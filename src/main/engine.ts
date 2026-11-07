@@ -360,8 +360,8 @@ export class Engine {
     const desc = this.provider.descriptor;
     return {
       appVersion: this.appVersion,
-      baselineTag: "v2.0.0",
-      baselineCommit: "d31e093b356846ff538dd8ba0dc22d62598e4427",
+      baselineTag: "v2.5.7",
+      baselineCommit: "8d1b8c2814f51d105cb5bf4a0e3a6aa04fef8ca1",
       dataRoot: this.dataRoot,
       providerId: desc.id,
       providerLabel: desc.label,

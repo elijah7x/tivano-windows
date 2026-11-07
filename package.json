@@ -3,7 +3,7 @@
   "productName": "Tivano Windows (Dev)",
   "version": "0.1.0",
   "private": true,
-  "description": "Independent Windows derivative of Tivano, targeting parity with Tivano for macOS v2.2.34 (d4c27410553677354bd08e70becd20ebbd240183). Derived from Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app — modified 2026-10-23, AGPL-3.0.",
+  "description": "Independent Windows derivative of Tivano, targeting parity with Tivano for macOS v2.5.7 (8d1b8c2814f51d105cb5bf4a0e3a6aa04fef8ca1). Derived from Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app — modified 2026-10-23, AGPL-3.0.",
   "main": "dist/main/index.cjs",
   "scripts": {
     "build": "node scripts/build.mjs",

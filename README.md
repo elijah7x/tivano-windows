@@ -1,8 +1,15 @@
 # Tivano Windows
 
-An independent Windows product built with Electron + React + TypeScript. The goal is full parity of features and product style with the frozen **Tivano for macOS v2.2.34** baseline. System behavior (windows, paths, shortcuts, processes, credentials) is adapted to Windows where that makes sense. The Mac product is not rewritten or modified.
+An independent Windows product, currently implemented with Electron + React + TypeScript. The goal is full parity of features and product style with the frozen **Tivano for macOS v2.5.7** baseline. System behavior (windows, paths, shortcuts, processes, credentials) is adapted to Windows where that makes sense. The Mac product is not rewritten or modified.
 
 This is development software, not a release. Nothing here is accepted as a supported Windows product yet, and the full feature/provider support matrix is not complete, so do not assume any given provider is supported.
+
+## Maintainers
+
+- Product owner: [@elijah7x](https://github.com/elijah7x), the author of Tivano for macOS. Sets product design and direction, and gives final acceptance of official releases.
+- Windows maintainer: [@Li-changwu](https://github.com/Li-changwu). Makes the technical decisions, reviews and merges PRs, and decides when a parity row is `done`.
+
+What each role decides, and how to contribute, is in [CONTRIBUTING.md › Roles](CONTRIBUTING.md#roles).
 
 ## Documentation
 
@@ -10,7 +17,8 @@ This is development software, not a release. Nothing here is accepted as a suppo
 - [docs/architecture.md](docs/architecture.md): technical direction and unverified items.
 - [docs/execution-plan.md](docs/execution-plan.md): phases and open items.
 - [docs/source-baseline.json](docs/source-baseline.json): exact tag, commit and how the reference was obtained.
-- `docs/phase-*.md`: per-phase design notes and recorded results. Short commit hashes in these documents (for example `e0af84b`) refer to the pre-publication development history, which is archived by the maintainer and not part of this repository.
+- [docs/parity.md](docs/parity.md): alignment checklist against the baseline, with per-feature status for contributors to pick from.
+- `docs/phase-*.md`: per-phase design notes and recorded results. Short commit hashes in these documents (for example `e0af84b`) refer to the pre-publication development history, which is archived by the project owner and not part of this repository.
 
 ## Build and verify
 
@@ -37,7 +45,7 @@ The recorded `npm run verify` results come from a macOS arm64 host. A full run o
 
 ## Status
 
-Verification is reported in five separate categories: synthetic replay, real Windows, real provider, desktop interaction and install/update. A result in one category does not stand in for another, and anything not run is `NOT RUN`. Review results below were produced on a macOS arm64 host unless a Windows host is named. Details are in the phase documents.
+Verification is reported in five separate categories: synthetic replay, real Windows, real provider, desktop interaction and install/update. A result in one category does not stand in for another, and anything not run is `NOT RUN`. Review results below were produced on a macOS arm64 host unless a Windows host is named. Details are in the phase documents. The "Maintainer review" records predate the current maintainer team and were made by the project owner.
 
 | Area | Maintainer review | Not verified |
 | --- | --- | --- |
@@ -51,14 +59,14 @@ Verification is reported in five separate categories: synthetic replay, real Win
 | Windows read-only Git (helper-run) | Local implementation reviewed. Native `--run` checks and packaged smoke passed on Windows Server 2022 x64 | Not accepted: packaged Git stalled before repository assertions, and the packaged job regression after it was NOT RUN |
 | Windows terminal (ConPTY + Job host) | Local implementation reviewed | Not accepted: disabled in ordinary builds; MSVC build, native ConPTY and packaged candidate NOT RUN |
 
-**Agent self-tested only.** The last two batches of work were tested by the agent that wrote them and have not been reviewed or accepted by a maintainer:
+**Agent self-tested only.** The last two batches of work were tested by the agent that wrote them and have not been reviewed or accepted by a Windows maintainer:
 
 - The feature batch: Codex model and reasoning-effort selection, the user-question card, checkpoint ledger changes, MCP, Hydra, themes and related changes.
 - The parity-fix batch for macOS v2.2.12 behavior: queueing a second message while a turn is stopping, binding the limit wait to the model, and keeping a Hydra head's brief while the head is busy.
 
 Still unverified:
 
-- Install and run as an ordinary user on Windows 10/11. All Windows evidence so far is from Windows Server 2022 x64 with an elevated account.
+- Install and run as an ordinary user on Windows 10/11. All maintainer-reviewed Windows evidence so far is from Windows Server 2022 x64 with an elevated account; some agent self-tested unit runs were made on Windows 11 as an administrator.
 - Real provider authentication and inference, end to end.
 - Windows native folder picker and file chooser.
 - Packaged Git on Windows.
@@ -69,7 +77,7 @@ Still unverified:
 
 ## Origin and license
 
-The baseline is [Tivano v2.2.34](https://github.com/elijah7x/tivano/releases/tag/v2.2.34) (released 2026-10-31), commit `d4c27410553677354bd08e70becd20ebbd240183`. The current main/dev branches are not used in its place. The reference source is read-only: fetch it from that GitHub tag and do not develop in it or run its scripts. Earlier baseline v2.0.0 (commit `d31e093b356846ff538dd8ba0dc22d62598e4427`) is recorded in [docs/source-baseline.json](docs/source-baseline.json) as historical.
+The baseline is [Tivano v2.5.7](https://github.com/elijah7x/tivano/releases/tag/v2.5.7) (released 2026-11-06), commit `8d1b8c2814f51d105cb5bf4a0e3a6aa04fef8ca1`. The current main/dev branches are not used in its place. The reference source is read-only: fetch it from that GitHub tag and do not develop in it or run its scripts. Earlier baselines v2.2.34 (commit `d4c27410553677354bd08e70becd20ebbd240183`) and v2.0.0 (commit `d31e093b356846ff538dd8ba0dc22d62598e4427`) are recorded in [docs/source-baseline.json](docs/source-baseline.json) as historical.
 
 Tivano Windows is an independent Windows rewrite derived from that baseline (started 2026-10-23). It is not the original Droppy Code and does not represent production by, endorsement by or affiliation with Droppy or Jordy Spruit. Original attribution: **Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app**.
 

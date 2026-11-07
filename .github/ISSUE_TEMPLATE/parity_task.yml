@@ -1,0 +1,68 @@
+name: Parity task
+description: Announce work on, or propose an approach for, a row from docs/parity.md.
+labels: ["parity"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Pick a row from `docs/parity.md` and say here that you are working on it, so nobody duplicates the work. You do not need approval to start. For anything large, describe your approach here and discuss it with a Windows maintainer first.
+  - type: input
+    id: row-id
+    attributes:
+      label: Parity row ID
+      description: The row ID in docs/parity.md.
+      placeholder: P1-01, P2-01 or W-01
+    validations:
+      required: true
+  - type: textarea
+    id: mac-behavior
+    attributes:
+      label: Mac behavior
+      description: What the macOS app does, with its location in the v2.5.7 source or the CHANGELOG entry that describes it.
+    validations:
+      required: true
+  - type: textarea
+    id: windows-approach
+    attributes:
+      label: Proposed Windows implementation
+      description: How you plan to build it on Windows, which parts of the code it touches, and anything that has to differ from the Mac behavior.
+    validations:
+      required: true
+  - type: checkboxes
+    id: verification
+    attributes:
+      label: Verification categories needed
+      description: Which of the five categories from AGENTS.md this row needs. Each one is reported separately in the PR, with a result or NOT RUN.
+      options:
+        - label: Synthetic replay
+        - label: Real Windows
+        - label: Real provider
+        - label: Desktop interaction
+        - label: Install/update
+  - type: dropdown
+    id: native
+    attributes:
+      label: Needs Windows-native capability?
+      description: For example the native helper, ConPTY, a native dialog or the packaged build.
+      options:
+        - "No"
+        - "Yes"
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: credentials
+    attributes:
+      label: Needs real credentials?
+      description: Real provider credentials are needed to verify against a real provider. Never paste credentials into this issue.
+      options:
+        - "No"
+        - "Yes"
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Anything else, such as related rows, issues or open questions.

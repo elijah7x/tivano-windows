@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Product feature request
+    url: https://github.com/elijah7x/tivano/issues
+    about: Feature requests for the product go to the Tivano for macOS repository.
+  - name: Problem with Tivano for macOS
+    url: https://github.com/elijah7x/tivano/issues
+    about: Mac behavior questions and bugs go to the Tivano for macOS repository.

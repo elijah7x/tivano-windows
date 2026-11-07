@@ -2,9 +2,11 @@
 
 ## 产品与基线
 
-Tivano Windows 是独立产品，采用 Electron + React + TypeScript，不重写 Tivano Mac。功能与产品风格对齐 Mac；窗口、路径、快捷键、进程和凭证等系统行为允许合理的 Windows 适配。
+Tivano Windows 是独立产品，目前采用 Electron + React + TypeScript，不重写 Tivano Mac。功能与产品风格对齐 Mac；窗口、路径、快捷键、进程和凭证等系统行为允许合理的 Windows 适配。
 
-完整功能对齐是最终目标，不是当前支持声明。当前对齐目标为 Mac v2.2.34，commit 为 `d4c27410553677354bd08e70becd20ebbd240183`（v2.0.0 `d31e093b356846ff538dd8ba0dc22d62598e4427` 为历史基线），来源见 [source-baseline.json](source-baseline.json)；不跟随 main/dev。逐项建立功能/provider 支持矩阵。矩阵至少记录 Mac 行为、Windows 方案、依赖、验证环境、证据和缺口，不能默认所有 provider 兼容。
+当前技术栈是现阶段的选择，不是硬性要求。Windows 维护者可以按 [CONTRIBUTING.md](../CONTRIBUTING.md#changing-the-stack-or-architecture) 的流程更换技术栈（包括重写），重大技术栈或架构变更须在 `docs/` 下写一份决策记录（动机、取舍、迁移计划、对现有功能和验收状态的影响）。影响用户可见行为时，须告知产品负责人。下文的分层与待验证事项描述的是当前实现，更换技术栈后随之更新。
+
+完整功能对齐是最终目标，不是当前支持声明。当前对齐目标为 Mac v2.5.7，commit 为 `8d1b8c2814f51d105cb5bf4a0e3a6aa04fef8ca1`（v2.2.34 `d4c27410553677354bd08e70becd20ebbd240183` 和 v2.0.0 `d31e093b356846ff538dd8ba0dc22d62598e4427` 为历史基线），来源见 [source-baseline.json](source-baseline.json)；不跟随 main/dev。逐项建立功能/provider 支持矩阵。矩阵至少记录 Mac 行为、Windows 方案、依赖、验证环境、证据和缺口，不能默认所有 provider 兼容。
 
 ## 分层与边界
 
