@@ -1,0 +1,33 @@
+{
+  "repository_url": "https://github.com/elijah7x/tivano.git",
+  "release_url": "https://github.com/elijah7x/tivano/releases/tag/v2.2.34",
+  "release_date": "2026-10-31",
+  "tag": "v2.2.34",
+  "tag_object": "bb7aa941895751fc2bfab2353adc00536179f36d",
+  "commit": "d4c27410553677354bd08e70becd20ebbd240183",
+  "acquired_at": "2026-10-31T15:29:18Z",
+  "acquisition_method": "Exclusive-created versioned directory; downloaded the GitHub source tarball for the exact peeled commit; verified MARKETING_VERSION=2.2.34 in config/release.xcconfig; extracted read-only (chmod a-w). Archive sha256 47c23c4f477ad8c2b831c3d4408279d009ab4e803faf2dee6361faf039104d7e (12,885,777 B). No upstream scripts executed, no dependencies installed.",
+  "fetch_refspec": "n/a — tarball by commit SHA",
+  "object_match": "Owner-supplied frozen commit d4c27410553677354bd08e70becd20ebbd240183; tag object recorded from release metadata.",
+  "reference_policy": "Read-only reference, not a development checkout. Do not replace with current main/dev or execute upstream scripts. Obtain the reference source from the GitHub tag v2.2.34 (https://github.com/elijah7x/tivano/releases/tag/v2.2.34).",
+  "relationship": "Tivano Windows is an independent Electron/React/TypeScript derivative rewrite targeting full parity with this frozen Tivano Mac baseline. It is not the original Droppy Code and does not claim endorsement or affiliation.",
+  "preserved_upstream_files": [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "TRADEMARK.md"
+  ],
+  "required_attribution": "Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app",
+  "import_scope": "Only the three upstream legal/attribution files were copied into the Windows project during source preparation. The full Mac source tree and its images/fonts remain outside the project as reference; no production data or credentials were imported.",
+  "validation_scope": "Source identity comparison only; no product build, test, launch or platform acceptance performed during preparation.",
+  "previous_baselines": [
+    {
+      "tag": "v2.0.0",
+      "tag_object": "dcf12b2b06f581d450d6dc3b8e5c4cce15da179a",
+      "commit": "d31e093b356846ff538dd8ba0dc22d62598e4427",
+      "release_url": "https://github.com/elijah7x/tivano/releases/tag/v2.0.0",
+      "release_date": "2026-10-22",
+      "acquired_at": "2026-10-23T04:18:13Z",
+      "status": "historical — superseded as parity target on 2026-10-31 (upgrade-v2234); v2.0.0 parity evidence A0–A85 stays valid against it"
+    }
+  ]
+}

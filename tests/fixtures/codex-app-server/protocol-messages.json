@@ -1,0 +1,213 @@
+{
+  "$comment": "Offline fixtures for the pinned Codex app-server protocol. Every entry is hand-constructed from the pinned generated types at codex-cli tag rust-v0.164.0 (commit 6aaac694803004a63c6f393d153c96d22521a6b9) — NOTHING is a recording of a real session. 'valid' entries must decode and route; 'malformed' entries must be rejected by the codec/classifier.",
+  "protocol": { "cli": "0.164.0", "schemaSha": "6aaac694", "transport": "stdio JSONL, one object per line, no jsonrpc member" },
+  "valid": [
+    {
+      "name": "initialize-request",
+      "direction": "client->server",
+      "covers": "initialize params shape (v1 InitializeParams/ClientInfo)",
+      "line": { "id": 1, "method": "initialize", "params": { "clientInfo": { "name": "tivano-win", "title": "Tivano", "version": "0.1.0" } } }
+    },
+    {
+      "name": "initialize-response",
+      "direction": "server->client",
+      "covers": "InitializeResponse {userAgent,codexHome,platformFamily,platformOs}",
+      "line": { "id": 1, "result": { "userAgent": "codex/0.164.0 (windows)", "codexHome": "C:\\\\fixtures\\\\codex-home", "platformFamily": "windows", "platformOs": "windows" } }
+    },
+    {
+      "name": "initialized-notification",
+      "direction": "client->server",
+      "covers": "post-initialize notification, no id, no params required",
+      "line": { "method": "initialized" }
+    },
+    {
+      "name": "thread-start-request",
+      "direction": "client->server",
+      "covers": "ThreadStartParams subset used by this build",
+      "line": { "id": 2, "method": "thread/start", "params": { "cwd": "D:\\\\proj", "approvalPolicy": "untrusted", "approvalsReviewer": "user", "sandbox": "read-only", "ephemeral": false } }
+    },
+    {
+      "name": "thread-resume-request",
+      "direction": "client->server",
+      "covers": "ThreadResumeParams: threadId + overrides + excludeTurns",
+      "line": { "id": 3, "method": "thread/resume", "params": { "threadId": "018f-thread", "cwd": "D:\\\\proj", "approvalPolicy": "untrusted", "approvalsReviewer": "user", "sandbox": "read-only", "excludeTurns": true } }
+    },
+    {
+      "name": "turn-start-request",
+      "direction": "client->server",
+      "covers": "TurnStartParams {threadId,input:[{type:'text',text,text_elements}]}",
+      "line": { "id": 4, "method": "turn/start", "params": { "threadId": "018f-thread", "input": [{ "type": "text", "text": "hello", "text_elements": [] }] } }
+    },
+    {
+      "name": "turn-interrupt-request",
+      "direction": "client->server",
+      "covers": "TurnInterruptParams {threadId,turnId}",
+      "line": { "id": 5, "method": "turn/interrupt", "params": { "threadId": "018f-thread", "turnId": "018f-turn" } }
+    },
+    {
+      "name": "turn-interrupt-response",
+      "direction": "server->client",
+      "covers": "empty object result (TurnInterruptResponse = Record<string,never>)",
+      "line": { "id": 5, "result": {} }
+    },
+    {
+      "name": "turn-started-notification",
+      "direction": "server->client",
+      "covers": "{threadId, turn: Turn(status:'inProgress')}",
+      "line": { "method": "turn/started", "params": { "threadId": "018f-thread", "turn": { "id": "018f-turn", "rootTurnId": null, "items": [], "itemsView": { "kind": "all" }, "status": "inProgress", "error": null, "startedAt": 1761336000, "completedAt": null, "durationMs": null } } }
+    },
+    {
+      "name": "agent-delta-notification",
+      "direction": "server->client",
+      "covers": "AgentMessageDeltaNotification {threadId,turnId,itemId,delta}",
+      "line": { "method": "item/agentMessage/delta", "params": { "threadId": "018f-thread", "turnId": "018f-turn", "itemId": "item-1", "delta": "partial text" } }
+    },
+    {
+      "name": "command-output-delta",
+      "direction": "server->client",
+      "covers": "CommandExecutionOutputDeltaNotification",
+      "line": { "method": "item/commandExecution/outputDelta", "params": { "threadId": "018f-thread", "turnId": "018f-turn", "itemId": "item-2", "delta": "out" } }
+    },
+    {
+      "name": "turn-completed-notification",
+      "direction": "server->client",
+      "covers": "terminal turn with status 'completed'",
+      "line": { "method": "turn/completed", "params": { "threadId": "018f-thread", "turn": { "id": "018f-turn", "rootTurnId": null, "items": [], "itemsView": { "kind": "all" }, "status": "completed", "error": null, "startedAt": 1761336000, "completedAt": 1761336010, "durationMs": 10000 } } }
+    },
+    {
+      "name": "turn-failed-notification",
+      "direction": "server->client",
+      "covers": "terminal turn with status 'failed' and TurnError",
+      "line": { "method": "turn/completed", "params": { "threadId": "018f-thread", "turn": { "id": "018f-turn", "rootTurnId": null, "items": [], "itemsView": { "kind": "all" }, "status": "failed", "error": { "message": "boom", "codexErrorInfo": "other", "additionalDetails": null, "misalignment": null }, "startedAt": 1761336000, "completedAt": 1761336010, "durationMs": 10000 } } }
+    },
+    {
+      "name": "command-execution-approval-request",
+      "direction": "server->client",
+      "covers": "CommandExecutionRequestApprovalParams core fields + INT request id",
+      "line": { "id": 77, "method": "item/commandExecution/requestApproval", "params": { "kind": "command", "threadId": "018f-thread", "turnId": "018f-turn", "itemId": "item-2", "startedAtMs": 1761336005000, "environmentId": null, "reason": "needs escalation", "command": "dir C:\\", "cwd": "D:\\\\proj" } }
+    },
+    {
+      "name": "command-approval-accept-response",
+      "direction": "client->server",
+      "covers": "CommandExecutionRequestApprovalResponse {decision:'accept'}",
+      "line": { "id": 77, "result": { "decision": "accept" } }
+    },
+    {
+      "name": "command-approval-decline-response",
+      "direction": "client->server",
+      "covers": "decision 'decline' — the only refusal this build emits",
+      "line": { "id": 77, "result": { "decision": "decline" } }
+    },
+    {
+      "name": "filechange-approval-request",
+      "direction": "server->client",
+      "covers": "FileChangeRequestApprovalParams + STRING request id (typed ids!)",
+      "line": { "id": "srv-018f", "method": "item/fileChange/requestApproval", "params": { "threadId": "018f-thread", "turnId": "018f-turn", "itemId": "item-3", "startedAtMs": 1761336005000, "reason": "write outside sandbox", "grantRoot": "D:\\\\proj\\\\out" } }
+    },
+    {
+      "name": "permissions-approval-request",
+      "direction": "server->client",
+      "covers": "PermissionsRequestApprovalParams with RequestPermissionProfile",
+      "line": { "id": 78, "method": "item/permissions/requestApproval", "params": { "threadId": "018f-thread", "turnId": "018f-turn", "itemId": "item-4", "environmentId": null, "startedAtMs": 1761336005000, "cwd": "D:\\\\proj", "reason": "needs fs+net", "permissions": { "network": { "enabled": true }, "fileSystem": { "read": ["D:\\\\proj\\\\in"], "write": ["D:\\\\proj\\\\out"] } } } }
+    },
+    {
+      "name": "permissions-approval-response",
+      "direction": "client->server",
+      "covers": "PermissionsRequestApprovalResponse {permissions,scope:'turn'}",
+      "line": { "id": 78, "result": { "permissions": { "network": { "enabled": true }, "fileSystem": { "read": ["D:\\\\proj\\\\in"], "write": ["D:\\\\proj\\\\out"] } }, "scope": "turn" } }
+    },
+    {
+      "name": "server-request-resolved",
+      "direction": "server->client",
+      "covers": "ServerRequestResolvedNotification {threadId,requestId:RequestId}",
+      "line": { "method": "serverRequest/resolved", "params": { "threadId": "018f-thread", "requestId": 77 } }
+    },
+    {
+      "name": "error-notification-final",
+      "direction": "server->client",
+      "covers": "ErrorNotification willRetry=false (final error for the turn)",
+      "line": { "method": "error", "params": { "error": { "message": "upstream died", "codexErrorInfo": "internalServerError", "additionalDetails": null, "misalignment": null }, "willRetry": false, "threadId": "018f-thread", "turnId": "018f-turn" } }
+    },
+    {
+      "name": "error-notification-retry",
+      "direction": "server->client",
+      "covers": "ErrorNotification willRetry=true (transient — a notice, not fatal)",
+      "line": { "method": "error", "params": { "error": { "message": "stream hiccup", "codexErrorInfo": { "responseStreamDisconnected": { "httpStatusCode": null } }, "additionalDetails": null, "misalignment": null }, "willRetry": true, "threadId": "018f-thread", "turnId": "018f-turn" } }
+    },
+    {
+      "name": "error-response-string-id",
+      "direction": "server->client",
+      "covers": "RPC error answer correlated by a STRING id",
+      "line": { "id": "req-abc", "error": { "code": -32000, "message": "resume target missing" } }
+    },
+    {
+      "name": "null-id-error-response",
+      "direction": "server->client",
+      "covers": "id:null error — answerable only with exactly one pending request",
+      "line": { "id": null, "error": { "code": -32700, "message": "parse error" } }
+    }
+  ],
+  "malformed": [
+    {
+      "name": "has-jsonrpc-member",
+      "covers": "foreign dialect marker — Codex must never emit 'jsonrpc'",
+      "line": { "jsonrpc": "2.0", "method": "initialized" },
+      "expected": "currently tolerated (classified as notification) — documented divergence from ACP"
+    },
+    {
+      "name": "array-envelope",
+      "covers": "batched JSON-RPC arrays are not a legal Codex frame",
+      "line": [{ "id": 1, "method": "initialize" }],
+      "expected": "BAD_ENVELOPE"
+    },
+    {
+      "name": "response-both-result-and-error",
+      "covers": "a response must carry exactly one of result/error",
+      "line": { "id": 1, "result": {}, "error": { "code": -1, "message": "x" } },
+      "expected": "BAD_ENVELOPE"
+    },
+    {
+      "name": "response-null-id-without-error",
+      "covers": "id:null is only legal on an ERROR response",
+      "line": { "id": null, "result": {} },
+      "expected": "BAD_ENVELOPE"
+    },
+    {
+      "name": "request-malformed-id",
+      "covers": "ids must be safe integers or non-empty strings",
+      "line": { "id": 1.5, "method": "turn/start", "params": {} },
+      "expected": "BAD_ENVELOPE"
+    },
+    {
+      "name": "request-empty-method",
+      "covers": "method must be a non-empty string",
+      "line": { "id": 9, "method": "", "params": {} },
+      "expected": "BAD_ENVELOPE"
+    },
+    {
+      "name": "response-missing-id",
+      "covers": "a response envelope requires the id member",
+      "line": { "result": {} },
+      "expected": "BAD_ENVELOPE"
+    },
+    {
+      "name": "error-field-not-object",
+      "covers": "error must be {code:int,message:string}",
+      "line": { "id": 1, "error": "failed" },
+      "expected": "BAD_ENVELOPE"
+    },
+    {
+      "name": "not-json",
+      "covers": "a line that is not JSON at all",
+      "line": "<<< not json >>>",
+      "raw": true,
+      "expected": "BAD_JSON"
+    },
+    {
+      "name": "bare-scalar",
+      "covers": "a JSON scalar is not a message object",
+      "line": 42,
+      "expected": "BAD_ENVELOPE"
+    }
+  ]
+}

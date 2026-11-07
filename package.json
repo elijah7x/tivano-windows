@@ -1,0 +1,39 @@
+{
+  "name": "tivano-windows",
+  "productName": "Tivano Windows (Dev)",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Independent Windows derivative of Tivano, targeting parity with Tivano for macOS v2.2.34 (d4c27410553677354bd08e70becd20ebbd240183). Derived from Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app — modified 2026-10-23, AGPL-3.0.",
+  "main": "dist/main/index.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "dev": "node scripts/build.mjs && node scripts/dev.mjs",
+    "test": "vitest run",
+    "test:e2e": "node scripts/e2e.mjs",
+    "verify": "node scripts/build.mjs && tsc --noEmit && vitest run && node scripts/e2e.mjs",
+    "helper:build:win": "powershell -ExecutionPolicy Bypass -File scripts/build-job-helper.ps1",
+    "test:windows": "node tests/windows/helper-harness.mjs",
+    "package:windows:plan": "node scripts/package-windows.mjs --plan",
+    "package:windows": "node scripts/package-windows.mjs --build",
+    "smoke:packaged": "node scripts/windows/packaged-smoke.mjs"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "node-pty": "1.1.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "electron": "44.9.3",
+    "electron-builder": "26.18.0",
+    "esbuild": "0.28.2",
+    "playwright-core": "1.64.1",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  }
+}
