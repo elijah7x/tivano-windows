@@ -125,7 +125,7 @@ You may use an AI coding agent. If you do:
 
 - Make the agent follow `AGENTS.md`, including the parity target, the read-only reference source, the evidence rules and the five verification categories.
 - In the PR, say which parts the agent generated and which parts a person has reviewed. An agent's own test run is labelled "agent self-tested" until a Windows maintainer has reviewed it.
-- Do not have the agent change the technology stack. See [Changing the stack or architecture](#changing-the-stack-or-architecture).
+- Do not have the agent change the technology stack without a Windows maintainer's decision record. Once one exists, an agent may carry out the change. See [Changing the stack or architecture](#changing-the-stack-or-architecture).
 - You are responsible for what you submit. Read the diff before you open the PR.
 
 ## Code style
