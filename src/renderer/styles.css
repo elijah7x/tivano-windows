@@ -305,7 +305,17 @@ html[data-performance] .sky-doll.sway { animation: none; }
 .group-name .chevron {
   display: inline-block;
   width: 12px;
-  transition: transform 0.12s ease;
+  transition:
+    transform 0.12s ease,
+    opacity 0.12s ease;
+}
+
+/* P2-22: the arrow trails the title — always visible while the section is
+   collapsed, hover-only (keyboard focus included) while it is expanded. */
+.group-name:not(.shelf-toggle):not(:hover):not(:focus-within):not(.closed) .chevron,
+.archived-toggle.open:not(:hover):not(:focus-within) .chevron,
+.shelf-toggle.open:not(:hover):not(:focus-within) .chevron {
+  opacity: 0;
 }
 
 .group-name.closed .chevron {
@@ -439,6 +449,7 @@ html[data-performance] .sky-doll.sway { animation: none; }
 }
 .archived-toggle .chevron {
   width: 12px;
+  transition: opacity 0.12s ease;
 }
 .row.archived {
   opacity: 0.65;
@@ -3812,7 +3823,10 @@ html[data-performance] .md-veil { animation: none; }
   padding: 6px 8px;
   cursor: pointer;
 }
-.ml-chev { color: var(--text-2); width: 14px; font-size: 11px; }
+.ml-chev { color: var(--text-2); width: 14px; font-size: 11px; transition: opacity 0.12s ease; }
+/* P2-22: arrow trails the group name — always visible while collapsed,
+   hover-only (focus included) while expanded. */
+.ml-group-head:not(:hover):not(:focus-within) .ml-chev:not(.closed) { opacity: 0; }
 .ml-group-name { font-weight: 600; font-size: calc(13px + var(--fs-ui-off)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ml-count { color: var(--text-2); font-size: calc(11px + var(--fs-ui-off)); }
 .ml-group-actions { margin-left: auto; display: flex; gap: 2px; opacity: 0; }
