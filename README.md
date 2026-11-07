@@ -40,6 +40,7 @@ Windows-only tooling (see [docs/phase-2c-windows-helper.md](docs/phase-2c-window
 | `npm run package:windows:plan` | Static packaging check; safe on any host and never implies a Windows build or validation |
 | `npm run package:windows` | Build the internal x64 installer (refuses unless run on win32/x64) |
 | `npm run smoke:packaged` | Offline smoke test of the packaged build (win32/x64 only; mock provider) |
+| [Desktop acceptance helpers](scripts/windows-acceptance/README.md) | Desktop acceptance helpers: launch in the interactive session, screenshots, runs as a standard user |
 
 The recorded `npm run verify` results come from a macOS arm64 host. A full run on a Windows development machine is not recorded.
 
