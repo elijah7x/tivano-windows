@@ -59,7 +59,10 @@ Nothing installs the C++ toolchain for you, and the helper build writes to a fre
 
 - **Windows-specific bugs, build problems and parity tasks:** open an issue in this repository with the matching template. For a bug, include your Windows edition and build, architecture, account type and how you installed the app.
 - **Product feature requests and questions about Mac behavior:** file them at <https://github.com/elijah7x/tivano/issues>. This repository follows the macOS baseline and does not decide product direction.
-- **Security problems:** do not open a public issue. For now, contact the maintainer privately through the contact details on the GitHub profile of `elijah7x`. Do not put exploit details in a public issue, a PR or a discussion.
+- **Security problems:** do not open a public issue. Use **Report a vulnerability** on the repository's Security tab (GitHub private vulnerability reporting); maintainers and the product owner see it there. Do not put exploit details in a public issue, a PR or a discussion.
+- **Questions and open-ended ideas:** use GitHub Discussions.
+
+**Talking with the product owner.** Maintainers may reach the product owner however suits them, on GitHub or directly. When a conversation settles something that later maintainers need to know (a product-design call, a stack decision, a change to these rules), leave a short record on GitHub: an issue, a discussion or a decision record in `docs/`.
 
 ## Picking work
 
@@ -85,7 +88,7 @@ The current implementation is Electron + React + TypeScript. That is the present
 
 - Branch from `main`. External contributors work from a fork.
 - One PR does one thing. Split unrelated fixes.
-- `main` accepts squash merges only, so the PR title becomes the commit subject. Write it accordingly.
+- `main` is set up for squash merges, so the PR title becomes the commit subject. Write it accordingly. Windows maintainers may change repository conventions like this one.
 - Update the matching row in `docs/parity.md` in the same PR. Set the status from what you verified, not what you intend. Contributors propose a status; a Windows maintainer confirms `done`.
 
 **Before you open it**
