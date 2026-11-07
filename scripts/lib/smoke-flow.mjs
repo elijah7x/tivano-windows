@@ -183,7 +183,7 @@ export async function runSmokeFlow(opts) {
     check(
       "mock provider badge visible",
       (await badge.count()) === 1 && (await badge.isVisible()) &&
-        /Mock Provider|模拟提供方/.test(await badge.innerText()),
+        /Mock Provider|模拟服务商/.test(await badge.innerText()),
     );
 
     await page.locator(".composer textarea").fill("please [mock:approval] run the sync");

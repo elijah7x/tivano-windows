@@ -1,9 +1,9 @@
 {
   "_meta": {
-    "provenance": "Values extracted verbatim from the frozen baseline catalog Tivano/Resources/Localizable.xcstrings",
-    "baselineTag": "v2.0.0",
-    "baselineCommit": "d31e093b356846ff538dd8ba0dc22d62598e4427",
-    "extractedAt": "2026-10-23",
+    "provenance": "Values extracted verbatim from the alignment-target catalog Tivano/Resources/Localizable.xcstrings",
+    "baselineTag": "v2.5.7",
+    "baselineCommit": "8d1b8c2814f51d105cb5bf4a0e3a6aa04fef8ca1",
+    "extractedAt": "2026-11-07",
     "refresh": "Set TIVANO_UPSTREAM_XCSTRINGS=/path/to/Localizable.xcstrings to re-verify this fixture against a live catalog; the test then checks every fixture value byte-for-byte and refuses to run when the file is absent/unreadable."
   },
   "values": {
@@ -26,7 +26,7 @@
     "Stop": "停止",
     "Retry": "重试",
     "Error": "错误",
-    "Today": "今日聚焦",
+    "Today": "今日",
     "Yesterday": "昨天",
     "Archive": "归档",
     "Delete": "删除",
