@@ -62,7 +62,7 @@ Statuses are taken from the earlier delta review of this range and have not been
 | P1-27 | File-completion list refreshes when the filesystem changes | `not started` | 2.0.22. Unchecked. |
 | P1-28 | Image preview reloads and retries | `not started` | 2.0.22. Unchecked. |
 | P1-29 | Markdown keeps streaming during long replies | `not started` | 2.0.22. Unchecked. |
-| P1-30 | Composer buttons share one round hover; full access shows a checked shield | `not started` | 2.0.22. Cosmetic. |
+| P1-30 | Composer buttons share one round hover; full access shows a checked shield | `done` | 2.0.22. The composer's controls (paperclip, context ring, runtime-mode and model/effort pickers, Build/Plan segments, Queue/Stop) share one hover fill (`var(--hover)`), and the standalone controls are fully round (`src/renderer/styles.css`); with Full access selected, a checked-shield glyph sits beside the runtime-mode picker (`src/renderer/components/RuntimeModePicker.tsx`), mirroring the Mac `checkmark.shield` symbol. Cosmetic; agent self-tested. |
 | P1-31 | Hydra panel: middle drag area, clicking a head's name opens its chat, context menu | `not started` | 2.1.20. |
 | P1-32 | DeepSeek Harness routes, agent mode and CLI-from-app | `blocked (macOS-only provider integration, no Windows equivalent identified)` | See P2-15. |
 | P1-33 | MCP: use the full command path for ACP agents; skip with a notice when the command is missing | `not started` | 2.0.22. Unchecked against `src/main/mcpService.ts`. |
