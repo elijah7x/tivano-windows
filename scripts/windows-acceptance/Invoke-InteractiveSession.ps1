@@ -204,13 +204,15 @@ try {
 [IO.File]::Move((__EXIT__ + '.pending'), __EXIT__)
 exit $code
 '@
-    $wrapper = $wrapper.Replace('__DIR__', (ConvertTo-AcceptanceLiteral $dir)).
-      Replace('__SESSION__', [string]$sessionId).
-      Replace('__STARTED__', (ConvertTo-AcceptanceLiteral $startedPath)).
-      Replace('__PAYLOAD__', (ConvertTo-AcceptanceLiteral $payloadPath)).
-      Replace('__OUT__', (ConvertTo-AcceptanceLiteral $stdoutPath)).
-      Replace('__ERR__', (ConvertTo-AcceptanceLiteral $stderrPath)).
-      Replace('__EXIT__', (ConvertTo-AcceptanceLiteral $exitPath))
+    # One pass, so a placeholder-like substring inside a substituted path is never rewritten.
+    $values = @{
+      '__DIR__' = (ConvertTo-AcceptanceLiteral $dir); '__SESSION__' = [string]$sessionId
+      '__STARTED__' = (ConvertTo-AcceptanceLiteral $startedPath); '__PAYLOAD__' = (ConvertTo-AcceptanceLiteral $payloadPath)
+      '__OUT__' = (ConvertTo-AcceptanceLiteral $stdoutPath); '__ERR__' = (ConvertTo-AcceptanceLiteral $stderrPath)
+      '__EXIT__' = (ConvertTo-AcceptanceLiteral $exitPath)
+    }
+    $wrapper = [regex]::Replace($wrapper, '__(DIR|SESSION|STARTED|PAYLOAD|OUT|ERR|EXIT)__',
+      [Text.RegularExpressions.MatchEvaluator]{ param($m) $values[$m.Value] })
     Set-Content -LiteralPath $wrapperPath -Value ($header + $wrapper) -Encoding UTF8
     Initialize-AcceptanceTaskFolder
     $taskName = "$Name-$([Guid]::NewGuid().ToString('N'))"
