@@ -272,7 +272,7 @@ function PairEditor(props: {
     aria: string,
   ) => (
     <select
-      className="model-select"
+      className="model-select hydra-model-choice"
       aria-label={t(aria)}
       value={value ?? ""}
       onChange={(e) => onPick(e.target.value === "" ? undefined : e.target.value)}

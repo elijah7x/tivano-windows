@@ -3315,6 +3315,12 @@ html[data-performance] .md-veil { animation: none; }
   align-items: end;
 }
 .hydra-editor .model-select { width: 100%; min-width: 0; }
+.hydra-editor .hydra-model-choice {
+  align-self: flex-start;
+  field-sizing: content;
+  width: auto;
+  max-width: min(190px, 100%);
+}
 .hydra-editor .wt-field { min-width: 0; }
 .hydra-editor-side {
   grid-column: 1 / -1;
