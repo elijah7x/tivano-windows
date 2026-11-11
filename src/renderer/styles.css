@@ -1237,18 +1237,30 @@ html[data-performance] .sky-doll.sway { animation: none; }
   border-top-left-radius: 0;
   border-top-right-radius: 0;
 }
+/* P1-30 (Mac 2.0.22): the composer's buttons share one round hover — the
+   same subtle fill (var(--hover)) the Mac chips wear, shaped round to each
+   control — instead of the plain rect hover the base button rule gives. */
 .attach-btn {
   border: 1px solid var(--border);
   background: transparent;
-  border-radius: 6px;
+  border-radius: 999px;
   padding: 4px 8px;
   cursor: pointer;
   font-size: calc(13px + var(--fs-ui-off));
   line-height: 1;
 }
+.attach-btn:hover:not(:disabled) {
+  background: var(--hover);
+}
 .attach-btn:disabled {
   opacity: 0.4;
   cursor: default;
+}
+.composer > button {
+  border-radius: 999px;
+}
+.composer > button:hover:not(.primary):not(:disabled) {
+  background: var(--hover);
 }
 .composer-note {
   flex-basis: 100%;
@@ -1269,11 +1281,33 @@ select.runtime-mode {
   color: var(--text);
   background: var(--surface-2, transparent);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 999px;
   padding: 3px 6px;
+}
+select.runtime-mode:hover:not(:disabled) {
+  background: var(--hover);
 }
 select.runtime-mode:disabled {
   opacity: 0.55;
+}
+/* P1-30: the runtime-mode glyph chip — full access shows a checked shield
+   (Mac checkmark.shield) beside the picker. */
+.runtime-mode-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.runtime-mode-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--text-2);
+}
+.runtime-mode-wrap:hover .runtime-mode-glyph {
+  background: var(--hover);
 }
 /* F06 Build/Plan segmented toggle. */
 .imode-toggle {
@@ -1289,6 +1323,9 @@ select.runtime-mode:disabled {
   border: 0;
   padding: 3px 10px;
   cursor: pointer;
+}
+.imode-toggle .imode:hover:not(.on):not(:disabled) {
+  background: var(--hover);
 }
 .imode-toggle .imode.on {
   background: var(--accent);
@@ -1510,7 +1547,11 @@ select.runtime-mode:disabled {
   padding: 3px;
   border: none;
   background: transparent;
+  border-radius: 50%;
   cursor: pointer;
+}
+.ctx-ring:hover {
+  background: var(--hover);
 }
 .ctx-ring .ctx-track {
   stroke: color-mix(in srgb, var(--text-2) 25%, transparent);
@@ -1554,9 +1595,12 @@ select.runtime-mode:disabled {
   color: var(--text);
   background: var(--surface-2, transparent);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 999px;
   padding: 3px 6px;
   max-width: 240px;
+}
+.model-picker select:hover:not(:disabled) {
+  background: var(--hover);
 }
 .model-picker select:disabled {
   opacity: 0.55;
