@@ -229,7 +229,7 @@ try {
     "mock provider badge is visibly labelled",
     (await badge.count()) === 1 &&
       (await badge.isVisible()) &&
-      /Mock Provider|模拟提供方/.test(await badge.innerText()),
+      /Mock Provider|模拟服务商/.test(await badge.innerText()),
   );
 
   // send a prompt that triggers the scripted approval — bind the turn id
@@ -277,7 +277,7 @@ try {
   );
   check(
     "About is honest about the mock provider",
-    /Mock Provider|模拟提供方/.test(about) && /synthetic|合成/.test(about),
+    /Mock Provider|模拟服务商/.test(about) && /synthetic|合成/.test(about),
   );
   await page.screenshot({ path: join(outDir, "04-settings-about.png") });
 

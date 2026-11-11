@@ -205,7 +205,7 @@ export async function runCodexSetupChecks({
   verify(
     "zh-Hans settings shows the same honest states",
     zhText.includes("下次启动生效") && zhText.includes("已保存的程序") &&
-      zhText.includes("模拟提供方") && !zhText.includes("Mock Provider (synthetic"),
+      zhText.includes("模拟服务商") && !zhText.includes("Mock Provider (synthetic"),
     zhText.slice(0, 160),
   );
   await page.screenshot({ path: join(outDir, "52-codexsetup-saved-pending-zh.png") });
