@@ -574,8 +574,8 @@ export function Sidebar(props: {
                   })
                 }
               >
-                <span className="chevron">▾</span>
                 <span className="title">{project.name}</span>
+                <span className="chevron">▾</span>
               </button>
               {project.directory && (
                 <button
@@ -668,16 +668,16 @@ export function Sidebar(props: {
               }}
             >
               <button
-                className="group-name shelf-toggle"
+                className={`group-name shelf-toggle${shelfOpen ? " open" : ""}`}
                 aria-expanded={shelfOpen}
                 onClick={() => setShelfOpen((v) => !v)}
               >
-                <span className="chevron">{shelfOpen ? "▾" : "▸"}</span>
                 <span className="shelf-icon" aria-hidden="true">▤</span>
                 <span className="title">
                   {snapshot.settings.shelvedGroupName ?? t("Shelved projects")} (
                   {groups.shelf.length})
                 </span>
+                <span className="chevron">{shelfOpen ? "▾" : "▸"}</span>
                 {groups.shelfHasUnread && <span className="shelf-unread" aria-label={t("Unread")} />}
               </button>
             </div>
@@ -760,14 +760,14 @@ export function Sidebar(props: {
       {groups.archived.length > 0 && (
         <div className="archived-block">
           <button
-            className="archived-toggle"
+            className={`archived-toggle${showArchived ? " open" : ""}`}
             onClick={() => setShowArchived((v) => !v)}
             aria-expanded={showArchived}
           >
-            <span className="chevron">{showArchived ? "▾" : "▸"}</span>
             <span className="title">
               {t("Archived")} ({groups.archived.length})
             </span>
+            <span className="chevron">{showArchived ? "▾" : "▸"}</span>
           </button>
           {showArchived &&
             groups.archived.map((th) => (

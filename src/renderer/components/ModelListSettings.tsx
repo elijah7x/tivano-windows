@@ -431,9 +431,6 @@ export function ModelListSettings(): React.JSX.Element {
                     setMenu({ x: e.clientX, y: e.clientY, kind: "section", sectionId: g.section.id });
                   }}
                 >
-                  <span className={`ml-chev${isCollapsed ? " closed" : ""}`} aria-hidden="true">
-                    {isCollapsed ? "▸" : "▾"}
-                  </span>
                   {editingId === g.section.id ? (
                     <input
                       className="ml-rename"
@@ -451,6 +448,9 @@ export function ModelListSettings(): React.JSX.Element {
                   ) : (
                     <span className="ml-group-name">{g.section.name}</span>
                   )}
+                  <span className={`ml-chev${isCollapsed ? " closed" : ""}`} aria-hidden="true">
+                    {isCollapsed ? "▸" : "▾"}
+                  </span>
                   <span className="ml-count">{g.pins.length}</span>
                   <span className="ml-group-actions">
                     <button
