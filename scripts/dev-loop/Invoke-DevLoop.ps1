@@ -896,7 +896,13 @@ function Read-DevResult {
 # ---- GitHub reads ----
 
 function Get-GhLogin {
-  $login = Invoke-Gh 'api user --jq .login'
+  # The network to GitHub drops now and then; a pass should not end on one failed request.
+  $login = $null
+  for ($try = 1; $try -le 5; $try++) {
+    $login = Invoke-Gh 'api user --jq .login'
+    if ($login.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($login.text)) { break }
+    if ($try -lt 5) { Start-Sleep -Seconds (15 * $try) }
+  }
   if ($login.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace($login.text)) { throw ('gh cannot tell who is signed in: ' + (Get-ErrorSummary $login)) }
   return $login.text.Trim()
 }
