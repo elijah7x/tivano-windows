@@ -966,6 +966,10 @@ const zhHans: Record<string, string> = {
   "%@ are done": "%@ 已完成",
   "%@ stopped": "%@ 已停止",
   "%@ failed": "%@ 失败",
+  "Hydra: no project named %@ is in the sidebar, so %@ did not start.":
+    "Hydra：侧边栏中没有名为 %@ 的项目，因此 %@ 未启动。",
+  "Hydra: %@ did not start because its checkout could not be read.":
+    "Hydra：无法读取 %@ 的检出目录，因此未启动。",
   " and ": " 和 ",
   ", ": "、",
   "Heads' reports": "子智能体报告",

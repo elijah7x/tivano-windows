@@ -137,6 +137,15 @@ export class MockProvider implements ProviderAdapter {
     // landing has real bytes to carry back (fixture-only filesystem
     // write, still synthetic; confined to the granted workspace).
     const wantsHydraTouch = prompt.includes("[mock:hydra-touch]");
+    // 2.2.12 start-failure fixtures: `[mock:hydra-badroute]` = one
+    // delegation routed to a project that is not in the sidebar;
+    // `[mock:hydra-deadcheckout]` = one routed to the project named
+    // "ghost-checkout" (a test binds it with no live directory);
+    // `[mock:hydra-waitroute]` = a held head plus a waiting unroutable
+    // one, so the queued head fails after the lead is already idle.
+    const wantsHydraBadRoute = prompt.includes("[mock:hydra-badroute]");
+    const wantsHydraDeadCheckout = prompt.includes("[mock:hydra-deadcheckout]");
+    const wantsHydraWaitRoute = prompt.includes("[mock:hydra-waitroute]");
     // F03 watchdog fixtures: `[mock:quiet]` emits its opening chunks then
     // goes silent forever (paused queue, nothing left) — the quiet
     // watchdog owns what happens next. `[mock:mend]` leads with an
@@ -172,16 +181,23 @@ export class MockProvider implements ProviderAdapter {
     const chunks = wantsSlow ? slowScript() : replyScript(prompt);
     if (
       wantsHydra || wantsHydraWait || wantsHydraWaitMany ||
-      wantsHydraProfile || wantsHydraTouch
+      wantsHydraProfile || wantsHydraTouch || wantsHydraBadRoute ||
+      wantsHydraDeadCheckout || wantsHydraWaitRoute
     ) {
-      const entries = wantsHydraWait || wantsHydraWaitMany
+      const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute
         ? wantsHydraWaitMany
           ? '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"},{"task":"Part two","prompt":"Second part."},{"task":"Part three","prompt":"Third part."}]'
-          : '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"}]'
+          : wantsHydraWaitRoute
+            ? '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"},{"task":"Lost errand","prompt":"Try it.","project":"ghost-proj"}]'
+            : '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"}]'
         : wantsHydraTouch
           ? '[{"task":"Write alpha","prompt":"Write the file. [mock:touch hydra-alpha.txt]"},{"task":"Write beta","prompt":"Write the file. [mock:touch hydra-beta.txt]"}]'
         : wantsHydraProfile
           ? '[{"task":"Deep pass","prompt":"Deep work.","profile":"deep"},{"task":"Plain pass","prompt":"Plain work."}]'
+        : wantsHydraBadRoute
+          ? '[{"task":"Lost errand","prompt":"Try it.","project":"ghost-proj"}]'
+        : wantsHydraDeadCheckout
+          ? '[{"task":"Dead checkout","prompt":"Try it.","project":"ghost-checkout"}]'
           : '[{"task":"Draft the outline","prompt":"Write a short outline."},{"task":"Verify the numbers","prompt":"Check the arithmetic."}]';
       // Split so the first entry closes one chunk BEFORE the second —
       // deterministic incremental dispatch (a head spawns while the

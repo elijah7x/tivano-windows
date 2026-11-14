@@ -429,3 +429,92 @@ describe("A58 pair binding (frozen hydraLaunch slice)", () => {
     store.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// P1-19 (2.2.12 parity): a head that cannot start ends failed — never
+// running without a turn, never with its watchdog armed — and its
+// explanation reaches the lead even while the lead is idle (frozen
+// failHydraRoute + hydraHeadFinished's immediate flush). A routing
+// error shows once, not again with each later message.
+
+describe("P1-19 failed spawns (frozen failHydraRoute)", () => {
+  it("an unroutable head ends failed; the routing note shows once", async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-badroute]");
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status === "failed");
+    // Failed at spawn: it never held a turn and no watchdog stays armed.
+    expect(head.turn).toBeNull();
+    expect(head.hydraHead!.summary).toContain("no project named ghost-proj");
+    expect(
+      (engine as unknown as { hydraWatchdogs: Map<string, unknown> })
+        .hydraWatchdogs.has(head.id),
+    ).toBe(false);
+    // The routing error lands once on the lead's timeline…
+    const notes = () =>
+      thread(engine, lead.id).messages.filter(
+        (m) =>
+          m.kind === "notice" && m.content.includes("no project named ghost-proj"),
+      );
+    await waitFor(() => notes().length === 1);
+    // …and inside the head's report, delivered once the lead is idle.
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some((m) =>
+        m.content.includes("Hydra reports:"),
+      ),
+    );
+    const report = thread(engine, lead.id).messages.find((m) =>
+      m.content.includes("Hydra reports:"),
+    )!;
+    expect(report.content).toContain("no project named ghost-proj");
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+    // A later lead turn must not re-show the routing error.
+    engine.sendTurn(lead.id, "thanks");
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+    expect(notes()).toHaveLength(1);
+    store.close();
+  });
+
+  it("a queued head that cannot start still flushes its report to an idle lead", async () => {
+    const { engine, store } = make();
+    engine.setSettings({ hydraMaxHeads: 1 });
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-waitroute]");
+    // Cap 1: the held head is out; the unroutable entry waits in
+    // hydraWaiting until the slot frees.
+    await waitFor(
+      () =>
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+    // Stopping the held head frees the slot — the queued delegation
+    // spawns while the lead is idle and fails at once; both reports
+    // flush anyway rather than staying queued.
+    engine.stopHydraHead(heads(engine, lead.id)[0]!.id);
+    await waitFor(() => heads(engine, lead.id).length === 2);
+    await waitFor(() =>
+      heads(engine, lead.id).every((h) =>
+        ["stopped", "failed"].includes(h.hydraHead!.status),
+      ),
+    );
+    const failed = heads(engine, lead.id).find(
+      (h) => h.hydraHead!.status === "failed",
+    )!;
+    expect(failed.turn).toBeNull();
+    expect(failed.hydraHead!.summary).toContain("no project named ghost-proj");
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some((m) =>
+        m.content.includes("Hydra reports:"),
+      ),
+    );
+    const report = thread(engine, lead.id).messages.find((m) =>
+      m.content.includes("Hydra reports:"),
+    )!;
+    expect(report.content).toContain("no project named ghost-proj");
+    expect(report.content).toContain("Hold for approval");
+    store.close();
+  });
+});

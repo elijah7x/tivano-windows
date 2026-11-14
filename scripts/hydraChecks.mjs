@@ -735,6 +735,108 @@ export async function runHydraChecks({
     policyReply?.content.slice(0, 120),
   );
 
+  // ---- HY-54..56: 2.2.12 — a head that cannot start ends failed with
+  // a report the idle lead actually receives (frozen failHydraRoute +
+  // hydraHeadFinished flush); the routing note shows once.
+
+  // HY-54: a delegation routed to a project that is not in the sidebar —
+  // the head fails at spawn, never holds a turn, and its report lands.
+  const leadBad = await newThread(page2);
+  await page2.evaluate(
+    (a) => window.tivano.invoke("turns:send", a),
+    { threadId: leadBad, text: "go [mock:hydra-badroute]" },
+  );
+  const sBad = await waitSnap2(
+    (s) =>
+      s.threads
+        .find((t) => t.id === leadBad)
+        ?.messages.some((m) => m.content.includes("Hydra reports:")),
+    30000,
+  );
+  const badTeam = teamOf(sBad, leadBad);
+  verify(
+    "HY-54 unroutable head ends failed, report reaches the idle lead",
+    badTeam.length === 1 &&
+      badTeam[0].hydraHead.status === "failed" &&
+      badTeam[0].turn == null &&
+      (badTeam[0].hydraHead.summary ?? "").includes(
+        "no project named ghost-proj",
+      ),
+    badTeam.map((t) => [t.hydraHead.status, t.hydraHead.summary]),
+  );
+  const badReport = sBad.threads
+    .find((t) => t.id === leadBad)
+    .messages.find((m) => m.content.includes("Hydra reports:"));
+  verify(
+    "HY-54b the report carries the failure explanation",
+    !!badReport && badReport.content.includes("no project named ghost-proj"),
+    badReport?.content.slice(0, 160),
+  );
+  // The routing error is a one-time note — a later lead turn must not
+  // re-show it. Wait for the report turn to settle before sending.
+  await waitSnap2(
+    (s) => s.threads.find((t) => t.id === leadBad)?.turn?.status === "done",
+  );
+  await page2.evaluate(
+    (a) => window.tivano.invoke("turns:send", a),
+    { threadId: leadBad, text: "thanks" },
+  );
+  const sAfter = await waitSnap2(
+    (s) => s.threads.find((t) => t.id === leadBad)?.turn?.status === "done",
+  );
+  const routeNotes = sAfter.threads
+    .find((t) => t.id === leadBad)
+    .messages.filter(
+      (m) => m.kind === "notice" && m.content.includes("no project named ghost-proj"),
+    );
+  verify(
+    "HY-54c routing note shows once, never again per message",
+    routeNotes.length === 1,
+    routeNotes.length,
+  );
+
+  // HY-55: the failed head's row shows in the Hydra panel.
+  const badPanel = await page2.locator(".hydra-panel").textContent();
+  verify(
+    "HY-55 panel shows the failed head",
+    !!badPanel &&
+      badPanel.includes("Failed") &&
+      badPanel.includes(badTeam[0].hydraHead.name),
+    badPanel?.slice(0, 160),
+  );
+
+  // HY-56: a delegation routed to a real sidebar project whose checkout
+  // cannot be read (a project row with no directory bound) fails the
+  // same way — failed head, explanation, delivered report.
+  await page2.evaluate(() =>
+    window.tivano.invoke("projects:create", { name: "ghost-checkout" }),
+  );
+  const leadDead = await newThread(page2);
+  await page2.evaluate(
+    (a) => window.tivano.invoke("turns:send", a),
+    { threadId: leadDead, text: "go [mock:hydra-deadcheckout]" },
+  );
+  const sDead = await waitSnap2(
+    (s) =>
+      s.threads
+        .find((t) => t.id === leadDead)
+        ?.messages.some((m) => m.content.includes("Hydra reports:")),
+    30000,
+  );
+  const deadTeam = teamOf(sDead, leadDead);
+  verify(
+    "HY-56 unreadable checkout ends the head failed with a report",
+    deadTeam.length === 1 &&
+      deadTeam[0].hydraHead.status === "failed" &&
+      (deadTeam[0].hydraHead.summary ?? "").includes(
+        "checkout could not be read",
+      ) &&
+      sDead.threads
+        .find((t) => t.id === leadDead)
+        .messages.some((m) => m.content.includes("checkout could not be read")),
+    deadTeam.map((t) => [t.hydraHead.status, t.hydraHead.summary]),
+  );
+
   await boundedClose(s2.app, s2.proc);
 
   // ---- HY-35..41: F22 isolation — own-copy heads + landing ------------
