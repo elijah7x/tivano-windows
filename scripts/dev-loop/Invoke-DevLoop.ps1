@@ -100,8 +100,13 @@ function Invoke-Git {
   param([string]$Directory, [string]$Arguments)
   $out = Join-Path $script:WorkRoot '.git.out.tmp'
   $err = Join-Path $script:WorkRoot '.git.err.tmp'
-  $code = Invoke-Tool $script:GitPath ('-C ' + (Quote-Argument $Directory) + ' ' + $Arguments) $out $err $script:WorkRoot
-  return [pscustomobject]@{ exitCode = $code; text = (Read-Text $out); error = (Read-Text $err) }
+  for ($try = 1; ; $try++) {
+    $code = Invoke-Tool $script:GitPath ('-C ' + (Quote-Argument $Directory) + ' ' + $Arguments) $out $err $script:WorkRoot
+    $result = [pscustomobject]@{ exitCode = $code; text = (Read-Text $out); error = (Read-Text $err) }
+    if ($code -eq 0 -or $try -ge 4 -or -not (Test-NetworkFailure $result.error)) { return $result }
+    Write-Log ('git network failure, retry ' + $try + '/3: ' + (ConvertTo-SingleLine ([string]$result.error) 160))
+    Start-Sleep -Seconds (20 * $try)
+  }
 }
 
 # Runs from the state root, which is never a git checkout, so gh never reads repository context from the cwd.
@@ -109,8 +114,20 @@ function Invoke-Gh {
   param([string]$Arguments)
   $out = Join-Path $script:WorkRoot '.gh.out.tmp'
   $err = Join-Path $script:WorkRoot '.gh.err.tmp'
-  $code = Invoke-Tool $script:GhPath $Arguments $out $err $script:WorkRoot
-  return [pscustomobject]@{ exitCode = $code; text = (Read-Text $out); error = (Read-Text $err) }
+  for ($try = 1; ; $try++) {
+    $code = Invoke-Tool $script:GhPath $Arguments $out $err $script:WorkRoot
+    $result = [pscustomobject]@{ exitCode = $code; text = (Read-Text $out); error = (Read-Text $err) }
+    if ($code -eq 0 -or $try -ge 4 -or -not (Test-NetworkFailure $result.error)) { return $result }
+    Write-Log ('gh network failure, retry ' + $try + '/3: ' + (ConvertTo-SingleLine ([string]$result.error) 160))
+    Start-Sleep -Seconds (20 * $try)
+  }
+}
+
+# Connection-level failures only, where the request most likely never reached GitHub; a rare duplicate comment is the accepted cost.
+function Test-NetworkFailure {
+  param([string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+  return ($Text -match '(?i)\bEOF\b|handshake|schannel|Could not resolve host|Failed to connect|connection (was )?(reset|refused|closed)|i/o timeout|TLS|unable to access|error connecting to|no such host')
 }
 
 function Get-Tail {
