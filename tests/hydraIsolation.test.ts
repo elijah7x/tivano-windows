@@ -583,4 +583,43 @@ describe("hydra shared-checkout fallbacks", () => {
     // The head still ran — in the shared checkout, as it honestly would.
     expect(existsSync(join(plain, "hydra-alpha.txt"))).toBe(true);
   });
+
+  it("a vanished checkout fails the heads at spawn and still reports (2.2.12)", async () => {
+    const plain = tmp("hydra-iso-plain-");
+    const r = rig(plain);
+    r.engine.setSettings({ hydraIsolateHeads: false });
+    // The grant still exists but the directory is gone — the checkout
+    // cannot be read, so each head ends failed instead of running
+    // without a turn.
+    rmSync(plain, { recursive: true, force: true });
+    const lead = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(lead.id, "split it [mock:hydra]");
+    await waitFor(() => heads(r.engine, lead.id).length === 2);
+    await waitFor(() =>
+      heads(r.engine, lead.id).every((h) => h.hydraHead!.status === "failed"),
+    );
+    for (const h of heads(r.engine, lead.id)) {
+      expect(h.turn).toBeNull();
+      expect(h.hydraHead!.summary).toContain("checkout could not be read");
+    }
+    // The lead hears each failure once as a note…
+    const notes = thread(r.engine, lead.id).messages.filter(
+      (m) =>
+        m.kind === "notice" && m.content.includes("checkout could not be read"),
+    );
+    expect(notes).toHaveLength(2);
+    // …and once the lead is idle the batch's report arrives — the
+    // failed spawn never leaves it queued.
+    await waitFor(() =>
+      thread(r.engine, lead.id).messages.some(
+        (m) => m.role === "user" && m.content.includes("Hydra reports:"),
+      ),
+    );
+    const report = thread(r.engine, lead.id).messages.find((m) =>
+      m.content.includes("Hydra reports:"),
+    )!;
+    expect(report.content).toContain("(failed)");
+    expect(report.content).toContain("checkout could not be read");
+    await waitFor(() => thread(r.engine, lead.id).turn?.status === "done");
+  });
 });
