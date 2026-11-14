@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // English source is the key (upstream convention). zh-Hans values follow the
 // frozen baseline's Localizable.xcstrings where the key exists upstream;
@@ -856,10 +856,14 @@ const zhHans: Record<string, string> = {
     "仅在你要求时把命令安装到用户拥有的 bin 目录。安装不会启用本地控制。如需使用请自行把该目录加入 PATH；Tivano 不会修改 shell 配置。",
   "Not installed": "未安装",
   "Installed": "已安装",
+  "Installed, but it points to an older copy of Tivano. Repair it to use this one.":
+    "已安装，但指向旧的 Tivano 副本。修复后将改用当前应用。",
   "Another tivano command exists — Tivano will not replace it":
     "已存在另一个 tivano 命令——Tivano 不会替换它",
   "unavailable in this build": "此构建不可用",
-  "Install or repair CLI": "安装或修复 CLI",
+  "Install CLI": "安装 CLI",
+  "Reinstall CLI": "重新安装 CLI",
+  "Repair CLI": "修复 CLI",
   "Uninstall CLI": "卸载 CLI",
   "Could not change the CLI command": "无法更改命令行命令",
   // v2.2.34 quick chat (frozen QuickChatView / shortcut detail).

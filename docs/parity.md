@@ -66,7 +66,7 @@ Statuses are taken from the earlier delta review of this range and have not been
 | P1-31 | Hydra panel: middle drag area, clicking a head's name opens its chat, context menu | `not started` | 2.1.20. |
 | P1-32 | DeepSeek Harness routes, agent mode and CLI-from-app | `blocked (macOS-only provider integration, no Windows equivalent identified)` | See P2-15. |
 | P1-33 | MCP: use the full command path for ACP agents; skip with a notice when the command is missing | `not started` | 2.0.22. Unchecked against `src/main/mcpService.ts`. |
-| P1-34 | Settings › CLI command shows the installed state with Install, Reinstall and Repair wording | `partial` | 2.2.22. The installer already reports its state (`src/main/cliInstall.ts`); wording parity is unchecked. |
+| P1-34 | Settings › CLI command shows the installed state with Install, Reinstall and Repair wording | `partial` | 2.2.22. `cliStatus` now reports a `repair` state when our shim points at a stale or missing client (`src/main/cliInstall.ts`, wired with the live target in `src/main/index.ts`); Settings › CLI command reads Install CLI / Reinstall CLI / Repair CLI and shows the frozen needs-repair sentence (`src/renderer/components/SettingsModal.tsx`, `src/renderer/i18n.ts` — zh-Hans matches the frozen catalog). Agent self-tested: vitest status mapping plus local-control e2e label checks on Windows 11. |
 
 ## 2. v2.2.34 → v2.5.7
 

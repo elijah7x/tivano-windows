@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-28.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Settings surface: theme, language, the Codex CLI setup block (choose /
 // save / clear a native executable path — persistence only, always
@@ -62,7 +62,7 @@ function sourceLabel(
 
 /** F33 CLI install state reported by main — real fs state, no caching. */
 type CliState = {
-  state: "unavailable" | "absent" | "foreign" | "installed" | string;
+  state: "unavailable" | "absent" | "foreign" | "installed" | "repair" | string;
   dir?: string;
   path?: string;
   target?: string;
@@ -752,7 +752,9 @@ export function SettingsModal(props: {
                 ? t("Not installed")
                 : cli.state === "foreign"
                   ? t("Another tivano command exists — Tivano will not replace it")
-                  : t("Installed")}
+                  : cli.state === "repair"
+                    ? t("Installed, but it points to an older copy of Tivano. Repair it to use this one.")
+                    : t("Installed")}
             {cli?.dir && cli.state !== "unavailable" && (
               <span className="mono dim"> {cli.dir}</span>
             )}
@@ -779,12 +781,19 @@ export function SettingsModal(props: {
                 })
             }
           >
-            {t("Install or repair CLI")}
+            {/* Frozen CLIInstallationSettings: Install CLI when absent
+                or foreign, Reinstall CLI when healthy, Repair CLI when
+                our shim points at a stale or missing client. */}
+            {cli?.state === "installed"
+              ? t("Reinstall CLI")
+              : cli?.state === "repair"
+                ? t("Repair CLI")
+                : t("Install CLI")}
           </button>
           <button
             className="choice"
             data-testid="cli-uninstall"
-            disabled={!cli || cli.state !== "installed"}
+            disabled={!cli || (cli.state !== "installed" && cli.state !== "repair")}
             onClick={() =>
               void api()
                 .invoke("cli:uninstall", {})
