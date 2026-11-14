@@ -500,9 +500,22 @@ function Invoke-Devin {
   if (-not $process.WaitForExit($DevinTimeoutMin * 60000)) {
     $null = Invoke-Tool (Join-Path ([Environment]::GetFolderPath('System')) 'taskkill.exe') ('/T /F /PID ' + $process.Id) `
       (Join-Path $RunDir ('devin-kill-' + $KillTag + '.out.log')) (Join-Path $RunDir ('devin-kill-' + $KillTag + '.err.log'))
+    Stop-WorktreeProcesses $Worktree
     return 'timeout'
   }
+  Stop-WorktreeProcesses $Worktree
   return ('exitCode ' + $process.ExitCode)
+}
+
+# App instances the agent's e2e runs leave behind keep the worktree locked and pile up on the desktop.
+function Stop-WorktreeProcesses {
+  param([string]$Worktree)
+  $prefix = $Worktree.TrimEnd('\') + '\'
+  Get-Process -ErrorAction SilentlyContinue | Where-Object {
+    $path = $null
+    try { $path = $_.Path } catch { }
+    $path -and $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+  } | ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction Stop } catch { } }
 }
 
 function Expand-Prompt {
