@@ -931,6 +931,10 @@ bootstrap = app.whenReady().then(async () => {
         platform: gitBoot.platform,
         executable: gitBoot.gitExe || GIT_POSIX_EXECUTABLE,
       });
+      // Test seam of the TIVANO_MOCK_TICK_MS kind: the e2e shrinks the
+      // frozen 60s freshness window so a check can watch the refresh
+      // trigger fire; unset means the frozen window applies.
+      const indexFreshMs = Number(process.env.TIVANO_FILE_INDEX_FRESH_MS);
       const index = new FileIndexService({
         isRepo: async (dir) => {
           const r = await runner
@@ -955,6 +959,7 @@ bootstrap = app.whenReady().then(async () => {
           if (r.code !== 0) return [];
           return r.stdout.split("\0").filter((s) => s.length > 0);
         },
+        ...(indexFreshMs > 0 ? { freshMs: indexFreshMs } : {}),
       });
       return {
         search: async (threadId: string, query: string) => {
