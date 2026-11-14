@@ -135,8 +135,10 @@ try {
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()
     $process.WaitForExit()
-    [Console]::Out.Write($stdout.Result)
-    [Console]::Error.Write($stderr.Result)
+    # Descendants that inherited the pipes (for example a leftover Electron) keep them open;
+    # do not wait for them once the command itself has exited.
+    if ($stdout.Wait(10000)) { [Console]::Out.Write($stdout.Result) } else { [Console]::Error.WriteLine('stdout not drained: a descendant process still holds it') }
+    if ($stderr.Wait(10000)) { [Console]::Error.Write($stderr.Result) }
     $result = $process.ExitCode
   }
   finally { $process.Dispose() }
