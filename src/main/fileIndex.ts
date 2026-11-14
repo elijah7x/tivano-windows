@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-30.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F05 @-mention file index — bounded port of the frozen FileIndex:
 // a git repository lists `ls-files --cached --others --exclude-standard`
@@ -18,6 +18,10 @@ export interface FileIndexDeps {
    *  directory, already NUL-split into relative paths. */
   gitFiles(directory: string): Promise<string[]>;
   now?: () => number;
+  /** Listing freshness in ms, default FRESH_MS (the frozen 60s). The
+   *  e2e injects a shorter window so the refresh trigger is observable
+   *  without a real minute; production never sets it. */
+  freshMs?: number;
 }
 
 const GIT_CAP = 60_000;
@@ -75,8 +79,9 @@ export class FileIndexService {
    *  already running; this bounded version rebuilds inline instead). */
   async list(directory: string): Promise<string[]> {
     const now = (this.deps.now ?? Date.now)();
+    const freshMs = this.deps.freshMs ?? FRESH_MS;
     const cached = this.cache.get(directory);
-    if (cached && now - cached.builtAt < FRESH_MS) return cached.paths;
+    if (cached && now - cached.builtAt < freshMs) return cached.paths;
     const paths = await this.build(directory);
     this.cache.delete(directory); // refresh LRU position
     this.cache.set(directory, { paths, builtAt: now });
