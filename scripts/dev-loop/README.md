@@ -6,14 +6,14 @@ Everything it produces is **agent self-tested**, not maintainer acceptance. It n
 
 ## What one run does
 
-`Invoke-DevLoop.ps1` is one pass. A scheduled task starts it every 30 minutes; a second start while one is running exits at once.
+`Invoke-DevLoop.ps1` runs a continuous pass: it keeps taking the next candidate until none is left, `<Root>\STOP` exists, today's `-MaxMergesPerDay` cap is hit, or `-MaxIssuesPerRun` is reached. A scheduled task triggers every 30 minutes with `MultipleInstances IgnoreNew`, so it only starts a new pass after the previous one ends or crashes.
 
-1. Exit at once if `<Root>\STOP` exists. Take the single-instance lock. Stop if today's merge limit is reached.
+1. Exit at once if `<Root>\STOP` exists. Take the single-instance lock. Before each candidate, stop if `<Root>\STOP` exists or today's merge limit is reached (posting a once-a-day note on the tracking issue when the merge cap stops it, or a one-time note when no `-Label` issue is left).
 2. `git fetch origin` in `-Checkout`.
 3. **Resume first.** An open pull request whose head branch starts with `nyx/` and whose author is the signed-in `gh` user is continued before anything new starts (lowest number first; one without a `needs-human` label). Its review, fix and merge steps run as below.
-4. **Otherwise pick an issue**: the lowest-numbered open issue with the `-Label` label (default `nyx-auto`), without `needs-human` or `nyx-blocked`, and with no open pull request from a `nyx/<n>-*` branch. An issue already attempted twice without a pull request gets `needs-human` and a comment instead.
-5. **Develop.** A worktree `<Root>\work\issue-<n>` on branch `nyx/<n>-<slug>` is cut from `origin/main` (reused when an earlier attempt left one). With `-DevinFrontEnd gui` (the default) the runner opens the worktree in Devin Desktop on the signed-in desktop, focuses its chat (Ctrl+Shift+E, then Ctrl+L), sends `/bypass`, pastes a one-line instruction pointing at the prompt file and sends it, then waits for the agent to create `agent-done-<step>.txt` in the run directory as its last action (or for `-DevinTimeoutMin`). The conversation stays in Devin Desktop, where it can be watched and joined. With `-DevinFrontEnd cli` Devin CLI runs in a console window instead; a running CLI session cannot be opened in Devin Desktop. Either way Devin works with `dev-prompt.md`, the issue text passed as a file, and the run directory `<Root>\runs\issue-<n>-<timestamp>`. It writes `result.json` (`{"status": "ready" | "blocked", "reason", "title"}`) and `pr-body.md`.
-   - Devin failed, timed out, or left no usable result, no `pr-body.md`, or an empty diff: the attempt counts, the worktree is kept, and the run moves on.
+4. **Otherwise pick an issue**: the lowest-numbered open issue with the `-Label` label (default `nyx-auto`), without `needs-human` or `nyx-blocked`, and with no open pull request from a `nyx/<n>-*` branch. An issue already attempted twice without a pull request gets `needs-human` and a comment instead, and the pass moves on.
+5. **Develop.** A worktree `<Root>\work\issue-<n>` on branch `nyx/<n>-<slug>` is cut from `origin/main` (reused when an earlier attempt left one). With `-DevinFrontEnd gui` (the default) the runner opens the worktree in Devin Desktop on the signed-in desktop, focuses its chat (Ctrl+Shift+E, then Ctrl+L), sends `/bypass`, pastes a one-line instruction pointing at the prompt file and sends it, then waits for the agent to create `agent-done-<step>.txt` in the run directory as its last action (or for `-DevinTimeoutMin`). While waiting in `gui` mode, a conversation stuck on an approval for 2 minutes gets `/bypass` re-sent (up to 3 times); no agent log activity for `-StallMinutes`, or an approval still pending for 10 minutes after 3 recoveries, ends the attempt as `stalled`. With `-DevinFrontEnd cli` Devin CLI runs in a console window instead; a running CLI session cannot be opened in Devin Desktop. Either way Devin works with `dev-prompt.md`, the issue text passed as a file, and the run directory `<Root>\runs\issue-<n>-<timestamp>`. It writes `result.json` (`{"status": "ready" | "blocked", "reason", "title"}`) and `pr-body.md`.
+   - Devin failed, stalled, timed out, or left no usable result, no `pr-body.md`, or an empty diff: the attempt counts, the worktree is kept, and the issue is retried once more in the same pass (or gets `needs-human` after two failed attempts) before the pass moves on.
    - `blocked`: the reason is commented on the issue, the issue gets `nyx-blocked`, the worktree is removed.
 6. **Guard the diff** before committing (see below). On a trip the runner opens no pull request, labels the issue `needs-human`, comments what tripped, and keeps the branch locally.
 7. **Commit and open the PR.** The commit message is the result title plus `Implemented by an AI coding agent (Devin); agent self-tested.`; then `git push -u origin <branch>` (never forced) and `gh pr create --base main` with `pr-body.md` (`Closes #<n>` is appended when missing).
@@ -28,7 +28,7 @@ Everything it produces is **agent self-tested**, not maintainer acceptance. It n
    - the PR is still open, its head SHA is unchanged and it does not conflict with `main`;
    - today's merges are below `-MaxMergesPerDay`.
 
-   If only unit failures are in the way, the review runs once more with `-Force -DryRun` (no second comment) to rule out a flake, and that gate decides; a PR comment records the merge after a flake. On a pass: `gh pr merge --squash --match-head-commit <sha> --delete-branch`, the worktree is removed, and the run continues with the next issue up to `-MaxIssuesPerRun`.
+   If only unit failures are in the way, the review runs once more with `-Force -DryRun` (no second comment) to rule out a flake, and that gate decides; a PR comment records the merge after a flake. On a pass: `gh pr merge --squash --match-head-commit <sha> --delete-branch`, the worktree is removed, and the run continues with the next issue up to `-MaxIssuesPerRun`. Each finished issue (`merged`, `needs-human`, `blocked`, failed attempt, or `skipped`) gets one comment on the tracking issue.
 10. **Fix rounds.** On a failed gate with rounds left, Devin runs in the same worktree with `fix-prompt.md` and the review, gate, check summary and a list of the failed conditions. It updates `result.json` and may update `pr-body.md`. The runner guards the diff again, adds a **new** commit (no amend), pushes it normally, updates the PR body when it changed, and reviews again. After `-MaxFixRounds` rounds the PR and the issue get `needs-human`, a short comment lists the failed conditions, the PR stays open, and the run moves on.
 
 Problems with the review machinery rather than the change (the reviewer failed, wrote no usable verdict, or its lock was busy) never use a fix round. A busy reviewer is retried next run; two unusable reviews in a row hand the PR over with `needs-human`. A PR closed by a person without merging makes the issue `needs-human` rather than being redone.
@@ -50,6 +50,12 @@ These changes need a maintainer. The prompts tell Devin the same rules; the guar
 - **Text from the agent is published.** Titles, bodies and comments pass a scrub that removes the runner's own paths and the profile path; this is a backstop to the prompt rule, not a guarantee.
 - **Branch protection is yours.** The runner merges as the signed-in `gh` user with `--squash --match-head-commit`. If `main` requires approvals or checks, the merge is refused and the PR stays open after three tries; that is by design, and `--admin` is never used.
 - **Keep `-Root` private** to the operating account: it holds worktrees, prompts, issue text and logs.
+
+## Watching it
+
+- **Progress appears on the tracking issue.** By default (`-TrackingIssue 0`), the runner finds or creates the open issue titled `Automated dev loop: progress log` and caches its number in `<Root>\state.json`. It posts one comment per finished issue (`merged`, `needs-human`, `blocked`, failed attempt, or `skipped`), a one-time note when no `nyx-auto` issue is left, and a once-a-day note when `-MaxMergesPerDay` stops it.
+- **Only `needs-human` and `nyx-blocked` need a maintainer.** Everything else retries or moves on by itself.
+- **Create `<Root>\STOP` to stop** cleanly between steps; delete it to resume.
 
 ## Labels
 
@@ -110,11 +116,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Invoke-
 | `-Reference` | none | Read-only macOS v2.5.7 baseline clone, given to Devin and to the reviewer |
 | `-DevinModel` | `swe-2-high` | For development, fixing and the review |
 | `-Label` | `nyx-auto` | Issue label to pick up |
-| `-MaxIssuesPerRun` | 1 | Pull requests resumed plus issues started in one run |
-| `-MaxMergesPerDay` | 4 | Local calendar day; a run exits early once it is reached |
-| `-MaxFixRounds` | 2 | Fix rounds per pull request, across runs |
-| `-DevinTimeoutMin` | 90 | Per Devin run (development or one fix round) |
-| `-IssueNumber` | 0 | Work only this issue (or its open PR) |
+| `-MaxIssuesPerRun` | `50` | Pull requests resumed plus issues started in one pass (1–200) |
+| `-MaxMergesPerDay` | `20` | Local calendar day; the pass exits early once it is reached (1–200) |
+| `-MaxFixRounds` | `2` | Fix rounds per pull request, across runs |
+| `-DevinTimeoutMin` | `90` | Per Devin run (development or one fix round) |
+| `-StallMinutes` | `20` | Minutes with no agent log activity before ending a run as `stalled` (5–240; GUI approvals stuck 2 minutes re-send `/bypass` up to 3 times, then stall after 10 minutes) |
+| `-TrackingIssue` | `0` | Progress log issue number (`0` finds or creates `Automated dev loop: progress log`) |
+| `-DevinFrontEnd` | `gui` | `gui` (Devin Desktop) or `cli` (Devin CLI) |
+| `-IssueNumber` | `0` | Work only this issue (or its open PR) |
 | `-DryRun` | off | Develop and commit locally only |
 
 ## Scheduled task
@@ -126,18 +135,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Registe
   -StandardCredentialFile D:\private\standard-account.json
 ```
 
-This registers `\TivanoDevLoop\run`: every 30 minutes (`-IntervalMinutes`), as the current user, Interactive/Limited, 8-hour limit, `MultipleInstances IgnoreNew`. It forwards `-Repo`, `-Root`, `-Checkout`, `-ReviewRoot`, `-ReviewCheckout`, `-StandardCredentialFile`, `-ReviewTokenFile`, `-Reference`, `-DevinModel`, `-Label`, `-MaxIssuesPerRun`, `-MaxMergesPerDay`, `-MaxFixRounds` and `-DevinTimeoutMin`; `-IssueNumber` and `-DryRun` are for manual runs only. The action runs a generated wrapper `<Root>\dev-loop-task.ps1` that rotates `<Root>\task.log` at 5 MB. Re-run the script to change arguments; `-Unregister` removes the task and leaves everything under `-Root` alone. The task runs only while the operating user is signed in.
+This registers `\TivanoDevLoop\run`: every 30 minutes (`-IntervalMinutes`), as the current user, Interactive/Limited, 72-hour limit (`-ExecutionLimitHours`, 1–720), `MultipleInstances IgnoreNew` (so the repetition interval only restarts the runner after a pass ends or crashes). It forwards `-Repo`, `-Root`, `-Checkout`, `-ReviewRoot`, `-ReviewCheckout`, `-StandardCredentialFile`, `-ReviewTokenFile`, `-Reference`, `-DevinModel`, `-Label`, `-MaxIssuesPerRun`, `-MaxMergesPerDay`, `-MaxFixRounds`, `-DevinTimeoutMin`, `-StallMinutes`, `-TrackingIssue` and `-DevinFrontEnd`; `-IssueNumber` and `-DryRun` are for manual runs only. The action runs a generated wrapper `<Root>\dev-loop-task.ps1` that rotates `<Root>\task.log` at 5 MB. Re-run the script to change arguments; `-Unregister` removes the task and leaves everything under `-Root` alone. The task runs only while the operating user is signed in.
 
 ## State and results
 
-- `<Root>\state.json`: per issue `attempts`, `status`, `branch`, `pr`, `lastRunDir`, `fixRounds`, `reviewFailures`, `mergeFailures` and the last gate for the PR head; and merges per local day.
+- `<Root>\state.json`: per issue `attempts`, `status`, `branch`, `pr`, `lastRunDir`, `fixRounds`, `reviewFailures`, `mergeFailures` and the last gate for the PR head; the cached tracking issue number; and merges per local day.
 - `<Root>\last-run.json` and stdout: `{ok, stopped, dryRun, merged, worked, skipped, errors}`. `worked` entries carry the issue, PR, `outcome` (`merged`, `needs-human`, `blocked`, `failed`, `deferred`, `closed`, `dry-run`, `stopped`) and the run directory. Per-issue failures are in `errors`; only a run-level failure is a nonzero exit. A start that finds another pass holding the lock writes `<Root>\last-skipped.json` instead, leaving the running pass's summary alone.
 - `<Root>\logs\dev-loop-<date>.log`: one line per step. `<Root>\runs\issue-<n>-<timestamp>\`: prompts, issue text, Devin and review logs, `result.json`, `pr-body.md`, comment and commit texts. Run directories and logs older than 30 days are deleted. A worktree is removed only when its issue is finished (merged, blocked, closed); a failed attempt, a guard trip and an issue waiting on a person keep theirs.
-- An issue counts an attempt when a run ends without a clean outcome (Devin failed, timed out or left no usable result, or the run crashed). Two attempts without a pull request make it `needs-human`.
+- An issue counts an attempt when a run ends without a clean outcome (Devin failed, stalled, timed out or left no usable result, or the run crashed). A failed attempt is retried once more in the same pass; two attempts without a pull request make it `needs-human`.
 
 ## Limits
 
 - A merged change is **agent self-tested**. The checks are the reviewer's: unit tests and e2e on a real Windows host under a standard account. Real provider, desktop interaction and install/update stay `NOT RUN` unless a person does them, and a Windows maintainer still decides `done` for a parity row; the guard stops the runner from claiming it.
-- Only one issue is developed at a time, and a failed or deferred step is retried on the next 30-minute run rather than in a loop.
+- Only one issue is developed at a time; a failed attempt is retried once more in the same pass before `needs-human`, and a deferred step is retried on the next pass.
 - The guard looks at the pull request's diff, not at what Devin did on the machine.
 - A flaky e2e failure that is not worse than base passes the gate; an e2e that fails on both base and pr is not detected as a regression.
