@@ -544,7 +544,26 @@ public static class DevLoopWindows {
   $script:GuiTypesLoaded = $true
 }
 
-# Opens the worktree in Devin Desktop, types a short instruction into its chat (Ctrl+L focuses it) and waits for
+function Set-DevinForeground {
+  param([IntPtr]$Window)
+  [DevLoopWindows]::ShowWindow($Window, 9) | Out-Null
+  # A tap of Alt lets a background process take the foreground.
+  [DevLoopWindows]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [DevLoopWindows]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+  [DevLoopWindows]::SetForegroundWindow($Window) | Out-Null
+  Start-Sleep -Milliseconds 800
+  return ([DevLoopWindows]::GetForegroundWindow() -eq $Window)
+}
+
+function Send-DevinText {
+  param([string]$Text)
+  [Windows.Forms.Clipboard]::SetText($Text)
+  Start-Sleep -Milliseconds 300
+  [Windows.Forms.SendKeys]::SendWait('^v')
+  Start-Sleep -Milliseconds 800
+  [Windows.Forms.SendKeys]::SendWait('{ENTER}')
+}
+
+# Opens the worktree in Devin Desktop, switches its chat to /bypass and pastes a short instruction and waits for
 # the agent to create a sentinel file as its last action. The session stays in Devin Desktop afterwards.
 function Invoke-DevinGui {
   param([string]$RunDir, [string]$Worktree, [string]$PromptPath, [string]$LogPath, [string]$Tag)
@@ -563,19 +582,20 @@ function Invoke-DevinGui {
   Start-Sleep -Seconds 8
   $sent = $false
   for ($try = 0; $try -lt 3 -and -not $sent; $try++) {
-    [DevLoopWindows]::ShowWindow($window, 9) | Out-Null
-    # A tap of Alt lets a background process take the foreground.
-    [DevLoopWindows]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [DevLoopWindows]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
-    [DevLoopWindows]::SetForegroundWindow($window) | Out-Null
-    Start-Sleep -Milliseconds 800
-    if ([DevLoopWindows]::GetForegroundWindow() -ne $window) { Start-Sleep -Seconds 2; continue }
-    [Windows.Forms.Clipboard]::SetText($message)
+    if (-not (Set-DevinForeground $window)) { Start-Sleep -Seconds 2; continue }
+    # Explorer first, so Ctrl+L opens the chat rather than toggling an already focused one closed.
+    [Windows.Forms.SendKeys]::SendWait('{ESC}^+e')
+    Start-Sleep -Seconds 1
     [Windows.Forms.SendKeys]::SendWait('^l')
     Start-Sleep -Seconds 3
-    if ([DevLoopWindows]::GetForegroundWindow() -ne $window) { continue }
-    [Windows.Forms.SendKeys]::SendWait('^v')
-    Start-Sleep -Milliseconds 800
-    [Windows.Forms.SendKeys]::SendWait('{ENTER}')
+    if (-not (Set-DevinForeground $window)) { continue }
+    [Windows.Forms.SendKeys]::SendWait('^a{DEL}')
+    # Text goes through the clipboard: an input method would rewrite typed keys.
+    # /bypass lets the agent run every tool without approval prompts in this conversation.
+    Send-DevinText '/bypass'
+    Start-Sleep -Seconds 3
+    if (-not (Set-DevinForeground $window)) { continue }
+    Send-DevinText $message
     $sent = $true
   }
   if (-not $sent) { return 'gui: could not bring the Devin Desktop window to the foreground' }
