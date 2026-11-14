@@ -554,6 +554,25 @@ function Set-DevinForeground {
   return ([DevLoopWindows]::GetForegroundWindow() -eq $Window)
 }
 
+# Devin's agent log records the mode change a /bypass applies; without it the conversation would stop at approvals.
+function Wait-DevinBypass {
+  param([DateTime]$Since, [int]$Seconds)
+  $logs = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Devin\cli\logs'
+  $deadline = [DateTime]::Now.AddSeconds($Seconds)
+  while ([DateTime]::Now -lt $deadline) {
+    Start-Sleep -Seconds 2
+    $files = @(Get-ChildItem -LiteralPath $logs -Filter 'devin_*.log' -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.LastWriteTime -ge $Since })
+    foreach ($file in $files) {
+      $hit = Select-String -LiteralPath $file.FullName -Pattern 'handle_slash_command_on_chain:apply_mode_change|ModeChange\(Bypass\)' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Line -match '^(\S+Z)' -and ([DateTime]::Parse($Matches[1]).ToLocalTime() -ge $Since.AddSeconds(-1)) } |
+        Select-Object -First 1
+      if ($hit) { return $true }
+    }
+  }
+  return $false
+}
+
 function Send-DevinText {
   param([string]$Text)
   [Windows.Forms.Clipboard]::SetText($Text)
@@ -591,14 +610,18 @@ function Invoke-DevinGui {
     if (-not (Set-DevinForeground $window)) { continue }
     [Windows.Forms.SendKeys]::SendWait('^a{DEL}')
     # Text goes through the clipboard: an input method would rewrite typed keys.
-    # /bypass lets the agent run every tool without approval prompts in this conversation.
+    # /bypass lets the agent run every tool without approval prompts in this conversation. The first Enter
+    # may only pick the command from the slash menu, so a second one sends it; on an empty box it does nothing.
+    $modeSince = [DateTime]::Now
     Send-DevinText '/bypass'
-    Start-Sleep -Seconds 3
+    [Windows.Forms.SendKeys]::SendWait('{ENTER}')
+    if (-not (Wait-DevinBypass $modeSince 20)) { continue }
     if (-not (Set-DevinForeground $window)) { continue }
+    [Windows.Forms.SendKeys]::SendWait('^a{DEL}')
     Send-DevinText $message
     $sent = $true
   }
-  if (-not $sent) { return 'gui: could not bring the Devin Desktop window to the foreground' }
+  if (-not $sent) { return 'gui: the Devin Desktop chat did not take /bypass or the window could not be focused' }
   Write-Text $LogPath ('Sent to Devin Desktop window "' + $folder + '" at ' + [DateTime]::Now.ToString('s') + "`n" + $message + "`n" +
     'The conversation is in Devin Desktop; this file is not a transcript.' + "`n")
   $deadline = [DateTime]::UtcNow.AddMinutes($DevinTimeoutMin)
