@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // IPC boundary: every channel validates its payload against the shared schema
 // and its sender against the packaged frame before reaching the engine.
@@ -117,6 +117,7 @@ export interface IpcOptions {
     status():
       | { state: "absent"; dir: string }
       | { state: "installed"; path: string; target: string; dir: string }
+      | { state: "repair"; path: string; target: string; dir: string }
       | { state: "foreign"; path: string; dir: string };
     install(): { state: "installed"; path: string; target: string; dir: string };
     uninstall(): { state: "absent"; dir: string };

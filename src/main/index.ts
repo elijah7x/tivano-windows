@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Entry: resolves an isolated data root, opens the store under its lock,
 // recovers in-flight turns honestly, and creates one hardened window.
@@ -852,7 +852,7 @@ bootstrap = app.whenReady().then(async () => {
     ? join(process.resourcesPath, "cli", "tivano.mjs")
     : join(app.getAppPath(), "cli", "tivano.mjs");
   const cliSurface = {
-    status: () => ({ ...cliStatus(cliDir), dir: cliDir }),
+    status: () => ({ ...cliStatus(cliDir, cliTarget), dir: cliDir }),
     install: () => {
       const r = installCli(cliDir, cliTarget);
       return { ...r, dir: cliDir };

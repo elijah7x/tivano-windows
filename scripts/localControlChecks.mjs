@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-30.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F33 local control e2e — a real Electron instance and a real Node
 // Unix-socket client: the double gate, hello/welcome handshake, read
@@ -229,42 +229,79 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   verify("LC-25 UI toggle off drops listener", statusAfter?.includes("Disabled"), statusAfter);
 
   // ---- CLI command install surface (frozen CLIInstallationSettings) ---
+  // win32 installs write a `.cmd` sibling next to the sh shim; status
+  // reads the `.cmd` first, so every scenario covers both names.
   const cliFile = join(cliDir, "tivano");
+  const cliCmdFile = join(cliDir, "tivano.cmd");
   const cliStatusText = () =>
     page.locator('[data-testid="cli-status"]').textContent();
-  verify("LC-27 CLI row shows not-installed + real bin dir",
+  const cliInstallLabel = async () =>
+    (await page.locator('[data-testid="cli-install"]').textContent())?.trim();
+  const waitCliText = (frag) => page.waitForFunction(
+    (f) => document.querySelector('[data-testid="cli-status"]')?.textContent?.includes(f),
+    frag, { timeout: 10000 });
+  // "Installed" is also a prefix of the needs-repair sentence — a real
+  // healthy state must wait for it without the repair wording.
+  const waitCliInstalled = () => page.waitForFunction(
+    () => {
+      const s = document.querySelector('[data-testid="cli-status"]')?.textContent ?? "";
+      return s.includes("Installed") && !s.includes("older copy");
+    }, { timeout: 10000 });
+  const overwriteCli = (text) => {
+    writeFileSync(cliFile, text);
+    if (existsSync(cliCmdFile)) writeFileSync(cliCmdFile, text);
+  };
+  const removeCli = () => {
+    if (existsSync(cliFile)) unlinkSync(cliFile);
+    if (existsSync(cliCmdFile)) unlinkSync(cliCmdFile);
+  };
+  verify("LC-27 CLI row shows not-installed + real bin dir + Install CLI",
     (await cliStatusText())?.includes("Not installed") &&
-    (await cliStatusText())?.includes(cliDir), await cliStatusText());
+    (await cliStatusText())?.includes(cliDir) &&
+    (await cliInstallLabel()) === "Install CLI", await cliStatusText());
   await page.locator('[data-testid="cli-install"]').click();
-  await page.waitForFunction(
-    () => document.querySelector('[data-testid="cli-status"]')?.textContent?.includes("Installed"),
-    { timeout: 10000 });
-  verify("LC-28 install writes a real marked shim",
-    existsSync(cliFile) && readFileSync(cliFile, "utf8").includes("tivano-cli-shim:"),
-    existsSync(cliFile));
+  await waitCliInstalled();
+  verify("LC-28 install writes a real marked shim, reads Reinstall CLI",
+    existsSync(cliFile) && readFileSync(cliFile, "utf8").includes("tivano-cli-shim:") &&
+    (await cliInstallLabel()) === "Reinstall CLI", await cliInstallLabel());
+  // needsRepair: our shim pointing at an older copy gets Repair CLI.
+  // Settings re-reads the real file state on open — reopen the modal.
+  const staleClient = join(cliDir, "older-tivano.mjs");
+  overwriteCli(
+    `#!/bin/sh\n# tivano-cli-shim: ${staleClient}\nexec node "${staleClient}" "$@"\n`);
+  await page.locator(".modal-actions .primary").click();
+  await page.waitForSelector(".modal", { state: "detached", timeout: 10000 });
+  await page.locator(".sidebar-foot button.row").click();
+  await page.waitForSelector('[data-testid="cli-status"]', { timeout: 10000 });
+  await waitCliText("older copy");
+  verify("LC-28a stale shim reports needs-repair, reads Repair CLI",
+    (await cliStatusText())?.includes("older copy") &&
+    (await cliInstallLabel()) === "Repair CLI", await cliStatusText());
+  await page.locator('[data-testid="cli-install"]').click();
+  await waitCliInstalled();
+  verify("LC-28b repair repoints the shim at this client",
+    readFileSync(cliFile, "utf8").includes("tivano-cli-shim:") &&
+    !readFileSync(cliFile, "utf8").includes("older-tivano") &&
+    (await cliInstallLabel()) === "Reinstall CLI", await cliInstallLabel());
   // Foreign command: installer must refuse, never replace.
-  unlinkSync(cliFile);
-  writeFileSync(cliFile, "#!/bin/sh\necho foreign\n");
+  overwriteCli("#!/bin/sh\necho foreign\n");
   await page.locator('[data-testid="cli-install"]').click();
-  await page.waitForFunction(
-    () => document.querySelector('[data-testid="cli-status"]')?.textContent?.includes("Another tivano"),
-    { timeout: 10000 });
-  verify("LC-29 foreign command refused, file untouched",
+  await waitCliText("Another tivano");
+  verify("LC-29 foreign command refused, file untouched, reads Install CLI",
     readFileSync(cliFile, "utf8").includes("foreign") &&
-    (await cliStatusText())?.includes("Another tivano"), await cliStatusText());
-  // Remove the foreign file ourselves → install → uninstall round trip.
-  unlinkSync(cliFile);
+    (await cliStatusText())?.includes("Another tivano") &&
+    (await cliInstallLabel()) === "Install CLI", await cliStatusText());
+  // Remove the foreign files ourselves → install → uninstall round trip.
+  removeCli();
   await page.locator('[data-testid="cli-install"]').click();
-  await page.waitForFunction(
-    () => document.querySelector('[data-testid="cli-status"]')?.textContent?.includes("Installed"),
-    { timeout: 10000 });
+  await waitCliInstalled();
   await page.locator('[data-testid="cli-uninstall"]').click();
-  await page.waitForFunction(
-    () => document.querySelector('[data-testid="cli-status"]')?.textContent?.includes("Not installed"),
-    { timeout: 10000 });
-  verify("LC-30 uninstall removes only our shim",
-    !existsSync(cliFile) && (await cliStatusText())?.includes("Not installed"),
-    existsSync(cliFile));
+  await waitCliText("Not installed");
+  verify("LC-30 uninstall removes only our shims",
+    !existsSync(cliFile) && !existsSync(cliCmdFile) &&
+    (await cliStatusText())?.includes("Not installed") &&
+    (await cliInstallLabel()) === "Install CLI",
+    [existsSync(cliFile), existsSync(cliCmdFile)]);
   // The real client binary answers against the live socket end to end —
   // re-open the gate LC-25 shut, wait for the listener, then call.
   await page.evaluate(() =>

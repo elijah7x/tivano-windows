@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-31.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // F33 CLI command: installer semantics (frozen ControlCLIInstaller) and
 // the real tivano.mjs client against a live control socket.
 
@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { Store } from "../src/main/store";
@@ -51,7 +51,12 @@ describe("cliInstall (frozen ControlCLIInstaller)", () => {
     const text = readFileSync(r.path, "utf8");
     expect(text).toContain(`# tivano-cli-shim: ${target}`);
     expect(text).toContain("exec node");
-    expect(cliStatus(dir)).toEqual({ state: "installed", path: r.path, target });
+    // win32 status reads the tivano.cmd sibling first; either marked
+    // shim name counts as installed.
+    const st = cliStatus(dir);
+    expect(st).toMatchObject({ state: "installed", target });
+    if (st.state === "installed")
+      expect(["tivano", "tivano.cmd"]).toContain(basename(st.path));
   });
 
   it("repairs its own shim but refuses to replace a foreign command", () => {
@@ -61,6 +66,7 @@ describe("cliInstall (frozen ControlCLIInstaller)", () => {
     const r = installCli(dir, target);
     expect(r.target).toBe(target);
     // Foreign file: no marker → conflict refusal, file untouched.
+    uninstallCli(dir);
     const foreign = join(dir, "tivano");
     writeFileSync(foreign, "#!/bin/sh\necho foreign\n");
     expect(cliStatus(dir).state).toBe("foreign");
@@ -68,11 +74,45 @@ describe("cliInstall (frozen ControlCLIInstaller)", () => {
     expect(readFileSync(foreign, "utf8")).toContain("foreign");
   });
 
-  it("uninstalls only its own shim and refuses foreign removal", () => {
+  it("refuses when either command-name sibling is foreign", () => {
+    const dir = freshDir();
+    installCli(dir, target);
+    // win32 status reads tivano.cmd first; a foreign file under the
+    // other name must still block install and stay untouched.
+    const foreign = join(dir, "tivano");
+    writeFileSync(foreign, "#!/bin/sh\necho foreign\n");
+    expect(() => installCli(dir, target)).toThrow(CliInstallError);
+    expect(readFileSync(foreign, "utf8")).toContain("foreign");
+  });
+
+  it("reports repair when its shim points at a stale or missing client", () => {
+    const dir = freshDir();
+    const realClient = join(freshDir(), "tivano.mjs");
+    writeFileSync(realClient, "// synthetic client\n");
+    installCli(dir, realClient);
+    // Healthy: marker matches this launch's bundled client.
+    expect(cliStatus(dir, realClient).state).toBe("installed");
+    // Out of date: marker still points at an older copy.
+    const stale = join(freshDir(), "older", "tivano.mjs");
+    installCli(dir, stale);
+    expect(cliStatus(dir, realClient)).toMatchObject({ state: "repair", target: stale });
+    // A stale shim is still ours — uninstall removes it.
+    expect(uninstallCli(dir).state).toBe("absent");
+    // Broken: marker matches but the client itself is gone.
+    installCli(dir, realClient);
+    rmSync(realClient);
+    expect(cliStatus(dir, realClient).state).toBe("repair");
+  });
+
+  it("uninstalls every marked sibling and refuses foreign removal", () => {
     const dir = freshDir();
     installCli(dir, target);
     expect(uninstallCli(dir).state).toBe("absent");
     expect(cliStatus(dir).state).toBe("absent");
+    // Whatever sibling set install wrote (win32 adds tivano.cmd), all
+    // marked files are gone — nothing ours can report installed again.
+    expect(existsSync(join(dir, "tivano"))).toBe(false);
+    expect(existsSync(join(dir, "tivano.cmd"))).toBe(false);
     // Foreign file survives an uninstall attempt with a conflict.
     const foreign = join(dir, "tivano");
     writeFileSync(foreign, "foreign");
