@@ -1,9 +1,10 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-30.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F05 @-mention + downloads: the frozen word-scan and FileIndex scoring
 // port, the cached directory index (git → enumerate fallback, skip set,
-// depth/cap bounds, 60s freshness), and the downloads listing (15
-// newest, hidden/dir skipped, id→path resolution by generation).
+// depth/cap bounds, 60s freshness and the refresh when it expires), and
+// the downloads listing (15 newest, hidden/dir skipped, id→path
+// resolution by generation).
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -155,6 +156,67 @@ describe("FileIndexService (frozen listing + cache)", () => {
     expect(await svc.list(dir)).toEqual(["f1.ts"]); // cached
     now += 61_000;
     expect(await svc.list(dir)).toEqual(["f2.ts"]); // rebuilt
+    expect(calls).toBe(2);
+  });
+
+  it("a file created after the first listing joins once the index is stale", async () => {
+    const dir = root();
+    touch(dir, "src/old.ts");
+    let now = 1_000_000;
+    const svc = new FileIndexService({
+      isRepo: async () => true,
+      // `ls-files --others` reports working-tree files; enumerate reads
+      // the same shape, so this doubles as the real-filesystem path.
+      gitFiles: async (d) => FileIndexService.enumerate(d),
+      now: () => now,
+    });
+    expect(await svc.list(dir)).toEqual(["src/old.ts"]);
+    touch(dir, "src/new-file.ts");
+    // The frozen trigger is age, not the change itself: inside the 60s
+    // window the first listing is still served.
+    expect(await svc.list(dir)).toEqual(["src/old.ts"]);
+    now += 61_000;
+    expect((await svc.list(dir)).sort()).toEqual([
+      "src/new-file.ts",
+      "src/old.ts",
+    ]);
+  });
+
+  it("a deleted file leaves the index on the same refresh", async () => {
+    const dir = root();
+    touch(dir, "keep/stay.ts");
+    const gone = touch(dir, "keep/gone.ts");
+    let now = 1_000_000;
+    const svc = new FileIndexService({
+      isRepo: async () => false,
+      gitFiles: async () => [],
+      now: () => now,
+    });
+    expect((await svc.list(dir)).sort()).toEqual(["keep/gone.ts", "keep/stay.ts"]);
+    rmSync(gone);
+    expect((await svc.list(dir)).sort()).toEqual(["keep/gone.ts", "keep/stay.ts"]);
+    now += 61_000;
+    expect(await svc.list(dir)).toEqual(["keep/stay.ts"]);
+  });
+
+  it("an injected freshness window shortens the same trigger", async () => {
+    const dir = root();
+    let now = 1_000_000;
+    let calls = 0;
+    const svc = new FileIndexService({
+      isRepo: async () => true,
+      gitFiles: async () => {
+        calls += 1;
+        return [`v${calls}.ts`];
+      },
+      now: () => now,
+      freshMs: 200,
+    });
+    expect(await svc.list(dir)).toEqual(["v1.ts"]);
+    now += 150;
+    expect(await svc.list(dir)).toEqual(["v1.ts"]); // still inside the window
+    now += 100; // 250 > 200: the same expiry check rebuilds
+    expect(await svc.list(dir)).toEqual(["v2.ts"]);
     expect(calls).toBe(2);
   });
 

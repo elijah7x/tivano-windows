@@ -1,9 +1,10 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-30.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F05 remainder e2e — frozen @-mention suggestions (workspace index →
-// scored rows → "@path " draft insertion) and the frozen downloads
-// popover (recent list, id-scoped attach through main, Choose Files…
-// pass-through, recentDownloadsPicker setting gate, zh-Hans).
+// scored rows → "@path " draft insertion, TTL refresh on filesystem
+// change) and the frozen downloads popover (recent list, id-scoped
+// attach through main, Choose Files… pass-through,
+// recentDownloadsPicker setting gate, zh-Hans).
 // Synthetic files + the test-env directory seams only — nothing real.
 
 import { execFileSync } from "node:child_process";
@@ -13,6 +14,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -124,6 +126,10 @@ export async function runFileMentionChecks({
       TIVANO_DOWNLOADS_DIR: realpathSync(dl),
       TIVANO_TEST_ATTACH: pick,
       TIVANO_TEST_EXTERNAL_OPEN: join(outDir, "external-opens.jsonl"),
+      // Shrink the frozen 60s index freshness so FM-10..12 can watch the
+      // refresh trigger fire without a real minute — same class of seam
+      // as TIVANO_MOCK_TICK_MS.
+      TIVANO_FILE_INDEX_FRESH_MS: "1500",
     },
     "mention-main",
   );
@@ -260,10 +266,15 @@ export async function runFileMentionChecks({
   const dlHead = await page.locator(".dl-menu .suggest-head").innerText();
   verify("DL-01 popover header", dlHead === "Recent downloads", dlHead);
   const dlRows = await page.locator(".dl-menu .dl-row .suggest-name").allInnerTexts();
+  // The reveal label follows the host platform, like DL-09: Finder on
+  // macOS, File Explorer on Windows.
+  const dlRowsJoined = dlRows.join("|");
   verify(
     "DL-02 newest-first listing, hidden/dir excluded, actions last",
-    dlRows.join("|") ===
-      "gamma-notes.txt|beta-photo.png|alpha-report.pdf|Show in Finder|Choose Files…",
+    dlRowsJoined ===
+      "gamma-notes.txt|beta-photo.png|alpha-report.pdf|Show in Finder|Choose Files…" ||
+      dlRowsJoined ===
+        "gamma-notes.txt|beta-photo.png|alpha-report.pdf|Show in File Explorer|Choose Files…",
     dlRows,
   );
   const sizes = await page.locator(".dl-menu .dl-size").allInnerTexts();
@@ -347,6 +358,69 @@ export async function runFileMentionChecks({
   await page.locator(".attach-btn").click(); // toggle the popover closed
   await page.evaluate(() =>
     window.tivano.invoke("settings:set", { language: "en" }),
+  );
+
+  // ---- index refresh on filesystem change -------------------------------
+  // The frozen trigger is the listing's age: the first search after the
+  // index passes its freshness window rebuilds it, so files created or
+  // deleted since join or leave the popup. This instance runs with
+  // TIVANO_FILE_INDEX_FRESH_MS=1500, shrinking that window for the run.
+  await page.evaluate((id) => window.tivano.invoke("threads:select", { id }), tid);
+  await page.locator("textarea[aria-label='Message']").waitFor();
+
+  // Let the index go provably stale, then pin a fresh build with a search.
+  await page.waitForTimeout(1800);
+  await setDraft(page, "@");
+  await page.waitForSelector(".suggest-menu .suggest-row", { timeout: 8000 });
+
+  // A file created now is absent while the fresh listing is still served.
+  writeFileSync(join(work, "src", "fresh-created.ts"), "x\n");
+  const early = await page.evaluate(
+    (id) => window.tivano.invoke("mention:search", { threadId: id, query: "fresh" }),
+    tid,
+  );
+  verify(
+    "FM-10 fresh window still serves the cached listing",
+    !early.paths.includes("src/fresh-created.ts"),
+    early,
+  );
+
+  // Past the window the same search rebuilds — the new file is offered.
+  // Wait for the new path itself: the popup keeps showing the previous
+  // answer until the search resolves, so bare row presence would see
+  // the stale listing.
+  await page.waitForTimeout(1800);
+  await setDraft(page, "@fresh");
+  await page.waitForFunction(
+    () =>
+      [
+        ...document.querySelectorAll(
+          ".suggest-menu .suggest-row .suggest-detail",
+        ),
+      ].some((d) => d.textContent === "src/fresh-created.ts"),
+    { timeout: 8000 },
+  );
+  const freshRows = await page
+    .locator(".suggest-menu .suggest-row .suggest-detail")
+    .allInnerTexts();
+  verify(
+    "FM-11 created file is offered after the refresh",
+    freshRows.includes("src/fresh-created.ts"),
+    freshRows,
+  );
+  await page.locator(".composer textarea").press("Escape");
+
+  // A deletion drops the path on the same refresh.
+  rmSync(join(work, "src", "store.ts"));
+  await page.waitForTimeout(1800);
+  const gone = await page.evaluate(
+    (id) => window.tivano.invoke("mention:search", { threadId: id, query: "store" }),
+    tid,
+  );
+  verify(
+    "FM-12 deleted file leaves the listing after the refresh",
+    !gone.paths.includes("src/store.ts"),
+    gone,
   );
 
   const c1 = await boundedClose(app, proc);
