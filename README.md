@@ -42,6 +42,7 @@ Windows-only tooling (see [docs/phase-2c-windows-helper.md](docs/phase-2c-window
 | `npm run smoke:packaged` | Offline smoke test of the packaged build (win32/x64 only; mock provider) |
 | [Desktop acceptance helpers](scripts/windows-acceptance/README.md) | Desktop acceptance helpers: launch in the interactive session, screenshots, runs as a standard user |
 | [Automated PR review](scripts/pr-review/README.md) | Automated PR review on a Windows machine: isolated checks as a standard account, read-only agent review posted as a comment (see its README) |
+| [Automated development loop](scripts/dev-loop/README.md) | Autonomous development on a Windows machine with the Devin CLI: takes labeled issues, opens PRs, has the PR reviewer judge them, merges when the gate passes (agent self-tested; see its README for the trust model) |
 
 The recorded `npm run verify` results come from a macOS arm64 host. A full run on a Windows development machine is not recorded.
 

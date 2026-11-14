@@ -5,7 +5,7 @@ A Windows machine can review open pull requests of this repository on its own: r
 ## Trust model
 
 - PR code runs only as a **separate standard local account**, started through Task Scheduler by `scripts/windows-acceptance/Invoke-AsStandardUser.ps1`. The operating account never runs `npm`, `node` or any project script, and the checks reach only the run directory (the two worktrees and the results) plus the read-only check script.
-- The agent runs as the operating account with the run directory as its workspace and `--permission-mode accept-edits`: it may read and write files there (it writes `review.md`), but command execution needs an approval that print mode never grants, so it cannot execute PR code. It is told to treat PR text as untrusted data.
+- The agent runs as the operating account with the run directory as its workspace and `--permission-mode accept-edits`: it may read and write files there (it writes `review.md`, `review.zh.md` and `verdict.json`), but command execution needs an approval that print mode never grants, so it cannot execute PR code. It is told to treat PR text as untrusted data.
 - Posting uses `gh`. A fine-grained token limited to this repository with **Pull requests: read and write**, **Contents: read-only** and **Metadata: read-only** can comment but cannot merge or push. Prefer it over a broad `gh` login; `gh`'s own login also works when it is already signed in for the operating account.
 - Store the token with machine-scope DPAPI in a `.json` file whose ACL is limited to the operating account and SYSTEM. With `$TokenFile` set to a private path outside the repository, these five lines create it; machine scope is used because a scheduled task has no user key material:
 
@@ -36,7 +36,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\pr-review\Invoke
   -StandardCredentialFile D:\private\standard-account.json -DryRun
 ```
 
-`-DryRun` does everything except posting the comment and except recording the head as reviewed, so the same PR is picked up again next time. Add `-Reference <path>` to a read-only checkout of the macOS v2.5.7 baseline for the parity comparison, `-TokenFile` for the token above, `-PrNumber <n>` to review one PR even if its head was already reviewed, `-DevinModel` (default `swe-2-high`) and `-MaxPerRun` (default 1).
+`-DryRun` does everything except posting the comment and except recording the head as reviewed, so the same PR is picked up again next time. It still writes `verdict.json` and `gate.json`, with `posted` false. Add `-Reference <path>` to a read-only checkout of the macOS v2.5.7 baseline for the parity comparison, `-TokenFile` for the token above, `-PrNumber <n>` to review one PR even if its head was already reviewed, `-Force` (needs `-PrNumber`) to say so explicitly, `-DevinModel` (default `swe-2-high`) and `-MaxPerRun` (default 1).
+
+`-Force` re-reviews a head that is already recorded as reviewed; a posted review then adds a second comment, and `-Force -DryRun` re-checks without commenting. It does not reset the attempts count: the same head is still attempted at most three times, counting every run, forced or not. `scripts/dev-loop` passes `-Force` and reads `gate.json`.
 
 One pass reviews at most `-MaxPerRun` open PRs against `main` (drafts included) whose head was not reviewed yet, oldest number first. The same head is attempted at most three times. A second concurrent start writes a skipped summary and exits.
 
@@ -52,7 +54,33 @@ This registers `\TivanoPrReview\poll`: every 10 minutes (`-IntervalMinutes`), as
 
 ## Results and re-review
 
-Each run creates `<Root>\runs\pr-<n>-<sha7>-<timestamp>\`, readable and writable only by the operating account, SYSTEM and Administrators. The standard account can write only its `sandbox\` subdirectory, which holds the `pr` and `base` worktrees and the raw check output; the base results are copied out before any PR code runs, so PR code cannot alter the baseline or the review inputs. The run directory holds `pr.json`, `diff.patch`, `diff.stat.txt`, copies of `checks-base\` and `checks-pr\` (standard-account evidence with `summary.json`) and `results-base\` and `results-pr\` (`steps.json`, `vitest.json`, `unit.log`, `e2e.log`; the PR's own results come from PR code and are data, not proof), `prompt.md`, `devin.log`, `review.md`, `review.zh.md`, `post-body.md` and the helper logs. `<Root>\last-run.json` and stdout carry a one-line JSON summary `{ok, reviewed, skipped, errors}`. Worktrees are removed after every attempt; run directories older than 30 days are deleted.
+Each run creates `<Root>\runs\pr-<n>-<sha7>-<timestamp>\`, readable and writable only by the operating account, SYSTEM and Administrators. The standard account can write only its `sandbox\` subdirectory, which holds the `pr` and `base` worktrees and the raw check output; the base results are copied out before any PR code runs, so PR code cannot alter the baseline or the review inputs. The run directory holds `pr.json`, `diff.patch`, `diff.stat.txt`, copies of `checks-base\` and `checks-pr\` (standard-account evidence with `summary.json`) and `results-base\` and `results-pr\` (`steps.json`, `vitest.json`, `unit.log`, `e2e.log`; the PR's own results come from PR code and are data, not proof), `prompt.md`, `devin.log`, `review.md`, `review.zh.md`, `verdict.json`, `gate.json`, `post-body.md` and the helper logs. `<Root>\last-run.json` and stdout carry a one-line JSON summary `{ok, reviewed, skipped, errors}`; the per-PR entries in `reviewed` and `errors` carry `runDir` and, when it was written, `gatePath`. Worktrees are removed after every attempt; run directories older than 30 days are deleted.
+
+### verdict.json
+
+Written by the review agent next to `review.md`: `{"recommendation": "merge" | "changes", "blocking": ["one line per problem that must be fixed"], "nonBlocking": ["one line per optional point"]}`. `recommendation` is `merge` only when `blocking` is empty. It is data from an agent that reads untrusted PR text, so a script must not treat it as authority on its own. The script reads it loosely: a missing, stale, unparsable or malformed file (no `recommendation` of `merge` or `changes`, no `blocking` list) gives `verdict: null` in `gate.json`; a single string is accepted for a list and blank entries are dropped.
+
+### gate.json
+
+Written to the run directory after the checks and the agent review, whether or not the review succeeded:
+
+```json
+{
+  "prNumber": 12, "headSha": "<40 hex>", "baseSha": "<merge-base, 40 hex>",
+  "pr":   {"install": 0, "build": 0, "typecheck": 0, "unit": 0, "e2e": 0},
+  "base": {"install": 0, "build": 0, "typecheck": 0, "unit": 0, "e2e": 0},
+  "unitComparison": true,
+  "newFailures": [], "fixed": [], "absent": [],
+  "verdict": {"recommendation": "merge", "blocking": [], "nonBlocking": []},
+  "reviewOk": true, "posted": true
+}
+```
+
+- `pr` and `base` hold the exit codes from `steps.json`; a step that did not run, or a run without `steps.json`, is `null`. `e2e` 124 means the 15-minute cap stopped it.
+- `unitComparison` is true when both runs produced a `vitest.json`. `newFailures`, `fixed` and `absent` are the same lists as in the check summary, and are empty when it is false.
+- `verdict` is the parsed `verdict.json` or `null` (see above). It is `null` whenever `reviewOk` is false.
+- `reviewOk` is true when the agent exited 0 and wrote a fresh, non-empty `review.md`. `posted` is true only when the comment was posted, so it is always false under `-DryRun` or after a failed post.
+- A PR whose run failed before the checks finished has no `gate.json`; the entry in `errors` has no `gatePath`.
 
 Reviewed heads are kept in `<Root>\state.json`. A review happens once per head SHA; a new push is a new review. Use `-PrNumber <n>` with `-DryRun` to look again before deciding, or without it to post a second comment on a head that was already reviewed.
 

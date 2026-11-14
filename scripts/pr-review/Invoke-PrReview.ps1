@@ -1,7 +1,7 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-10.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-14.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Invoke-PrReview.ps1 -Root <state root outside any git checkout> -Checkout <clone used only for worktrees> -StandardCredentialFile <file> [-TokenFile <file>] [-Reference <macOS baseline clone>] [-DryRun] [-PrNumber <n>]
-# One polling pass. Writes a one-line JSON summary to stdout and <Root>\last-run.json.
+# Usage: .\Invoke-PrReview.ps1 -Root <state root outside any git checkout> -Checkout <clone used only for worktrees> -StandardCredentialFile <file> [-TokenFile <file>] [-Reference <macOS baseline clone>] [-DryRun] [-PrNumber <n> [-Force]]
+# One polling pass. Writes a one-line JSON summary to stdout and <Root>\last-run.json, and <run dir>\gate.json per reviewed PR.
 
 param(
   [string]$Repo = 'elijah7x/tivano-windows',
@@ -13,7 +13,8 @@ param(
   [string]$DevinModel = 'swe-2-high',
   [ValidateRange(1, 20)][int]$MaxPerRun = 1,
   [switch]$DryRun,
-  [int]$PrNumber = 0
+  [int]$PrNumber = 0,
+  [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -345,6 +346,48 @@ function Write-ChecksSummary {
     $null = $lines.Add('')
   }
   Write-Text $Path (($lines -join "`n") + "`n")
+  return [pscustomobject]@{
+    comparison = [bool]($ReportBase -and $ReportPr)
+    newFailures = $newFailures
+    fixed = $fixed
+    absent = $absent
+  }
+}
+
+function Get-StepRecord {
+  param($Steps)
+  $values = @{}
+  foreach ($step in @('install', 'build', 'typecheck', 'unit', 'e2e')) {
+    $values[$step] = $null
+    if ($Steps -and $Steps.PSObject.Properties[$step] -and $null -ne $Steps.$step) { $values[$step] = [int]$Steps.$step }
+  }
+  return [pscustomobject]@{
+    install = $values['install']; build = $values['build']; typecheck = $values['typecheck']
+    unit = $values['unit']; e2e = $values['e2e']
+  }
+}
+
+# Loose check of the agent's verdict.json: anything missing, stale or malformed gives $null,
+# which a caller must treat as "no usable verdict".
+function Get-Verdict {
+  param([string]$Path, [DateTime]$NotBefore)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+  if ((Get-Item -LiteralPath $Path).LastWriteTimeUtc -lt $NotBefore) { return $null }
+  $text = Read-Text $Path
+  if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+  try { $data = $text.TrimStart([char]0xFEFF) | ConvertFrom-Json } catch { return $null }
+  if ($data -isnot [pscustomobject]) { return $null }
+  if (-not $data.PSObject.Properties['recommendation'] -or -not $data.PSObject.Properties['blocking']) { return $null }
+  $recommendation = ([string]$data.recommendation).Trim().ToLowerInvariant()
+  if ($recommendation -ne 'merge' -and $recommendation -ne 'changes') { return $null }
+  if ($null -eq $data.blocking) { return $null }
+  # A single string is accepted for either list; blank entries are dropped.
+  $blocking = @($data.blocking | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+  $nonBlocking = @()
+  if ($data.PSObject.Properties['nonBlocking'] -and $null -ne $data.nonBlocking) {
+    $nonBlocking = @($data.nonBlocking | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+  }
+  return [pscustomobject]@{ recommendation = $recommendation; blocking = $blocking; nonBlocking = $nonBlocking }
 }
 
 function Build-PostBody {
@@ -407,6 +450,7 @@ try {
   if ([string]::IsNullOrWhiteSpace($Checkout)) { throw '-Checkout is required.' }
   if ([string]::IsNullOrWhiteSpace($StandardCredentialFile)) { throw '-StandardCredentialFile is required.' }
   if ([string]::IsNullOrWhiteSpace($Repo) -or $Repo -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw '-Repo must be owner/name.' }
+  if ($Force -and $PrNumber -le 0) { throw '-Force requires -PrNumber.' }
 
   $WorkRoot = Get-AcceptancePath $Root
   Assert-OutsideGitCheckout $WorkRoot
@@ -484,7 +528,8 @@ try {
         continue
       }
       $entry = Get-StateEntry $state ([string]$number)
-      if ($PrNumber -eq 0 -and ($entry.reviewed -contains $sha)) {
+      # -PrNumber and -Force both re-review a head already recorded as reviewed; the attempts limit below still applies.
+      if ($PrNumber -eq 0 -and -not $Force -and ($entry.reviewed -contains $sha)) {
         $skippedOut += [ordered]@{ pr = $number; reason = 'head ' + $sha.Substring(0, 7) + ' already reviewed' }
         continue
       }
@@ -507,6 +552,7 @@ try {
       $sha7 = $sha.Substring(0, 7)
       $stamp = [DateTime]::Now.ToString('yyyyMMddTHHmmss')
       $runDir = Join-Path $runsDir ("pr-$number-$sha7-$stamp")
+      $gatePath = Join-Path $runDir 'gate.json'
       [IO.Directory]::CreateDirectory($runDir) | Out-Null
       $worktrees = @()
       $prTree = $null
@@ -589,7 +635,7 @@ try {
         $reportBase = Get-VitestReport (Join-Path $resultsBase 'vitest.json') $baseTree
         $reportPr = Get-VitestReport (Join-Path $resultsPr 'vitest.json') $prTree
         $checksSummaryPath = Join-Path $runDir 'checks-summary.md'
-        Write-ChecksSummary $checksSummaryPath $runDir 'base' 'pr' $stepsBase $stepsPr $reportBase $reportPr $standardBase $standardPr
+        $comparison = Write-ChecksSummary $checksSummaryPath $runDir 'base' 'pr' $stepsBase $stepsPr $reportBase $reportPr $standardBase $standardPr
 
         $template = Read-Text $script:PromptTemplate
         if ($null -eq $template) { throw 'review-prompt.md is missing.' }
@@ -607,46 +653,78 @@ try {
 
         $devinLog = Join-Path $runDir 'devin.log'
         $reviewPath = Join-Path $runDir 'review.md'
-        foreach ($stale in @($reviewPath, (Join-Path $runDir 'review.zh.md'))) { Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue }
+        $verdictPath = Join-Path $runDir 'verdict.json'
+        foreach ($stale in @($reviewPath, (Join-Path $runDir 'review.zh.md'), $verdictPath)) { Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue }
         $agentStart = [DateTime]::UtcNow
         $devinResult = Invoke-Devin $runDir $prTree $promptPath $devinLog
+
+        # A timed-out or failed agent may leave a partial review; it is never posted and gate.json says reviewOk false.
+        $reviewOk = $false
+        $reviewText = $null
+        $reviewProblem = $null
         if ($devinResult -ne 'exitCode 0') {
-          # A timed-out or failed agent may leave a partial review; never post it.
-          $errorsOut += [ordered]@{ pr = $number; error = 'Devin CLI ' + $devinResult + '; nothing posted' }
-          continue
-        }
-        if (-not (Test-Path -LiteralPath $reviewPath -PathType Leaf) -or
+          $reviewProblem = 'Devin CLI ' + $devinResult + '; nothing posted'
+        } elseif (-not (Test-Path -LiteralPath $reviewPath -PathType Leaf) -or
             (Get-Item -LiteralPath $reviewPath).LastWriteTimeUtc -lt $agentStart) {
-          $errorsOut += [ordered]@{ pr = $number; error = 'no fresh review.md was written; nothing posted' }
-          continue
+          $reviewProblem = 'no fresh review.md was written; nothing posted'
+        } else {
+          $reviewText = Read-Text $reviewPath
+          if ([string]::IsNullOrWhiteSpace($reviewText)) { $reviewProblem = 'no review.md was written; nothing posted' } else { $reviewOk = $true }
         }
+        $verdict = $null
+        if ($reviewOk) { $verdict = Get-Verdict $verdictPath $agentStart }
 
-        $reviewText = Read-Text $reviewPath
-        if ([string]::IsNullOrWhiteSpace($reviewText)) {
-          $errorsOut += [ordered]@{ pr = $number; error = 'no review.md was written; nothing posted' }
-          continue
-        }
-
-        $bodyPath = Join-Path $runDir 'post-body.md'
-        Build-PostBody $bodyPath $sha7 $reviewText (Read-Text $checksSummaryPath)
+        # DryRun is the "do not post" switch: it also leaves the head unrecorded, so a later pass reviews it again.
         $posted = $false
-        if (-not $DryRun) {
-          $postCode = Invoke-Gh ('pr review ' + $number + ' -R ' + $Repo + ' --comment --body-file ' + (Quote-Argument $bodyPath)) `
-            (Join-Path $runDir 'post.out.log') (Join-Path $runDir 'post.err.log')
-          if ($postCode -ne 0) {
-            $errorsOut += [ordered]@{ pr = $number; error = 'gh pr review failed: ' + (Get-Tail (Join-Path $runDir 'post.err.log') 5) }
-            continue
+        $postProblem = $null
+        if ($reviewOk) {
+          $bodyPath = Join-Path $runDir 'post-body.md'
+          Build-PostBody $bodyPath $sha7 $reviewText (Read-Text $checksSummaryPath)
+          if (-not $DryRun) {
+            $postCode = Invoke-Gh ('pr review ' + $number + ' -R ' + $Repo + ' --comment --body-file ' + (Quote-Argument $bodyPath)) `
+              (Join-Path $runDir 'post.out.log') (Join-Path $runDir 'post.err.log')
+            if ($postCode -ne 0) {
+              $postProblem = 'gh pr review failed: ' + (Get-Tail (Join-Path $runDir 'post.err.log') 5)
+            } else {
+              $posted = $true
+              $entry = Get-StateEntry $state ([string]$number)
+              $reviewed = @($entry.reviewed)
+              if ($reviewed -notcontains $sha) { $reviewed += $sha }
+              $entry.reviewed = $reviewed
+              Save-State $statePath $state
+            }
           }
-          $posted = $true
-          $entry = Get-StateEntry $state ([string]$number)
-          $reviewed = @($entry.reviewed)
-          if ($reviewed -notcontains $sha) { $reviewed += $sha }
-          $entry.reviewed = $reviewed
-          Save-State $statePath $state
         }
-        $reviewedOut += [ordered]@{ pr = $number; sha = $sha; posted = $posted; runDir = $runDir }
+
+        $gate = [ordered]@{
+          prNumber = $number
+          headSha = $sha
+          baseSha = $mergeBase
+          pr = (Get-StepRecord $stepsPr)
+          base = (Get-StepRecord $stepsBase)
+          unitComparison = $comparison.comparison
+          newFailures = @($comparison.newFailures)
+          fixed = @($comparison.fixed)
+          absent = @($comparison.absent)
+          verdict = $verdict
+          reviewOk = $reviewOk
+          posted = $posted
+        }
+        Write-Text $gatePath ((ConvertTo-Json -InputObject $gate -Depth 6) + "`n")
+
+        if ($reviewProblem) {
+          $errorsOut += [ordered]@{ pr = $number; error = $reviewProblem; runDir = $runDir; gatePath = $gatePath }
+          continue
+        }
+        if ($postProblem) {
+          $errorsOut += [ordered]@{ pr = $number; error = $postProblem; runDir = $runDir; gatePath = $gatePath }
+          continue
+        }
+        $reviewedOut += [ordered]@{ pr = $number; sha = $sha; posted = $posted; runDir = $runDir; gatePath = $gatePath }
       } catch {
-        $errorsOut += [ordered]@{ pr = $number; error = $_.Exception.Message }
+        $failure = [ordered]@{ pr = $number; error = $_.Exception.Message; runDir = $runDir }
+        if (Test-Path -LiteralPath $gatePath -PathType Leaf) { $failure['gatePath'] = $gatePath }
+        $errorsOut += $failure
       } finally {
         if ($script:GitPath) {
           foreach ($tree in $worktrees) { $null = Invoke-Git ('worktree remove --force ' + (Quote-Argument $tree)) }
