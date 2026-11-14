@@ -18,6 +18,9 @@ param(
   [ValidateRange(1, 50)][int]$MaxMergesPerDay = 4,
   [ValidateRange(0, 5)][int]$MaxFixRounds = 2,
   [ValidateRange(5, 480)][int]$DevinTimeoutMin = 90,
+  # gui: the task is typed into a Devin Desktop chat on the signed-in desktop, so it can be watched and joined there.
+  # cli: a headless Devin CLI run in a console window. Its session cannot be opened in Devin Desktop while it runs.
+  [ValidateSet('gui', 'cli')][string]$DevinFrontEnd = 'gui',
   [int]$IssueNumber = 0,
   [switch]$DryRun
 )
@@ -481,6 +484,7 @@ function Save-Commit {
 
 function Invoke-Devin {
   param([string]$RunDir, [string]$Worktree, [string]$PromptPath, [string]$LogPath, [string]$KillTag)
+  if ($DevinFrontEnd -eq 'gui') { return (Invoke-DevinGui $RunDir $Worktree $PromptPath $LogPath $KillTag) }
   # A visible console on the signed-in desktop shows Devin's live output; --export keeps the transcript as the log.
   $inner = 'title Devin ' + (Split-Path -Leaf $Worktree) + ' ' + $KillTag + ' && ' +
     (Quote-Argument $script:DevinPath) + ' --model ' + $DevinModel +
@@ -505,6 +509,86 @@ function Invoke-Devin {
   }
   Stop-WorktreeProcesses $Worktree
   return ('exitCode ' + $process.ExitCode)
+}
+
+$script:GuiTypesLoaded = $false
+
+function Initialize-GuiTypes {
+  if ($script:GuiTypesLoaded) { return }
+  Add-Type -AssemblyName System.Windows.Forms
+  Add-Type -TypeDefinition @'
+using System; using System.Text; using System.Runtime.InteropServices;
+public static class DevLoopWindows {
+  delegate bool EnumProc(IntPtr h, IntPtr p);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr p);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
+  // Devin Desktop titles a window "<folder> - Devin" or "<session title> <folder> - Devin".
+  public static IntPtr Find(string folder) {
+    IntPtr found = IntPtr.Zero;
+    string bare = folder + " - Devin", tail = " " + bare;
+    EnumWindows((h, p) => {
+      if (!IsWindowVisible(h)) return true;
+      var sb = new StringBuilder(1024); GetWindowText(h, sb, 1024); var t = sb.ToString();
+      if (t == bare || t.EndsWith(tail, StringComparison.Ordinal)) { found = h; return false; }
+      return true;
+    }, IntPtr.Zero);
+    return found;
+  }
+}
+'@
+  $script:GuiTypesLoaded = $true
+}
+
+# Opens the worktree in Devin Desktop, types a short instruction into its chat (Ctrl+L focuses it) and waits for
+# the agent to create a sentinel file as its last action. The session stays in Devin Desktop afterwards.
+function Invoke-DevinGui {
+  param([string]$RunDir, [string]$Worktree, [string]$PromptPath, [string]$LogPath, [string]$Tag)
+  Initialize-GuiTypes
+  $sentinel = Join-Path $RunDir ('agent-done-' + $Tag + '.txt')
+  Remove-Item -LiteralPath $sentinel -Force -ErrorAction SilentlyContinue
+  $message = 'Read the task file ' + $PromptPath + ' and carry it out exactly as written, without asking questions. ' +
+    'When you are completely finished, after result.json and pr-body.md, create the empty file ' + $sentinel +
+    ' as your very last action.'
+  $folder = Split-Path -Leaf $Worktree
+  # Not waited on: the launcher may stay attached to the Desktop process it starts.
+  $null = Start-Process -FilePath $script:DevinPath -ArgumentList ('desktop ' + (Quote-Argument $Worktree)) -WindowStyle Hidden
+  $window = [IntPtr]::Zero
+  for ($i = 0; $i -lt 90 -and $window -eq [IntPtr]::Zero; $i++) { Start-Sleep -Seconds 1; $window = [DevLoopWindows]::Find($folder) }
+  if ($window -eq [IntPtr]::Zero) { return 'gui: no Devin Desktop window for ' + $folder }
+  Start-Sleep -Seconds 8
+  $sent = $false
+  for ($try = 0; $try -lt 3 -and -not $sent; $try++) {
+    [DevLoopWindows]::ShowWindow($window, 9) | Out-Null
+    # A tap of Alt lets a background process take the foreground.
+    [DevLoopWindows]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [DevLoopWindows]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+    [DevLoopWindows]::SetForegroundWindow($window) | Out-Null
+    Start-Sleep -Milliseconds 800
+    if ([DevLoopWindows]::GetForegroundWindow() -ne $window) { Start-Sleep -Seconds 2; continue }
+    [Windows.Forms.Clipboard]::SetText($message)
+    [Windows.Forms.SendKeys]::SendWait('^l')
+    Start-Sleep -Seconds 3
+    if ([DevLoopWindows]::GetForegroundWindow() -ne $window) { continue }
+    [Windows.Forms.SendKeys]::SendWait('^v')
+    Start-Sleep -Milliseconds 800
+    [Windows.Forms.SendKeys]::SendWait('{ENTER}')
+    $sent = $true
+  }
+  if (-not $sent) { return 'gui: could not bring the Devin Desktop window to the foreground' }
+  Write-Text $LogPath ('Sent to Devin Desktop window "' + $folder + '" at ' + [DateTime]::Now.ToString('s') + "`n" + $message + "`n" +
+    'The conversation is in Devin Desktop; this file is not a transcript.' + "`n")
+  $deadline = [DateTime]::UtcNow.AddMinutes($DevinTimeoutMin)
+  while ([DateTime]::UtcNow -lt $deadline) {
+    if (Test-Path -LiteralPath $sentinel) { Start-Sleep -Seconds 10; Stop-WorktreeProcesses $Worktree; return 'exitCode 0' }
+    if (Test-Path -LiteralPath (Join-Path $WorkRoot 'STOP')) { Stop-WorktreeProcesses $Worktree; return 'stopped' }
+    Start-Sleep -Seconds 15
+  }
+  Stop-WorktreeProcesses $Worktree
+  return 'timeout'
 }
 
 # App instances the agent's e2e runs leave behind keep the worktree locked and pile up on the desktop.

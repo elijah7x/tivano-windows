@@ -19,6 +19,7 @@ param(
   [ValidateRange(1, 50)][int]$MaxMergesPerDay = 4,
   [ValidateRange(0, 5)][int]$MaxFixRounds = 2,
   [ValidateRange(5, 480)][int]$DevinTimeoutMin = 90,
+  [ValidateSet('gui', 'cli')][string]$DevinFrontEnd = 'gui',
   [switch]$Unregister
 )
 
@@ -121,7 +122,7 @@ try {
   $invokeArguments += @(
     '-DevinModel', (ConvertTo-Literal $DevinModel), '-Label', (ConvertTo-Literal $Label),
     '-MaxIssuesPerRun', [string]$MaxIssuesPerRun, '-MaxMergesPerDay', [string]$MaxMergesPerDay,
-    '-MaxFixRounds', [string]$MaxFixRounds, '-DevinTimeoutMin', [string]$DevinTimeoutMin
+    '-MaxFixRounds', [string]$MaxFixRounds, '-DevinTimeoutMin', [string]$DevinTimeoutMin, '-DevinFrontEnd', $DevinFrontEnd
   )
 
   # The wrapper rotates the log before the run starts: the scheduled action cannot redirect
