@@ -1,14 +1,24 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-29.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F05 attachment e2e — Mock provider only: pick via the test-attached
 // dialog stub, chips, cap notice, send with the frozen "Attached files:"
-// prompt suffix, isolation, restart persistence. Synthetic files only.
+// prompt suffix, isolation, restart persistence, and the P1-28 preview
+// reload/Retry checks against the real library copy. Synthetic files
+// only.
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 
-export async function runAttachChecks({ launch, instances, snap, outDir, check, boundedClose }) {
+export async function runAttachChecks({
+  launch,
+  instances,
+  snap,
+  outDir,
+  check,
+  boundedClose,
+  dataRoot,
+}) {
   const verify = (name, ok, detail) => {
     check(name, ok, detail === undefined ? "" : JSON.stringify(detail));
     if (!ok) throw new Error(name);
@@ -295,6 +305,54 @@ export async function runAttachChecks({ launch, instances, snap, outDir, check, 
   await page2.locator(".msg-attach .attach-thumb-btn").click();
   await page2.locator(".attach-pop .attach-pop-img").waitFor();
   verify("AT-26 sent chip previews too", true);
+  await page2.keyboard.press("Escape");
+
+  // AT-27..29 (P1-28): the popover re-reads the attachment on every open
+  // instead of reusing the chip's bytes, and a failed read lands the
+  // frozen failure state whose Retry reloads. The library copy at
+  // <dataRoot>/attachments/<id>/<name> is the file a reopen re-reads —
+  // attachments are copied at attach time, so a replaced source file is
+  // moot on Windows and no watcher is needed.
+  const imgAtt = (await snap(page2)).threads
+    .find((t) => t.id === imgId)
+    ?.messages.find((m) => m.role === "user")
+    ?.attachments?.find((a) => a.name === "dot.png");
+  if (!imgAtt) throw new Error("sent dot.png attachment id not found");
+  const libCopy = join(dataRoot, "attachments", imgAtt.id, "dot.png");
+  const savedPng = readFileSync(libCopy);
+  rmSync(libCopy);
+  await page2.locator(".msg-attach .attach-thumb-btn").click();
+  await page2.locator(".attach-pop-fail").waitFor();
+  const failText = await page2.locator(".attach-pop-fail").innerText();
+  verify(
+    "AT-27 vanished copy lands the frozen failure state + Retry",
+    failText.includes("Preview unavailable") &&
+      (await page2.locator(".attach-pop-retry").count()) === 1,
+    failText,
+  );
+  writeFileSync(libCopy, savedPng);
+  await page2.locator(".attach-pop-retry").click();
+  await page2.locator(".attach-pop .attach-pop-img").waitFor();
+  verify("AT-28 Retry reloads the image", true);
+  // A reopen re-reads: swap the library bytes, dismiss and reopen — the
+  // popover serves the new copy, not the image it first opened with.
+  const firstSrc = await page2
+    .locator(".attach-pop .attach-pop-img")
+    .getAttribute("src");
+  const PNG_B64_ALT =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  writeFileSync(libCopy, Buffer.from(PNG_B64_ALT, "base64"));
+  await page2.keyboard.press("Escape");
+  await page2.locator(".attach-pop").waitFor({ state: "detached" });
+  await page2.locator(".msg-attach .attach-thumb-btn").click();
+  await page2.locator(".attach-pop .attach-pop-img").waitFor();
+  const reopenedSrc = await page2
+    .locator(".attach-pop .attach-pop-img")
+    .getAttribute("src");
+  verify(
+    "AT-29 reopen serves the replaced copy",
+    reopenedSrc === `data:image/png;base64,${PNG_B64_ALT}` && reopenedSrc !== firstSrc,
+  );
   await page2.keyboard.press("Escape");
 
   // AT-13: zh-Hans — aria label + notice localize.

@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // E2E on an isolated dev instance: real Electron process, temporary data
 // root, synthetic provider only. Assertions bind to real object identity —
@@ -1867,6 +1867,7 @@ try {
     outDir,
     check,
     boundedClose,
+    dataRoot,
   });
 
   // ---- A47: F05 @-mentions + downloads popover (local state) -------------

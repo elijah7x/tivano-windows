@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-29.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F05 draft attachments: engine pending-set semantics (cap, consume,
 // isolation, cleanup) plus AttachmentService copy/cleanup behavior.
@@ -330,6 +330,30 @@ describe("A80 attachment read (preview)", () => {
     // And an id borrowed from another thread stays out.
     const t2 = engine.createThread(null);
     expect(s.read(t2.id, r.attached[0]!.id)).toBeUndefined();
+  });
+
+  // P1-28: the service keeps no preview cache — a vanished copy degrades
+  // the read once, and the next read serves the restored bytes, so a
+  // renderer Retry sees the file as it is now.
+  it("a failed read recovers on the next call and a replaced copy is picked up", async () => {
+    const root = tmp();
+    const { engine } = make(join(root, "data"));
+    const t = engine.createThread(null);
+    const s = svc(root, null, engine, t.id);
+    const r = await s.addBlobs(t.id, [
+      { name: "shot.png", data: new Uint8Array([137, 80, 78, 71]) },
+    ]);
+    const id = r.attached[0]!.id;
+    const libCopy = engine.pendingAttachmentPaths(t.id)[0]!;
+    rmSync(libCopy);
+    expect(s.read(t.id, id)?.kind).toBe("file");
+    const restored = Buffer.from([137, 80, 78, 71, 1, 2, 3]);
+    writeFileSync(libCopy, restored);
+    const got = s.read(t.id, id);
+    expect(got?.kind).toBe("image");
+    if (got?.kind === "image") {
+      expect(got.dataUrl).toBe(`data:image/png;base64,${restored.toString("base64")}`);
+    }
   });
 });
 });
