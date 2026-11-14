@@ -481,15 +481,17 @@ function Save-Commit {
 
 function Invoke-Devin {
   param([string]$RunDir, [string]$Worktree, [string]$PromptPath, [string]$LogPath, [string]$KillTag)
-  $inner = (Quote-Argument $script:DevinPath) + ' --model ' + $DevinModel +
-    ' --permission-mode dangerous --respect-workspace-trust false --prompt-file ' + (Quote-Argument $PromptPath) +
-    ' -p > ' + (Quote-Argument $LogPath) + ' 2>&1'
+  # A visible console on the signed-in desktop shows Devin's live output; --export keeps the transcript as the log.
+  $inner = 'title Devin ' + (Split-Path -Leaf $Worktree) + ' ' + $KillTag + ' && ' +
+    (Quote-Argument $script:DevinPath) + ' --model ' + $DevinModel +
+    ' --permission-mode dangerous --respect-workspace-trust false --verbosity 2 --prompt-file ' + (Quote-Argument $PromptPath) +
+    ' --export ' + (Quote-Argument $LogPath) + ' -p'
   $previous = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   $process = $null
   try {
     $process = Start-Process -FilePath $script:CmdExe -ArgumentList ('/d /c "' + $inner + '"') `
-      -WorkingDirectory $Worktree -PassThru -WindowStyle Hidden
+      -WorkingDirectory $Worktree -PassThru -WindowStyle Normal
   } finally {
     $ErrorActionPreference = $previous
   }
@@ -1201,6 +1203,7 @@ $errorsOut = @()
 $lock = $null
 $ok = $true
 $stopped = $false
+$summaryName = 'last-run.json'
 
 try {
   if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Windows is required.' }
@@ -1227,12 +1230,13 @@ try {
     $skippedOut += [ordered]@{ issue = $null; reason = 'the STOP file exists' }
     Write-Log 'STOP file present; exiting'
   } else {
-    # One pass at a time. A second start writes a skipped summary and leaves the first run alone.
+    # One pass at a time. A second start writes last-skipped.json, so the running pass's last-run.json survives.
     try {
       $lock = [IO.File]::Open((Join-Path $WorkRoot 'lock'), [IO.FileMode]::OpenOrCreate,
         [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     } catch {
       $skippedOut += [ordered]@{ issue = $null; reason = 'another run holds the lock' }
+      $summaryName = 'last-skipped.json'
     }
   }
 
@@ -1471,7 +1475,7 @@ $summary = [ordered]@{
 }
 $json = ConvertTo-Json -InputObject $summary -Depth 6 -Compress
 if ($WorkRoot -and (Test-Path -LiteralPath $WorkRoot)) {
-  try { Write-Text (Join-Path $WorkRoot 'last-run.json') ($json + "`n") } catch { }
+  try { Write-Text (Join-Path $WorkRoot $summaryName) ($json + "`n") } catch { }
 } elseif ($Root) {
   try {
     $fallback = Get-AcceptancePath $Root
