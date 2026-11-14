@@ -15,10 +15,13 @@ param(
   [ValidatePattern('^[A-Za-z0-9._:/-]+$')][string]$DevinModel = 'swe-2-high',
   [ValidatePattern('^[A-Za-z0-9_.-]+$')][string]$Label = 'nyx-auto',
   [ValidateRange(1, 1440)][int]$IntervalMinutes = 30,
-  [ValidateRange(1, 20)][int]$MaxIssuesPerRun = 1,
-  [ValidateRange(1, 50)][int]$MaxMergesPerDay = 4,
+  [ValidateRange(1, 720)][int]$ExecutionLimitHours = 72,
+  [ValidateRange(1, 200)][int]$MaxIssuesPerRun = 50,
+  [ValidateRange(1, 200)][int]$MaxMergesPerDay = 20,
   [ValidateRange(0, 5)][int]$MaxFixRounds = 2,
   [ValidateRange(5, 480)][int]$DevinTimeoutMin = 90,
+  [ValidateRange(5, 240)][int]$StallMinutes = 20,
+  [int]$TrackingIssue = 0,
   [ValidateSet('gui', 'cli')][string]$DevinFrontEnd = 'gui',
   [switch]$Unregister
 )
@@ -122,7 +125,9 @@ try {
   $invokeArguments += @(
     '-DevinModel', (ConvertTo-Literal $DevinModel), '-Label', (ConvertTo-Literal $Label),
     '-MaxIssuesPerRun', [string]$MaxIssuesPerRun, '-MaxMergesPerDay', [string]$MaxMergesPerDay,
-    '-MaxFixRounds', [string]$MaxFixRounds, '-DevinTimeoutMin', [string]$DevinTimeoutMin, '-DevinFrontEnd', $DevinFrontEnd
+    '-MaxFixRounds', [string]$MaxFixRounds, '-DevinTimeoutMin', [string]$DevinTimeoutMin,
+    '-StallMinutes', [string]$StallMinutes, '-TrackingIssue', [string]$TrackingIssue,
+    '-DevinFrontEnd', $DevinFrontEnd
   )
 
   # The wrapper rotates the log before the run starts: the scheduled action cannot redirect
@@ -150,7 +155,7 @@ exit `$LASTEXITCODE
   # An omitted repetition duration means the repetition never expires.
   $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 8)
+    -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours $ExecutionLimitHours)
   $task = New-ScheduledTask -Action $action -Principal $principal -Trigger $trigger -Settings $settings
   Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -InputObject $task -Force | Out-Null
 
@@ -160,11 +165,12 @@ exit `$LASTEXITCODE
   [Console]::Out.WriteLine('  action:    ' + $registered.Actions[0].Execute + ' ' + $registered.Actions[0].Arguments)
   [Console]::Out.WriteLine('  trigger:   every ' + $IntervalMinutes + ' minutes, first run ' + $registered.Triggers[0].StartBoundary)
   [Console]::Out.WriteLine('  principal: LogonType Interactive, RunLevel Limited (runs while that user is signed in; no password stored)')
-  [Console]::Out.WriteLine('  limit:     8 hours, MultipleInstances IgnoreNew')
+  [Console]::Out.WriteLine('  limit:     ' + $ExecutionLimitHours + ' hours, MultipleInstances IgnoreNew')
+  [Console]::Out.WriteLine('  pass:      up to ' + $MaxIssuesPerRun + ' issues, ' + $MaxMergesPerDay + ' merges/day, ' + $StallMinutes + 'm stall, tracking #' + $TrackingIssue + ' (0 = auto)')
   [Console]::Out.WriteLine('  wrapper:   ' + $wrapperPath)
   [Console]::Out.WriteLine('  log:       ' + $logPath + ' (rotated to task.log.1 at 5 MB), per-day logs in ' + (Join-Path $rootPath 'logs'))
   [Console]::Out.WriteLine('  state:     ' + (Join-Path $rootPath 'state.json') + ', runs in ' + (Join-Path $rootPath 'runs'))
-  [Console]::Out.WriteLine('  stop:      create ' + (Join-Path $rootPath 'STOP') + ' to make every run exit at once; delete it to resume')
+  [Console]::Out.WriteLine('  stop:      create ' + (Join-Path $rootPath 'STOP') + ' to stop between issues and make new runs exit at once; delete it to resume')
   [Console]::Out.WriteLine('  next run:  ' + $info.NextRunTime)
   exit 0
 } catch {
