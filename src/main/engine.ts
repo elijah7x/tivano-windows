@@ -3970,6 +3970,10 @@ export class Engine {
 
     const head = this.insertHeadThread(lead, d, persona, headIndex, batchId);
     if (!head) return this.refuseDelegation(lead, "the thread store is full");
+    // A store that stopped owning writes (the engine shut down while the
+    // delegation streamed) never persisted the head — there is nothing
+    // to start or fail, and threadDirectory would throw on the ghost id.
+    if (!this.store.state.threads.some((t) => t.id === head.id)) return;
     if (routed) {
       head.hydraHead!.profile = routed.name;
       head.title += ` · ${routed.name}`;
@@ -3981,6 +3985,22 @@ export class Engine {
     const headEffort = routed?.effort ?? launch?.workerEffort ?? lead.codexEffort;
     if (headModel) head.codexModel = headModel;
     if (headEffort) head.codexEffort = headEffort;
+    // Frozen routeHydraHead: a delegation naming a project that is not
+    // in the sidebar cannot start — this build routes by name only, so
+    // the head ends failed with the routing error, shown to the lead
+    // once rather than again with each later message.
+    if (
+      d.project?.trim() &&
+      !this.store.state.projects.some(
+        (p) => p.name.toLowerCase() === d.project!.toLowerCase(),
+      )
+    ) {
+      return this.failHydraStart(
+        head,
+        `Hydra: no project named ${d.project} is in the sidebar, so ${persona.name} did not start.`,
+        { note: true },
+      );
+    }
     // F22 isolation (frozen makeHydraCopy): with copies on and a copyable
     // checkout the head gets its own detached worktree first and runs
     // there; a checkout that cannot be copied honestly keeps the shared
@@ -3991,20 +4011,29 @@ export class Engine {
       return;
     }
     const dir = this.threadDirectory(head.id);
+    // Frozen startTivanoHead: a head whose checkout cannot be read
+    // never starts — it ends failed and the lead hears why.
+    if (!this.hydraCheckoutUsable(head)) {
+      return this.failHydraStart(
+        head,
+        `Hydra: ${persona.name} did not start because its checkout could not be read.`,
+        { note: true },
+      );
+    }
     try {
       this.sendTurn(head.id, delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)"), {
         authored: false,
         hydraBrief: true,
       });
     } catch (err) {
-      head.hydraHead!.status = "failed";
-      head.hydraHead!.finishedAt = Date.now();
-      head.hydraHead!.summary = `The head could not start: ${(err as Error)?.message ?? String(err)}`;
-      this.queueHydraReport(head);
-      this.store.update(() => {});
-      this.emit({ type: "thread-updated", thread: head });
-      return;
+      return this.failHydraStart(
+        head,
+        `The head could not start: ${(err as Error)?.message ?? String(err)}`,
+      );
     }
+    // A turn that failed synchronously already ended the head through
+    // endTurn — arm the watchdog only while it is genuinely at work.
+    if (head.hydraHead!.status !== "running") return;
     this.armHydraWatchdog(head);
     this.store.update(() => {});
     this.emit({ type: "thread-updated", thread: head });
@@ -4056,6 +4085,27 @@ export class Engine {
     this.emit({ type: "thread-added", thread: head });
     this.emit({ type: "thread-updated", thread: lead });
     return head;
+  }
+
+  /** Frozen startTivanoHead's `checkout != nil` gate, bounded to this
+   *  build's sources of truth — the same directories sendTurn resolves:
+   *  a head bound to a dead copy, or to a project with neither a live
+   *  grant directory nor a live attached directory, has no checkout it
+   *  could run in. A project-less head needs none — it runs with the
+   *  honest "(no project checkout)" brief by design. */
+  private hydraCheckoutUsable(head: ChatThread): boolean {
+    if (head.worktreeDir !== undefined)
+      return this.paths?.dirLive(head.worktreeDir) === true;
+    if (!head.projectId) return true;
+    const grantDir = this.paths?.lookup(head.projectId)?.directory;
+    if (grantDir !== undefined && this.paths!.dirLive(grantDir)) return true;
+    const project = this.store.state.projects.find(
+      (p) => p.id === head.projectId,
+    );
+    return (
+      project?.directory !== undefined &&
+      this.directoryStatusFor(project) === "available"
+    );
   }
 
   /** The checkout a head's copy is made OF (frozen): a head kept in the
@@ -4131,6 +4181,16 @@ export class Engine {
     const cur = this.store.state.threads.find((t) => t.id === headId);
     if (!cur?.hydraHead || cur.hydraHead.status !== "running") return;
     const dir = this.threadDirectory(cur.id);
+    // Frozen startTivanoHead: after the copy bound (or failed to), a
+    // head whose checkout still cannot be read ends failed with the
+    // same report — never running without a turn.
+    if (!this.hydraCheckoutUsable(cur)) {
+      return this.failHydraStart(
+        cur,
+        `Hydra: ${persona.name} did not start because its checkout could not be read.`,
+        { note: true },
+      );
+    }
     const brief = delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)");
     try {
       this.sendTurn(cur.id, brief, {
@@ -4158,14 +4218,12 @@ export class Engine {
         this.emit({ type: "thread-updated", thread: cur });
         return;
       }
-      cur.hydraHead!.status = "failed";
-      cur.hydraHead!.finishedAt = Date.now();
-      cur.hydraHead!.summary = `The head could not start: ${(err as Error)?.message ?? String(err)}`;
-      this.queueHydraReport(cur);
-      this.store.update(() => {});
-      this.emit({ type: "thread-updated", thread: cur });
-      return;
+      return this.failHydraStart(
+        cur,
+        `The head could not start: ${(err as Error)?.message ?? String(err)}`,
+      );
     }
+    if (cur.hydraHead!.status !== "running") return;
     this.armHydraWatchdog(cur);
     this.store.update(() => {});
     this.emit({ type: "thread-updated", thread: cur });
@@ -4337,6 +4395,39 @@ export class Engine {
     }, ms);
     timer.unref?.();
     this.hydraWatchdogs.set(head.id, timer);
+  }
+
+  /** Frozen failHydraRoute plus the failed tail of startTivanoHead: a
+   *  head that cannot start ends failed — never left running without a
+   *  turn, never left with an armed watchdog. Route-style failures also
+   *  land once on the lead's timeline as a note (frozen appendHydraNote);
+   *  every kind queues its explanation into the batch's report, which
+   *  flushes right away when the lead is already idle — a failed spawn
+   *  must not leave the report queued. The freed slot sends the next
+   *  waiting head out first (frozen finish order). A head already
+   *  finished or removed does nothing. */
+  private failHydraStart(
+    head: ChatThread,
+    summary: string,
+    opts?: { note?: boolean },
+  ): void {
+    const info = head.hydraHead;
+    if (!info || info.status !== "running") return;
+    const w = this.hydraWatchdogs.get(head.id);
+    if (w) clearTimeout(w);
+    this.hydraWatchdogs.delete(head.id);
+    if (opts?.note) {
+      const lead = this.store.state.threads.find((t) => t.id === info.leadId);
+      if (lead && !lead.hydraHead) this.appendNotice(lead, summary, "info");
+    }
+    info.status = "failed";
+    info.finishedAt = Date.now();
+    info.summary = summary;
+    this.queueHydraReport(head);
+    this.spawnWaitingHeads(info.leadId);
+    this.store.update(() => {});
+    this.emit({ type: "thread-updated", thread: head });
+    this.flushHydraReports(info.leadId);
   }
 
   /** A head turn's end becomes its report — queued for the lead until

@@ -161,4 +161,38 @@ describe("injected failures", () => {
     expect(existsSync(join(root, "store.lock"))).toBe(false);
     s.close();
   });
+
+  it("update() never surfaces a write failure — head start sees none (P1-19)", () => {
+    // restoreAllMocks only restores vi.spyOn spies — the previous test's
+    // standing mockImplementation on this module vi.fn leaks otherwise.
+    vi.resetAllMocks();
+    const root = fresh();
+    const s = new Store(root);
+    s.open();
+    // Pins the invariant the Hydra spawn path relies on: store.update
+    // only mutates and schedules; the deferred flush swallows a write
+    // failure into lastWriteError, so no thrown store failure can occur
+    // at head start by construction. The only throwing write path is
+    // the explicit flushNow/close one.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(writeFileSync).mockImplementationOnce(() => {
+        throw new Error("ENOSPC injected");
+      });
+      expect(() =>
+        s.update((d) => {
+          d.settings.theme = "dark";
+        }),
+      ).not.toThrow();
+      vi.advanceTimersByTime(200);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(s.lastWriteError).toContain("ENOSPC");
+    vi.mocked(writeFileSync).mockImplementationOnce(() => {
+      throw new Error("ENOSPC injected");
+    });
+    expect(() => s.flushNow()).toThrow(/ENOSPC/);
+    s.close();
+  });
 });
