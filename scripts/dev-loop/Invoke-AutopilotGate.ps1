@@ -7,11 +7,11 @@ param(
   [int]$PrNumber = 0,
   [string]$Repo = 'elijah7x/tivano-windows',
   [string]$Root = 'C:\tivano\dev-loop',
-  [string]$ReviewRoot,
-  [string]$ReviewCheckout,
-  [string]$StandardCredentialFile,
+  [string]$ReviewRoot = 'C:\tivano\pr-bot\state',
+  [string]$ReviewCheckout = 'C:\tivano\tivano-windows',
+  [string]$StandardCredentialFile = 'C:\tivano\secrets\tivano-std.credential.json',
   [string]$ReviewTokenFile,
-  [string]$Reference,
+  [string]$Reference = 'C:\tivano\reference\tivano-v2.5.7',
   [ValidatePattern('^[A-Za-z0-9._:/-]+$')][string]$DevinModel = 'swe-2-high',
   [ValidateRange(1, 720)][int]$ReviewTimeoutMin = 240
 )
