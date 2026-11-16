@@ -239,13 +239,27 @@ function Invoke-Review {
   if ($NoPost) { $inner += ' -DryRun' }
   $inner += ' > ' + (Quote-Argument $outLog) + ' 2> ' + (Quote-Argument $errLog)
   Write-Log ('review pr #' + $Pr + ' head ' + $Sha.Substring(0, 7) + ' (' + $Tag + ')')
-  $process = Start-Process -FilePath $script:CmdExe -ArgumentList ('/d /c "' + $inner + '"') `
-    -WorkingDirectory $script:WorkRoot -PassThru -WindowStyle Hidden
-  if (-not $process) { throw 'Could not start Invoke-PrReview.ps1.' }
-  if (-not $process.WaitForExit($ReviewTimeoutMin * 60000)) {
-    $null = Invoke-Tool (Join-Path ([Environment]::GetFolderPath('System')) 'taskkill.exe') ('/T /F /PID ' + $process.Id) `
-      (Join-Path $RunDir ('review-kill-' + $Tag + '.out.log')) (Join-Path $RunDir ('review-kill-' + $Tag + '.err.log')) $script:WorkRoot
-    return [pscustomobject]@{ status = 'unavailable'; message = 'the review run timed out'; gate = $null; gatePath = $null }
+  # The review runs in a one-off scheduled task rather than as a child of this process: started from inside a
+  # Devin Desktop chat, the reviewer Devin CLI inherits that session's environment and reports "Not logged in".
+  $doneFile = Join-Path $RunDir ('review-' + $Tag + '.done')
+  $cmdFile = Join-Path $RunDir ('review-' + $Tag + '.cmd')
+  Remove-Item -LiteralPath $doneFile -Force -ErrorAction SilentlyContinue
+  Write-Text $cmdFile ('@echo off' + "`r`n" + 'cd /d ' + (Quote-Argument $script:WorkRoot) + "`r`n" + $inner + "`r`n" + 'echo %ERRORLEVEL%> ' + (Quote-Argument $doneFile) + "`r`n")
+  $taskName = 'gate-pr-' + $Pr + '-' + $Tag
+  $action = New-ScheduledTaskAction -Execute $script:CmdExe -Argument ('/d /c "' + $cmdFile + '"') -WorkingDirectory $script:WorkRoot
+  $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
+  $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes ($ReviewTimeoutMin + 5)) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+  Register-ScheduledTask -TaskPath '\TivanoDevLoop\' -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+  try {
+    Start-ScheduledTask -TaskPath '\TivanoDevLoop\' -TaskName $taskName
+    $deadline = [DateTime]::UtcNow.AddMinutes($ReviewTimeoutMin)
+    while (-not (Test-Path -LiteralPath $doneFile) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Seconds 10 }
+    if (-not (Test-Path -LiteralPath $doneFile)) {
+      Stop-ScheduledTask -TaskPath '\TivanoDevLoop\' -TaskName $taskName -ErrorAction SilentlyContinue
+      return [pscustomobject]@{ status = 'unavailable'; message = 'the review run timed out'; gate = $null; gatePath = $null }
+    }
+  } finally {
+    Unregister-ScheduledTask -TaskPath '\TivanoDevLoop\' -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
   }
 
   $summary = $null
