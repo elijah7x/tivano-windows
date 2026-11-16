@@ -34,7 +34,11 @@ Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, 
 - After every `npm run verify` (pass or fail), stop any leftover process whose executable path or command line is inside the worktree so no Electron window stays open or locks files:
   ```powershell
   $wt = 'C:\tivano\dev-loop\work\<n>-<slug>'
-  Get-CimInstance Win32_Process | Where-Object {
+  # Spare this shell and its ancestors (their command lines can contain the path too).
+  $all = @(Get-CimInstance Win32_Process)
+  $keep = @{}; $id = $PID
+  while ($id -and -not $keep.ContainsKey($id)) { $keep[$id] = $true; $id = ($all | Where-Object { $_.ProcessId -eq $id }).ParentProcessId }
+  $all | Where-Object { -not $keep.ContainsKey($_.ProcessId) } | Where-Object {
     ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($wt, 'OrdinalIgnoreCase')) -or
     ($_.CommandLine -and $_.CommandLine.IndexOf($wt, [StringComparison]::OrdinalIgnoreCase) -ge 0)
   } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
