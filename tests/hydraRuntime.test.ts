@@ -518,3 +518,97 @@ describe("P1-19 failed spawns (frozen failHydraRoute)", () => {
     store.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// P1-21 (2.0.22/2.2.12 parity): a head that failed with a non-transient
+// error before it said anything or ran a tool is a startup failure — the
+// report gives ONE cause per provider, with the error shown once. A
+// transient error never produces provider-broken wording.
+
+describe("P1-21 startup failures (frozen startupFailure + per-provider cause)", () => {
+  it("quiet-fail heads with a sibling done read as likely temporary", async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-failstart]");
+    await waitFor(() => heads(engine, lead.id).length === 3);
+    await waitFor(() =>
+      heads(engine, lead.id).every((h) =>
+        ["completed", "failed"].includes(h.hydraHead!.status),
+      ),
+    );
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some((m) =>
+        m.content.includes("Hydra reports:"),
+      ),
+    );
+    const report = thread(engine, lead.id).messages.find((m) =>
+      m.content.includes("Hydra reports:"),
+    )!;
+    // Two heads failed the same way before any work: the error shows
+    // once, the second names the first, and a completed sibling on the
+    // same provider makes the cause read as likely temporary.
+    expect(report.content).toContain("Same startup failure as Hank.");
+    expect(report.content).toContain("likely temporary");
+    expect(report.content).not.toContain("environment (its install");
+    expect(report.content).not.toContain(
+      "do it yourself or send it out again",
+    );
+    store.close();
+  });
+
+  it("a batch that all failed at start reads as the provider's environment", async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-failall]");
+    await waitFor(() => heads(engine, lead.id).length === 2);
+    await waitFor(() =>
+      heads(engine, lead.id).every(
+        (h) => h.hydraHead!.status === "failed",
+      ),
+    );
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some((m) =>
+        m.content.includes("Hydra reports:"),
+      ),
+    );
+    const report = thread(engine, lead.id).messages.find((m) =>
+      m.content.includes("Hydra reports:"),
+    )!;
+    expect(report.content).toContain("Same startup failure as Hank.");
+    expect(report.content).toContain("before doing any work");
+    expect(report.content).toContain(
+      "environment (its install, sign-in, configuration or MCP servers)",
+    );
+    expect(report.content).toContain("Do their parts yourself");
+    expect(report.content).not.toContain("likely temporary");
+    expect(report.content).not.toContain(
+      "do it yourself or send it out again",
+    );
+    store.close();
+  });
+
+  it("a transient quiet-fail keeps the generic take-over wording", async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-failtransient]");
+    await waitFor(() => heads(engine, lead.id).length === 2);
+    await waitFor(() =>
+      heads(engine, lead.id).every((h) =>
+        ["completed", "failed"].includes(h.hydraHead!.status),
+      ),
+    );
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some((m) =>
+        m.content.includes("Hydra reports:"),
+      ),
+    );
+    const report = thread(engine, lead.id).messages.find((m) =>
+      m.content.includes("Hydra reports:"),
+    )!;
+    expect(report.content).toContain(
+      "do it yourself or send it out again",
+    );
+    expect(report.content).not.toContain("before doing any work");
+    store.close();
+  });
+});
