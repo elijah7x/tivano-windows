@@ -267,6 +267,7 @@ function Set-DevinForeground {
 
 # Keyboard shortcuts toggle the chat panel or land in an open editor depending on what had focus, so the
 # chat input is clicked instead: maximized, it is the box at the bottom of the right-hand Devin panel.
+# No Ctrl+A/Delete afterwards: if the click ever lands in an editor, a paste is recoverable, a wipe is not.
 function Focus-DevinChatInput {
   param([IntPtr]$Window)
   if (-not (Set-DevinForeground $Window)) { return $false }
@@ -365,7 +366,6 @@ function Send-DevinBypassCommandSafe {
   param([IntPtr]$Window)
   if (-not (Set-DevinForeground $Window)) { return $false }
   if (-not (Focus-DevinChatInput $Window)) { return $false }
-  if (-not (Send-DevinKeysSafe $Window '^a{DEL}')) { return $false }
   $modeSince = [DateTime]::Now
   if (-not (Send-DevinTextSafe $Window '/bypass')) { return $false }
   if (-not (Send-DevinKeysSafe $Window '{ENTER}')) { return $false }
@@ -575,6 +575,7 @@ function Invoke-Kickoff {
   param([bool]$WaitForIdle)
   if (-not (Test-Path -LiteralPath $script:PromptPath -PathType Leaf)) { throw 'autopilot.md is missing next to this script.' }
   if (-not (Test-Path -LiteralPath $script:WorkspacePath -PathType Container)) { throw '-Workspace does not exist.' }
+  if (Test-Stop) { Write-Log 'STOP file present; kickoff exiting'; return 'deferred' }
   Initialize-GuiTypes
 
   $folder = Split-Path -Leaf $script:WorkspacePath
@@ -614,7 +615,7 @@ function Invoke-Kickoff {
     return 'failed'
   }
 
-  $message = 'Read the file ' + $script:PromptPath + ' and carry it out exactly as written. Work through the whole queue without asking questions. Re-read that file after every issue.'
+  $message = 'Read the file ' + $script:PromptPath + ' and carry it out exactly as written. Work through the whole queue without asking questions. Re-read that file after every issue. Use these values wherever the file names its defaults: repository ' + $Repo + ', label ' + $Label + ', root folder ' + $script:WorkRoot + ' (progress.json in its autopilot subfolder, STOP in its state subfolder).'
   $sent = $false
   for ($try = 0; $try -lt 3 -and -not $sent; $try++) {
     $window = [DevLoopWindows]::Find($folder)
@@ -624,6 +625,7 @@ function Invoke-Kickoff {
       Start-Sleep -Seconds 2
       continue
     }
+    if (Test-Stop) { Write-Log 'STOP file present; kickoff exiting'; return 'deferred' }
     if (-not (Send-DevinBypassCommandSafe $window)) {
       Write-Log ('kickoff try ' + ($try + 1) + '/3: /bypass failed or focus changed')
       Start-Sleep -Seconds 2
@@ -634,7 +636,7 @@ function Invoke-Kickoff {
       Start-Sleep -Seconds 2
       continue
     }
-    if (-not ((Focus-DevinChatInput $window) -and (Send-DevinKeysSafe $window '^a{DEL}'))) {
+    if (-not (Focus-DevinChatInput $window)) {
       Write-Log ('kickoff try ' + ($try + 1) + '/3: focus changed before clearing input')
       Start-Sleep -Seconds 2
       continue
@@ -791,7 +793,7 @@ function Invoke-WatchTick {
         Write-Log 'approval recovery aborted: lost focus after /bypass'
         return
       }
-      if (-not ((Focus-DevinChatInput $window) -and (Send-DevinKeysSafe $window '^a{DEL}'))) {
+      if (-not (Focus-DevinChatInput $window)) {
         Write-Log 'approval recovery aborted: focus changed before clear'
         return
       }
@@ -834,7 +836,7 @@ function Invoke-WatchTick {
       Write-Log 'idle nudge aborted: could not focus Devin window'
       return
     }
-    if (-not ((Focus-DevinChatInput $window) -and (Send-DevinKeysSafe $window '^a{DEL}'))) {
+    if (-not (Focus-DevinChatInput $window)) {
       Write-Log 'idle nudge aborted: focus changed before clear'
       return
     }
@@ -892,6 +894,13 @@ function Invoke-RegisterTask {
     -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
   $task = New-ScheduledTask -Action $action -Principal $principal -Trigger $trigger -Settings $settings
   Register-ScheduledTask -TaskName $script:TaskName -TaskPath $script:TaskPath -InputObject $task -Force | Out-Null
+  # The per-issue runner would work and merge the same issues in parallel.
+  $legacy = Get-ScheduledTask -TaskPath $script:TaskPath -TaskName 'run' -ErrorAction SilentlyContinue
+  if ($legacy -and $legacy.State -ne 'Disabled') {
+    if ($legacy.State -eq 'Running') { Stop-ScheduledTask -TaskPath $script:TaskPath -TaskName 'run' }
+    $null = Disable-ScheduledTask -TaskPath $script:TaskPath -TaskName 'run'
+    Write-Host 'Disabled the per-issue runner task run (autopilot replaces it).'
+  }
 
   $registered = Get-ScheduledTask -TaskName $script:TaskName -TaskPath $script:TaskPath
   $info = Get-ScheduledTaskInfo -TaskName $script:TaskName -TaskPath $script:TaskPath
