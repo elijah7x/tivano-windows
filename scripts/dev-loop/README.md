@@ -150,3 +150,63 @@ This registers `\TivanoDevLoop\run`: every 30 minutes (`-IntervalMinutes`), as t
 - Only one issue is developed at a time; a failed attempt is retried once more in the same pass before `needs-human`, and a deferred step is retried on the next pass.
 - The guard looks at the pull request's diff, not at what Devin did on the machine.
 - A flaky e2e failure that is not worse than base passes the gate; an e2e that fails on both base and pr is not detected as a regression.
+
+## Autopilot (one Devin Desktop chat)
+
+Instead of spawning a fresh Devin session per issue, a single long-running Devin Desktop chat can follow `scripts/dev-loop/autopilot.md` and run the whole issue loop itself: pick an eligible `nyx-auto` issue, implement it in a worktree, self-verify, open the pull request, run the merge gate, fix review findings, merge when the gate passes, and continue to the next issue.
+
+The older per-issue runner task (`\TivanoDevLoop\run` via `Register-DevLoopTask.ps1`) is kept in the repository, but is disabled / unregistered by default when autopilot is used so the two loops do not compete over the same issues.
+
+### Gate script (`Invoke-AutopilotGate.ps1`)
+
+The autopilot chat runs the isolated reviewer through `scripts/dev-loop/Invoke-AutopilotGate.ps1`:
+
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Invoke-AutopilotGate.ps1 `
+  -PrNumber 12 -ReviewRoot C:\tivano\pr-review -ReviewCheckout C:\tivano\pr-review\clone `
+  -StandardCredentialFile C:\tivano\private\standard-account.json
+```
+
+- Reads the PR head SHA with `gh`, runs `scripts/pr-review/Invoke-PrReview.ps1` with `-Force` and comment posting enabled, and waits up to `-ReviewTimeoutMin` (default `240` minutes).
+- If another review holds the reviewer lock, waits 60 seconds and retries up to 10 times.
+- Evaluates `gate.json` with the same merge-gate rules as `Invoke-DevLoop.ps1` and writes logs and failure lists under `<Root>\autopilot\gate\pr-<n>-<timestamp>\` (`-Root` defaults to `C:\tivano\dev-loop`).
+- Prints one compact JSON line to stdout (`{"pr":n,"headSha":"...","verdict":"pass|fail|unavailable","failures":["..."],"gatePath":"..."}`) and exits `0` on `pass`, `1` on `fail`, or `2` on `unavailable`.
+- Never merges, labels, or comments itself beyond what `Invoke-PrReview.ps1` posts.
+
+### Watchdog task and nudge rules (`Start-DevinAutopilot.ps1`)
+
+`scripts/dev-loop/Start-DevinAutopilot.ps1` launches the chat (`-Kickoff`) and keeps it moving via the scheduled task `\TivanoDevLoop\autopilot` (`-Watch`, run every `-IntervalMinutes`, default `15`, with a 30-minute execution limit, `MultipleInstances IgnoreNew`, and Interactive logon for GUI access):
+
+- **Idle check:** before touching the GUI, `-Watch` checks `GetLastInputInfo`; if the user has been active within `-UserIdleSeconds` (default `120`), it logs `user active, deferred` and exits without touching any window.
+- **Window safety:** immediately before every paste and every keystroke batch, it verifies the foreground window is still the target `<Workspace>` Devin Desktop window; if focus changed, it aborts that attempt and never types into another window.
+- **No label or PR edits:** the watchdog never edits labels, issues, or pull requests, except posting one public-text-safe comment (with no host names or local paths) on the tracking issue (`Automated dev loop: progress log`) when stuck.
+- **Quiet exits:** exits quietly if `<Root>\state\STOP` exists. If `<Root>\autopilot\progress.json` reports `state: "done"` or `state: "idle"` for today's `daily merge cap`, it checks `gh` (and whether the local calendar date changed) and exits when no eligible work remains.
+- **Watchdog actions when idle and work remains:**
+  1. **No Devin Desktop window:** runs the `-Kickoff` path to launch `devin desktop <Workspace>`, enable `/bypass`, and paste the `autopilot.md` instruction.
+  2. **Approval pending `>= -ApprovalMinutes` (default `3`):** detects an unresolved permission prompt in `%APPDATA%\Devin\cli\logs\devin_*.log`, focuses the window, re-sends `/bypass` and waits for confirmation, then pastes a continuation prompt.
+  3. **No log write for `>= -IdleMinutes` (default `25`, range `5`–`240`):** focuses the window and pastes a continuation prompt pointing back to `autopilot.md` and `progress.json`.
+- **Stuck guard:** every nudge is recorded in `<Root>\autopilot\watchdog.json`. After 6 consecutive nudges with no new agent log write in between, it posts one comment to `Automated dev loop: progress log`, sets `stuckNotified` to `true`, and stops nudging until new log activity resumes.
+
+### State and files (relative to `-Root`, default `C:\tivano\dev-loop`)
+
+- `<Root>\autopilot\progress.json`: current autopilot chat progress (`state`, `issue`, `step`, `updatedAt`).
+- `<Root>\autopilot\watchdog.json`: consecutive nudge counter, nudge history, and `stuckNotified` flag.
+- `<Root>\autopilot\gate\pr-<n>-<timestamp>\`: gate run logs and `failures.md`.
+- `<Root>\state\logs\autopilot-yyyyMMdd.log`: kickoff and watchdog logs.
+- `<Root>\state\STOP`: stop file checked by `-Watch` (and `-Kickoff`).
+
+### Start, register, and stop
+
+```
+# Launch (or focus) Devin Desktop for C:\tivano\dev-loop\repo and send the autopilot prompt once idle:
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Start-DevinAutopilot.ps1 -Kickoff
+
+# Register the 15-minute watchdog task \TivanoDevLoop\autopilot:
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Start-DevinAutopilot.ps1 -Register
+
+# Stop watchdog ticks cleanly without unregistering:
+New-Item -ItemType File -Path C:\tivano\dev-loop\state\STOP -Force | Out-Null
+
+# Remove the scheduled task (state and logs are kept):
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Start-DevinAutopilot.ps1 -Unregister
+```
