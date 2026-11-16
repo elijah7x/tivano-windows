@@ -10,7 +10,12 @@ import { AttachChip } from "./AttachChip";
 import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
 import { useT } from "../locale";
 import { translateError } from "../i18n";
-import { renderMarkdown } from "../markdown";
+import {
+  renderMarkdown,
+  renderMarkdownStreaming,
+  type MarkdownLabels,
+  type StreamingParse,
+} from "../markdown";
 import { api, callApi, clientStore } from "../client";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
@@ -216,10 +221,16 @@ export function ChatView(props: {
       }
     >(),
   );
+  // P1-29 (frozen MarkdownParser.Parse): per-message incremental parse —
+  // stable leading blocks are reused element-for-element and just the tail
+  // re-renders per chunk, so a long reply keeps streaming instead of
+  // reparsing the whole text every flush.
+  const mdRef = useRef(new Map<string, StreamingParse>());
   useEffect(() => {
     setHydraPanelHidden(false);
     headCount.current = 0;
     veilRef.current.clear();
+    mdRef.current.clear();
   }, [threadId]);
   useEffect(() => {
     if (heads.length > headCount.current) setHydraPanelHidden(false);
@@ -423,6 +434,28 @@ export function ChatView(props: {
             });
             return veil;
           };
+          // P1-29: while a message streams, render through the incremental
+          // parse; once it settles the state drops and the plain whole
+          // render produces the identical final tree.
+          const mdFor = (
+            m: Message,
+            source: string,
+            labels: MarkdownLabels | undefined,
+            veil: { chars: number; ms: number } | null,
+          ): React.ReactNode => {
+            if (m.status !== "streaming") {
+              mdRef.current.delete(m.id);
+              return renderMarkdown(source, labels);
+            }
+            const r = renderMarkdownStreaming(
+              source,
+              labels,
+              mdRef.current.get(m.id) ?? null,
+              veil,
+            );
+            mdRef.current.set(m.id, r.state);
+            return r.nodes;
+          };
           const renderMessage = (m: Message): React.JSX.Element | null => {
           const ck = m.role === "assistant" && m.turnId
             ? ckpts.find((r) => r.turnId === m.turnId)
@@ -449,16 +482,11 @@ export function ChatView(props: {
                   )}
                 </summary>
                 <div className="plan-body">
-                  {renderMarkdown(
-                    m.content,
-                    {
-                      copy: t("Copy"),
-                      copied: t("Copied"),
-                      renderDelegation: delegationCard,
-                    },
-                    m.status === "streaming",
-                    veilFor(m),
-                  )}
+                  {mdFor(m, m.content, {
+                    copy: t("Copy"),
+                    copied: t("Copied"),
+                    renderDelegation: delegationCard,
+                  }, veilFor(m))}
                 </div>
               </details>
             );
@@ -553,7 +581,8 @@ export function ChatView(props: {
               )}
               {m.role === "assistant" ? (
                 <div className="msg-body">
-                  {renderMarkdown(
+                  {mdFor(
+                    m,
                     m.content.replaceAll(
                       `*${INTERRUPTED_MARKER}*`,
                       `*[${t("interrupted by restart — not resumed")}]*`,
@@ -563,7 +592,6 @@ export function ChatView(props: {
                       copied: t("Copied"),
                       renderDelegation: delegationCard,
                     },
-                    m.status === "streaming",
                     veilFor(m),
                   )}
                 </div>

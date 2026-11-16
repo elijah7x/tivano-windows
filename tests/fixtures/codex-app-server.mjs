@@ -253,8 +253,30 @@ function runTurn(threadId, turnId, prompt, model, effort, serviceTier, policy, c
           "",
           "![cat](https://example.com/c.png) ![bad](file:///etc/passwd) [bad](file:///x)",
         ].join("\n")
-      : `fixture response: ${prompt.slice(0, 80)}${meTag}${polTag}${cmTag}`;
-    const chunks = lower.includes("slow") ? text.split(/(?<=.{4})/) : [text];
+      : // "long" → a several-hundred-KB reply over many deltas, so the
+        // renderer's incremental streaming path is exercised end to end.
+        lower.includes("long")
+        ? (() => {
+            const seg = ["LONG-REPLY-HEAD"];
+            for (let i = 0; i < 300; i++) {
+              seg.push(
+                `## Long ${i}\n\nLONG-REPLY part ${i} with **bold** and \`code\` ` +
+                  `filler text that keeps the reply growing like a real model answer. `.repeat(
+                    6,
+                  ),
+              );
+              if (i % 10 === 0)
+                seg.push("```ts\nconst n = " + i + ";\n" + "// filler\n".repeat(25) + "```");
+            }
+            seg.push("LONG-REPLY-TAIL");
+            return seg.join("\n\n");
+          })()
+        : `fixture response: ${prompt.slice(0, 80)}${meTag}${polTag}${cmTag}`;
+    const chunks = lower.includes("long")
+      ? (text.match(/[\s\S]{1,2000}/g) ?? [text])
+      : lower.includes("slow")
+        ? text.split(/(?<=.{4})/)
+        : [text];
     chunks.forEach((c, i) =>
       schedule(() => {
         if (activeTurn !== t) return;

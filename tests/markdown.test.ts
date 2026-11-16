@@ -362,3 +362,82 @@ it("a hydra fence becomes the delegation card when the renderer is injected", ()
   expect(found.classes).toContain("fake-card");
   expect(found.classes).not.toContain("md-preblock");
 });
+
+// P1-29 (frozen MarkdownParser.parse(_:extending:)): a streamed reply must
+// keep rendering the whole text every flush while reparsing only its
+// unstable tail — whole reparse per chunk was the measured long-reply lag.
+type StreamFn = (
+  source: string,
+  labels: undefined,
+  prev: import("../src/renderer/markdown").StreamingParse | null,
+  veil: null,
+) => {
+  nodes: ReactNode[];
+  state: import("../src/renderer/markdown").StreamingParse;
+};
+const streamFn = sandbox.module.exports.renderMarkdownStreaming as StreamFn;
+expect(typeof streamFn).toBe("function");
+
+it("streams a long reply with identical output and a reused stable prefix", () => {
+  const parts: string[] = [];
+  for (let i = 0; i < 60; i++) {
+    parts.push(
+      `## S${i}\n\npara ${i} **b** *e* \`c\` [l](https://e.com/${i}) ` + "x".repeat(50),
+    );
+    if (i % 5 === 0) parts.push("```ts\nline one\nline two\n```");
+    if (i % 3 === 0) parts.push("- a\n- b\n- c");
+    if (i % 11 === 0) parts.push("> quoted\n> rows");
+  }
+  const full = parts.join("\n\n");
+  const wholeStream = (s: string) =>
+    walk((renderFn as (x: string, l?: undefined, st?: boolean, v?: null) => ReactNode[])(s, undefined, true, null));
+  let state: import("../src/renderer/markdown").StreamingParse | null = null;
+  let prevNodes: ReactNode[] = [];
+  let stablePrefixLen = 0;
+  const chunk = Math.ceil(full.length / 220);
+  for (let end = chunk; end < full.length + chunk; end += chunk) {
+    const src = full.slice(0, Math.min(end, full.length));
+    const r = streamFn(src, undefined, state, null);
+    state = r.state;
+    // Every chunk renders the same tree a whole streaming parse would —
+    // no lost text, no reordering, mended tail identical.
+    expect(walk(r.nodes)).toEqual(wholeStream(src));
+    // The previously-stable prefix comes back as the same element
+    // objects — never reparsed, which is what keeps each flush cheap.
+    for (let s = 0; s < stablePrefixLen; s++) {
+      expect(r.nodes[s]).toBe(prevNodes[s]);
+    }
+    stablePrefixLen = state.stableNodes.length;
+    prevNodes = r.nodes;
+  }
+  expect(stablePrefixLen).toBeGreaterThan(0);
+  // The tail of the last chunk is visible in the rendered tree — the
+  // final paragraph's words render (markers stripped to elements).
+  const found = walk(prevNodes);
+  expect(found.text).toContain("para 59");
+  expect(found.text.endsWith("x".repeat(50))).toBe(true);
+});
+
+it("reparses fully when the text is replaced instead of appended", () => {
+  const first = "alpha paragraph\n\n```\ncode\n```";
+  const second = "omega paragraph\n\n```\ncode\n```";
+  let state: import("../src/renderer/markdown").StreamingParse | null = null;
+  let r = streamFn(first, undefined, state, null);
+  state = r.state;
+  expect(state.stableNodes.length).toBeGreaterThan(0);
+  r = streamFn(second, undefined, state, null);
+  // A rewritten text cannot reuse nodes — the new words must render.
+  expect(walk(r.nodes).text).toContain("omega");
+  expect(walk(r.nodes).text).not.toContain("alpha");
+});
+
+it("keeps an open code fence streaming until a later chunk closes it", () => {
+  let state: import("../src/renderer/markdown").StreamingParse | null = null;
+  let r = streamFn("intro\n\n```ts\nconst a = 1;", undefined, state, null);
+  state = r.state;
+  expect(walk(r.nodes).classes).toContain("md-preblock");
+  r = streamFn("intro\n\n```ts\nconst a = 1;\nconst b = 2;\n```\n\ntail", undefined, state, null);
+  const found = walk(r.nodes);
+  expect(found.text).toContain("const b = 2;");
+  expect(found.text).toContain("tail");
+});
