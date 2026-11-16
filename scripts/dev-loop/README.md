@@ -170,8 +170,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Invoke-
 - Reads the PR head SHA with `gh`, runs `scripts/pr-review/Invoke-PrReview.ps1` with `-Force` and comment posting enabled, and waits up to `-ReviewTimeoutMin` (default `240` minutes).
 - If another review holds the reviewer lock, waits 60 seconds and retries up to 10 times.
 - Evaluates `gate.json` with the same merge-gate rules as `Invoke-DevLoop.ps1` and writes logs and failure lists under `<Root>\autopilot\gate\pr-<n>-<timestamp>\` (`-Root` defaults to `C:\tivano\dev-loop`).
-- Prints one compact JSON line to stdout (`{"pr":n,"headSha":"...","verdict":"pass|fail|unavailable","failures":["..."],"gatePath":"..."}`) and exits `0` on `pass`, `1` on `fail`, or `2` on `unavailable`.
-- Never merges, labels, or comments itself beyond what `Invoke-PrReview.ps1` posts.
+- Prints one compact JSON line to stdout (`{"pr":n,"headSha":"...","verdict":"pass|fail|unavailable","failures":["..."],"gatePath":"...","glm":{"status":"ok|unavailable|skipped","verdict":"pass|changes","blocking":<count>,"runDir":"..."},"notes":[...]}`) and exits `0` on `pass`, `1` on `fail`, or `2` on `unavailable`.
+- Never merges, labels, or comments itself beyond the review comments from `Invoke-PrReview.ps1` and `Invoke-GlmReview.ps1`.
+
+### GLM-5.3 second reviewer
+
+- **What it checks and what blocks:** `Invoke-AutopilotGate.ps1` also runs `scripts/dev-loop/Invoke-GlmReview.ps1` (GLM-5.3) as an independent second reviewer on the same PR head and posts its own PR comment. Blocking findings appear in `failures` prefixed with `GLM-5.3: ` and fail the gate; non-blocking, out-of-scope, or style-only points are advisory. If the two reviewers contradict each other, autopilot follows the issue text and `AGENTS.md`, takes the safer option, and explains why in the commit message and a short PR comment. If GLM-5.3 is `unavailable`, it never blocks the gate by itself.
+- **Credentials and isolation:** GLM-5.3 runs through the ZCode CLI with an isolated `ZCODE_DATA_BASE_DIR` (`C:\tivano\zcode\home`) whose `provider_config` holds a BigModel Coding Plan API key. That directory sits outside the repository (never committed) and must be readable only by the runner account.
+- **Consult step:** When autopilot is about to give up (gate still fails after 2 fix rounds, the same `npm run verify` test fails 3 times in a row, or an issue appears blocked as ambiguous), it writes trimmed failures to `C:\tivano\dev-loop\autopilot\runs\<n>\failures-<k>.md` and runs `Invoke-GlmReview.ps1 -Mode consult -PrNumber <pr> -FailuresFile <file>` (up to ~20 minutes; exit `0` ok, `2` unavailable) once per issue per resume. It reads `consultPath`, runs one final fix round and re-gates, and falls back to `needs-human` (summarizing GLM's diagnosis) only if that fails or consult is unavailable.
+- **Disabling and read-only boundary:** Pass `-SkipGlm` to `Invoke-AutopilotGate.ps1` to skip the GLM review (`glm.status` becomes `"skipped"`). GLM never edits repository files or commits; it only reviews and advises.
 
 ### Watchdog task and nudge rules (`Start-DevinAutopilot.ps1`)
 
