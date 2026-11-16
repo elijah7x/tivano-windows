@@ -197,6 +197,85 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   });
   verify("LC-20b absent key refused", un.error?.code === "invalidRequest", un);
 
+  // ---- Hydra in local control (F34/P2-24) --------------------------------------
+  // A saved pair on the fixture provider makes --hydra on creatable.
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", {
+      hydraEnabled: true,
+      hydraPairs: [{ id: "e2e-pair", provider: "mock", headProfiles: [] }],
+    }));
+  const { res: hc } = await req("create", {
+    ticket: `${instance}/${randomUUID()}/${Date.now()}`,
+    workspace: "local", hydra: true,
+  });
+  const hcOp = hc.result?.operation;
+  verify("LC-32 create hydra=on accepted",
+    hcOp?.state === "ready" && hcOp.threadId, hc);
+  const hydraThreadId = hcOp.threadId;
+  const { res: hv } = await req("thread", { id: hydraThreadId });
+  verify("LC-33 thread reports hydra + normal role",
+    hv.result?.thread?.hydra === true && hv.result?.thread?.role === "normal",
+    hv.result?.thread);
+  const { res: hs } = await req("submit", {
+    ticket: `${instance}/${randomUUID()}/${Date.now()}`,
+    threadId: hydraThreadId, text: "slow work",
+  });
+  verify("LC-34 send accepted on a Hydra-led chat",
+    hs.result?.operation?.state === "started", hs);
+  const hydraTurn = hs.result.operation.turnId;
+  const { res: hi } = await req("interrupt", {
+    ticket: `${instance}/${randomUUID()}/${Date.now()}`,
+    threadId: hydraThreadId, turnId: hydraTurn,
+  });
+  verify("LC-35 interrupt accepted on a Hydra-led chat",
+    hi.result?.operation?.state === "ended", hi);
+  // The real CLI drives --hydra end to end (frozen main.swift flag).
+  const cliCreate = await promisify(execFile)(
+    "node", [join(process.cwd(), "cli", "tivano.mjs"), "create",
+      "--workspace", "local", "--hydra", "on"],
+    { env: { ...process.env, TIVANO_CONTROL_SOCKET: sock }, timeout: 15000 })
+    .then((r) => JSON.parse(r.stdout))
+    .catch((e) => ({ err: String(e) }));
+  verify("LC-36 tivano.mjs create --hydra on",
+    cliCreate?.operation?.state === "ready" && cliCreate?.operation?.threadId,
+    cliCreate);
+  const { res: hv2 } = await req("thread", { id: cliCreate.operation.threadId });
+  verify("LC-37 CLI-created chat reports hydra",
+    hv2.result?.thread?.hydra === true, hv2.result?.thread);
+  // App-wide switch off -> a clear failure, in both UI languages.
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { hydraEnabled: false }));
+  const { res: hoff } = await req("create", {
+    ticket: `${instance}/${randomUUID()}/${Date.now()}`,
+    workspace: "local", hydra: true,
+  });
+  verify("LC-38 switch off refuses with hydra_disabled",
+    hoff.error?.code === "unsupported" && hoff.error?.detail === "hydra_disabled",
+    hoff);
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { language: "zh-Hans" }));
+  const { res: hoffZh } = await req("create", {
+    ticket: `${instance}/${randomUUID()}/${Date.now()}`,
+    workspace: "local", hydra: true,
+  });
+  verify("LC-39 same failure kind under zh-Hans",
+    hoffZh.error?.code === hoff.error?.code &&
+    hoffZh.error?.detail === hoff.error?.detail, hoffZh);
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { hydraEnabled: true, language: "en" }));
+  // A control-created chat with no flag stays Hydra-off even though the
+  // UI default is on — it never inherits.
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { hydraDefaultEnabled: true }));
+  const { res: hdef } = await req("create", {
+    ticket: `${instance}/${randomUUID()}/${Date.now()}`,
+    workspace: "local",
+  });
+  const { res: hdefView } = await req("thread", { id: hdef.result?.operation?.threadId });
+  verify("LC-40 absent flag stays hydra off",
+    hdef.result?.operation?.state === "ready" &&
+    hdefView.result?.thread?.hydra === false, hdefView.result?.thread);
+
   // ---- gate close kills the listener -----------------------------------------
   await page.evaluate(() =>
     window.tivano.invoke("settings:set", { externalControlEnabled: false }));

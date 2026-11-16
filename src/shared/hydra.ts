@@ -144,6 +144,23 @@ export function hydraPairForLead(
   return pairs.find((p) => p.id === pairId && p.provider === providerId);
 }
 
+/** The pair a control-created chat leads with — frozen
+ *  Settings.hydraPair(for:model:): the provider's pair for the lead's
+ *  model, else one for any model on the provider, else the provider's
+ *  first saved pair. undefined = the provider has no pair saved. */
+export function hydraPairForProvider(
+  pairs: HydraPair[],
+  providerId: string,
+  model: string | undefined,
+): HydraPair | undefined {
+  const candidates = pairs.filter((p) => p.provider === providerId);
+  if (model !== undefined) {
+    const exact = candidates.find((p) => p.orchestratorModel === model);
+    if (exact) return exact;
+  }
+  return candidates.find((p) => p.orchestratorModel === undefined) ?? candidates[0];
+}
+
 /**
  * What the lead's heads launch with in THIS build — the slice of
  * `hydraLaunch(for:)` a single-provider engine can honour. Heads always

@@ -722,7 +722,14 @@ export class Engine {
   createThread(
     projectId: string | null,
     title?: string,
-    opts?: { workspaceDefault?: boolean },
+    opts?: {
+      workspaceDefault?: boolean;
+      /** F34: external-control create (frozen createExternalThread)
+       *  never inherits the saved per-chat default or last pair — the
+       *  resolved choice is handed in explicitly: `enabled` plus the
+       *  pair `--hydra on` resolved to. */
+      externalHydra?: { enabled: boolean; pairId?: string };
+    },
   ): ChatThread {
     this.assertMutable();
     if (projectId) this.mustProject(projectId);
@@ -742,12 +749,20 @@ export class Engine {
       // (frozen makeThread — absent setting = fullAccess).
       runtimeMode: settings.defaultRuntimeMode ?? "fullAccess",
       // F21: seed the per-chat Hydra flag from the saved default (frozen
-      // ChatThread.hydraDefaultKey semantics — absent setting = on). Inert
-      // until F22 scheduling consumes it.
-      hydraEnabled: settings.hydraDefaultEnabled !== false,
-      ...(settings.lastHydraPairId
-        ? { hydraPairId: settings.lastHydraPairId }
-        : {}),
+      // ChatThread.hydraDefaultKey semantics — absent setting = on).
+      // F34: an external create instead takes its choice verbatim —
+      // frozen createExternalThread always starts Hydra off and never
+      // inherits the saved default or last pair.
+      hydraEnabled: opts?.externalHydra
+        ? opts.externalHydra.enabled
+        : settings.hydraDefaultEnabled !== false,
+      ...(opts?.externalHydra
+        ? opts.externalHydra.pairId
+          ? { hydraPairId: opts.externalHydra.pairId }
+          : {}
+        : settings.lastHydraPairId
+          ? { hydraPairId: settings.lastHydraPairId }
+          : {}),
     };
     this.store.update((d) => {
       d.threads.push(thread);
@@ -2721,6 +2736,20 @@ export class Engine {
     });
     this.emit({ type: "thread-updated", thread });
     this.emit({ type: "settings-changed", settings: this.store.state.settings });
+  }
+
+  /**
+   * F34: the local-control send gate (frozen
+   * `app.runningHydraHeads(of:) == 0`): a lead stays busy while any of
+   * its heads still work and while head reports sit queued for its next
+   * turn. Heads waiting on their own approvals/questions still count —
+   * their work has not come back.
+   */
+  hydraLeadBusy(leadId: string): boolean {
+    if (this.hydraPendingReports.has(leadId)) return true;
+    return this.store.state.threads.some(
+      (t) => t.hydraHead?.leadId === leadId && t.hydraHead.status === "running",
+    );
   }
 
   /**
