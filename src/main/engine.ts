@@ -2863,6 +2863,10 @@ export class Engine {
     const thread = this.store.state.threads.find((t) => t.id === threadId);
     const turn = thread?.turn;
     if (!thread || !turn || turn.id !== turnId || turn.status !== "running") return;
+    // Frozen startedWaiting: a second pending request in the same wait
+    // must not re-note the lead.
+    const wasWaiting =
+      turn.approval?.status === "pending" || turn.question?.status === "pending";
     const approval: ApprovalRequest = { ...req, id: randomUUID(), turnId, status: "pending" };
     turn.approval = approval;
     turn.status = "waiting-approval";
@@ -2891,6 +2895,8 @@ export class Engine {
         this.handles.get(threadId)?.resume(true);
       }
     }
+    if (approval.status === "pending" && !wasWaiting)
+      this.noteHeadWaiting(thread);
   }
 
   private finishTurn(threadId: string, turnId: string, status: "done"): void {
@@ -2950,9 +2956,12 @@ export class Engine {
     const turn = thread?.turn;
     if (!thread || !turn || turn.id !== turnId) return;
     if (turn.status !== "running") return; // questions present only while live
+    const wasWaiting =
+      turn.approval?.status === "pending" || turn.question?.status === "pending";
     turn.question = { ...req, status: "pending" };
     this.store.update(() => {});
     this.emit({ type: "thread-updated", thread });
+    if (!wasWaiting) this.noteHeadWaiting(thread);
   }
 
   /** Codex only: the answer bytes were CONFIRMED on the wire — NOW the
@@ -3469,6 +3478,21 @@ export class Engine {
     thread.updatedAt = Date.now();
     this.store.update(() => {});
     this.emit({ type: "thread-updated", thread });
+  }
+
+  /** Frozen AppModel.hydraHeadStartedWaiting: the lead's chat hears once
+   *  per waiting episode that a head is parked on the user, in the same
+   *  in-timeline note channel other head news uses. */
+  private noteHeadWaiting(head: ChatThread): void {
+    const info = head.hydraHead;
+    if (!info || info.status !== "running") return;
+    const lead = this.store.state.threads.find((t) => t.id === info.leadId);
+    if (!lead || lead.hydraHead) return;
+    this.appendNotice(
+      lead,
+      `${info.name} is waiting for your answer. Open it from the Hydra panel to reply.`,
+      "info",
+    );
   }
 
   /**
