@@ -5,6 +5,8 @@
 // The catalog stays provider-owned (models:list) — pins only ORGANIZE the
 // picker; a pin whose model never appeared in a catalog still shows by id.
 
+import { pairHeadsProvider } from "./hydra";
+
 /** Frozen ProviderKind — this build ships one provider adapter. The field
  *  rides along so stored pins keep the frozen identity shape. */
 export type ModelPinProvider = "codex";
@@ -35,6 +37,400 @@ export interface ModelPreference {
 
 /** Frozen AppSettings.modelListLimit. */
 export const MODEL_LIST_LIMIT = 30;
+
+// ── P1-25: frozen ModelFamilies visibility trim (ModelVisibility.swift) ──
+// "Hide outdated models" (frozen hidesOutdatedModels, default ON) keeps a
+// picker's list short: each vendor shows its three newest versions, and an
+// effort/Fast spelling listed as a row of its own folds behind the row that
+// names its base. Chosen, pinned, Hydra and in-use models always show;
+// versionless rows always stay. Bounded port: no Fusion fold (this build
+// ships no Devin provider) and no collapsed() merge — the catalog already
+// carries efforts on one row (CodexModelOption.efforts).
+//
+// The version ordering rule: a row's version is the FIRST dotted number
+// run in its name ("Claude Opus 5.5" → [5,5], "claude-opus-4-8" → [4,8]);
+// a trailing size token ("256K", "1.5m", "120B") never counts. Versions
+// compare per VENDOR (a line key's first word — "opus"/"sonnet"/"haiku"/
+// "fable" stand for claude, "codex" for gpt), so "GPT-5.4 Mini" hides
+// when the catalogue holds three newer GPT versions even though its own
+// line is newest. A line the vendor rule would empty still keeps its
+// newest row while that row's major is the vendor's newest major (a
+// current small model is not outdated for lagging the flagship).
+
+/** The row shape the trim needs — CodexModelOption satisfies it. */
+export interface ModelRowLike {
+  id: string;
+  name: string;
+  isDefault?: boolean | undefined;
+}
+
+interface ParsedName {
+  base: string;
+  effort: string | undefined;
+  isFast: boolean;
+}
+
+const EFFORT_WORDS: Record<string, string> = {
+  none: "none",
+  minimal: "minimal",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  "x-high": "xhigh",
+  max: "max",
+};
+
+/** Frozen parse(): the variant words a provider appends, read from the end.
+ *  No "Fusion (LEAD + SIDEKICK)" branch — this build has no Devin catalog. */
+export function parseVariantName(name: string): ParsedName {
+  const words = name.split(" ").filter((w) => w !== "");
+  let isFast = false;
+  let effort: string | undefined;
+  if (words.length > 1 && words[words.length - 1]!.toLowerCase() === "fast") {
+    isFast = true;
+    words.pop();
+  }
+  const pair = words.length - (words[words.length - 1]?.toLowerCase() === "thinking" ? 3 : 2);
+  if (pair > 0 && words[pair]!.toLowerCase() === "extra" && words[pair + 1]!.toLowerCase() === "high") {
+    words[pair] = "xhigh";
+    words.splice(pair + 1, 1);
+  }
+  if (words.length > 2 && words[words.length - 1]!.toLowerCase() === "thinking") {
+    const before = words[words.length - 2]!.toLowerCase();
+    const level = before === "no" ? "none" : EFFORT_WORDS[before];
+    if (level !== undefined) {
+      effort = level;
+      words.splice(words.length - 2, 2);
+    }
+  } else if (words.length > 1) {
+    const level = EFFORT_WORDS[words[words.length - 1]!.toLowerCase()];
+    if (level !== undefined) {
+      effort = level;
+      words.pop();
+    }
+  }
+  return { base: words.join(" "), effort, isFast };
+}
+
+const TRIAL_WORDS = new Set(["free", "preview", "exp", "experimental"]);
+const CHANNEL_WORDS = new Set([
+  "free", "preview", "exp", "experimental", "new", "beta",
+  "highspeed", "contributor", "thinking",
+]);
+
+/** Frozen bareName: lowercased, minus the catalogue prefix and
+ *  parentheticals. */
+function bareName(name: string): string {
+  let text = name.toLowerCase();
+  const slash = text.lastIndexOf("/");
+  if (slash >= 0) text = text.slice(slash + 1);
+  let result = "";
+  let depth = 0;
+  for (const ch of text) {
+    if (ch === "(") {
+      depth += 1;
+      result += " ";
+      continue;
+    }
+    if (ch === ")") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (depth === 0) result += ch;
+  }
+  return result;
+}
+
+const splitWords = (text: string): string[] => text.split(/[ \-_]+/).filter((w) => w !== "");
+
+/** A context window written into a name: "1M", "256k". */
+function isContextSize(word: string): boolean {
+  const last = word[word.length - 1];
+  if ((last !== "m" && last !== "k") || word.length <= 1) return false;
+  return /^[0-9.]+$/.test(word.slice(0, -1)) && /[0-9]/.test(word[0]!);
+}
+
+/** Digits with an optional dot, then k/m/b: a size in a name, not a
+ *  version ("256k", "1.5m", "120b"); also the dash-joined tail of a
+ *  word ("k3-256k"). */
+function isSizeWord(word: string): boolean {
+  const last = word[word.length - 1];
+  if (last === undefined || !"kmb".includes(last) || word.length <= 1) return false;
+  return /^[0-9.]+$/.test(word.slice(0, -1)) && /[0-9]/.test(word[0]!);
+}
+
+/** Frozen lineageKey(): the line a name belongs to — catalogue prefix,
+ *  variant words, versions, context sizes, parentheticals and channel
+ *  words removed. "Claude Opus 4.8" and "Claude Opus 4.6 Thinking 1M"
+ *  are both "claude opus"; "Kimi K2.7" and "Kimi K3" are "kimi";
+ *  "GLM-5.3 Flash" stays apart as "glm flash". */
+export function modelLineageKey(name: string): string {
+  const spaced = bareName(name)
+    .split(" ")
+    .filter((w) => w !== "")
+    .map((word) => {
+      // A size at the end of a dashed word is not part of the line:
+      // "k3-256k" keys like "k3".
+      let w = word;
+      for (;;) {
+        const cut = Math.max(w.lastIndexOf("-"), w.lastIndexOf("_"));
+        if (cut >= 0 && isSizeWord(w.slice(cut + 1))) w = w.slice(0, cut);
+        else break;
+      }
+      return w;
+    })
+    .filter((w) => !isContextSize(w))
+    .join(" ");
+  const base = parseVariantName(spaced).base;
+  const kept = splitWords(base)
+    .map((word) => {
+      if (/^[0-9]/.test(word)) return null;
+      const stem = word.match(/^[^0-9]*/)?.[0] ?? word;
+      // "k3", "m2.7" and "v4.1" are versions; "qwen3.8" is qwen.
+      if (stem.length < word.length && ["k", "m", "v"].includes(stem)) return null;
+      return CHANNEL_WORDS.has(stem) ? null : stem;
+    })
+    .filter((w): w is string => w !== null);
+  const key = kept.join(" ");
+  return key === "" ? (base === "" ? name.toLowerCase() : base) : key;
+}
+
+/** Frozen isTrial — free, preview and experimental rows are channels,
+ *  not versions of a line. */
+export function isTrialModel(name: string): boolean {
+  return splitWords(bareName(name)).some((w) => TRIAL_WORDS.has(w));
+}
+
+/** The index after a size token starting at `at` in `text`, or -1 when the
+ *  digits there are not a size ("120b", "1.5m" right before a word end). */
+function sizeEndAt(text: string, at: number): number {
+  let cursor = at;
+  let dot = false;
+  while (cursor < text.length) {
+    const ch = text[cursor]!;
+    if (/[0-9]/.test(ch)) cursor++;
+    else if (ch === "." && !dot && cursor + 1 < text.length && /[0-9]/.test(text[cursor + 1]!)) {
+      dot = true;
+      cursor++;
+    } else break;
+  }
+  if (cursor <= at || cursor >= text.length || !"kmb".includes(text[cursor]!)) return -1;
+  const end = cursor + 1;
+  if (end !== text.length && !" -_()[]".includes(text[end]!)) return -1;
+  return end;
+}
+
+/** Frozen version(): the first version number in a name, as its parts.
+ *  "Claude Opus 5.5" → [5,5], "claude-opus-4-8" → [4,8], "GLM-5.3" and
+ *  "glm-5p3" → [5,3]. A size token is skipped and a run stops before one,
+ *  so "GPT-OSS 120B" → [] and "K3-256K" → [3]. Parentheticals are left
+ *  out. [] means versionless — the row always stays. */
+export function modelNameVersion(name: string): number[] {
+  const text = bareName(name);
+  let index = 0;
+  while (index < text.length) {
+    if (!/[0-9]/.test(text[index]!)) {
+      index++;
+      continue;
+    }
+    const sizeEnd = sizeEndAt(text, index);
+    if (sizeEnd >= 0) {
+      index = sizeEnd;
+      continue;
+    }
+    const parts: number[] = [];
+    let digits = "";
+    let cursor = index;
+    while (cursor < text.length) {
+      const ch = text[cursor]!;
+      if (/[0-9]/.test(ch)) {
+        digits += ch;
+      } else if (
+        ".-p".includes(ch) &&
+        digits !== "" &&
+        cursor + 1 < text.length &&
+        /[0-9]/.test(text[cursor + 1]!) &&
+        sizeEndAt(text, cursor + 1) < 0
+      ) {
+        parts.push(parseInt(digits, 10));
+        digits = "";
+      } else break;
+      cursor++;
+    }
+    if (digits !== "") parts.push(parseInt(digits, 10));
+    return parts;
+  }
+  return [];
+}
+
+/** Missing parts compare as 0 (frozen compareVersions). */
+export function compareModelVersions(lhs: number[], rhs: number[]): number {
+  const len = Math.max(lhs.length, rhs.length);
+  for (let i = 0; i < len; i++) {
+    const l = i < lhs.length ? lhs[i]! : 0;
+    const r = i < rhs.length ? rhs[i]! : 0;
+    if (l !== r) return l < r ? -1 : 1;
+  }
+  return 0;
+}
+
+/** The vendor a line belongs to: its key's first word. Claude's lines go
+ *  by their own names in some catalogues, and a "Codex …" name answers
+ *  for gpt (frozen vendor()). */
+function vendorOf(lineage: string): string {
+  const word = lineage.split(" ")[0]!;
+  if (word === "opus" || word === "sonnet" || word === "haiku" || word === "fable")
+    return "claude";
+  if (word === "codex") return "gpt";
+  return word;
+}
+
+const versionKey = (v: number[]): string => v.join(".");
+
+/** Frozen vendorVersions(): each vendor's distinct versions in a list —
+ *  the "known versions" another catalogue contributes so a catalogue
+ *  whose newest is long superseded elsewhere does not keep it as
+ *  current. Keys are joined version strings ("5.5"). */
+export function vendorModelVersions(list: ModelRowLike[]): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  for (const option of list) {
+    const version = modelNameVersion(option.name);
+    if (version.length === 0) continue;
+    const vendor = vendorOf(modelLineageKey(option.name));
+    const key = versionKey(version);
+    const set = result.get(vendor) ?? new Set<string>();
+    set.add(key);
+    result.set(vendor, set);
+  }
+  return result;
+}
+
+/** Frozen simplified(): the rows a list keeps in view when
+ *  hidesOutdatedModels is on, in the provider's order. A protected or
+ *  default row always stays; otherwise:
+ *  - an effort or Fast variant row whose base is another row's own name
+ *    hides behind that row;
+ *  - a versioned row stays while its version is among its vendor's
+ *    newest `keepingVersions` distinct versions, or it leads a line of
+ *    the vendor's newest major version;
+ *  - versionless rows always stay.
+ *  `knownVersions` folds in other catalogues' versions (vendorModelVersions). */
+export function simplifiedModels<T extends ModelRowLike>(
+  list: T[],
+  options?: {
+    keepingVersions?: number | undefined;
+    knownVersions?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+    isProtected?: ((option: T) => boolean) | undefined;
+  },
+): T[] {
+  const keeping = options?.keepingVersions ?? 3;
+  const isProtected = options?.isProtected ?? (() => false);
+  const entries = list.map((option) => ({
+    option,
+    parsed: parseVariantName(option.name),
+    lineage: modelLineageKey(option.name),
+    version: modelNameVersion(option.name),
+  }));
+  const names = new Set(list.map((o) => o.name.toLowerCase()));
+
+  // Versions count per vendor, not per line.
+  const versionsByVendor = new Map<string, number[][]>();
+  for (const e of entries) {
+    if (e.version.length === 0) continue;
+    const vendor = vendorOf(e.lineage);
+    const arr = versionsByVendor.get(vendor) ?? [];
+    arr.push(e.version);
+    versionsByVendor.set(vendor, arr);
+  }
+  for (const [vendor, versions] of options?.knownVersions ?? []) {
+    const arr = versionsByVendor.get(vendor);
+    if (arr === undefined) continue; // only vendors this list carries
+    for (const key of versions) arr.push(key.split(".").map(Number));
+  }
+  const keptVersions = new Map<string, Set<string>>();
+  const newestMajor = new Map<string, number>();
+  for (const [vendor, versions] of versionsByVendor) {
+    const seen = new Set<string>();
+    const distinct = versions
+      .filter((v) => {
+        const k = versionKey(v);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .sort((a, b) => compareModelVersions(b, a));
+    keptVersions.set(vendor, new Set(distinct.slice(0, keeping).map(versionKey)));
+    const first = distinct[0]?.[0];
+    if (first !== undefined) newestMajor.set(vendor, first);
+  }
+  // A line the vendor rule would empty keeps its newest row while that
+  // row is of the vendor's newest major version.
+  const survivors = new Set<string>();
+  const lineNewest = new Map<string, { id: string; version: number[] }>();
+  const lineKept = new Set<string>();
+  for (const e of entries) {
+    if (e.version.length === 0) continue;
+    const vendor = vendorOf(e.lineage);
+    if (keptVersions.get(vendor)?.has(versionKey(e.version))) lineKept.add(e.lineage);
+    const cur = lineNewest.get(e.lineage);
+    if (cur === undefined || compareModelVersions(e.version, cur.version) > 0)
+      lineNewest.set(e.lineage, { id: e.option.id, version: e.version });
+  }
+  for (const [lineage, newest] of lineNewest) {
+    if (!lineKept.has(lineage) && newest.version[0] === newestMajor.get(vendorOf(lineage)))
+      survivors.add(newest.id);
+  }
+
+  return entries
+    .filter((e) => {
+      if (e.option.isDefault === true || isProtected(e.option)) return true;
+      if (
+        (e.parsed.effort !== undefined || e.parsed.isFast) &&
+        names.has(e.parsed.base.toLowerCase())
+      )
+        return false;
+      if (
+        e.version.length > 0 &&
+        !survivors.has(e.option.id) &&
+        !keptVersions.get(vendorOf(e.lineage))!.has(versionKey(e.version))
+      )
+        return false;
+      return true;
+    })
+    .map((e) => e.option);
+}
+
+/** Frozen protectedModelIDs(): the ids a trimmed picker keeps anyway —
+ *  the caller's extras (the picker's own choice, the open chat's model),
+ *  the settings' pins, and every pair's lead and heads models on
+ *  `provider` (a head profile's model counts on its own provider, else
+ *  the pair's heads provider). Not every thread's model: old chats
+ *  would keep every outdated model in view. */
+export function protectedModelIds(
+  slices: {
+    modelList?: ModelPin[] | undefined;
+    hydraPairs?: import("./hydra").HydraPair[] | undefined;
+  },
+  provider: string,
+  extra: Iterable<string> = [],
+): Set<string> {
+  const out = new Set<string>(extra);
+  for (const pin of slices.modelList ?? []) {
+    if (pin.provider === provider) out.add(pin.modelID);
+  }
+  for (const pair of slices.hydraPairs ?? []) {
+    if (pair.provider === provider && pair.orchestratorModel)
+      out.add(pair.orchestratorModel);
+    const headsProvider = pairHeadsProvider(pair);
+    if (headsProvider === provider && pair.workerModel) out.add(pair.workerModel);
+    for (const profile of pair.headProfiles ?? []) {
+      if ((profile.provider ?? headsProvider) === provider && profile.model)
+        out.add(profile.model);
+    }
+  }
+  return out;
+}
 
 export function pinId(pin: ModelPin): string {
   return `${pin.provider}/${pin.modelID}`;

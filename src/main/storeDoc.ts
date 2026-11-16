@@ -515,6 +515,9 @@ const vSettings = vObject({
   modelSections: vOptional(vArray(vModelSection, 60)),
   collapsedModelSections: vOptional(vArray(vNonEmptyString(40), 60)),
   modelPreferences: vOptional(vModelPreferences),
+  // P1-25: frozen hidesOutdatedModels — optional so every pre-P1-25
+  // store loads verbatim; absent = ON (the frozen default).
+  hideOutdatedModels: vOptional(vBoolean),
   // F18: optional so every pre-A54 store loads verbatim.
   mcpServers: vOptional(vArray(vMcpServer, 32)),
   // F26: wallpaper file is a library basename the install path minted;

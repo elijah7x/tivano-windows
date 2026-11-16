@@ -772,6 +772,15 @@ rl.on("line", (line) => {
             supportedReasoningEfforts: [],
             isDefault: false,
           },
+          // P1-25: five versions of one "fixture" vendor line — the
+          // hide-outdated trim keeps the three newest; "… High" folds
+          // behind its base row while the base is listed.
+          { id: "fixture-v1", displayName: "Fixture 1.0", hidden: false, supportedReasoningEfforts: [], isDefault: false },
+          { id: "fixture-v2", displayName: "Fixture 2.0", hidden: false, supportedReasoningEfforts: [], isDefault: false },
+          { id: "fixture-v3", displayName: "Fixture 3.0", hidden: false, supportedReasoningEfforts: [], isDefault: false },
+          { id: "fixture-v4", displayName: "Fixture 4.0", hidden: false, supportedReasoningEfforts: [], isDefault: false },
+          { id: "fixture-v5", displayName: "Fixture 5.0", hidden: false, supportedReasoningEfforts: [], isDefault: false },
+          { id: "fixture-v5-high", displayName: "Fixture 5.0 High", hidden: false, supportedReasoningEfforts: [], isDefault: false },
         ],
         nextCursor: null,
       });

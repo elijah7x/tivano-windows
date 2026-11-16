@@ -1977,6 +1977,7 @@ export class Engine {
     modelPreferences?:
       | Record<string, import("../shared/modelList").ModelPreference>
       | undefined;
+    hideOutdatedModels?: boolean | undefined;
     mcpServers?: import("../shared/mcp").McpServerConfig[] | undefined;
     backdropOpacity?: number | undefined;
     helperPanelSize?: { width: number; height: number } | undefined;
@@ -2124,6 +2125,8 @@ export class Engine {
           delete d.settings.modelPreferences;
         else d.settings.modelPreferences = patch.modelPreferences;
       }
+      if (patch.hideOutdatedModels !== undefined)
+        d.settings.hideOutdatedModels = patch.hideOutdatedModels;
       // F18: whole-array write; empty clears (frozen absent = none).
       if (patch.mcpServers !== undefined) {
         if (patch.mcpServers.length === 0) delete d.settings.mcpServers;

@@ -26,6 +26,8 @@ import {
   movePinToSection,
   pinId,
   prefKey,
+  protectedModelIds,
+  simplifiedModels,
   removePin,
   removeSection,
   renameSection,
@@ -170,7 +172,21 @@ export function ModelListSettings(): React.JSX.Element {
   const catalogModels: CodexModelOption[] =
     catalog?.state === "ready" ? catalog.models : [];
   const pinnedIds = new Set(pins.map(pinId));
-  const catalogMatches = catalogModels.filter(
+  // P1-25: frozen hidesOutdatedModels (default ON) — the catalog card
+  // trims like the picker does; searching always lists the full one
+  // (frozen "search still finds everything").
+  const hideOutdated = settings?.hideOutdatedModels ?? true;
+  const catalogProtected = protectedModelIds(
+    { modelList: pins, hydraPairs: settings?.hydraPairs },
+    "codex",
+  );
+  const visibleCatalog =
+    hideOutdated && trimmed === ""
+      ? simplifiedModels(catalogModels, {
+          isProtected: (m) => catalogProtected.has(m.id),
+        })
+      : catalogModels;
+  const catalogMatches = visibleCatalog.filter(
     (m) =>
       trimmed === "" ||
       m.name.toLowerCase().includes(trimmed) ||
@@ -322,6 +338,21 @@ export function ModelListSettings(): React.JSX.Element {
 
   return (
     <div className="ml-settings">
+      <div className="choice-row">
+        <button
+          role="switch"
+          aria-checked={hideOutdated}
+          className={`choice${hideOutdated ? " active" : ""}`}
+          onClick={() => write({ hideOutdatedModels: !hideOutdated })}
+        >
+          {t("Hide outdated models")}
+        </button>
+      </div>
+      <p className="codex-note">
+        {t(
+          "Show the three newest versions of each model and one row per model instead of one per effort. Chosen and in-use models always show.",
+        )}
+      </p>
       <input
         className="ml-search"
         type="search"
