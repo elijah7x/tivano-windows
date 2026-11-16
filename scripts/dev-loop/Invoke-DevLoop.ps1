@@ -657,14 +657,14 @@ public static class DevLoopWindows {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
-  // Devin Desktop titles a window "<folder> - Devin" or "<session title> <folder> - Devin".
+  // Devin Desktop titles a window "<folder> - Devin" or "<session title> <folder> - Devin", plus " - <open editor>" when a file is open.
   public static IntPtr Find(string folder) {
     IntPtr found = IntPtr.Zero;
     string bare = folder + " - Devin", tail = " " + bare;
     EnumWindows((h, p) => {
       if (!IsWindowVisible(h)) return true;
       var sb = new StringBuilder(1024); GetWindowText(h, sb, 1024); var t = sb.ToString();
-      if (t == bare || t.EndsWith(tail, StringComparison.Ordinal)) { found = h; return false; }
+      if (t == bare || t.EndsWith(tail, StringComparison.Ordinal) || t.StartsWith(bare + " - ", StringComparison.Ordinal) || t.Contains(tail + " - ")) { found = h; return false; }
       return true;
     }, IntPtr.Zero);
     return found;
