@@ -220,14 +220,18 @@ public static class DevLoopWindows {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
-  // Devin Desktop titles a window "<folder> - Devin" or "<session title> <folder> - Devin".
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
+  // Devin Desktop titles a window "<folder> - Devin" or "<session title> <folder> - Devin", plus " - <open editor>" when a file is open.
   public static IntPtr Find(string folder) {
     IntPtr found = IntPtr.Zero;
     string bare = folder + " - Devin", tail = " " + bare;
     EnumWindows((h, p) => {
       if (!IsWindowVisible(h)) return true;
       var sb = new StringBuilder(1024); GetWindowText(h, sb, 1024); var t = sb.ToString();
-      if (t == bare || t.EndsWith(tail, StringComparison.Ordinal)) { found = h; return false; }
+      if (t == bare || t.EndsWith(tail, StringComparison.Ordinal) || t.StartsWith(bare + " - ", StringComparison.Ordinal) || t.Contains(tail + " - ")) { found = h; return false; }
       return true;
     }, IntPtr.Zero);
     return found;
@@ -258,6 +262,28 @@ function Set-DevinForeground {
   [DevLoopWindows]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [DevLoopWindows]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
   [DevLoopWindows]::SetForegroundWindow($Window) | Out-Null
   Start-Sleep -Milliseconds 800
+  return (Test-DevinForeground $Window)
+}
+
+# Keyboard shortcuts toggle the chat panel or land in an open editor depending on what had focus, so the
+# chat input is clicked instead: maximized, it is the box at the bottom of the right-hand Devin panel.
+function Focus-DevinChatInput {
+  param([IntPtr]$Window)
+  if (-not (Set-DevinForeground $Window)) { return $false }
+  [DevLoopWindows]::ShowWindow($Window, 3) | Out-Null
+  Start-Sleep -Milliseconds 800
+  if (-not (Test-DevinForeground $Window)) { return $false }
+  $rect = New-Object DevLoopWindows+RECT
+  if (-not [DevLoopWindows]::GetWindowRect($Window, [ref]$rect)) { return $false }
+  $width = $rect.Right - $rect.Left
+  $height = $rect.Bottom - $rect.Top
+  $x = [int]($rect.Right - $width * 0.1125)
+  $y = [int]($rect.Bottom - $height * 0.124)
+  [DevLoopWindows]::SetCursorPos($x, $y) | Out-Null
+  Start-Sleep -Milliseconds 200
+  [DevLoopWindows]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+  [DevLoopWindows]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 600
   return (Test-DevinForeground $Window)
 }
 
@@ -302,6 +328,15 @@ function Read-LogLinesShared {
   return @($lines)
 }
 
+# Windows does not refresh LastWriteTime while Devin holds a log open for appending, so logs are picked
+# by creation time (a desktop session can run for days) and activity is read from the line timestamps.
+function Get-DevinLogFiles {
+  param([string]$Logs)
+  $cutoff = [DateTime]::Now.AddDays(-7)
+  return @(Get-ChildItem -LiteralPath $Logs -Filter 'devin_*.log' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.CreationTime -ge $cutoff })
+}
+
 function Wait-DevinBypass {
   param([DateTime]$Since, [int]$Seconds)
   $logs = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Devin\cli\logs'
@@ -311,8 +346,7 @@ function Wait-DevinBypass {
   while ([DateTime]::Now -lt $deadline) {
     Start-Sleep -Seconds 2
     if (-not (Test-Path -LiteralPath $logs -PathType Container)) { continue }
-    $files = @(Get-ChildItem -LiteralPath $logs -Filter 'devin_*.log' -File -ErrorAction SilentlyContinue |
-      Where-Object { $_.LastWriteTime -ge $Since })
+    $files = Get-DevinLogFiles $logs
     foreach ($file in $files) {
       foreach ($line in (Read-LogLinesShared $file.FullName)) {
         if ($line -notmatch 'handle_slash_command_on_chain:apply_mode_change|ModeChange\(Bypass\)') { continue }
@@ -330,12 +364,7 @@ function Wait-DevinBypass {
 function Send-DevinBypassCommandSafe {
   param([IntPtr]$Window)
   if (-not (Set-DevinForeground $Window)) { return $false }
-  # Explorer first, so Ctrl+L opens the chat rather than toggling an already focused one closed.
-  if (-not (Send-DevinKeysSafe $Window '{ESC}^+e')) { return $false }
-  Start-Sleep -Seconds 1
-  if (-not (Send-DevinKeysSafe $Window '^l')) { return $false }
-  Start-Sleep -Seconds 3
-  if (-not (Set-DevinForeground $Window)) { return $false }
+  if (-not (Focus-DevinChatInput $Window)) { return $false }
   if (-not (Send-DevinKeysSafe $Window '^a{DEL}')) { return $false }
   $modeSince = [DateTime]::Now
   if (-not (Send-DevinTextSafe $Window '/bypass')) { return $false }
@@ -351,19 +380,16 @@ function Get-DevinLogActivity {
   if (-not (Test-Path -LiteralPath $logs -PathType Container)) {
     return [pscustomobject]@{ newestWriteUtc = $null; pendingApprovalUtc = $null }
   }
-  $files = @(Get-ChildItem -LiteralPath $logs -Filter 'devin_*.log' -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.LastWriteTimeUtc -ge $SinceUtc })
+  $files = Get-DevinLogFiles $logs
   $styles = [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
   foreach ($file in $files) {
-    if ($null -eq $newestWriteUtc -or $file.LastWriteTimeUtc -gt $newestWriteUtc) {
-      $newestWriteUtc = $file.LastWriteTimeUtc
-    }
     $filePendingUtc = $null
     foreach ($line in (Read-LogLinesShared $file.FullName)) {
       if ($line -notmatch '^(\S+Z)(?:\s|$)') { continue }
       $parsed = [DateTime]::MinValue
       if (-not [DateTime]::TryParse($Matches[1], [Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) { continue }
       if ($parsed -lt $SinceUtc) { continue }
+      if ($null -eq $newestWriteUtc -or $parsed -gt $newestWriteUtc) { $newestWriteUtc = $parsed }
       if ($line -match 'Permission decision for tool \S+: prompting user') {
         $filePendingUtc = $parsed
       } elseif ($null -ne $filePendingUtc -and $line -match 'User approved tool permission|User denied tool permission|auto-decided') {
@@ -608,7 +634,7 @@ function Invoke-Kickoff {
       Start-Sleep -Seconds 2
       continue
     }
-    if (-not (Send-DevinKeysSafe $window '^a{DEL}')) {
+    if (-not ((Focus-DevinChatInput $window) -and (Send-DevinKeysSafe $window '^a{DEL}'))) {
       Write-Log ('kickoff try ' + ($try + 1) + '/3: focus changed before clearing input')
       Start-Sleep -Seconds 2
       continue
@@ -765,7 +791,7 @@ function Invoke-WatchTick {
         Write-Log 'approval recovery aborted: lost focus after /bypass'
         return
       }
-      if (-not (Send-DevinKeysSafe $window '^a{DEL}')) {
+      if (-not ((Focus-DevinChatInput $window) -and (Send-DevinKeysSafe $window '^a{DEL}'))) {
         Write-Log 'approval recovery aborted: focus changed before clear'
         return
       }
@@ -795,12 +821,20 @@ function Invoke-WatchTick {
       Write-Log ('no log write for ' + [Math]::Round($idleMin, 1) + 'm, but no open ' + $Label + ' issues without needs-human remain; idle')
       return
     }
+    # A long npm run verify or gate run writes nothing to Devin's log; the agent is busy, not stuck.
+    $busy = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+      $_.CommandLine -and ($_.CommandLine -like ('*' + (Join-Path $Root 'work') + '*') -or $_.CommandLine -match 'Invoke-AutopilotGate|Invoke-PrReview')
+    })
+    if ($busy.Count -gt 0) {
+      Write-Log ('no log write for ' + [Math]::Round($idleMin, 1) + 'm, but ' + $busy.Count + ' task process(es) are running; not nudging')
+      return
+    }
     Write-Log ('no log write for ' + [Math]::Round($idleMin, 1) + 'm (>= ' + $IdleMinutes + 'm) while work remains; nudging')
     if (-not (Set-DevinForeground $window)) {
       Write-Log 'idle nudge aborted: could not focus Devin window'
       return
     }
-    if (-not (Send-DevinKeysSafe $window '^a{DEL}')) {
+    if (-not ((Focus-DevinChatInput $window) -and (Send-DevinKeysSafe $window '^a{DEL}'))) {
       Write-Log 'idle nudge aborted: focus changed before clear'
       return
     }
