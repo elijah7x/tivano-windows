@@ -390,6 +390,9 @@ export interface HydraHeadInfo {
   kind: HydraHeadKind;
   origin: HydraHeadOrigin;
   status: HydraHeadStatus;
+  /** Frozen HydraHeadInfo.StopReason — set only when the quiet watchdog
+   *  stopped the head for sitting still. */
+  stopReason?: "stalled";
   summary?: string;
   /** The provider's one-line progress note, or the last tool the head used. */
   activity?: string;

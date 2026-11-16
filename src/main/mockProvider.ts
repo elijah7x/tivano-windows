@@ -146,6 +146,9 @@ export class MockProvider implements ProviderAdapter {
     const wantsHydraBadRoute = prompt.includes("[mock:hydra-badroute]");
     const wantsHydraDeadCheckout = prompt.includes("[mock:hydra-deadcheckout]");
     const wantsHydraWaitRoute = prompt.includes("[mock:hydra-waitroute]");
+    // F03/P2-06 fixture: `[mock:hydra-quiet]` = one head whose own prompt
+    // goes silent — the quiet watchdog owns what happens to it.
+    const wantsHydraQuiet = prompt.includes("[mock:hydra-quiet]");
     // F03 watchdog fixtures: `[mock:quiet]` emits its opening chunks then
     // goes silent forever (paused queue, nothing left) — the quiet
     // watchdog owns what happens next. `[mock:mend]` leads with an
@@ -182,7 +185,7 @@ export class MockProvider implements ProviderAdapter {
     if (
       wantsHydra || wantsHydraWait || wantsHydraWaitMany ||
       wantsHydraProfile || wantsHydraTouch || wantsHydraBadRoute ||
-      wantsHydraDeadCheckout || wantsHydraWaitRoute
+      wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraQuiet
     ) {
       const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute
         ? wantsHydraWaitMany
@@ -198,6 +201,8 @@ export class MockProvider implements ProviderAdapter {
           ? '[{"task":"Lost errand","prompt":"Try it.","project":"ghost-proj"}]'
         : wantsHydraDeadCheckout
           ? '[{"task":"Dead checkout","prompt":"Try it.","project":"ghost-checkout"}]'
+        : wantsHydraQuiet
+          ? '[{"task":"Sit still","prompt":"Open up then sit silent. [mock:quiet]"}]'
           : '[{"task":"Draft the outline","prompt":"Write a short outline."},{"task":"Verify the numbers","prompt":"Check the arithmetic."}]';
       // Split so the first entry closes one chunk BEFORE the second —
       // deterministic incremental dispatch (a head spawns while the

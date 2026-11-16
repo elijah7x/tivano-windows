@@ -204,6 +204,27 @@ describe("delegatedHeadPrompt + reportMessage — frozen text", () => {
     expect(msg).toContain("leaves its part alone");
   });
 
+  it("a stalled stop credits Tivano and offers the continue path", () => {
+    const msg = reportMessage([
+      {
+        headIndex: 0,
+        task: "A",
+        status: "stopped",
+        stopReason: "stalled",
+        text: "Stalled: no edits or tool calls for 10 minutes; stopped by Tivano.",
+      },
+      { headIndex: 1, task: "B", status: "stopped", text: "" },
+    ]);
+    expect(msg).toContain(
+      "(stopped by Tivano: it stalled with no progress; its copy and session are kept, so you can continue it)",
+    );
+    expect(msg).toContain("(stopped by the user before finishing)");
+    expect(msg).toContain(
+      "A head Tivano stopped for stalling may be continued once with a smaller, more specific step, or its part given to a new head.",
+    );
+    expect(msg).toContain("leaves its part alone");
+  });
+
   it("names still-working heads in the opening", () => {
     const msg = reportMessage(
       [{ headIndex: 0, task: "A", status: "completed", text: "R." }],

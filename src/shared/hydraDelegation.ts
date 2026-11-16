@@ -378,6 +378,10 @@ export interface HydraReport {
   landing?: HydraLanding | undefined;
   /** Frozen copyPath — the head's own copy kept for unlanded work. */
   copyPath?: string | undefined;
+  /** Frozen HydraHeadInfo.stopReason — set when the quiet watchdog
+   *  stopped the head, so the report says Tivano stopped it, not the
+   *  user, and tells the lead it can be continued. */
+  stopReason?: "stalled" | undefined;
 }
 
 const list = (names: string[]): string =>
@@ -436,8 +440,11 @@ export function reportMessage(
   for (const r of reports) {
     const outcome =
       r.status === "failed" ? " (failed)"
-      : r.status === "stopped" ? " (stopped by the user before finishing)"
-      : "";
+      : r.status === "stopped"
+        ? r.stopReason === "stalled"
+          ? " (stopped by Tivano: it stalled with no progress; its copy and session are kept, so you can continue it)"
+          : " (stopped by the user before finishing)"
+        : "";
     const effort: string[] = [];
     if (r.elapsedMs !== undefined && r.elapsedMs >= 1000) effort.push(duration(r.elapsedMs));
     if (r.toolCalls) effort.push(r.toolCalls === 1 ? "1 tool" : `${r.toolCalls} tools`);
@@ -491,9 +498,14 @@ export function reportMessage(
       "A head that failed leaves its part to you: do it yourself or send it out again.",
     );
   }
-  if (reports.some((r) => r.status === "stopped")) {
+  if (reports.some((r) => r.status === "stopped" && r.stopReason === undefined)) {
     closing.push(
       "A head the user stopped leaves its part alone unless the user asks for it.",
+    );
+  }
+  if (reports.some((r) => r.stopReason === "stalled")) {
+    closing.push(
+      "A head Tivano stopped for stalling may be continued once with a smaller, more specific step, or its part given to a new head.",
     );
   }
   return [opening, "", ...sections, "", ...closing].join("\n").trim();
@@ -506,6 +518,12 @@ export const MAX_DELEGATED_TASKS = 32;
 /** Frozen `HydraWatchdog.stalledNote` lead-in for budget-stopped heads. */
 export const STALLED_NOTE =
   "[Tivano] This head was stopped for spending its budget.";
+/** Frozen `HydraWatchdog.stalledNote` — the report's own words when the
+ *  quiet watchdog stopped the head for sitting still. Upstream appends
+ *  the provider's last-output age; that is Antigravity-only there, so
+ *  this build keeps the plain note. */
+export const QUIET_STALL_NOTE =
+  "Stalled: no edits or tool calls for 10 minutes; stopped by Tivano.";
 
 /** Index into the repeating roster for a possibly-rounded name —
  *  `personaAt(personaIndex(n)) === personaNamed(n)` whenever both resolve. */
