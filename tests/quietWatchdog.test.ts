@@ -109,6 +109,36 @@ describe("quiet watchdog (F03)", () => {
     expect(live.turn?.status).toBe("done");
     expect(live.turn?.quietMinutes).toBeUndefined();
   });
+
+  const headOf = (engine: Engine, leadId: string) =>
+    engine.snapshot().threads.find((t) => t.hydraHead?.leadId === leadId)!;
+
+  it("a head parked on an approval is never stopped or labelled", () => {
+    const engine = makeEngine(freshRoot());
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-wait]");
+    pump(400); // the held head is parked on its approval card
+    const head = headOf(engine, lead.id);
+    expect(head.turn?.status).toBe("waiting-approval");
+    pump(5000); // far past every threshold — a waiting head is not silent
+    expect(head.turn?.status).toBe("waiting-approval");
+    expect(head.turn?.quietMinutes).toBeUndefined();
+    expect(head.hydraHead!.status).toBe("running");
+  });
+
+  it("a head parked on a question is never stopped or labelled", () => {
+    const engine = makeEngine(freshRoot());
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-waitq]");
+    pump(400);
+    const head = headOf(engine, lead.id);
+    expect(head.turn?.question?.status).toBe("pending");
+    pump(5000);
+    expect(head.turn?.status).toBe("running");
+    expect(head.turn?.question?.status).toBe("pending");
+    expect(head.turn?.quietMinutes).toBeUndefined();
+    expect(head.hydraHead!.status).toBe("running");
+  });
 });
 
 describe("quiet watchdog on Hydra heads (P2-06, frozen)", () => {

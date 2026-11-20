@@ -34,6 +34,18 @@ function statusLabel(
   }
 }
 
+/** Frozen hydraWaitingStatus: a running head parked on the user shows
+ *  the pending reason instead of "working" (approval beats question). */
+function waitingLabel(
+  head: ChatThread,
+  t: (s: string) => string,
+): string | null {
+  if (head.hydraHead?.status !== "running") return null;
+  if (head.turn?.approval?.status === "pending") return t("Awaiting approval");
+  if (head.turn?.question?.status === "pending") return t("Awaiting your answer");
+  return null;
+}
+
 /** F22 isolation: where an isolated head's work went — one honest word. */
 function landingLabel(
   info: NonNullable<ChatThread["hydraHead"]>,
@@ -100,11 +112,13 @@ export function HydraPanel(props: {
 
   if (ownHead) {
     const persona = personaAt(ownHead.headIndex);
+    const waiting = waitingLabel(thread, t);
     return (
       <div className="hydra-strip" role="note">
         <span className="hydra-dot" style={{ background: hex(persona.hex) }} />
         <span className="hydra-strip-text">
           {t("A Hydra head working for the lead")} — {ownHead.name}
+          {waiting && ` · ${waiting}`}
         </span>
         {lead && (
           <button
@@ -121,16 +135,19 @@ export function HydraPanel(props: {
   }
   if (!heads.length) return null;
 
+  const waitingCount = heads.filter((h) => waitingLabel(h, t) !== null).length;
   return (
     <div className="hydra-panel" aria-label={t("Heads")}>
       <span className="hydra-title">
         {t("Heads")} · {heads.length}
+        {waitingCount > 0 && ` · ${waitingCount} ${t("waiting")}`}
       </span>
       <ul>
         {heads.map((h) => {
           const info = h.hydraHead!;
           const persona = personaAt(info.headIndex);
           const land = landingLabel(info, t);
+          const waiting = waitingLabel(h, t);
           return (
             <li key={h.id} className={`hydra-row ${info.status}`}>
               <button
@@ -148,7 +165,7 @@ export function HydraPanel(props: {
                 <span className="hydra-task">{info.task}</span>
                 {land && <span className="hydra-land">{land}</span>}
                 <span className={`hydra-status ${info.status}`}>
-                  {statusLabel(info.status, info.stopReason, t)}
+                  {waiting ?? statusLabel(info.status, info.stopReason, t)}
                   {info.status === "running" && <MiniSpinner />}
                 </span>
               </button>
