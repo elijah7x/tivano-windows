@@ -146,6 +146,9 @@ export class MockProvider implements ProviderAdapter {
     const wantsHydraBadRoute = prompt.includes("[mock:hydra-badroute]");
     const wantsHydraDeadCheckout = prompt.includes("[mock:hydra-deadcheckout]");
     const wantsHydraWaitRoute = prompt.includes("[mock:hydra-waitroute]");
+    // P2-07 fixture: `[mock:hydra-waitq]` = one head that parks on a
+    // user-input question instead of an approval.
+    const wantsHydraWaitQ = prompt.includes("[mock:hydra-waitq]");
     // F03/P2-06 fixture: `[mock:hydra-quiet]` = one head whose own prompt
     // goes silent — the quiet watchdog owns what happens to it.
     const wantsHydraQuiet = prompt.includes("[mock:hydra-quiet]");
@@ -170,6 +173,9 @@ export class MockProvider implements ProviderAdapter {
     // holds the same way.
     const wantsQuiet = prompt.includes("[mock:quiet]");
     const wantsMend = prompt.includes("[mock:mend]");
+    // P2-07 fixture: `[mock:question]` presents a user-input request then
+    // holds — the waiting-for-answer path an approval already exercises.
+    const wantsQuestion = prompt.includes("[mock:question]");
     // `[mock:reason]` streams a reasoning item then holds — the running
     // indicator's chevron has thinking steps to open (frozen disclosure).
     const wantsReason = prompt.includes("[mock:reason]");
@@ -199,14 +205,17 @@ export class MockProvider implements ProviderAdapter {
     if (
       wantsHydra || wantsHydraWait || wantsHydraWaitMany ||
       wantsHydraProfile || wantsHydraTouch || wantsHydraBadRoute ||
-      wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraQuiet ||
-      wantsHydraFailStart || wantsHydraFailAll || wantsHydraFailTransient
+      wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraWaitQ ||
+      wantsHydraQuiet || wantsHydraFailStart || wantsHydraFailAll ||
+      wantsHydraFailTransient
     ) {
-      const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute
+      const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute || wantsHydraWaitQ
         ? wantsHydraWaitMany
           ? '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"},{"task":"Part two","prompt":"Second part."},{"task":"Part three","prompt":"Third part."}]'
           : wantsHydraWaitRoute
             ? '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"},{"task":"Lost errand","prompt":"Try it.","project":"ghost-proj"}]'
+          : wantsHydraWaitQ
+            ? '[{"task":"Ask something","prompt":"Work then ask. [mock:question]"}]'
             : '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"}]'
         : wantsHydraTouch
           ? '[{"task":"Write alpha","prompt":"Write the file. [mock:touch hydra-alpha.txt]"},{"task":"Write beta","prompt":"Write the file. [mock:touch hydra-beta.txt]"}]'
@@ -317,6 +326,30 @@ export class MockProvider implements ProviderAdapter {
         emitUsage();
         cb.onDone();
       });
+    } else if (wantsQuestion) {
+      driver.queue.push(() => {
+        driver.paused = true;
+        cb.onQuestion?.({
+          providerKey: "mock-q-1",
+          questions: [
+            {
+              id: "q1",
+              header: "Synthetic check",
+              prompt: "Pick a synthetic answer.",
+              choices: [{ label: "continue" }, { label: "hold" }],
+              allowsOther: false,
+              isSecret: false,
+            },
+          ],
+        });
+      });
+      const tail = chunks.slice(2);
+      driver.queue.push(() => {
+        // Reached only when the question is answered; emits the rest.
+        for (const delta of tail) cb.onChunk(++driver.seq, delta);
+        emitUsage();
+        cb.onDone();
+      });
     } else if (wantsQuiet || wantsMend || wantsReason) {
       if (wantsReason) {
         driver.queue.push(() =>
@@ -396,6 +429,12 @@ export class MockProvider implements ProviderAdapter {
           driver.queue.length = 0;
           return;
         }
+        pump();
+      },
+      answer: (providerKey: string) => {
+        if (driver.cancelled) return;
+        cb.onQuestionAnswered?.(providerKey);
+        driver.paused = false;
         pump();
       },
     };
