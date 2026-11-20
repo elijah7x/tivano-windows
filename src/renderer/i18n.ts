@@ -1065,6 +1065,7 @@ const zhHans: Record<string, string> = {
   "Show the brief": "显示简报",
   "Brief": "简报",
   "Stopped": "已停止",
+  "Stalled": "卡住",
   "Stop this head": "停止此子智能体",
   "Checkout": "检出目录",
   "Own copy": "独立副本",

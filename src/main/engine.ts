@@ -35,6 +35,7 @@ import {
   HydraDelegationStreamParser,
   MAX_DELEGATED_TASKS,
   MAX_DELEGATION_ROUNDS,
+  QUIET_STALL_NOTE,
   STALLED_NOTE,
   delegatedHeadPrompt,
   hydraDelegationRequest,
@@ -180,6 +181,12 @@ export class Engine {
   private readonly quietLabelMs = Number(process.env.TIVANO_QUIET_LABEL_MS) || 5 * 60_000;
   private readonly quietStopMs = Number(process.env.TIVANO_QUIET_STOP_MS) || 10 * 60_000;
   private readonly quietToolStopMs = Number(process.env.TIVANO_QUIET_TOOL_STOP_MS) || 30 * 60_000;
+  /** Frozen HydraWatchdog.toolCounts — a head's tool-call count at the
+   *  last look; unchanged across two looks is part of the stall check. */
+  private readonly hydraQuietTools = new Map<string, number>();
+  /** Frozen HydraWatchdog.stalledHeadIDs — heads the quiet watchdog is
+   *  stopping; finishHydraHead turns the mark into stopReason=stalled. */
+  private readonly hydraStalledIds = new Set<string>();
   /** Per-turn checkpoint lifecycle — attached by bootstrap when the
    *  service exists. Optional so tests/mock runs keep the old path. */
   private checkpoints?: CheckpointCoordinator;
@@ -1133,6 +1140,10 @@ export class Engine {
     if (steeredHead?.hydraHead) {
       const info = steeredHead.hydraHead;
       info.status = "running";
+      // Frozen: a running head carries no stop reason; the stall note it
+      // already reported must not be prepended to the next turn's report.
+      info.stopReason = undefined;
+      info.stalledNote = undefined;
       // A fresh batch: this turn's report flushes on its own, never
       // folded into the batch it was originally spawned under.
       info.batchId = `steer-${turn.id}`;
@@ -1530,10 +1541,39 @@ export class Engine {
       const turn = thread.turn;
       if (!turn || (turn.status !== "running" && turn.status !== "waiting-approval")) continue;
       anyLive = true;
+      // Frozen HydraWatchdog.watchHydraHeads: a head parked on the user
+      // or inside a running tool is awake; a running head quiet for ten
+      // minutes that edited nothing and called no new tool since the
+      // last look has stalled and is stopped the way the panel's Stop
+      // stops it — its finish path then marks stopReason=stalled.
+      if (thread.hydraHead) {
+        const info = thread.hydraHead;
+        if (info.status !== "running") continue;
+        const tools = thread.messages.filter(
+          (m) => m.turnId === turn.id && m.kind === "tool",
+        );
+        const prevTools = this.hydraQuietTools.get(thread.id);
+        this.hydraQuietTools.set(thread.id, tools.length);
+        if (turn.approval?.status === "pending" || turn.question?.status === "pending") {
+          this.noteTurnEvent(turn.id);
+          continue;
+        }
+        if (tools.some((m) => m.tool?.state === "running")) continue;
+        const quiet = now - (this.turnLastEvent.get(turn.id) ?? turn.startedAt);
+        const edits = tools.filter((m) => m.tool?.kind === "edit").length;
+        if (
+          quiet >= this.quietStopMs &&
+          edits === 0 &&
+          prevTools === tools.length
+        ) {
+          this.hydraStalledIds.add(thread.id);
+          this.stopHydraHead(thread.id);
+        }
+        continue;
+      }
       // Frozen exemptions (watchQuiet guard): head threads run their own
       // watchdog; anything waiting on the user or on delegated heads is
       // awake by definition, not silent.
-      if (thread.hydraHead) continue;
       if (turn.approval?.status === "pending" || turn.question?.status === "pending") continue;
       if (this.limitWaits.has(thread.id)) continue;
       if (
@@ -4417,6 +4457,8 @@ export class Engine {
     const w = this.hydraWatchdogs.get(head.id);
     if (w) clearTimeout(w);
     this.hydraWatchdogs.delete(head.id);
+    this.hydraQuietTools.delete(head.id);
+    this.hydraStalledIds.delete(head.id);
     if (opts?.note) {
       const lead = this.store.state.threads.find((t) => t.id === info.leadId);
       if (lead && !lead.hydraHead) this.appendNotice(lead, summary, "info");
@@ -4442,6 +4484,7 @@ export class Engine {
         : status === "cancelled" || status === "interrupted"
           ? "stopped"
           : "failed";
+    this.hydraQuietTools.delete(head.id);
     const lastAssistant = [...head.messages]
       .reverse()
       .find((m) => m.role === "assistant" && m.content.trim());
@@ -4456,6 +4499,14 @@ export class Engine {
       if (summary) parts.push(`Partial output before the failure:\n\n${summary}`);
       summary = parts.join("\n\n");
     }
+    // Frozen finishHydraHead: a head the quiet watchdog stopped tells its
+    // lead why ahead of whatever it had said, and is marked stalled so
+    // the panel and the report can say Tivano stopped it. The budget
+    // watchdog's stalledNote is already on the record; every other stop
+    // keeps no reason and reads as a user stop.
+    const stalled = this.hydraStalledIds.delete(head.id) && outcome === "stopped";
+    info.stopReason = stalled ? "stalled" : undefined;
+    if (stalled && !info.stalledNote) info.stalledNote = QUIET_STALL_NOTE;
     if (info.stalledNote) summary = `${info.stalledNote}\n\n${summary}`.trim();
     info.status = outcome;
     info.summary = summary;
@@ -4521,6 +4572,7 @@ export class Engine {
       toolCalls: info.toolCalls,
       provider: this.provider.descriptor.label,
       ...(startupFailure ? { startupFailure: true } : {}),
+      ...(info.stopReason !== undefined ? { stopReason: info.stopReason } : {}),
       ...(info.landing !== undefined ? { landing: info.landing } : {}),
       ...(info.copyKept === true && head.worktreeDir !== undefined
         ? { copyPath: head.worktreeDir }

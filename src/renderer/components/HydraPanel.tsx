@@ -19,6 +19,7 @@ const hex = (n: number): string => `#${n.toString(16).padStart(6, "0")}`;
 
 function statusLabel(
   status: "running" | "completed" | "stopped" | "failed",
+  stopReason: "stalled" | undefined,
   t: (s: string) => string,
 ): string {
   switch (status) {
@@ -27,7 +28,7 @@ function statusLabel(
     case "completed":
       return t("Done");
     case "stopped":
-      return t("Stopped");
+      return stopReason === "stalled" ? t("Stalled") : t("Stopped");
     case "failed":
       return t("Failed");
   }
@@ -147,7 +148,7 @@ export function HydraPanel(props: {
                 <span className="hydra-task">{info.task}</span>
                 {land && <span className="hydra-land">{land}</span>}
                 <span className={`hydra-status ${info.status}`}>
-                  {statusLabel(info.status, t)}
+                  {statusLabel(info.status, info.stopReason, t)}
                   {info.status === "running" && <MiniSpinner />}
                 </span>
               </button>
