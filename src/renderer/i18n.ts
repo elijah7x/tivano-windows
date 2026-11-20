@@ -594,7 +594,7 @@ const zhHans: Record<string, string> = {
   "Loading model list…": "正在加载模型列表…",
   // F17 — model pin/section management (frozen ModelsSettingsPage)
   "Models": "模型",
-  "Hide outdated models": "隐藏过时的模型",
+  "Hide outdated models": "隐藏过时模型",
   "Show the three newest versions of each model and one row per model instead of one per effort. Chosen and in-use models always show.":
     "每个模型只显示最新的三个版本，每个模型占一行而不是每种强度一行。已选用和使用中的模型始终显示。",
   "Search models": "搜索模型",
