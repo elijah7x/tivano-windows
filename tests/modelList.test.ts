@@ -19,12 +19,17 @@ import {
   moveModelListItem,
   moveModelSection,
   movePinToSection,
+  modelLineageKey,
+  modelNameVersion,
+  parseVariantName,
   pinId,
   prefKey,
+  protectedModelIds,
   removePin,
   removeSection,
   renameSection,
   setModelListItems,
+  simplifiedModels,
   toggleSectionCollapsed,
   type ModelPin,
   type ModelSection,
@@ -198,5 +203,178 @@ describe("settings persistence (F17)", () => {
     writeFileSync(path, JSON.stringify(doc));
     const { engine } = makeEngine(root);
     expect(engine.snapshot().settings.modelList).toBeUndefined();
+  });
+
+  it("P1-25: hideOutdatedModels round-trips; absent on pre-P1-25 stores", () => {
+    const root = freshRoot();
+    const first = makeEngine(root);
+    expect(first.engine.snapshot().settings.hideOutdatedModels).toBeUndefined();
+    first.engine.setSettings({ hideOutdatedModels: false });
+    first.store.close();
+    const { engine } = makeEngine(root);
+    expect(engine.snapshot().settings.hideOutdatedModels).toBe(false);
+    engine.setSettings({ hideOutdatedModels: true });
+    expect(engine.snapshot().settings.hideOutdatedModels).toBe(true);
+  });
+});
+
+// ── P1-25: hide outdated models (frozen ModelFamilies + ModelVisibility) ──
+
+const M = (id: string, name: string, isDefault = false) => ({ id, name, isDefault });
+
+describe("P1-25 name parsing and versions", () => {
+  it("reads the variant words from the end like frozen parse()", () => {
+    expect(parseVariantName("GPT-6 Sol High Fast")).toEqual({
+      base: "GPT-6 Sol",
+      effort: "high",
+      isFast: true,
+    });
+    expect(parseVariantName("Claude Opus 5.5 XHigh Fast")).toEqual({
+      base: "Claude Opus 5.5",
+      effort: "xhigh",
+      isFast: true,
+    });
+    expect(parseVariantName("GPT-6 Sol No Thinking")).toEqual({
+      base: "GPT-6 Sol",
+      effort: "none",
+      isFast: false,
+    });
+    // "Thinking" alone names a model of its own, not an effort.
+    expect(parseVariantName("Claude Opus 4.6 Thinking").effort).toBeUndefined();
+    expect(parseVariantName("GPT-6 Sol Extra High").effort).toBe("xhigh");
+    expect(parseVariantName("GPT-6 Sol").effort).toBeUndefined();
+  });
+
+  it("keys lineages like the frozen lineageKey", () => {
+    expect(modelLineageKey("Claude Opus 4.8")).toBe("claude opus");
+    expect(modelLineageKey("Claude Opus 4.6 Thinking 1M")).toBe("claude opus");
+    expect(modelLineageKey("claude-opus-5-5")).toBe("claude opus");
+    expect(modelLineageKey("Kimi K2.7")).toBe("kimi");
+    expect(modelLineageKey("Kimi K3")).toBe("kimi");
+    expect(modelLineageKey("GLM-5.3 Flash")).toBe("glm flash");
+  });
+
+  it("reads versions like the frozen version()", () => {
+    expect(modelNameVersion("Claude Opus 5.5")).toEqual([5, 5]);
+    expect(modelNameVersion("claude-opus-4-8")).toEqual([4, 8]);
+    expect(modelNameVersion("GLM-5.3")).toEqual([5, 3]);
+    expect(modelNameVersion("glm-5p3")).toEqual([5, 3]);
+    expect(modelNameVersion("GPT-OSS 120B")).toEqual([]);
+    expect(modelNameVersion("K3-256K")).toEqual([3]);
+    expect(modelNameVersion("Kimi K2.7")).toEqual([2, 7]);
+    expect(modelNameVersion("Fixture Model")).toEqual([]);
+  });
+});
+
+describe("simplifiedModels (frozen simplified)", () => {
+  const catalog = () => [
+    M("gpt54", "GPT-5.4 Sol"),
+    M("gpt56", "GPT-5.6 Sol"),
+    M("gpt60", "GPT-6.0 Sol"),
+    M("gpt61", "GPT-6.1 Sol"),
+    M("gpt61h", "GPT-6.1 Sol High"),
+    M("gem30", "Gemini 3.0 Flash"),
+    M("sonnet46", "Sonnet 4.6"),
+    M("plain", "Fixture Model"),
+  ];
+
+  it("keeps each vendor's three newest versions, folding effort rows", () => {
+    const kept = simplifiedModels(catalog()).map((m) => m.id);
+    // gpt keeps 6.1/6.0/5.6 — 5.4 is the fourth version; "… High"
+    // folds behind its listed base; the versionless row stays.
+    expect(kept).toEqual(["gpt56", "gpt60", "gpt61", "gem30", "sonnet46", "plain"]);
+  });
+
+  it("a variant row stays when its base is not itself a row", () => {
+    const kept = simplifiedModels([
+      M("b", "Vendor 2.0"),
+      M("vh", "Other 1.0 High"),
+    ]).map((m) => m.id);
+    expect(kept).toContain("vh");
+  });
+
+  it("protected and default rows always show, even when outdated", () => {
+    const kept = simplifiedModels(catalog(), {
+      isProtected: (m) => m.id === "gpt54",
+    }).map((m) => m.id);
+    expect(kept).toContain("gpt54");
+    const withDefault = simplifiedModels([
+      ...catalog(),
+      M("old", "GPT-4.1 Sol", true),
+    ]).map((m) => m.id);
+    expect(withDefault).toContain("old");
+  });
+
+  it("keeps a line's newest row while it shares the vendor's newest major", () => {
+    const kept = simplifiedModels([
+      M("a9", "Gemini 4.9 Argon"),
+      M("a8", "Gemini 4.8 Argon"),
+      M("a7", "Gemini 4.7 Argon"),
+      M("f4", "Gemini 4.0 Flash"),
+      M("f3", "Gemini 3.8 Flash"),
+    ]).map((m) => m.id);
+    // Vendor's newest three are all Argon; the Flash line survives on
+    // its newest row only while that row is of the newest major (4.0),
+    // so 3.8 hides.
+    expect(kept).toEqual(["a9", "a8", "a7", "f4"]);
+  });
+
+  it("counts versions per vendor, not per line", () => {
+    const kept = simplifiedModels([
+      M("s6", "GPT-6.0 Sol"),
+      M("s61", "GPT-6.1 Sol"),
+      M("t56", "GPT-5.6 Terra"),
+      M("m54", "GPT-5.4 Mini"),
+    ]).map((m) => m.id);
+    // GPT's three newest are 6.1/6.0/5.6 — "GPT-5.4 Mini" goes although
+    // its own line has nothing newer (frozen example).
+    expect(kept).toEqual(["s6", "s61", "t56"]);
+  });
+
+  it("honours knownVersions from other catalogues", () => {
+    const known = new Map([["claude", new Set(["5.5", "5.0", "4.8"])]]);
+    const kept = simplifiedModels([M("s", "Sonnet 4.6")], {
+      knownVersions: known,
+    }).map((m) => m.id);
+    // Claude's three newest known versions supersede 4.6 entirely.
+    expect(kept).toEqual([]);
+    const keptHere = simplifiedModels(
+      [M("s", "Sonnet 4.6"), M("o", "Other 1.0")],
+      { knownVersions: known },
+    ).map((m) => m.id);
+    // A vendor this list does not carry adds nothing.
+    expect(keptHere).toEqual(["o"]);
+  });
+});
+
+describe("protectedModelIds (frozen protectedModelIDs)", () => {
+  it("protects pins, extras and pair lead/head/profile models on the provider", () => {
+    const ids = protectedModelIds(
+      {
+        modelList: [P("pinned-m"), { provider: "codex", modelID: "pin2" }],
+        hydraPairs: [
+          {
+            id: "pair1",
+            provider: "codex",
+            orchestratorModel: "lead-m",
+            workerModel: "work-m",
+            headProfiles: [{ id: "h1", name: "h", model: "prof-m" }],
+          },
+          {
+            id: "pair2",
+            provider: "other",
+            orchestratorModel: "foreign-lead",
+            workerProvider: "codex",
+            workerModel: "home-worker",
+            headProfiles: [{ id: "h2", name: "h", provider: "other", model: "foreign-prof" }],
+          },
+        ],
+      },
+      "codex",
+      ["thread-m"],
+    );
+    expect(ids).toEqual(
+      new Set(["thread-m", "pinned-m", "pin2", "lead-m", "work-m", "prof-m", "home-worker"]),
+    );
   });
 });
