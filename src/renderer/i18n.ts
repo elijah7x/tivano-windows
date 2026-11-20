@@ -484,8 +484,10 @@ const zhHans: Record<string, string> = {
   "no such pending approval": "没有对应的待审批请求",
   "approval already resolved": "该审批已处理",
   "unknown approval option": "未知审批选项",
-  "Synthetic provider error (prompt contained [mock:fail]).":
-    "合成提供方错误（提示包含 [mock:fail]）。",
+  "Synthetic provider error (synthetic fail).":
+    "合成提供方错误（synthetic fail）。",
+  "Synthetic provider error (synthetic fail-quiet).":
+    "合成提供方错误（synthetic fail-quiet）。",
   "Mock Provider (synthetic — no real model, tools or commands)":
     "模拟提供方（合成 —— 无真实模型、工具或命令）",
   "Synthetic action requested by the Mock Provider. Nothing will be executed regardless of the answer.":
