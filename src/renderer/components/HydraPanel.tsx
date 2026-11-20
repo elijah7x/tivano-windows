@@ -188,6 +188,26 @@ export function HydraPanel(props: {
                   {t("Stop")}
                 </button>
               )}
+              {/* P1-35: frozen continueFailedHydraHead — a failed or
+                  stopped head with its own copy continues in its own
+                  session; a shared-checkout head keeps no Continue. */}
+              {(info.status === "stopped" || info.status === "failed") &&
+                info.baseTree !== undefined &&
+                h.worktreeDir !== undefined && (
+                  <button
+                    className="hydra-continue"
+                    title={t("Continue this head in its own session")}
+                    aria-label={`${t("Continue")} ${info.name}`}
+                    disabled={props.readOnly === true}
+                    onClick={() =>
+                      void callApi("hydra:continue", { threadId: h.id }).catch(
+                        () => {},
+                      )
+                    }
+                  >
+                    {t("Continue")}
+                  </button>
+                )}
             </li>
           );
         })}

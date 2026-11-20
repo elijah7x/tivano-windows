@@ -73,6 +73,8 @@ const zhHans: Record<string, string> = {
   "Queued": "已排队",
   "Stop": "停止",
   "Retry": "重试",
+  "Continue": "继续",
+  "Continue this head in its own session": "在该子智能体自己的会话中继续",
   "Error": "错误",
   "Today": "今日聚焦",
   "Yesterday": "昨天",

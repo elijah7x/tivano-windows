@@ -498,3 +498,148 @@ describe("recovery", () => {
     expect(again.turn!.status).toBe("done");
   });
 });
+
+describe("P1-35 continue (frozen sendContinuation)", () => {
+  it("a failed turn shows continuable and resumes in the same session", () => {
+    const root = freshRoot();
+    const { engine } = makeEngine(root);
+    const t = engine.createThread(null, "t");
+    engine.sendTurn(t.id, "boom [mock:fail]");
+    pump();
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)!.turn!.status).toBe("error");
+    expect(engine.canContinueTurn(t.id)).toBe(true);
+
+    engine.continueTurn(t.id);
+    const th = engine.snapshot().threads.find((x) => x.id === t.id)!;
+    const user = th.messages[th.messages.length - 2]!;
+    expect(user.role).toBe("user");
+    expect(user.content).toBe(
+      "The previous turn ended with an error. Check the current files and your earlier tool results, then continue the task from where you left off without repeating work that is already done.",
+    );
+    expect(th.turn!.status).toBe("running");
+    pump();
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)!.turn!.status).toBe("done");
+    expect(engine.canContinueTurn(t.id)).toBe(false);
+  });
+
+  it("a cancelled (stopped) turn is continuable too", () => {
+    const root = freshRoot();
+    const { engine } = makeEngine(root);
+    const t = engine.createThread(null, "t");
+    engine.sendTurn(t.id, "[mock:slow] go");
+    pump(30);
+    engine.cancelTurn(t.id);
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)!.turn!.status).toBe("cancelled");
+    expect(engine.canContinueTurn(t.id)).toBe(true);
+    engine.continueTurn(t.id);
+    pump();
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)!.turn!.status).toBe("done");
+  });
+
+  it("refuses a running turn, an archived thread and a head", () => {
+    const root = freshRoot();
+    const { engine } = makeEngine(root);
+    const t = engine.createThread(null, "t");
+    engine.sendTurn(t.id, "[mock:slow] go");
+    expect(engine.canContinueTurn(t.id)).toBe(false);
+    expect(() => engine.continueTurn(t.id)).toThrow(EngineError);
+    engine.cancelTurn(t.id);
+
+    const archived = engine.createThread(null, "a");
+    engine.sendTurn(archived.id, "boom [mock:fail]");
+    pump();
+    engine.archiveThread(archived.id);
+    expect(engine.canContinueTurn(archived.id)).toBe(false);
+    expect(() => engine.continueTurn(archived.id)).toThrow(EngineError);
+
+    const head = engine.createThread(null, "h");
+    engine.sendTurn(head.id, "boom [mock:fail]");
+    pump();
+    head.hydraHead = {
+      leadId: head.id,
+      headIndex: 0,
+      name: "hank",
+      task: "t",
+      batchId: "b",
+      status: "failed",
+      spawnedAt: Date.now(),
+    };
+    expect(engine.canContinueTurn(head.id)).toBe(false);
+    expect(() => engine.continueTurn(head.id)).toThrow(EngineError);
+  });
+
+  it("continueHydraHead re-runs a stopped head in its retained copy", () => {
+    const root = freshRoot();
+    const { engine, store } = makeEngine(root);
+    const head = engine.createThread(null, "h");
+    engine.sendTurn(head.id, "[mock:slow] go");
+    pump(30);
+    engine.cancelTurn(head.id);
+    head.hydraHead = {
+      leadId: head.id,
+      headIndex: 0,
+      name: "hank",
+      task: "t",
+      batchId: "b",
+      status: "stopped",
+      baseTree: "a".repeat(40),
+      spawnedAt: Date.now(),
+    };
+    head.worktreeDir = root;
+    store.update(() => {});
+
+    expect(() => engine.continueHydraHead(head.id)).not.toThrow();
+    expect(head.hydraHead.status).toBe("running");
+    const user = head.messages[head.messages.length - 2]!;
+    expect(user.content).toContain("continue the task from where you left off");
+    pump();
+    expect(head.turn!.status).toBe("done");
+  });
+
+  it("continueHydraHead refuses a running head, a non-head and a copy-less head", () => {
+    const root = freshRoot();
+    const { engine } = makeEngine(root);
+    const plain = engine.createThread(null, "p");
+    expect(() => engine.continueHydraHead(plain.id)).toThrow(EngineError);
+
+    const noCopy = engine.createThread(null, "n");
+    noCopy.hydraHead = {
+      leadId: noCopy.id,
+      headIndex: 0,
+      name: "hank",
+      task: "t",
+      batchId: "b",
+      status: "failed",
+      spawnedAt: Date.now(),
+    };
+    expect(() => engine.continueHydraHead(noCopy.id)).toThrow(EngineError);
+
+    // A head whose own copy was released also refuses (frozen
+    // worktreePath gate) — never a silent re-capture.
+    const released = engine.createThread(null, "x");
+    released.hydraHead = {
+      leadId: released.id,
+      headIndex: 0,
+      name: "hank",
+      task: "t",
+      batchId: "b",
+      status: "stopped",
+      baseTree: "a".repeat(40),
+      spawnedAt: Date.now(),
+    };
+    expect(() => engine.continueHydraHead(released.id)).toThrow(EngineError);
+
+    const running = engine.createThread(null, "r");
+    running.hydraHead = {
+      leadId: running.id,
+      headIndex: 0,
+      name: "hank",
+      task: "t",
+      batchId: "b",
+      status: "running",
+      baseTree: "a".repeat(40),
+      spawnedAt: Date.now(),
+    };
+    expect(() => engine.continueHydraHead(running.id)).toThrow(EngineError);
+  });
+});
