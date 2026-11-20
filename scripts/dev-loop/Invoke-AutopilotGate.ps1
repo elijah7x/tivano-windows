@@ -11,7 +11,7 @@ param(
   [string]$ReviewCheckout = 'C:\tivano\tivano-windows',
   [string]$StandardCredentialFile = 'C:\tivano\secrets\tivano-std.credential.json',
   [string]$ReviewTokenFile,
-  [string]$Reference = 'C:\tivano\reference\tivano-v2.5.7',
+  [string]$Reference = 'C:\tivano\reference\tivano-v3.0.0',
   [ValidatePattern('^[A-Za-z0-9._:/-]+$')][string]$DevinModel = 'swe-2-high',
   [ValidateRange(1, 720)][int]$ReviewTimeoutMin = 240,
   [ValidateRange(1, 240)][int]$GlmTimeoutMin = 20,

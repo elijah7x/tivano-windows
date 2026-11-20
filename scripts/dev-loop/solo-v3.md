@@ -9,11 +9,13 @@ Long-horizon solo mission for Devin Desktop (single GUI chat, bypass mode, Windo
 - Re-read this entire file after every phase and after every issue, and re-read `C:\tivano\pr-bot\tool\scripts\dev-loop\autopilot.md` after every issue, so conversation compaction never drops rules.
 - Maintain `C:\tivano\dev-loop\autopilot\solo-v3.json` (create `C:\tivano\dev-loop\autopilot` if missing) as UTF-8 JSON without BOM:
   ```json
-  {"phase":0,"step":"short text","issue":0,"queue":[],"done":[],"needsHuman":[],"updatedAt":"ISO time"}
+  {"phase":0,"step":"short text","issue":0,"queue":[],"done":[],"needsHuman":[],"rowsWorked":[],"updatedAt":"ISO time"}
   ```
 - Write it atomically via:
   ```powershell
-  [IO.File]::WriteAllText('C:\tivano\dev-loop\autopilot\solo-v3.json', ($json + "`n"), [Text.UTF8Encoding]::new($false))
+  $dst = 'C:\tivano\dev-loop\autopilot\solo-v3.json'; $tmp = $dst + '.tmp'
+  [IO.File]::WriteAllText($tmp, ($json + "`n"), [Text.UTF8Encoding]::new($false))
+  if (Test-Path $dst) { [IO.File]::Replace($tmp, $dst, $null) } else { [IO.File]::Move($tmp, $dst) }
   ```
 - Update `solo-v3.json` at every phase and step change. Also keep `C:\tivano\dev-loop\autopilot\progress.json` updated as `autopilot.md` requires so daily merge tracking and the watchdog stay accurate.
 - On startup or after any interruption, compaction, or restart, read `solo-v3.json` and `progress.json` first and resume from the recorded `phase`, `step`, and `issue`.
@@ -46,7 +48,7 @@ Clear existing open `nyx-auto` work before re-baselining so pending PRs do not c
    - Fix review or gate failures, run `npm run verify`, kill leftover worktree processes, push new commits (never force-push), and run `Invoke-AutopilotGate.ps1`.
    - Use `Invoke-GlmReview.ps1 -Mode consult` once if stuck after 2 fix rounds or 3 identical `npm run verify` failures.
    - Merge on gate pass (confirm `MERGED`, remove worktree, append to `done`) or label `needs-human` (append to `needsHuman`), and post the one-line update to tracking issue `#34`.
-4. When no open `nyx-auto` issue (without `needs-human`) or pending `nyx/` PR remains, set `solo-v3.json` `phase: 1`, `step: "reference"`, `issue: 0`, re-read this file, and enter Phase 1.
+4. When no open `nyx-auto` issue without `needs-human` remains, and every open `nyx/` PR belongs to an issue labelled `needs-human` (those PRs stay open for a person and do not hold you here), set `solo-v3.json` `phase: 1`, `step: "reference"`, `issue: 0`, re-read this file, and enter Phase 1.
 
 ## 2. Phase 1 — Re-baseline to v3.0.0
 
@@ -60,7 +62,12 @@ Deliver one PR titled `Parity: retarget the checklist to macOS v3.0.0` moving th
    }
    git -C C:\tivano\reference\tivano-v3.0.0 rev-parse v3.0.0
    git -C C:\tivano\reference\tivano-v3.0.0 rev-parse 'v3.0.0^{commit}'
+   if ((git -C C:\tivano\reference\tivano-v3.0.0 rev-parse HEAD) -ne '15e03374f077343e500e8e5e3574c8c598162171') {
+     git -C C:\tivano\reference\tivano-v3.0.0 checkout --detach --force v3.0.0
+   }
+   git -C C:\tivano\reference\tivano-v3.0.0 rev-parse HEAD
    ```
+   `HEAD` must also equal the commit below; read files only after it does.
    Confirm tag object `145684ceebc9c8e9a36ab563107150b9c2a8930a` and commit `15e03374f077343e500e8e5e3574c8c598162171`.
 2. **Create or reuse the Phase 1 worktree** from `origin/main`:
    ```powershell
@@ -101,7 +108,7 @@ Turn actionable `docs/parity.md` rows into an ordered GitHub issue queue with ze
    gh pr list -R elijah7x/tivano-windows --state open --limit 200 --json number,title,headRefName
    ```
    **Never open a duplicate issue** for a parity row ID that already has an open issue or open PR.
-3. Review every `not started` and `partial` row (both old and new sections) that lacks an open issue:
+3. Review every `not started` and `partial` row (both old and new sections) that lacks an open issue. Skip a row whose ID is in `solo-v3.json` `rowsWorked` (an issue for it was already merged or parked): a merged row stays `partial` until a maintainer confirms `done`, and that is not a reason to open it again. Open a follow-up for such a row only when its `Notes` name a specific missing behavior that the merged work did not cover, at most once per row, and add `-followup` to its entry in `rowsWorked`. After each merge or needs-human outcome, append every row ID the issue covered to `rowsWorked`. Also treat as worked any row ID named in the title of a closed issue labelled `nyx-auto` (`gh issue list --state closed --label nyx-auto --limit 500`), so work from before this file existed is not repeated.
    - **Unattended-eligible rows:** open one issue per row with `--label parity --label nyx-auto` (write body files under `C:\tivano\dev-loop\autopilot\runs\plan\`, public-text safe). Group tiny rows on the same screen or component into one issue and list every covered row ID in the title and body.
      - Title: `<ID>: <imperative summary>` (under 100 chars).
      - Body: parity row ID and full description, upstream `v3.0.0` behavior with version number, Windows acceptance criteria, and likely `src/` / `tests/` files involved.
