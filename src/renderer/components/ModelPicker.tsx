@@ -111,6 +111,15 @@ export function ModelPicker(props: {
     } else groups.push({ label: item.section.name, pins: [] });
   }
   const selected = thread.codexModel ?? "";
+  // P1-36: the sub-agent mode row from the frozen picker's
+  // SubagentModeRow set, bounded to a select in the model menu — shown
+  // while Hydra runs for app and chat; heads never get a mode.
+  const subagentVisible =
+    settings?.hydraEnabled !== false &&
+    thread.hydraEnabled !== false &&
+    !thread.hydraHead;
+  const subagentMode =
+    thread.subagentMode ?? (thread.hydraPairId ? "preset" : "same");
   const selectedModel = models.find((m) => m.id === selected);
   const efforts = orderedEfforts(selectedModel?.efforts ?? []);
   const selectedEffort = thread.codexEffort ?? "";
@@ -216,6 +225,46 @@ export function ModelPicker(props: {
           </option>
         ))}
       </select>
+      {subagentVisible && (
+        <select
+          className="subagent-mode-select"
+          aria-label={t("Sub-agents")}
+          title={t("Sub-agent mode — applies to the next turn")}
+          value={subagentMode}
+          disabled={!!props.readOnly}
+          onChange={(e) =>
+            tryCall("threads:set-subagent-mode", {
+              threadId: thread.id,
+              mode: e.target.value,
+            })
+          }
+        >
+          <option
+            value="same"
+            title={t(
+              "This model splits the work and hands parts to sub-agents running the same model.",
+            )}
+          >
+            {t("Same-model sub-agents")}
+          </option>
+          <option
+            value="preset"
+            title={t(
+              "A saved lead and sub-agent combo; sub-agents run the combo's models.",
+            )}
+          >
+            {t("Preset sub-agents")}
+          </option>
+          <option
+            value="adaptive"
+            title={t(
+              "The lead splits the work into roles and matches each to a model across providers.",
+            )}
+          >
+            {t("Adaptive sub-agents")}
+          </option>
+        </select>
+      )}
       {tierId !== null && (
         <label
           className="fast-tier"

@@ -480,7 +480,7 @@ describe("lead policy + turn notes (frozen HydraPrompts slice)", () => {
 
 describe("frozen bounds", () => {
   it("keeps the frozen limits", () => {
-    expect(MAX_DELEGATION_ROUNDS).toBe(3);
+    expect(MAX_DELEGATION_ROUNDS).toBe(5);
     expect(MAX_DELEGATED_TASKS).toBe(32);
     expect(HYDRA_PERSONAS.length).toBe(25);
   });

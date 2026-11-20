@@ -4,6 +4,15 @@
 
 import type { KeyChord } from "./shortcuts";
 import type { HydraPair } from "./hydra";
+
+/** P1-36: frozen v3.0.0 sub-agent modes (the picker's SubagentModeRow
+ *  set). Same-model = heads on this chat's model; Preset = heads on a
+ *  saved lead↔heads combo (a HydraPair); Adaptive = the lead titles
+ *  each role and routes it to a head profile (bounded Chimera —
+ *  identities, casting cards and cross-provider matching land in
+ *  P1-37). Absent on a thread = derived: a saved pair means "preset",
+ *  otherwise "same". */
+export type SubagentMode = "same" | "preset" | "adaptive";
 import type { ModelPin, ModelSection, ModelPreference } from "./modelList";
 import type { McpServerConfig } from "./mcp";
 import type { WallpaperSetting } from "./wallpaper";
@@ -268,6 +277,9 @@ export interface Settings {
   hydraPairs?: HydraPair[];
   /** The pair the model picker last put a chat on. */
   lastHydraPairId?: string;
+  /** P1-36: the sub-agent mode new chats seed from (frozen picker
+   *  default); absent = derived per chat. */
+  subagentModeDefault?: SubagentMode;
   /**
    * F17: frozen modelList / modelSections / collapsedModelSections /
    * modelPreferences. Pins only ORGANIZE the model picker — the catalog
@@ -657,6 +669,10 @@ export interface ChatThread {
   hydraEnabled?: boolean;
   /** F21: the Hydra pair this chat leads on; absent = none chosen. */
   hydraPairId?: string;
+  /** P1-36: this chat's sub-agent mode — seeded from
+   *  `subagentModeDefault`; absent = derived (pair ? "preset" :
+   *  "same"). */
+  subagentMode?: SubagentMode;
   /**
    * v2.2.34 title keep-updated: true once the user has set the title
    * themselves — an explicit rename is never overwritten by
@@ -859,6 +875,10 @@ export interface FollowUpItem {
   text: string;
   createdAt: number;
   bundleId?: string;
+  /** P1-36: system-authored items (Hydra refusals) drain as
+   *  non-authored turns — they never restart the delegation budget
+   *  (frozen refuse-turn semantics). Absent = a user-queued item. */
+  unauthored?: boolean;
 }
 
 export interface StoreFile {

@@ -1027,6 +1027,21 @@ const zhHans: Record<string, string> = {
   "Reports back to the lead": "向主导模型汇报",
   "A finished head hands its report to the lead, which checks the work and answers you. Completed heads collapse automatically; their reports stay in completion cards in the chat.":
     "子智能体完成后将报告交给主导模型，由它检查工作并回复你。完成的子智能体会自动收起，工作报告保留在聊天里的完成卡片中。",
+  // P1-36: sub-agent modes — frozen verbatim zh-Hans.
+  "Sub-agents": "子代理",
+  "Sub-agent mode": "子代理模式",
+  "Same-model sub-agents": "同模型子代理",
+  "Preset sub-agents": "模型搭配",
+  "Adaptive sub-agents": "自适应子代理",
+  "This model splits the work and hands parts to sub-agents running the same model.":
+    "由当前模型拆分任务，交给同一模型的子代理执行。",
+  "A saved lead and sub-agent combo; sub-agents run the combo's models.":
+    "使用已保存的主代理与子代理的模型搭配，子代理运行搭配指定的模型。",
+  "The lead splits the work into roles and matches each to a model across providers.":
+    "主代理把工作拆成不同角色，并为每个角色匹配合适服务商的模型。",
+  "Default for new chats": "新对话的默认模式",
+  "New chats start on this mode; each chat switches it in the model picker. With no saved pair, Preset falls back to Same-model.":
+    "新对话使用该模式；每个对话可在模型选择器中切换。没有保存的组合时，“模型搭配”回退为“同模型”。",
   "Only newly dispatched heads": "仅限新派发的子智能体",
   "Only newly dispatched Codex heads managed by Tivano can be archived after successful completion. Lead chats, older sessions, heads with user follow-ups or descendant sessions, and heads not confirmed idle stay visible.":
     "仅新派发且由 Tivano 管理的 Codex 子智能体会在成功完成后归档。主会话、较早会话，以及收到用户后续消息、有后代会话或尚未确认空闲的子智能体会话，均保持可见。",
