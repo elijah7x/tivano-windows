@@ -453,6 +453,8 @@ const zhHans: Record<string, string> = {
   "Turn already running": "已有轮次在运行",
   "A turn is already running on this thread": "此对话已有轮次在运行",
   "a turn is already running on this thread": "此对话已有轮次在运行",
+  "heads have no sub-agent mode": "子智能体没有子代理模式",
+  "switch modes when no sub-agents are at work": "请在没有子代理正在工作时切换模式",
   "Open link": "打开链接",
   "Tivano Windows": "Tivano Windows",
   "A previous turn was interrupted": "上一个轮次被中断",

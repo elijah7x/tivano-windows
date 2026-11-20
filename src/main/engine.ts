@@ -4816,15 +4816,14 @@ export class Engine {
         if (k.startsWith(`${leadId}:${r.batchId}:`)) this.hydraCaptures.delete(k);
     }
     try {
-      this.sendTurn(leadId, reportMessage(flushable, stillWorking), {
-        authored: false,
-        hydraReport: flushable.map((r) => r.headIndex),
-      });
       // Frozen refundRound: a flushed batch whose every head provably
       // did nothing hands its round back (≤ MAX_REFUNDED_ROUNDS per
       // request, only while the generation it was charged under still
-      // runs). After the send: a failed send re-queues the reports and
-      // the same round must never refund twice.
+      // runs). Before the send: the report turn's wire prompt reads
+      // hydraRounds for canDelegate, so the refund must land first or
+      // the lead is told "no more heads" while its round comes back.
+      // hydraBatchGen.delete makes each batch single-fire even when the
+      // send throws and the reports re-queue.
       const byBatch = new Map<string, HydraReport[]>();
       for (const r of flushable) {
         const k = r.batchId ?? "";
@@ -4850,6 +4849,10 @@ export class Engine {
         if (rounds > 0) this.hydraRounds.set(leadId, rounds - 1);
         this.hydraRefunds.set(leadId, refunds + 1);
       }
+      this.sendTurn(leadId, reportMessage(flushable, stillWorking), {
+        authored: false,
+        hydraReport: flushable.map((r) => r.headIndex),
+      });
     } catch {
       // Busy/closed raced — reports go back pending; the next endTurn
       // retries the flush.

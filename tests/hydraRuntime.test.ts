@@ -741,6 +741,37 @@ describe("P1-36 sub-agent modes and the delegation budget", () => {
     store.close();
   });
 
+  it("the report-turn prompt sees the refunded round", async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    const e = engine as any;
+    // A lead that spent its 5th round on an all-fail batch: the refund
+    // lands BEFORE the report turn's prompt is built, so the lead is
+    // told it may delegate again, not "no more heads".
+    budget(engine).hydraRounds.set(lead.id, 5);
+    e.hydraBudgetGen.set(lead.id, 1);
+    e.hydraBatchGen.set("b1", 1);
+    e.hydraPendingReports.set(lead.id, [
+      {
+        headIndex: 0,
+        task: "probe",
+        status: "failed",
+        text: "boom",
+        batchId: "b1",
+        copyPath: "c:/scratch/b1",
+      },
+    ]);
+    e.flushHydraReports(lead.id);
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+    const reply = thread(engine, lead.id)
+      .messages.filter((m) => m.role === "assistant")
+      .at(-1)!.content;
+    expect(reply).toContain("send heads out again for exactly that");
+    expect(reply).not.toContain("Send out no more heads");
+    expect(budget(engine).hydraRounds.get(lead.id)).toBe(4);
+    store.close();
+  });
+
   it("an authored message restarts the budget", async () => {
     const { engine, store } = make();
     const lead = engine.createThread(null, "lead");
