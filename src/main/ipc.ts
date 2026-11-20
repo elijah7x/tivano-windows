@@ -372,7 +372,9 @@ export function registerIpc(opts: IpcOptions): () => void {
   });
   handle("turns:send", (p) => engine.sendTurn(p.threadId, p.text));
   handle("turns:cancel", (p) => engine.cancelTurn(p.threadId));
+  handle("turns:continue", (p) => engine.continueTurn(p.threadId));
   handle("hydra:stop", (p) => engine.stopHydraHead(p.threadId));
+  handle("hydra:continue", (p) => engine.continueHydraHead(p.threadId));
   handle("threads:set-hydra", (p) => engine.setThreadHydra(p.threadId, p.enabled));
   handle("approvals:resolve", (p) =>
     engine.resolveApproval(p.threadId, p.approvalId, p.optionId),

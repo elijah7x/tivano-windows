@@ -164,6 +164,10 @@ export class Engine {
   /** Frozen AutoContinue.continueMessage verbatim. */
   private static readonly LIMIT_CONTINUE_MESSAGE =
     "The usage limit has reset. Continue exactly where you left off and finish the task.";
+  /** Frozen AutoContinue.failedTurnContinueMessage verbatim — the
+   *  canned resume prompt the user-facing Continue affordance sends. */
+  private static readonly FAILED_TURN_CONTINUE_MESSAGE =
+    "The previous turn ended with an error. Check the current files and your earlier tool results, then continue the task from where you left off without repeating work that is already done.";
   /**
    * F03 quiet watchdog (frozen ThreadRuntime.watchQuiet): per-turn clock of
    * the last provider event + one shared ticker while any turn runs. At
@@ -4716,6 +4720,61 @@ export class Engine {
       this.finishHydraHead(thread, "cancelled");
       this.flushHydraReports(thread.hydraHead.leadId);
     }
+  }
+
+  /** Frozen continuableTurnID + canContinue: the Continue affordance
+   *  shows on an ordinary thread whose last turn failed or was stopped
+   *  (the single-turn model makes "latest" automatic). Heads are
+   *  continued from the Hydra panel instead; archived threads and live
+   *  turns are out. Codex needs its provider binding so the resume
+   *  lands in the SAME session (frozen providerSessionID gate); mock
+   *  and synthetic sessions replay without one. */
+  canContinueTurn(threadId: string): boolean {
+    const thread = this.store.state.threads.find((t) => t.id === threadId);
+    if (!thread || thread.isArchived === true || thread.hydraHead) return false;
+    const status = thread.turn?.status;
+    if (
+      status !== "error" &&
+      status !== "cancelled" &&
+      status !== "denied" &&
+      status !== "interrupted"
+    )
+      return false;
+    if (
+      this.provider.descriptor.mode === "codex" &&
+      thread.providerThread === undefined
+    )
+      return false;
+    return true;
+  }
+
+  /** Frozen sendContinuation(after:text:userInitiated:) — Continue
+   *  sends the canned resume prompt as an ordinary turn; the thread's
+   *  provider binding keeps it in the same session and conversation. */
+  continueTurn(threadId: string): Turn {
+    this.assertMutable();
+    if (!this.canContinueTurn(threadId))
+      throw new EngineError("this turn cannot be continued");
+    return this.sendTurn(threadId, Engine.FAILED_TURN_CONTINUE_MESSAGE);
+  }
+
+  /** Frozen continueFailedHydraHead (closed-job path): a failed or
+   *  stopped head with its own copy continues in its own session — the
+   *  steered-head send re-runs it in that copy with a fresh batch. A
+   *  shared-checkout head (no own copy) is refused like the frozen
+   *  hasOwnCopy/worktreePath gate. The upstream open-job path
+   *  re-delegates through the lead's job ledger, which this build does
+   *  not carry — its reports/batches already settle per turn. */
+  continueHydraHead(threadId: string): Turn {
+    this.assertMutable();
+    const thread = this.mustThread(threadId);
+    const info = thread.hydraHead;
+    if (!info) throw new EngineError("not a hydra head");
+    if (info.status !== "stopped" && info.status !== "failed")
+      throw new EngineError("only a failed or stopped head can be continued");
+    if (info.baseTree === undefined)
+      throw new EngineError("the head has no retained copy to continue in");
+    return this.sendTurn(threadId, Engine.FAILED_TURN_CONTINUE_MESSAGE);
   }
 
   /** Turn-end bookkeeping: head → report path; lead → dropped-block

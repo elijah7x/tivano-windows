@@ -200,6 +200,7 @@ export const REQUEST_CHANNELS = [
   "openin:reveal",
   "turns:send",
   "turns:cancel",
+  "turns:continue",
   "approvals:resolve",
   "settings:set",
   "links:open-external",
@@ -247,6 +248,7 @@ export const REQUEST_CHANNELS = [
   "wallpaper:data",
   "hydra:catalog",
   "hydra:stop",
+  "hydra:continue",
   "threads:set-model",
   "questions:answer",
   "followUps:enqueue",
@@ -423,6 +425,9 @@ export const requestValidators = {
   // typed text; the engine refuses empty turns with nothing attached.
   "turns:send": vObject({ threadId: vId, text: vMaxString(16000) }),
   "turns:cancel": vObject({ threadId: vId }),
+  // P1-35: continue a failed or stopped turn — opaque id only (frozen
+  // sendContinuation; the engine picks the canned resume prompt).
+  "turns:continue": vObject({ threadId: vId }),
   "approvals:resolve": vObject({ threadId: vId, approvalId: vId, optionId: vString }),
   "settings:set": vObject({
     theme: vOptional(vTheme),
@@ -671,6 +676,9 @@ export const requestValidators = {
   // F22: stop a running head — renderer names only the opaque thread id
   // it was shown in the Hydra panel.
   "hydra:stop": vObject({ threadId: vId }),
+  // P1-35: continue a failed or stopped head in its own session/copy
+  // (frozen continueFailedHydraHead).
+  "hydra:continue": vObject({ threadId: vId }),
   "threads:set-model": vObject({
     threadId: vId,
     model: vNullable(vNonEmptyString(200)),

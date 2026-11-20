@@ -249,6 +249,19 @@ export function ChatView(props: {
 
   const turn = thread.turn;
   const waiting = turn?.status === "waiting-approval";
+  // P1-35: frozen continuableTurnID — the Continue affordance shows on a
+  // failed or stopped last turn of an ordinary thread. Heads continue
+  // from the Hydra panel; codex without a provider binding has no
+  // session to resume; the engine re-checks the gate on turns:continue.
+  const continuable =
+    thread.isArchived !== true &&
+    !thread.hydraHead &&
+    !!turn &&
+    (turn.status === "error" ||
+      turn.status === "cancelled" ||
+      turn.status === "denied" ||
+      turn.status === "interrupted") &&
+    (props.mode !== "codex" || thread.providerThread !== undefined);
   const hadInterrupted = thread.messages.some((m) => m.status === "interrupted");
   const syntheticStdio = props.mode === "synthetic-stdio";
   const codex = props.mode === "codex" ? props.codex : undefined;
@@ -761,6 +774,23 @@ export function ChatView(props: {
         {turn?.question && <QuestionCard threadId={thread.id} question={turn.question} />}
         {props.limitResumeAt !== undefined && (
           <LimitWaitRow threadId={thread.id} resumeAt={props.limitResumeAt} />
+        )}
+        {/* P1-35: frozen Continue button on a failed or stopped turn —
+            resumes the same provider session via turns:continue. */}
+        {continuable && (
+          <div className="continue-row">
+            <button
+              className="continue-btn"
+              disabled={props.readOnly === true}
+              onClick={() =>
+                void callApi("turns:continue", { threadId: thread.id }).catch(
+                  () => {},
+                )
+              }
+            >
+              {t("Continue")}
+            </button>
+          </div>
         )}
         <div ref={endRef} />
       </div>
