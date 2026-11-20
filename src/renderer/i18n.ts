@@ -970,6 +970,8 @@ const zhHans: Record<string, string> = {
     "Hydra：侧边栏中没有名为 %@ 的项目，因此 %@ 未启动。",
   "Hydra: %@ did not start because its checkout could not be read.":
     "Hydra：无法读取 %@ 的检出目录，因此未启动。",
+  "The turn failed without a recorded error.": "这一轮失败了，但没有记录下错误。",
+  "Partial output before the failure:\n\n%@": "失败前的部分输出：\n\n%@",
   " and ": " 和 ",
   ", ": "、",
   "Heads' reports": "子智能体报告",
