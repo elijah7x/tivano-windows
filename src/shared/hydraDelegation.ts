@@ -378,10 +378,29 @@ export interface HydraReport {
   landing?: HydraLanding | undefined;
   /** Frozen copyPath — the head's own copy kept for unlanded work. */
   copyPath?: string | undefined;
+  /** Frozen HydraReport.provider — the provider's display name the head
+   *  ran on; heads that failed to start group their cause by it. */
+  provider?: string | undefined;
+  /** Frozen HydraReport.startupFailure — the head failed with a
+   *  non-transient error before it said anything or ran a tool. */
+  startupFailure?: boolean | undefined;
   /** Frozen HydraHeadInfo.stopReason — set when the quiet watchdog
    *  stopped the head, so the report says Tivano stopped it, not the
    *  user, and tells the lead it can be continued. */
   stopReason?: "stalled" | undefined;
+}
+
+/** Frozen `isTransientFailure`: a failure likely to clear on its own —
+ *  rate limits, dropped connections, timeouts — is never evidence the
+ *  provider is broken, so it never marks a startup failure. */
+export function hydraIsTransientFailure(error: string): boolean {
+  const text = error.toLowerCase();
+  return [
+    "rate limit", "rate-limit", "ratelimit", "429", "too many requests", "overloaded",
+    "try again", "timed out", "timeout", "network", "connection", "offline",
+    "503", "502", "500", "504", "service unavailable", "bad gateway",
+    "temporarily", "usage limit", "quota", "econnreset", "enotfound", "socket",
+  ].some((m) => text.includes(m));
 }
 
 const list = (names: string[]): string =>
@@ -436,6 +455,17 @@ export function reportMessage(
   if (stillWorking.length) {
     opening += ` ${list(stillWorking)} ${stillWorking.length === 1 ? "is" : "are"} still at work; ${stillWorking.length === 1 ? "its report comes" : "their reports come"} as a later message.`;
   }
+  // Frozen: heads that failed to start on one provider share one cause,
+  // and the same error is shown once per provider, not once per head.
+  const startupGroups = new Map<string, HydraReport[]>();
+  for (const r of reports) {
+    if (r.status !== "failed" || r.startupFailure !== true) continue;
+    const provider = r.provider ?? "their provider";
+    const group = startupGroups.get(provider) ?? [];
+    group.push(r);
+    startupGroups.set(provider, group);
+  }
+  const firstWithError = new Map<string, string>();
   const sections: string[] = [];
   for (const r of reports) {
     const outcome =
@@ -451,9 +481,19 @@ export function reportMessage(
     const took = effort.length ? ` (${effort.join(", ")})` : "";
     const body = r.text.trim();
     const land = landingLine(r);
+    let bodyLine = body || "No report.";
+    if (r.status === "failed" && r.startupFailure === true && body) {
+      const key = `${r.provider ?? ""} ${body}`;
+      const first = firstWithError.get(key);
+      if (first !== undefined) {
+        bodyLine = `Same startup failure as ${first}.`;
+      } else {
+        firstWithError.set(key, personaAt(r.headIndex).name);
+      }
+    }
     sections.push(
       `## ${personaAt(r.headIndex).name}: ${r.task}${outcome}${took}\n` +
-        `${land ? land + "\n" : ""}${body || "No report."}`,
+        `${land ? land + "\n" : ""}${bodyLine}`,
     );
   }
   const closing: string[] = [];
@@ -493,7 +533,25 @@ export function reportMessage(
         `${personaAt(r.headIndex).name}'s changes would not apply on their own; the patch is at ${path}. Apply it with \`git apply --3way ${path}\` and settle what conflicts.`,
       );
   }
-  if (reports.some((r) => r.status === "failed")) {
+  // Frozen: one cause per provider. Another head done on it makes the
+  // failure likely temporary; none done at all makes the provider's own
+  // environment the cause, so resending fails the same way.
+  for (const [provider, group] of startupGroups) {
+    const names = group.map((r) => personaAt(r.headIndex).name);
+    const onProvider = reports.filter(
+      (r) => (r.provider ?? "their provider") === provider,
+    );
+    if (onProvider.some((r) => r.status === "completed")) {
+      closing.push(
+        `${list(names)} failed on ${provider} before doing any work while other heads on ${provider} succeeded, so the failure is likely temporary: you may send their parts to ${provider} again or do them yourself.`,
+      );
+    } else if (!onProvider.some((r) => r.status === "running")) {
+      closing.push(
+        `${list(names)} failed on ${provider} before doing any work. The cause is ${provider}'s environment (its install, sign-in, configuration or MCP servers), not the task: sending heads to ${provider} again fails the same way. Do ${names.length === 1 ? "its part" : "their parts"} yourself, and tell the user in one line the error above and that it needs fixing on ${provider}'s side.`,
+      );
+    }
+  }
+  if (reports.some((r) => r.status === "failed" && r.startupFailure !== true)) {
     closing.push(
       "A head that failed leaves its part to you: do it yourself or send it out again.",
     );

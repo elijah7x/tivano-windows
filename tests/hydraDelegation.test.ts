@@ -13,6 +13,7 @@ import {
   delegationFromEntry,
   hasSentDelegationBlock,
   hydraDelegationRequest,
+  hydraIsTransientFailure,
   hydraLeadPolicy,
   hydraReportNote,
   hydraTeamStatus,
@@ -231,6 +232,130 @@ describe("delegatedHeadPrompt + reportMessage — frozen text", () => {
       ["Nova"],
     );
     expect(msg).toContain("Nova is still at work");
+  });
+
+  // P1-21 (2.0.22/2.2.12 parity): heads that failed before doing work
+  // give one cause per provider, not one failure per head.
+  it("one cause per provider when no head on it completed", () => {
+    const msg = reportMessage([
+      {
+        headIndex: 0, task: "A", status: "failed",
+        text: "agent exited: not signed in",
+        provider: "Codex", startupFailure: true,
+      },
+      {
+        headIndex: 1, task: "B", status: "failed",
+        text: "agent exited: not signed in",
+        provider: "Codex", startupFailure: true,
+      },
+    ]);
+    // The shared error shows once; the second head names the first.
+    expect(msg).toContain("agent exited: not signed in");
+    expect(msg).toContain("Same startup failure as Hank.");
+    expect(msg).toContain(
+      "Hank and Walter failed on Codex before doing any work. " +
+        "The cause is Codex's environment (its install, sign-in, configuration or MCP servers), " +
+        "not the task: sending heads to Codex again fails the same way. " +
+        "Do their parts yourself, and tell the user in one line the error above " +
+        "and that it needs fixing on Codex's side.",
+    );
+    expect(msg).not.toContain("do it yourself or send it out again");
+  });
+
+  it("a lone startup failure says its part, and reads singular", () => {
+    const msg = reportMessage([
+      {
+        headIndex: 0, task: "A", status: "failed",
+        text: "agent exited: not signed in",
+        provider: "Codex", startupFailure: true,
+      },
+    ]);
+    expect(msg).toContain(
+      "Hank failed on Codex before doing any work. The cause is Codex's environment",
+    );
+    expect(msg).toContain("Do its part yourself");
+    expect(msg).not.toContain("Same startup failure");
+  });
+
+  it("a head done on the same provider makes the failure likely temporary", () => {
+    const msg = reportMessage([
+      {
+        headIndex: 0, task: "A", status: "failed",
+        text: "agent exited: not signed in",
+        provider: "Codex", startupFailure: true,
+      },
+      {
+        headIndex: 1, task: "B", status: "completed",
+        text: "Done it.", provider: "Codex",
+      },
+    ]);
+    expect(msg).toContain(
+      "Hank failed on Codex before doing any work while other heads on Codex succeeded, " +
+        "so the failure is likely temporary: you may send their parts to Codex again " +
+        "or do them yourself.",
+    );
+    expect(msg).not.toContain("environment (its install, sign-in");
+    expect(msg).not.toContain("do it yourself or send it out again");
+  });
+
+  it("a failure that is not a startup failure keeps the generic take-over", () => {
+    const msg = reportMessage([
+      {
+        headIndex: 0, task: "A", status: "failed",
+        text: "The connection dropped mid-work.",
+        provider: "Codex",
+      },
+      {
+        headIndex: 1, task: "B", status: "completed",
+        text: "Done it.", provider: "Codex",
+      },
+    ]);
+    expect(msg).toContain(
+      "A head that failed leaves its part to you: do it yourself or send it out again.",
+    );
+    expect(msg).not.toContain("before doing any work");
+  });
+
+  it("groups only same-provider startup failures; an absent provider reads plainly", () => {
+    const msg = reportMessage([
+      {
+        headIndex: 0, task: "A", status: "failed",
+        text: "agent exited", startupFailure: true,
+      },
+      {
+        headIndex: 1, task: "B", status: "failed",
+        text: "agent exited",
+        provider: "Codex", startupFailure: true,
+      },
+    ]);
+    expect(msg).toContain("Hank failed on their provider before doing any work");
+    expect(msg).toContain("Walter failed on Codex before doing any work");
+  });
+});
+
+describe("hydraIsTransientFailure — frozen isTransientFailure", () => {
+  it("rate limits, dropped connections and timeouts are transient", () => {
+    for (const e of [
+      "429 too many requests",
+      "rate limit reached",
+      "The connection dropped mid-work.",
+      "request timed out",
+      "503 service unavailable",
+      "usage limit reached",
+      "ECONNRESET",
+    ]) {
+      expect(hydraIsTransientFailure(e), e).toBe(true);
+    }
+  });
+
+  it("lasting environment errors are not transient", () => {
+    for (const e of [
+      "agent exited: not signed in",
+      "binary not found on PATH",
+      "MCP server failed to start",
+    ]) {
+      expect(hydraIsTransientFailure(e), e).toBe(false);
+    }
   });
 });
 

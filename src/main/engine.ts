@@ -39,6 +39,7 @@ import {
   STALLED_NOTE,
   delegatedHeadPrompt,
   hydraDelegationRequest,
+  hydraIsTransientFailure,
   hydraLeadPolicy,
   hydraReportNote,
   hydraTeamStatus,
@@ -4489,7 +4490,14 @@ export class Engine {
       .find((m) => m.role === "assistant" && m.content.trim());
     let summary = lastAssistant?.content.trim() ?? "";
     if (outcome === "failed") {
-      summary = `The turn failed.${summary ? ` Partial output:\n${summary}` : ""}`;
+      // Frozen failedTurnReport: the recorded error first, then whatever
+      // the head managed to say named as partial output.
+      const parts = [
+        head.turn?.error?.trim() ||
+          "The turn failed without a recorded error.",
+      ];
+      if (summary) parts.push(`Partial output before the failure:\n\n${summary}`);
+      summary = parts.join("\n\n");
     }
     // Frozen finishHydraHead: a head the quiet watchdog stopped tells its
     // lead why ahead of whatever it had said, and is marked stalled so
@@ -4538,6 +4546,21 @@ export class Engine {
   private queueHydraReport(head: ChatThread): void {
     const info = head.hydraHead;
     if (!info) return;
+    // Frozen startupFailure: a head that failed with an error of its own
+    // — never a transient one — before it said anything or ran a tool.
+    // A start that never reached a turn (routing, unreadable checkout,
+    // a send that threw) has no recorded turn error and stays unmarked.
+    const err = head.turn?.error?.trim();
+    const startupFailure =
+      info.status === "failed" &&
+      err !== undefined &&
+      err !== "" &&
+      !hydraIsTransientFailure(err) &&
+      !head.messages.some(
+        (m) =>
+          m.kind === "tool" ||
+          (m.role === "assistant" && m.content.trim() !== ""),
+      );
     const reports = this.hydraPendingReports.get(info.leadId) ?? [];
     reports.push({
       headIndex: info.headIndex,
@@ -4547,6 +4570,8 @@ export class Engine {
       batchId: info.batchId,
       elapsedMs: info.elapsedMs,
       toolCalls: info.toolCalls,
+      provider: this.provider.descriptor.label,
+      ...(startupFailure ? { startupFailure: true } : {}),
       ...(info.stopReason !== undefined ? { stopReason: info.stopReason } : {}),
       ...(info.landing !== undefined ? { landing: info.landing } : {}),
       ...(info.copyKept === true && head.worktreeDir !== undefined

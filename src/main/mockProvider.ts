@@ -149,6 +149,20 @@ export class MockProvider implements ProviderAdapter {
     // F03/P2-06 fixture: `[mock:hydra-quiet]` = one head whose own prompt
     // goes silent — the quiet watchdog owns what happens to it.
     const wantsHydraQuiet = prompt.includes("[mock:hydra-quiet]");
+    // 2.2.12 startup-failure fixtures: `[mock:hydra-failstart]` = two
+    // heads whose turns error before a word or a tool plus one that
+    // completes (likely-temporary wording); `[mock:hydra-failall]` = all
+    // quiet-fail (provider-environment wording); `[mock:hydra-failtransient]`
+    // = a quiet-fail with a transient error (generic take-over wording).
+    const wantsHydraFailStart = prompt.includes("[mock:hydra-failstart]");
+    const wantsHydraFailAll = prompt.includes("[mock:hydra-failall]");
+    const wantsHydraFailTransient = prompt.includes("[mock:hydra-failtransient]");
+    // `[mock:fail-quiet]` errors the turn before ANY chunk — a head that
+    // failed having said nothing and run no tool (frozen startupFailure);
+    // `[mock:fail-quiet-transient]` the same with a transient error.
+    const wantsFailQuietTransient = prompt.includes("[mock:fail-quiet-transient]");
+    const wantsFailQuiet =
+      prompt.includes("[mock:fail-quiet]") || wantsFailQuietTransient;
     // F03 watchdog fixtures: `[mock:quiet]` emits its opening chunks then
     // goes silent forever (paused queue, nothing left) — the quiet
     // watchdog owns what happens next. `[mock:mend]` leads with an
@@ -185,7 +199,8 @@ export class MockProvider implements ProviderAdapter {
     if (
       wantsHydra || wantsHydraWait || wantsHydraWaitMany ||
       wantsHydraProfile || wantsHydraTouch || wantsHydraBadRoute ||
-      wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraQuiet
+      wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraQuiet ||
+      wantsHydraFailStart || wantsHydraFailAll || wantsHydraFailTransient
     ) {
       const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute
         ? wantsHydraWaitMany
@@ -203,6 +218,12 @@ export class MockProvider implements ProviderAdapter {
           ? '[{"task":"Dead checkout","prompt":"Try it.","project":"ghost-checkout"}]'
         : wantsHydraQuiet
           ? '[{"task":"Sit still","prompt":"Open up then sit silent. [mock:quiet]"}]'
+        : wantsHydraFailStart
+          ? '[{"task":"Quiet fail one","prompt":"Try it. [mock:fail-quiet]"},{"task":"Quiet fail two","prompt":"Try it. [mock:fail-quiet]"},{"task":"Steady part","prompt":"Normal work."}]'
+        : wantsHydraFailAll
+          ? '[{"task":"Quiet fail one","prompt":"Try it. [mock:fail-quiet]"},{"task":"Quiet fail two","prompt":"Try it. [mock:fail-quiet]"}]'
+        : wantsHydraFailTransient
+          ? '[{"task":"Flaky start","prompt":"Try it. [mock:fail-quiet-transient]"},{"task":"Steady part","prompt":"Normal work."}]'
           : '[{"task":"Draft the outline","prompt":"Write a short outline."},{"task":"Verify the numbers","prompt":"Check the arithmetic."}]';
       // Split so the first entry closes one chunk BEFORE the second —
       // deterministic incremental dispatch (a head spawns while the
@@ -239,7 +260,7 @@ export class MockProvider implements ProviderAdapter {
       });
     };
 
-    for (const delta of chunks.slice(0, 2)) {
+    for (const delta of chunks.slice(0, wantsFailQuiet ? 0 : 2)) {
       driver.queue.push(() => cb.onChunk(++driver.seq, delta));
     }
     if (noticeMatch) {
@@ -248,7 +269,15 @@ export class MockProvider implements ProviderAdapter {
       );
     }
 
-    if (wantsLimitNoTime) {
+    if (wantsFailQuietTransient) {
+      driver.queue.push(() =>
+        cb.onError("Synthetic provider error: the connection dropped before the turn began."),
+      );
+    } else if (wantsFailQuiet) {
+      driver.queue.push(() =>
+        cb.onError("Synthetic provider error (prompt contained [mock:fail-quiet])."),
+      );
+    } else if (wantsLimitNoTime) {
       driver.queue.push(() =>
         cb.onError("usage limit reached on the synthetic account"),
       );

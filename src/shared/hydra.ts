@@ -465,6 +465,12 @@ export interface HydraReport {
   landing?: HydraLanding;
   /** The head's own copy of the checkout, for work that did not land. */
   checkoutPath?: string;
+  /** The provider's display name the head ran on — startup failures
+   *  group their cause by it. */
+  provider?: string;
+  /** The head failed with a non-transient error before it said anything
+   *  or ran a tool — one cause per provider, not one per head. */
+  startupFailure?: boolean;
 }
 
 /** A head the lead asked for through the delegation block. `name` is the
