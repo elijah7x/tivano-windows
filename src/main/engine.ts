@@ -35,9 +35,11 @@ import {
   HydraDelegationStreamParser,
   MAX_DELEGATED_TASKS,
   MAX_DELEGATION_ROUNDS,
+  QUIET_STALL_NOTE,
   STALLED_NOTE,
   delegatedHeadPrompt,
   hydraDelegationRequest,
+  hydraIsTransientFailure,
   hydraLeadPolicy,
   hydraReportNote,
   hydraTeamStatus,
@@ -179,6 +181,12 @@ export class Engine {
   private readonly quietLabelMs = Number(process.env.TIVANO_QUIET_LABEL_MS) || 5 * 60_000;
   private readonly quietStopMs = Number(process.env.TIVANO_QUIET_STOP_MS) || 10 * 60_000;
   private readonly quietToolStopMs = Number(process.env.TIVANO_QUIET_TOOL_STOP_MS) || 30 * 60_000;
+  /** Frozen HydraWatchdog.toolCounts — a head's tool-call count at the
+   *  last look; unchanged across two looks is part of the stall check. */
+  private readonly hydraQuietTools = new Map<string, number>();
+  /** Frozen HydraWatchdog.stalledHeadIDs — heads the quiet watchdog is
+   *  stopping; finishHydraHead turns the mark into stopReason=stalled. */
+  private readonly hydraStalledIds = new Set<string>();
   /** Per-turn checkpoint lifecycle — attached by bootstrap when the
    *  service exists. Optional so tests/mock runs keep the old path. */
   private checkpoints?: CheckpointCoordinator;
@@ -722,7 +730,14 @@ export class Engine {
   createThread(
     projectId: string | null,
     title?: string,
-    opts?: { workspaceDefault?: boolean },
+    opts?: {
+      workspaceDefault?: boolean;
+      /** F34: external-control create (frozen createExternalThread)
+       *  never inherits the saved per-chat default or last pair — the
+       *  resolved choice is handed in explicitly: `enabled` plus the
+       *  pair `--hydra on` resolved to. */
+      externalHydra?: { enabled: boolean; pairId?: string };
+    },
   ): ChatThread {
     this.assertMutable();
     if (projectId) this.mustProject(projectId);
@@ -742,12 +757,20 @@ export class Engine {
       // (frozen makeThread — absent setting = fullAccess).
       runtimeMode: settings.defaultRuntimeMode ?? "fullAccess",
       // F21: seed the per-chat Hydra flag from the saved default (frozen
-      // ChatThread.hydraDefaultKey semantics — absent setting = on). Inert
-      // until F22 scheduling consumes it.
-      hydraEnabled: settings.hydraDefaultEnabled !== false,
-      ...(settings.lastHydraPairId
-        ? { hydraPairId: settings.lastHydraPairId }
-        : {}),
+      // ChatThread.hydraDefaultKey semantics — absent setting = on).
+      // F34: an external create instead takes its choice verbatim —
+      // frozen createExternalThread always starts Hydra off and never
+      // inherits the saved default or last pair.
+      hydraEnabled: opts?.externalHydra
+        ? opts.externalHydra.enabled
+        : settings.hydraDefaultEnabled !== false,
+      ...(opts?.externalHydra
+        ? opts.externalHydra.pairId
+          ? { hydraPairId: opts.externalHydra.pairId }
+          : {}
+        : settings.lastHydraPairId
+          ? { hydraPairId: settings.lastHydraPairId }
+          : {}),
     };
     this.store.update((d) => {
       d.threads.push(thread);
@@ -1132,6 +1155,10 @@ export class Engine {
     if (steeredHead?.hydraHead) {
       const info = steeredHead.hydraHead;
       info.status = "running";
+      // Frozen: a running head carries no stop reason; the stall note it
+      // already reported must not be prepended to the next turn's report.
+      info.stopReason = undefined;
+      info.stalledNote = undefined;
       // A fresh batch: this turn's report flushes on its own, never
       // folded into the batch it was originally spawned under.
       info.batchId = `steer-${turn.id}`;
@@ -1529,10 +1556,39 @@ export class Engine {
       const turn = thread.turn;
       if (!turn || (turn.status !== "running" && turn.status !== "waiting-approval")) continue;
       anyLive = true;
+      // Frozen HydraWatchdog.watchHydraHeads: a head parked on the user
+      // or inside a running tool is awake; a running head quiet for ten
+      // minutes that edited nothing and called no new tool since the
+      // last look has stalled and is stopped the way the panel's Stop
+      // stops it — its finish path then marks stopReason=stalled.
+      if (thread.hydraHead) {
+        const info = thread.hydraHead;
+        if (info.status !== "running") continue;
+        const tools = thread.messages.filter(
+          (m) => m.turnId === turn.id && m.kind === "tool",
+        );
+        const prevTools = this.hydraQuietTools.get(thread.id);
+        this.hydraQuietTools.set(thread.id, tools.length);
+        if (turn.approval?.status === "pending" || turn.question?.status === "pending") {
+          this.noteTurnEvent(turn.id);
+          continue;
+        }
+        if (tools.some((m) => m.tool?.state === "running")) continue;
+        const quiet = now - (this.turnLastEvent.get(turn.id) ?? turn.startedAt);
+        const edits = tools.filter((m) => m.tool?.kind === "edit").length;
+        if (
+          quiet >= this.quietStopMs &&
+          edits === 0 &&
+          prevTools === tools.length
+        ) {
+          this.hydraStalledIds.add(thread.id);
+          this.stopHydraHead(thread.id);
+        }
+        continue;
+      }
       // Frozen exemptions (watchQuiet guard): head threads run their own
       // watchdog; anything waiting on the user or on delegated heads is
       // awake by definition, not silent.
-      if (thread.hydraHead) continue;
       if (turn.approval?.status === "pending" || turn.question?.status === "pending") continue;
       if (this.limitWaits.has(thread.id)) continue;
       if (
@@ -2727,6 +2783,22 @@ export class Engine {
   }
 
   /**
+   * F34: the local-control send gate (frozen
+   * `app.runningHydraHeads(of:) == 0`): a lead stays busy while any of
+   * its heads still work and while head reports sit queued for its next
+   * turn. Heads waiting on their own approvals/questions still count —
+   * their work has not come back.
+   */
+  hydraLeadBusy(leadId: string): boolean {
+    if ((this.hydraPendingReports.get(leadId)?.length ?? 0) > 0) return true;
+    return this.store.state.threads.some(
+      (t) =>
+        t.hydraHead?.leadId === leadId &&
+        (t.hydraHead.status === "running" || t.hydraHead.landingPending === true),
+    );
+  }
+
+  /**
    * The provider-owned model catalog (Codex model/list). Never
    * fabricated: non-Codex providers → unsupported; no live session →
    * pending; a failed read → unavailable with the real reason.
@@ -2866,6 +2938,10 @@ export class Engine {
     const thread = this.store.state.threads.find((t) => t.id === threadId);
     const turn = thread?.turn;
     if (!thread || !turn || turn.id !== turnId || turn.status !== "running") return;
+    // Frozen startedWaiting: a second pending request in the same wait
+    // must not re-note the lead.
+    const wasWaiting =
+      turn.approval?.status === "pending" || turn.question?.status === "pending";
     const approval: ApprovalRequest = { ...req, id: randomUUID(), turnId, status: "pending" };
     turn.approval = approval;
     turn.status = "waiting-approval";
@@ -2894,6 +2970,8 @@ export class Engine {
         this.handles.get(threadId)?.resume(true);
       }
     }
+    if (approval.status === "pending" && !wasWaiting)
+      this.noteHeadWaiting(thread);
   }
 
   private finishTurn(threadId: string, turnId: string, status: "done"): void {
@@ -2953,9 +3031,12 @@ export class Engine {
     const turn = thread?.turn;
     if (!thread || !turn || turn.id !== turnId) return;
     if (turn.status !== "running") return; // questions present only while live
+    const wasWaiting =
+      turn.approval?.status === "pending" || turn.question?.status === "pending";
     turn.question = { ...req, status: "pending" };
     this.store.update(() => {});
     this.emit({ type: "thread-updated", thread });
+    if (!wasWaiting) this.noteHeadWaiting(thread);
   }
 
   /** Codex only: the answer bytes were CONFIRMED on the wire — NOW the
@@ -3472,6 +3553,21 @@ export class Engine {
     thread.updatedAt = Date.now();
     this.store.update(() => {});
     this.emit({ type: "thread-updated", thread });
+  }
+
+  /** Frozen AppModel.hydraHeadStartedWaiting: the lead's chat hears once
+   *  per waiting episode that a head is parked on the user, in the same
+   *  in-timeline note channel other head news uses. */
+  private noteHeadWaiting(head: ChatThread): void {
+    const info = head.hydraHead;
+    if (!info || info.status !== "running") return;
+    const lead = this.store.state.threads.find((t) => t.id === info.leadId);
+    if (!lead || lead.hydraHead) return;
+    this.appendNotice(
+      lead,
+      `${info.name} is waiting for your answer. Open it from the Hydra panel to reply.`,
+      "info",
+    );
   }
 
   /**
@@ -4419,6 +4515,8 @@ export class Engine {
     const w = this.hydraWatchdogs.get(head.id);
     if (w) clearTimeout(w);
     this.hydraWatchdogs.delete(head.id);
+    this.hydraQuietTools.delete(head.id);
+    this.hydraStalledIds.delete(head.id);
     if (opts?.note) {
       const lead = this.store.state.threads.find((t) => t.id === info.leadId);
       if (lead && !lead.hydraHead) this.appendNotice(lead, summary, "info");
@@ -4444,13 +4542,29 @@ export class Engine {
         : status === "cancelled" || status === "interrupted"
           ? "stopped"
           : "failed";
+    this.hydraQuietTools.delete(head.id);
     const lastAssistant = [...head.messages]
       .reverse()
       .find((m) => m.role === "assistant" && m.content.trim());
     let summary = lastAssistant?.content.trim() ?? "";
     if (outcome === "failed") {
-      summary = `The turn failed.${summary ? ` Partial output:\n${summary}` : ""}`;
+      // Frozen failedTurnReport: the recorded error first, then whatever
+      // the head managed to say named as partial output.
+      const parts = [
+        head.turn?.error?.trim() ||
+          "The turn failed without a recorded error.",
+      ];
+      if (summary) parts.push(`Partial output before the failure:\n\n${summary}`);
+      summary = parts.join("\n\n");
     }
+    // Frozen finishHydraHead: a head the quiet watchdog stopped tells its
+    // lead why ahead of whatever it had said, and is marked stalled so
+    // the panel and the report can say Tivano stopped it. The budget
+    // watchdog's stalledNote is already on the record; every other stop
+    // keeps no reason and reads as a user stop.
+    const stalled = this.hydraStalledIds.delete(head.id) && outcome === "stopped";
+    info.stopReason = stalled ? "stalled" : undefined;
+    if (stalled && !info.stalledNote) info.stalledNote = QUIET_STALL_NOTE;
     if (info.stalledNote) summary = `${info.stalledNote}\n\n${summary}`.trim();
     info.status = outcome;
     info.summary = summary;
@@ -4490,6 +4604,21 @@ export class Engine {
   private queueHydraReport(head: ChatThread): void {
     const info = head.hydraHead;
     if (!info) return;
+    // Frozen startupFailure: a head that failed with an error of its own
+    // — never a transient one — before it said anything or ran a tool.
+    // A start that never reached a turn (routing, unreadable checkout,
+    // a send that threw) has no recorded turn error and stays unmarked.
+    const err = head.turn?.error?.trim();
+    const startupFailure =
+      info.status === "failed" &&
+      err !== undefined &&
+      err !== "" &&
+      !hydraIsTransientFailure(err) &&
+      !head.messages.some(
+        (m) =>
+          m.kind === "tool" ||
+          (m.role === "assistant" && m.content.trim() !== ""),
+      );
     const reports = this.hydraPendingReports.get(info.leadId) ?? [];
     reports.push({
       headIndex: info.headIndex,
@@ -4499,6 +4628,9 @@ export class Engine {
       batchId: info.batchId,
       elapsedMs: info.elapsedMs,
       toolCalls: info.toolCalls,
+      provider: this.provider.descriptor.label,
+      ...(startupFailure ? { startupFailure: true } : {}),
+      ...(info.stopReason !== undefined ? { stopReason: info.stopReason } : {}),
       ...(info.landing !== undefined ? { landing: info.landing } : {}),
       ...(info.copyKept === true && head.worktreeDir !== undefined
         ? { copyPath: head.worktreeDir }

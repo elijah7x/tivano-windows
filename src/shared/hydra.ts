@@ -144,6 +144,23 @@ export function hydraPairForLead(
   return pairs.find((p) => p.id === pairId && p.provider === providerId);
 }
 
+/** The pair a control-created chat leads with — frozen
+ *  Settings.hydraPair(for:model:): the provider's pair for the lead's
+ *  model, else one for any model on the provider, else the provider's
+ *  first saved pair. undefined = the provider has no pair saved. */
+export function hydraPairForProvider(
+  pairs: HydraPair[],
+  providerId: string,
+  model: string | undefined,
+): HydraPair | undefined {
+  const candidates = pairs.filter((p) => p.provider === providerId);
+  if (model !== undefined) {
+    const exact = candidates.find((p) => p.orchestratorModel === model);
+    if (exact) return exact;
+  }
+  return candidates.find((p) => p.orchestratorModel === undefined) ?? candidates[0];
+}
+
 /**
  * What the lead's heads launch with in THIS build — the slice of
  * `hydraLaunch(for:)` a single-provider engine can honour. Heads always
@@ -390,6 +407,9 @@ export interface HydraHeadInfo {
   kind: HydraHeadKind;
   origin: HydraHeadOrigin;
   status: HydraHeadStatus;
+  /** Frozen HydraHeadInfo.StopReason — set only when the quiet watchdog
+   *  stopped the head for sitting still. */
+  stopReason?: "stalled";
   summary?: string;
   /** The provider's one-line progress note, or the last tool the head used. */
   activity?: string;
@@ -462,6 +482,12 @@ export interface HydraReport {
   landing?: HydraLanding;
   /** The head's own copy of the checkout, for work that did not land. */
   checkoutPath?: string;
+  /** The provider's display name the head ran on — startup failures
+   *  group their cause by it. */
+  provider?: string;
+  /** The head failed with a non-transient error before it said anything
+   *  or ran a tool — one cause per provider, not one per head. */
+  startupFailure?: boolean;
 }
 
 /** A head the lead asked for through the delegation block. `name` is the

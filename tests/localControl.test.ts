@@ -6,7 +6,7 @@
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, type Socket } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { Store } from "../src/main/store";
@@ -96,6 +96,17 @@ function hello(sock: string, h: unknown): Promise<Record<string, unknown>> {
     conn.setTimeout(5000, () => reject(new Error("hello timeout")));
   });
 }
+
+/** Some sandboxes deny filesystem/named-pipe listeners outright — the
+ *  F34 socket cases probe once and skip there instead of failing on the
+ *  environment; tests/localControlDispatch.test.ts covers the same ops
+ *  without a socket and always runs. */
+const socketBindable = await new Promise<boolean>((resolve) => {
+  const probe = join(tmpdir(), `tivano-lc-probe-${randomUUID()}.sock`);
+  const s = createServer(() => {});
+  s.on("error", () => resolve(false));
+  s.listen(probe, () => s.close(() => resolve(true)));
+});
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const enabled = (e: Engine) =>
@@ -369,5 +380,244 @@ describe("local control (F33)", () => {
       text: "old write",
     });
     expect((res.error as Record<string, unknown>).code).toBe("unknown");
+  });
+
+  describe.runIf(socketBindable)("F34 socket-level hydra control", () => {
+  it("create --hydra on needs the app-wide switch and a saved pair", async () => {
+    const { engine, svc, sock } = rig();
+    enabled(engine);
+    svc.refreshListening();
+    await wait(30);
+    // Non-boolean hydra is a bad request.
+    const bad = await call(sock, svc.instance, "create", {
+      ticket: ticket(svc), workspace: "local", hydra: "yes",
+    });
+    expect((bad.error as Record<string, unknown>).code).toBe("invalidRequest");
+    // App-wide switch off -> unsupported/hydra_disabled.
+    engine.setSettings({ hydraEnabled: false });
+    const off = await call(sock, svc.instance, "create", {
+      ticket: ticket(svc), workspace: "local", hydra: true,
+    });
+    expect((off.error as Record<string, unknown>).code).toBe("unsupported");
+    expect((off.error as Record<string, unknown>).detail).toBe("hydra_disabled");
+    // Switch on but no saved pair -> a clear failure, not a silent
+    // Hydra-off chat.
+    engine.setSettings({ hydraEnabled: true, hydraPairs: [] });
+    const noPair = await call(sock, svc.instance, "create", {
+      ticket: ticket(svc), workspace: "local", hydra: true,
+    });
+    expect((noPair.error as Record<string, unknown>).code).toBe("unsupported");
+    expect((noPair.error as Record<string, unknown>).detail).toBe("hydra_pair_missing");
+    // A pair saved against ANOTHER provider does not count.
+    engine.setSettings({
+      hydraPairs: [{ id: "foreign", provider: "claude", headProfiles: [] }],
+    });
+    const foreign = await call(sock, svc.instance, "create", {
+      ticket: ticket(svc), workspace: "local", hydra: true,
+    });
+    expect((foreign.error as Record<string, unknown>).detail).toBe("hydra_pair_missing");
+  });
+
+  it("F34: --hydra on binds the saved pair; absent or off never inherits", async () => {
+    const { engine, svc, sock } = rig();
+    enabled(engine);
+    svc.refreshListening();
+    await wait(30);
+    // The UI's own defaults exist — external create must not touch them.
+    engine.setSettings({
+      hydraEnabled: true,
+      hydraDefaultEnabled: true,
+      lastHydraPairId: "pair-ui",
+      hydraPairs: [
+        {
+          id: "pair-1",
+          provider: "mock",
+          orchestratorModel: "mock-big",
+          orchestratorEffort: "high",
+          headProfiles: [],
+        },
+      ],
+    });
+    type CreateOp = { operation: { state: string; threadId: string } };
+    const op = async (params: Record<string, unknown>) =>
+      ((await call(sock, svc.instance, "create", { ticket: ticket(svc), ...params }))
+        .result as CreateOp).operation;
+    // --hydra on, no model: the pair's saved lead model+effort apply.
+    const on = await op({ workspace: "local", hydra: true });
+    expect(on.state).toBe("ready");
+    const led = engine.snapshot().threads.find((t) => t.id === on.threadId)!;
+    expect(led.hydraEnabled).toBe(true);
+    expect(led.hydraPairId).toBe("pair-1");
+    expect(led.codexModel).toBe("mock-big");
+    expect(led.codexEffort).toBe("high");
+    const view = await call(sock, svc.instance, "thread", { id: led.id });
+    const viewThread = (view.result as { thread: { hydra: boolean; role: string } }).thread;
+    expect(viewThread.hydra).toBe(true);
+    expect(viewThread.role).toBe("normal");
+    // --hydra on with an explicit model keeps the asked model.
+    const withModel = await op({ workspace: "local", hydra: true, model: "asked-model" });
+    const led2 = engine.snapshot().threads.find(
+      (t) => t.id === withModel.threadId,
+    )!;
+    expect(led2.hydraEnabled).toBe(true);
+    expect(led2.codexModel).toBe("asked-model");
+    // No flag and --hydra off both stay off and inherit nothing — the
+    // UI's hydraDefaultEnabled/lastHydraPairId are not consulted.
+    for (const params of [
+      { workspace: "local" },
+      { workspace: "local", hydra: false },
+    ]) {
+      const made = await op(params);
+      const plain = engine.snapshot().threads.find(
+        (t) => t.id === made.threadId,
+      )!;
+      expect(plain.hydraEnabled).toBe(false);
+      expect(plain.hydraPairId).toBeUndefined();
+      const summary = await call(sock, svc.instance, "thread", { id: plain.id });
+      expect(
+        (summary.result as { thread: { hydra: boolean } }).thread.hydra,
+      ).toBe(false);
+    }
+    // The UI's per-chat default did not move under any of it.
+    expect(engine.snapshot().settings.hydraDefaultEnabled).toBe(true);
+    expect(engine.snapshot().settings.lastHydraPairId).toBe("pair-ui");
+  });
+
+  it("F34: a lead is busy while its heads work; heads refuse writes", async () => {
+    // Slow ticks keep the closing turn alive for the interrupt check —
+    // the same shape as the interrupt test above.
+    const root = freshRoot();
+    const store = new Store(root);
+    store.open();
+    const engine = new Engine(store, new MockProvider({ tickMs: 300 }), root, "t");
+    const svc = new LocalControlService(engine, root, "dev");
+    services.push(svc);
+    const sock = join(root, "control", "control.sock");
+    enabled(engine);
+    svc.refreshListening();
+    await wait(30);
+    const lead = engine.createThread(null, "lead");
+    // A synthetic running head under the lead — no provider involved.
+    const head = engine.createThread(null, "head");
+    store.update((d) => {
+      const h = d.threads.find((t) => t.id === head.id)!;
+      h.hydraEnabled = false;
+      h.hydraHead = {
+        leadId: lead.id,
+        headIndex: 0,
+        name: "Nyx",
+        task: "probe",
+        batchId: "batch-1",
+        status: "running",
+        spawnedAt: Date.now(),
+      };
+    });
+    // Writes aimed AT a head are unsupported on every write command.
+    const headSend = await call(sock, svc.instance, "submit", {
+      ticket: ticket(svc), threadId: head.id, text: "hello",
+    });
+    expect((headSend.error as Record<string, unknown>).code).toBe("unsupported");
+    expect((headSend.error as Record<string, unknown>).detail).toBe("hydra-head-target");
+    const headIntr = await call(sock, svc.instance, "interrupt", {
+      ticket: ticket(svc), threadId: head.id, turnId: randomUUID(),
+    });
+    expect((headIntr.error as Record<string, unknown>).code).toBe("unsupported");
+    // The lead reads busy while the head works — in both UI languages.
+    const busyEn = await call(sock, svc.instance, "submit", {
+      ticket: ticket(svc), threadId: lead.id, text: "more work",
+    });
+    expect((busyEn.error as Record<string, unknown>).code).toBe("busy");
+    engine.setSettings({ language: "zh-Hans" });
+    const busyZh = await call(sock, svc.instance, "submit", {
+      ticket: ticket(svc), threadId: lead.id, text: "more work",
+    });
+    expect((busyZh.error as Record<string, unknown>).code).toBe("busy");
+    engine.setSettings({ language: "en" });
+    // Head summaries stay honest in the list views.
+    const normal = await call(sock, svc.instance, "threads", {});
+    const normalItems = (
+      normal.result as { threads: { items: { id: string }[] } }
+    ).threads.items;
+    const normalIds = normalItems.map((t) => t.id);
+    expect(normalIds).toContain(lead.id);
+    expect(normalIds).not.toContain(head.id);
+    const heads = await call(sock, svc.instance, "threads", { role: "head" });
+    const headItems = (
+      heads.result as {
+        threads: { items: { id: string; role: string; hydra: boolean }[] };
+      }
+    ).threads.items;
+    expect(headItems.map((t) => t.id)).toEqual([head.id]);
+    expect(headItems[0]?.role).toBe("head");
+    expect(headItems[0]?.hydra).toBe(false);
+    // Finish the head -> still busy while its landing is in flight
+    // (frozen: landing counts as working until the report queues).
+    store.update((d) => {
+      const h = d.threads.find((t) => t.id === head.id)!.hydraHead!;
+      h.status = "completed";
+      h.landingPending = true;
+    });
+    const landingBusy = await call(sock, svc.instance, "submit", {
+      ticket: ticket(svc), threadId: lead.id, text: "more work",
+    });
+    expect((landingBusy.error as Record<string, unknown>).code).toBe("busy");
+    // Landing done and an empty leftover report queue -> the lead is free.
+    (
+      engine as unknown as { hydraPendingReports: Map<string, unknown[]> }
+    ).hydraPendingReports.set(lead.id, []);
+    store.update((d) => {
+      d.threads.find((t) => t.id === head.id)!.hydraHead!.landingPending = false;
+    });
+    const sent = await call(sock, svc.instance, "submit", {
+      ticket: ticket(svc), threadId: lead.id, text: "more work",
+    });
+    const sentOp = (sent.result as Record<string, unknown>).operation as {
+      state: string;
+      turnId: string;
+    };
+    expect(sentOp.state).toBe("started");
+    const intr = await call(sock, svc.instance, "interrupt", {
+      ticket: ticket(svc), threadId: lead.id, turnId: sentOp.turnId,
+    });
+    expect(
+      ((intr.result as Record<string, unknown>).operation as { state: string }).state,
+    ).toBe("ended");
+    // A report still queued for the lead holds it busy; the empty map
+    // entry a finished flush leaves behind does not.
+    (
+      engine as unknown as { hydraPendingReports: Map<string, unknown[]> }
+    ).hydraPendingReports.set(lead.id, [{ headIndex: 0 }]);
+    const queuedBusy = await call(sock, svc.instance, "submit", {
+      ticket: ticket(svc), threadId: lead.id, text: "more work",
+    });
+    expect((queuedBusy.error as Record<string, unknown>).code).toBe("busy");
+    (
+      engine as unknown as { hydraPendingReports: Map<string, unknown[]> }
+    ).hydraPendingReports.delete(lead.id);
+    store.close();
+  });
+
+  it("F34: failure kinds are stable across UI languages", async () => {
+    const { engine, svc, sock } = rig();
+    enabled(engine);
+    svc.refreshListening();
+    await wait(30);
+    // The wire carries constant codes — the main process never
+    // localizes provider/control failures. Same calls under zh-Hans
+    // must return the identical kinds as under English.
+    engine.setSettings({ hydraEnabled: false });
+    const run = () =>
+      call(sock, svc.instance, "create", {
+        ticket: ticket(svc), workspace: "local", hydra: true,
+      });
+    const en = (await run()).error as Record<string, unknown>;
+    engine.setSettings({ language: "zh-Hans" });
+    const zh = (await run()).error as Record<string, unknown>;
+    expect(zh.code).toBe(en.code);
+    expect(zh.detail).toBe(en.detail);
+    const missing = await call(sock, svc.instance, "thread", { id: randomUUID() });
+    expect((missing.error as Record<string, unknown>).code).toBe("notFound");
+    engine.setSettings({ language: "en" });
+  });
   });
 });

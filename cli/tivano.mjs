@@ -13,6 +13,7 @@
 //   tivano thread <uuid> | history <uuid>
 //   tivano create [--provider ID] [--model ID] [--workspace local]
 //                 [--project UUID] [--prompt TEXT] [--continuation MODE]
+//                 [--hydra on|off]
 //   tivano send <uuid> --text TEXT|--stdin [--continuation MODE]
 //   tivano interrupt <uuid> --turn <uuid>
 //   tivano operation <ticket>
@@ -59,7 +60,7 @@ function usage() {
   process.stderr.write(
     `usage: tivano info|providers|projects|threads
        tivano thread <uuid> | history <uuid>
-       tivano create [--provider ID] [--model ID] [--workspace local] [--project UUID] [--prompt TEXT] [--continuation MODE]
+       tivano create [--provider ID] [--model ID] [--workspace local] [--project UUID] [--prompt TEXT] [--continuation MODE] [--hydra on|off]
        tivano send <uuid> --text TEXT|--stdin [--continuation automatic|providerSession|fresh|transcript]
        tivano interrupt <uuid> --turn <uuid>
        tivano operation <ticket>
@@ -189,6 +190,13 @@ async function main() {
       if (params === null) usage();
       const prompt = params.prompt;
       delete params.prompt;
+      // --hydra on|off rides the create request as a boolean (frozen
+      // ControlCreate.hydra).
+      if (params.hydra !== undefined) {
+        if (params.hydra === "on") params.hydra = true;
+        else if (params.hydra === "off") params.hydra = false;
+        else usage();
+      }
       build = (inst) => {
         const cmds = [{ method: "create", params: { ...params, ticket: ticket(inst) } }];
         return cmds;

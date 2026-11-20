@@ -146,6 +146,26 @@ export class MockProvider implements ProviderAdapter {
     const wantsHydraBadRoute = prompt.includes("[mock:hydra-badroute]");
     const wantsHydraDeadCheckout = prompt.includes("[mock:hydra-deadcheckout]");
     const wantsHydraWaitRoute = prompt.includes("[mock:hydra-waitroute]");
+    // P2-07 fixture: `[mock:hydra-waitq]` = one head that parks on a
+    // user-input question instead of an approval.
+    const wantsHydraWaitQ = prompt.includes("[mock:hydra-waitq]");
+    // F03/P2-06 fixture: `[mock:hydra-quiet]` = one head whose own prompt
+    // goes silent — the quiet watchdog owns what happens to it.
+    const wantsHydraQuiet = prompt.includes("[mock:hydra-quiet]");
+    // 2.2.12 startup-failure fixtures: `[mock:hydra-failstart]` = two
+    // heads whose turns error before a word or a tool plus one that
+    // completes (likely-temporary wording); `[mock:hydra-failall]` = all
+    // quiet-fail (provider-environment wording); `[mock:hydra-failtransient]`
+    // = a quiet-fail with a transient error (generic take-over wording).
+    const wantsHydraFailStart = prompt.includes("[mock:hydra-failstart]");
+    const wantsHydraFailAll = prompt.includes("[mock:hydra-failall]");
+    const wantsHydraFailTransient = prompt.includes("[mock:hydra-failtransient]");
+    // `[mock:fail-quiet]` errors the turn before ANY chunk — a head that
+    // failed having said nothing and run no tool (frozen startupFailure);
+    // `[mock:fail-quiet-transient]` the same with a transient error.
+    const wantsFailQuietTransient = prompt.includes("[mock:fail-quiet-transient]");
+    const wantsFailQuiet =
+      prompt.includes("[mock:fail-quiet]") || wantsFailQuietTransient;
     // F03 watchdog fixtures: `[mock:quiet]` emits its opening chunks then
     // goes silent forever (paused queue, nothing left) — the quiet
     // watchdog owns what happens next. `[mock:mend]` leads with an
@@ -153,6 +173,9 @@ export class MockProvider implements ProviderAdapter {
     // holds the same way.
     const wantsQuiet = prompt.includes("[mock:quiet]");
     const wantsMend = prompt.includes("[mock:mend]");
+    // P2-07 fixture: `[mock:question]` presents a user-input request then
+    // holds — the waiting-for-answer path an approval already exercises.
+    const wantsQuestion = prompt.includes("[mock:question]");
     // `[mock:reason]` streams a reasoning item then holds — the running
     // indicator's chevron has thinking steps to open (frozen disclosure).
     const wantsReason = prompt.includes("[mock:reason]");
@@ -182,13 +205,17 @@ export class MockProvider implements ProviderAdapter {
     if (
       wantsHydra || wantsHydraWait || wantsHydraWaitMany ||
       wantsHydraProfile || wantsHydraTouch || wantsHydraBadRoute ||
-      wantsHydraDeadCheckout || wantsHydraWaitRoute
+      wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraWaitQ ||
+      wantsHydraQuiet || wantsHydraFailStart || wantsHydraFailAll ||
+      wantsHydraFailTransient
     ) {
-      const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute
+      const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute || wantsHydraWaitQ
         ? wantsHydraWaitMany
           ? '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"},{"task":"Part two","prompt":"Second part."},{"task":"Part three","prompt":"Third part."}]'
           : wantsHydraWaitRoute
             ? '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"},{"task":"Lost errand","prompt":"Try it.","project":"ghost-proj"}]'
+          : wantsHydraWaitQ
+            ? '[{"task":"Ask something","prompt":"Work then ask. [mock:question]"}]'
             : '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"}]'
         : wantsHydraTouch
           ? '[{"task":"Write alpha","prompt":"Write the file. [mock:touch hydra-alpha.txt]"},{"task":"Write beta","prompt":"Write the file. [mock:touch hydra-beta.txt]"}]'
@@ -198,6 +225,14 @@ export class MockProvider implements ProviderAdapter {
           ? '[{"task":"Lost errand","prompt":"Try it.","project":"ghost-proj"}]'
         : wantsHydraDeadCheckout
           ? '[{"task":"Dead checkout","prompt":"Try it.","project":"ghost-checkout"}]'
+        : wantsHydraQuiet
+          ? '[{"task":"Sit still","prompt":"Open up then sit silent. [mock:quiet]"}]'
+        : wantsHydraFailStart
+          ? '[{"task":"Quiet fail one","prompt":"Try it. [mock:fail-quiet]"},{"task":"Quiet fail two","prompt":"Try it. [mock:fail-quiet]"},{"task":"Steady part","prompt":"Normal work."}]'
+        : wantsHydraFailAll
+          ? '[{"task":"Quiet fail one","prompt":"Try it. [mock:fail-quiet]"},{"task":"Quiet fail two","prompt":"Try it. [mock:fail-quiet]"}]'
+        : wantsHydraFailTransient
+          ? '[{"task":"Flaky start","prompt":"Try it. [mock:fail-quiet-transient]"},{"task":"Steady part","prompt":"Normal work."}]'
           : '[{"task":"Draft the outline","prompt":"Write a short outline."},{"task":"Verify the numbers","prompt":"Check the arithmetic."}]';
       // Split so the first entry closes one chunk BEFORE the second —
       // deterministic incremental dispatch (a head spawns while the
@@ -234,7 +269,7 @@ export class MockProvider implements ProviderAdapter {
       });
     };
 
-    for (const delta of chunks.slice(0, 2)) {
+    for (const delta of chunks.slice(0, wantsFailQuiet ? 0 : 2)) {
       driver.queue.push(() => cb.onChunk(++driver.seq, delta));
     }
     if (noticeMatch) {
@@ -243,7 +278,15 @@ export class MockProvider implements ProviderAdapter {
       );
     }
 
-    if (wantsLimitNoTime) {
+    if (wantsFailQuietTransient) {
+      driver.queue.push(() =>
+        cb.onError("Synthetic provider error: the connection dropped before the turn began."),
+      );
+    } else if (wantsFailQuiet) {
+      driver.queue.push(() =>
+        cb.onError("Synthetic provider error (prompt contained [mock:fail-quiet])."),
+      );
+    } else if (wantsLimitNoTime) {
       driver.queue.push(() =>
         cb.onError("usage limit reached on the synthetic account"),
       );
@@ -279,6 +322,30 @@ export class MockProvider implements ProviderAdapter {
       const tail = chunks.slice(2);
       driver.queue.push(() => {
         // Reached only when resumed; emits the remaining chunks then done.
+        for (const delta of tail) cb.onChunk(++driver.seq, delta);
+        emitUsage();
+        cb.onDone();
+      });
+    } else if (wantsQuestion) {
+      driver.queue.push(() => {
+        driver.paused = true;
+        cb.onQuestion?.({
+          providerKey: "mock-q-1",
+          questions: [
+            {
+              id: "q1",
+              header: "Synthetic check",
+              prompt: "Pick a synthetic answer.",
+              choices: [{ label: "continue" }, { label: "hold" }],
+              allowsOther: false,
+              isSecret: false,
+            },
+          ],
+        });
+      });
+      const tail = chunks.slice(2);
+      driver.queue.push(() => {
+        // Reached only when the question is answered; emits the rest.
         for (const delta of tail) cb.onChunk(++driver.seq, delta);
         emitUsage();
         cb.onDone();
@@ -362,6 +429,12 @@ export class MockProvider implements ProviderAdapter {
           driver.queue.length = 0;
           return;
         }
+        pump();
+      },
+      answer: (providerKey: string) => {
+        if (driver.cancelled) return;
+        cb.onQuestionAnswered?.(providerKey);
+        driver.paused = false;
         pump();
       },
     };
