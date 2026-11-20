@@ -30,6 +30,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import type { Engine } from "./engine";
 import type { ChatThread } from "../shared/types";
+import { hydraPairForProvider, type HydraPair } from "../shared/hydra";
 
 const VERSION = 1;
 const MAX_FRAME = 1_048_576;
@@ -332,7 +333,9 @@ export class LocalControlService {
           ? "project"
           : "missing_project"
         : "standalone",
-      role: "normal",
+      // F34: heads exist in this build — report them honestly; helpers
+      // and voice chats do not (bounded).
+      role: t.hydraHead ? "head" : "normal",
       archived: t.isArchived === true,
       provider: this.engine.providerDescriptor.id,
       model: t.codexModel ?? null,
@@ -348,6 +351,12 @@ export class LocalControlService {
         ? { mode: "worktree", phase: "ready", path: t.worktreeDir }
         : { mode: "local" },
       executionDirectory: this.engine.threadDirectory(t.id),
+      // Frozen ChatThread.hydraIsOn: the app-wide switch AND the chat's
+      // own flag — both default on when absent (helpers don't exist
+      // here to exclude).
+      hydra:
+        this.engine.snapshot().settings.hydraEnabled !== false &&
+        t.hydraEnabled !== false,
     };
   }
 
@@ -394,7 +403,10 @@ export class LocalControlService {
         if (!["active", "archived", "all"].includes(archive)) fail("invalidRequest");
         const role = str(params, "role") ?? "normal";
         if (!["normal", "helper", "head", "all"].includes(role)) fail("invalidRequest");
-        if (role !== "normal" && role !== "all") fail("unsupported", "no helper/head threads");
+        // F34: head threads exist — they answer `head` and `all` and
+        // stay out of `normal` (frozen non-head listing). Helpers do
+        // not exist in this build.
+        if (role === "helper") fail("unsupported", "no helper threads");
         const affiliation = str(params, "affiliation") ?? "all";
         if (!["all", "standalone", "project", "missing_project"].includes(affiliation))
           fail("invalidRequest");
@@ -403,6 +415,8 @@ export class LocalControlService {
         const projFilter = params["project"];
         if (projFilter !== undefined && !isUuid(projFilter)) fail("invalidRequest");
         let items = snap.threads.map((t) => this.threadSummary(t));
+        if (role === "normal") items = items.filter((t) => t.role === "normal");
+        else if (role === "head") items = items.filter((t) => t.role === "head");
         if (archive === "active") items = items.filter((t) => !t.archived);
         else if (archive === "archived") items = items.filter((t) => t.archived);
         if (affiliation === "standalone") items = items.filter((t) => t.affiliation === "standalone");
@@ -547,26 +561,62 @@ export class LocalControlService {
       if (!p) fail("missingProject");
       if (d.mode !== "mock" && !p.directory) fail("directoryUnavailable");
     }
+    const model = str(params, "model");
+    // F34 (frozen createExternalThread): `hydra` is a boolean on|off —
+    // `on` requires the app-wide Hydra switch and a saved pair for this
+    // provider; off/absent always create Hydra-off without touching the
+    // UI's per-chat default.
+    const hydra = params["hydra"];
+    if (hydra !== undefined && typeof hydra !== "boolean") fail("invalidRequest");
+    let pair: HydraPair | undefined;
+    if (hydra === true) {
+      const s = this.engine.snapshot().settings;
+      if (s.hydraEnabled === false) fail("unsupported", "hydra_disabled");
+      pair = hydraPairForProvider(s.hydraPairs ?? [], d.mode, model);
+      if (!pair) fail("unsupported", "hydra_pair_missing");
+    }
     const ticket = this.ticketParam(params);
     const { op, fresh } = this.acceptWrite(ticket, { method: "create", params });
     if (!fresh) return { operation: outcomeOf(op) };
     try {
-      const thread = this.engine.createThread(projectId ?? null);
+      const thread = this.engine.createThread(projectId ?? null, undefined, {
+        externalHydra: {
+          enabled: hydra === true,
+          ...(pair ? { pairId: pair.id } : {}),
+        },
+      });
       op.threadId = thread.id;
-      const model = str(params, "model");
       if (model !== undefined) {
         if (model.length > 512) fail("unsupported", "model_unavailable");
         this.engine.setThreadModel(thread.id, model, str(params, "effort") ?? null);
+      } else if (pair?.orchestratorModel !== undefined) {
+        // Frozen: with --model omitted, the pair's saved lead model and
+        // effort apply (bounded: no catalog gate — the pair can only be
+        // saved against this build's one provider).
+        this.engine.setThreadModel(
+          thread.id,
+          pair.orchestratorModel ?? null,
+          pair.orchestratorEffort ?? null,
+        );
       }
       op.state = "ready";
       op.expiresAt = op.ticket.issuedAtMs + RETENTION_MS;
       op.updatedAt = Date.now();
       return { operation: outcomeOf(op) };
     } catch (e) {
+      // A ControlFailure keeps its code on the wire (frozen parity);
+      // anything else is a provider failure.
+      const f =
+        e instanceof ControlFailure
+          ? e
+          : new ControlFailure("providerFailure", (e as Error).message.slice(0, 400));
       op.state = "failed";
-      op.error = { code: "providerFailure", detail: (e as Error).message.slice(0, 400) };
+      op.error = {
+        code: f.code,
+        ...(f.detail !== undefined ? { detail: f.detail } : {}),
+      };
       op.expiresAt = op.ticket.issuedAtMs + RETENTION_MS;
-      throw new ControlFailure("providerFailure", (e as Error).message.slice(0, 400));
+      throw f;
     }
   }
 
@@ -581,9 +631,16 @@ export class LocalControlService {
       fail("invalidRequest");
     const t = this.engine.snapshot().threads.find((x) => x.id === threadId);
     if (!t) fail("notFound");
+    // F34 (frozen requireOrdinaryThread): a head is not an ordinary
+    // chat — its lead owns its work. A Hydra-LED chat is ordinary and
+    // submits fine.
+    if (t.hydraHead) fail("unsupported", "hydra-head-target");
     if (t.isArchived) fail("archived");
     if (t.turn && (t.turn.status === "running" || t.turn.status === "waiting-approval"))
       fail("busy");
+    // Frozen sendToThread waits for runningHydraHeads == 0: a lead whose
+    // heads still work (or whose reports wait to land) reads busy.
+    if (this.engine.hydraLeadBusy(threadId)) fail("busy");
     // Frozen rejection surface: slash commands ride no ordinary prompt.
     if (text.trimStart().startsWith("/")) fail("invalidRequest", "slash-command");
     const hasStarted = t.messages.length > 0;
@@ -613,6 +670,7 @@ export class LocalControlService {
     if (!isUuid(threadId) || !isUuid(turnId)) fail("invalidRequest");
     const t = this.engine.snapshot().threads.find((x) => x.id === threadId);
     if (!t) fail("notFound");
+    if (t.hydraHead) fail("unsupported", "hydra-head-target");
     const turn = t.turn;
     if (!turn || turn.id !== turnId) fail("notFound");
     if (turn.status !== "running" && turn.status !== "waiting-approval")
