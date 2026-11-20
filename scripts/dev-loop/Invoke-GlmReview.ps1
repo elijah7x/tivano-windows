@@ -450,6 +450,7 @@ function Build-ReviewPrompt {
     '- Edits to guarded paths (`scripts/dev-loop/`, `scripts/pr-review/`, `scripts/windows-acceptance/`, `.github/`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `TRADEMARK.md`, `docs/source-baseline.json`, `package-lock.json`, or dependency sections in `package.json`).'
     ''
     'Everything else (code style, naming, minor structure, refactor ideas, optional improvements) MUST go in `advisory`, NOT `blocking`.'
+    $(if ($script:BaselinePr) { 'Exception for this PR only: its scoped goal is retargeting the parity baseline, so edits to `docs/source-baseline.json` and `docs/parity.md` are expected and not blocking; edits to any other guarded path still block.' } else { '' })
     'Each blocking item MUST cite `file:line` and explain how to fix it in one line (`"file:line - problem - fix"`).'
     ''
     '## Output format'
@@ -648,6 +649,8 @@ try {
     throw ('cannot read PR #' + $PrNumber + ': ' + (Get-ErrorSummary $prView))
   }
   $prData = $prView.text | ConvertFrom-Json
+  # The re-baseline PR exists to edit the recorded baseline; that one guarded file is expected there.
+  $script:BaselinePr = ([string](Get-JsonProp $prData 'headRefName')) -like 'nyx/rebaseline-v*'
   $headShaOut = [string](Get-JsonProp $prData 'headRefOid')
   if ([string]::IsNullOrWhiteSpace($headShaOut) -or $headShaOut.Length -lt 7) {
     throw ('PR #' + $PrNumber + ' returned no valid head SHA.')
