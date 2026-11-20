@@ -119,4 +119,76 @@ export async function runMarkdownChecks({
   ledger.exited = c.exited;
   ledger.outcome = c.outcome;
   verify("md-a exited cleanly", c.exited && c.outcome === "resolved", c.outcome);
+
+  // --- session MD2: a several-hundred-KB streamed reply keeps updating ---
+  // P1-29: the fixture emits ~2000-char deltas; while the turn runs the
+  // rendered body must keep growing, and the final render must show both
+  // sentinels — head early, tail delivered by the last delta.
+  s = await launch({}, "s-md-b");
+  instances.push(s);
+  ({ app, proc, ledger } = s);
+  page = await app.firstWindow();
+  await page.waitForSelector(".sidebar-head", { timeout: 15000 });
+  await page.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
+  await page.locator('button[title="New project"]').click();
+  await page.getByLabel("Project name").fill("MD Long");
+  await page.keyboard.press("Enter");
+  await page.locator('button[title="New thread in MD Long"]').click();
+  await page.waitForSelector(".chat-head h1");
+  const tid2 = (await snap(page)).selectedThreadId;
+
+  // Attach a mutation observer BEFORE the send: each React flush during
+  // streaming lands as a batch of DOM mutations, so the event timestamps
+  // show whether painting kept pace with the deltas or stalled into one
+  // end-of-turn burst — polling innerText cannot tell those apart.
+  await page.evaluate(() => {
+    const w = window;
+    w.__mdObs = { t0: performance.now(), events: [] };
+    w.__mdObs.m = new MutationObserver(() => {
+      w.__mdObs.events.push(performance.now() - w.__mdObs.t0);
+    });
+    w.__mdObs.m.observe(document.querySelector(".timeline"), {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  });
+  await page.locator(".composer textarea").fill("long please");
+  await page.keyboard.press("Enter");
+  const bodySel = ".msg.assistant .msg-body";
+  await page.waitForSelector(bodySel, { timeout: 15000 });
+  const mutLog = await waitSnapshot(
+    page,
+    (x) => x.threads.find((y) => y.id === tid2)?.turn?.status === "done",
+    30000,
+  ).then(() =>
+    page.evaluate(() => {
+      const w = window;
+      w.__mdObs.m.disconnect();
+      return w.__mdObs.events;
+    }),
+  );
+  const spread =
+    mutLog.length > 1 ? mutLog[mutLog.length - 1] - mutLog[0] : 0;
+  verify(
+    "MD-12 long reply painted progressively, not one end-of-turn burst",
+    mutLog.length >= 5 && spread > 500,
+    { mutations: mutLog.length, spreadMs: Math.round(spread) },
+  );
+  await waitSnapshot(
+    page,
+    (x) => x.threads.find((y) => y.id === tid2)?.turn?.status === "done",
+    30000,
+  );
+  const longText = await page.locator(bodySel).last().innerText();
+  verify(
+    "MD-13 head and tail of the long reply both rendered",
+    longText.includes("LONG-REPLY-HEAD") && longText.includes("LONG-REPLY-TAIL"),
+    { len: longText.length },
+  );
+  await page.screenshot({ path: join(outDir, "89-markdown-long.png") });
+  c = await boundedClose(app, proc);
+  ledger.exited = c.exited;
+  ledger.outcome = c.outcome;
+  verify("md-b exited cleanly", c.exited && c.outcome === "resolved", c.outcome);
 }
