@@ -220,6 +220,8 @@ const vThread = vObject({
         text: vNonEmptyString(8000),
         createdAt: vTs,
         bundleId: vOptional(vNonEmptyString(120)),
+        // P1-36: system-authored items drain as non-authored turns.
+        unauthored: vOptional(vBoolean),
       }),
       PERSIST_MAX_FOLLOWUPS,
     ),
@@ -262,6 +264,8 @@ const vThread = vObject({
   // F21: per-chat Hydra choice + chosen pair — inert until F22 scheduling.
   hydraEnabled: vOptional(vBoolean),
   hydraPairId: vOptional(vNonEmptyString(120)),
+  // P1-36: the chat's sub-agent mode (absent = derived).
+  subagentMode: vOptional(vEnum(["same", "preset", "adaptive"] as const)),
   // v2.2.34 keep-updated titles — see ChatThread.
   titleUserSet: vOptional(vBoolean),
   titleReviewTurns: vOptional(vInt(0, 1_000_000)),
@@ -508,6 +512,11 @@ const vSettings = vObject({
   hasSeenHydraIntro: vOptional(vBoolean),
   hydraPairs: vOptional(vArray(vHydraPair, PERSIST_MAX_HYDRA_PAIRS)),
   lastHydraPairId: vOptional(vNonEmptyString(120)),
+  // P1-36: the sub-agent mode new chats seed from — optional so every
+  // pre-P1-36 store loads verbatim; absent = derived per chat.
+  subagentModeDefault: vOptional(
+    vEnum(["same", "preset", "adaptive"] as const),
+  ),
   // F17: frozen modelList / modelSections / collapsedModelSections /
   // modelPreferences — pins organize the picker; the catalog stays
   // provider-owned. Optional so every pre-A53 store loads verbatim.
@@ -598,6 +607,8 @@ const vThreadHead = vObject({
         text: vNonEmptyString(8000),
         createdAt: vTs,
         bundleId: vOptional(vNonEmptyString(120)),
+        // P1-36: system-authored items drain as non-authored turns.
+        unauthored: vOptional(vBoolean),
       }),
       PERSIST_MAX_FOLLOWUPS,
     ),
@@ -638,6 +649,8 @@ const vThreadHead = vObject({
   // F21: per-chat Hydra choice + chosen pair — inert until F22 scheduling.
   hydraEnabled: vOptional(vBoolean),
   hydraPairId: vOptional(vNonEmptyString(120)),
+  // P1-36: the chat's sub-agent mode (absent = derived).
+  subagentMode: vOptional(vEnum(["same", "preset", "adaptive"] as const)),
   // v2.2.34 keep-updated titles — see ChatThread.
   titleUserSet: vOptional(vBoolean),
   titleReviewTurns: vOptional(vInt(0, 1_000_000)),

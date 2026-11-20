@@ -47,7 +47,9 @@ export function delegationFromEntry(entry: unknown): HydraDelegation | null {
   };
   const prompt = get("prompt");
   if (!prompt) return null;
-  const task = get("task") ?? singleLine(prompt, 60);
+  // `role` is the adaptive mode's job-title field (frozen Chimera
+  // entries); it stands in for `task` when the lead names one.
+  const task = get("task") ?? get("role") ?? singleLine(prompt, 60);
   return {
     task,
     prompt,
@@ -570,7 +572,11 @@ export function reportMessage(
 }
 
 /** Frozen `maxDelegationRounds` — rounds of heads per user request. */
-export const MAX_DELEGATION_ROUNDS = 3;
+export const MAX_DELEGATION_ROUNDS = 5;
+/** Frozen `maxRefundedRounds` — a request refunds at most this many
+ *  rounds whose every head provably did nothing (all failed/stopped
+ *  with no landing, on a kept copy or a startup failure). */
+export const MAX_REFUNDED_ROUNDS = 2;
 /** Frozen `HydraPrompts.maxDelegatedTasks` — entries per delegation block. */
 export const MAX_DELEGATED_TASKS = 32;
 /** Frozen `HydraWatchdog.stalledNote` lead-in for budget-stopped heads. */
@@ -787,4 +793,29 @@ export function hydraReportNote(
     ? "If the reports open up the next stage of the work, or a head failed, or a piece of the user's request is still undone, send heads out again for exactly that, with the same ```hydra block at the end of your reply; never for verifying, redoing or finishing what a head already did."
     : "Send out no more heads for this request; whatever is left, do yourself.";
   return `[Hydra] Your heads reported back below.${team ? " " + team : ""} ${more}\n\n---\n\n`;
+}
+
+/** Frozen `v2QueuedHeadsNote` — tells the lead that tasks from its
+ *  delegation block are waiting on the concurrency cap, so it does not
+ *  conclude the dispatch failed and send them again. Rides the front of
+ *  the next lead prompt while the queue is non-empty. */
+export function hydraQueuedHeadsNote(queued: number, maxHeads: number): string {
+  const tasks = queued === 1 ? "1 of your tasks is" : `${queued} of your tasks are`;
+  const heads = maxHeads === 1 ? "1 head" : `${maxHeads} heads`;
+  return `[Hydra] ${tasks} queued, not lost: the cap allows ${heads} at once. They start automatically as heads finish; do not send them again.\n\n---\n\n`;
+}
+
+/** Bounded `ChimeraPrompts.policy` slice — the adaptive mode's extra
+ *  delegation guidance: role titles plus routing through the pair's
+ *  head profiles (Windows' bounded stand-in for the frozen identities:
+ *  casting cards and cross-provider matching are the P1-37 follow-up). */
+export function hydraAdaptiveNote(profiles: string[]): string {
+  const names = profiles.filter((p) => p.trim() !== "");
+  return (
+    `Every new entry needs a short clear job title in "role". ` +
+    (names.length
+      ? `When one of the head profiles fits that role, add "profile": <its name>. `
+      : "") +
+    `A role that fits no profile runs on your own model. Never name models elsewhere.`
+  );
 }

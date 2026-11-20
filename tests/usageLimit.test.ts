@@ -177,6 +177,28 @@ describe("F20 engine auto-continue", () => {
     store.close();
   });
 
+  it("P1-36: the automatic continue does not restart the delegation budget", { timeout: 15_000 }, async () => {
+    const { engine, store } = make();
+    engine.setSettings({ autoContinueAfterLimit: true });
+    const th = engine.createThread(null, "chat");
+    engine.selectThread(th.id);
+    engine.sendTurn(th.id, "[mock:limit:1] work");
+    await waitFor(() => turnStatus(engine, th.id) === "error");
+    await waitFor(() => (engine.snapshot().limitResumesAt ?? {})[th.id] !== undefined);
+    // Charge the budget now — the queued auto-continue must leave it alone.
+    (engine as any).hydraRounds.set(th.id, 2);
+    (engine as any).hydraRefunds.set(th.id, 1);
+    const gen0 = (engine as any).hydraBudgetGen.get(th.id) ?? 0;
+    await waitFor(
+      () => userTexts(engine, th.id).includes(CONTINUE) && turnStatus(engine, th.id) === "done",
+      9_000,
+    );
+    expect((engine as any).hydraRounds.get(th.id)).toBe(2);
+    expect((engine as any).hydraRefunds.get(th.id)).toBe(1);
+    expect((engine as any).hydraBudgetGen.get(th.id) ?? 0).toBe(gen0);
+    store.close();
+  });
+
   it("a limit with no reset time posts the honest warning and never waits", async () => {
     const { engine, store } = make();
     engine.setSettings({ autoContinueAfterLimit: true });

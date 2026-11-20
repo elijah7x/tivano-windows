@@ -664,3 +664,203 @@ describe("P1-21 startup failures (frozen startupFailure + per-provider cause)", 
     store.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// P1-36 (v3.0.0 parity): sub-agent modes + the delegation budget —
+// five rounds per request, at most two refunded all-empty batches, the
+// queued-heads note on the lead's wire prompt, and an authored message
+// (never a report/refusal turn) restarting the count.
+
+const budget = (engine: Engine) =>
+  engine as unknown as {
+    hydraRounds: Map<string, number>;
+    hydraRefunds: Map<string, number>;
+    hydraBudgetGen: Map<string, number>;
+  };
+
+describe("P1-36 sub-agent modes and the delegation budget", () => {
+  it("the 5-round budget refuses the 6th delegation round", { timeout: 20000 }, async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "split [mock:hydra-loop]");
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some(
+        (m) =>
+          m.role === "user" &&
+          m.content.includes("used all 5 of its rounds of heads"),
+      ),
+    );
+    // The refusal drains as a non-authored turn: the spent budget and
+    // the request's generation both survive it (frozen refuse-turn
+    // semantics — a refusal never restarts the count).
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some(
+        (m) =>
+          m.role === "assistant" &&
+          m.content.includes("Fixed reply from the **Mock Provider**"),
+      ),
+    );
+    expect(budget(engine).hydraRounds.get(lead.id)).toBe(5);
+    expect(budget(engine).hydraBudgetGen.get(lead.id)).toBe(1);
+    store.close();
+  });
+
+  it("all-empty batches refund their round — at most twice a request", { timeout: 20000 }, async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "split [mock:hydra-loop-fail]");
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some(
+        (m) =>
+          m.role === "user" &&
+          m.content.includes("used all 5 of its rounds of heads"),
+      ),
+    );
+    // Rounds 1+2 refunded (7 heads spawned over 5 net rounds), then
+    // the refund tap closed and the budget refused the next block.
+    await waitFor(() => budget(engine).hydraRefunds.get(lead.id) === 2);
+    expect(heads(engine, lead.id)).toHaveLength(7);
+    expect(budget(engine).hydraRounds.get(lead.id)).toBe(5);
+    store.close();
+  });
+
+  it("a batch that did something is never refunded", { timeout: 15000 }, async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    // Two quiet-fail heads plus one that completes: the batch is not
+    // all-empty, so no round comes back.
+    engine.sendTurn(lead.id, "split [mock:hydra-failstart]");
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some((m) =>
+        m.content.includes("Hydra reports:"),
+      ),
+    );
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+    expect(budget(engine).hydraRefunds.get(lead.id) ?? 0).toBe(0);
+    expect(budget(engine).hydraRounds.get(lead.id)).toBe(1);
+    store.close();
+  });
+
+  it("the report-turn prompt sees the refunded round", async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    const e = engine as any;
+    // A lead that spent its 5th round on an all-fail batch: the refund
+    // lands BEFORE the report turn's prompt is built, so the lead is
+    // told it may delegate again, not "no more heads".
+    budget(engine).hydraRounds.set(lead.id, 5);
+    e.hydraBudgetGen.set(lead.id, 1);
+    e.hydraBatchGen.set("b1", 1);
+    e.hydraPendingReports.set(lead.id, [
+      {
+        headIndex: 0,
+        task: "probe",
+        status: "failed",
+        text: "boom",
+        batchId: "b1",
+        copyPath: "c:/scratch/b1",
+      },
+    ]);
+    e.flushHydraReports(lead.id);
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+    const reply = thread(engine, lead.id)
+      .messages.filter((m) => m.role === "assistant")
+      .at(-1)!.content;
+    expect(reply).toContain("send heads out again for exactly that");
+    expect(reply).not.toContain("Send out no more heads");
+    expect(budget(engine).hydraRounds.get(lead.id)).toBe(4);
+    store.close();
+  });
+
+  it("an authored message restarts the budget", async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "split [mock:hydra]");
+    await waitFor(() =>
+      heads(engine, lead.id).every((h) => h.hydraHead!.status === "completed"),
+    );
+    // The report turn is non-authored: the spent round stays charged.
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+    expect(budget(engine).hydraRounds.get(lead.id)).toBe(1);
+    engine.sendTurn(lead.id, "next request");
+    expect(budget(engine).hydraRounds.get(lead.id) ?? 0).toBe(0);
+    expect(budget(engine).hydraBudgetGen.get(lead.id)).toBe(2);
+    store.close();
+  });
+
+  it("cap-held delegations announce themselves on the lead's next prompt", async () => {
+    const { engine, store } = make();
+    engine.setSettings({ hydraMaxHeads: 1 });
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-waitmany]");
+    await waitFor(
+      () =>
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+    // Two delegations wait under cap 1 — the next lead prompt opens
+    // with the frozen queued-heads note.
+    engine.sendTurn(lead.id, "keep going");
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some(
+        (m) =>
+          m.role === "assistant" &&
+          m.content.includes("queued, not lost"),
+      ),
+    );
+    const reply = thread(engine, lead.id).messages.find(
+      (m) => m.role === "assistant" && m.content.includes("queued, not lost"),
+    )!;
+    expect(reply.content).toContain("2 of your tasks are queued");
+    expect(reply.content).toContain("the cap allows 1 head at once");
+    store.close();
+  });
+
+  it("Same-model ignores the saved pair's cap; Preset honours it", async () => {
+    const { engine, store } = make();
+    const pair = { ...newHydraPair("mock"), maxHeads: 1 };
+    engine.setSettings({ hydraPairs: [pair], lastHydraPairId: pair.id });
+    // Derived Preset: the chat inherits the last pair — cap 1 holds
+    // two of the three delegations back.
+    const lead = engine.createThread(null, "lead");
+    expect(lead.subagentMode).toBeUndefined();
+    engine.sendTurn(lead.id, "go [mock:hydra-waitmany]");
+    await waitFor(
+      () =>
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+    expect(heads(engine, lead.id)).toHaveLength(1);
+    // Same-model: the pair's cap no longer applies — all three go out.
+    const lead2 = engine.createThread(null, "lead2");
+    engine.setSubagentMode(lead2.id, "same");
+    expect(thread(engine, lead2.id).subagentMode).toBe("same");
+    engine.sendTurn(lead2.id, "go [mock:hydra-waitmany]");
+    await waitFor(() => heads(engine, lead2.id).length === 3);
+    store.close();
+  });
+
+  it("the adaptive mode's role instruction reaches the provider", async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    engine.setSubagentMode(lead.id, "adaptive");
+    expect(engine.snapshot().settings.subagentModeDefault).toBe("adaptive");
+    engine.sendTurn(lead.id, "hello");
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+    const reply = thread(engine, lead.id).messages.find(
+      (m) => m.role === "assistant",
+    )!;
+    expect(reply.content).toContain('job title in "role"');
+    store.close();
+  });
+
+  it("a `role` entry lands as the head's task (frozen Chimera field)", async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-role]");
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    expect(heads(engine, lead.id)[0]!.hydraHead!.task).toBe("Outline it");
+    store.close();
+  });
+});
