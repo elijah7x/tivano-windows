@@ -499,6 +499,8 @@ export const requestValidators = {
     // renderer-side via shared/modelList.ts, then persisted wholesale).
     modelList: vOptional(vArray(vModelPin, 30)),
     modelSections: vOptional(vArray(vModelSection, 60)),
+    // P1-25: frozen hidesOutdatedModels (default ON — absent = on).
+    hideOutdatedModels: vOptional(vBoolean),
     collapsedModelSections: vOptional(vArray(vNonEmptyString(40), 60)),
     modelPreferences: vOptional(vModelPreferences),
     // F18: local MCP server registry (stdio slice only).

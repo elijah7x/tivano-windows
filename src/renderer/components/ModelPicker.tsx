@@ -11,6 +11,8 @@ import {
   modelListItems,
   pinId,
   prefKey,
+  protectedModelIds,
+  simplifiedModels,
   type ModelPin,
 } from "../../shared/modelList";
 import { useT } from "../locale";
@@ -87,6 +89,19 @@ export function ModelPicker(props: {
   const pinnedSections = settings?.modelSections ?? [];
   const pinnedIds = new Set(pinnedList.map(pinId));
   const usePins = pinnedList.length > 0;
+  const selected0 = thread.codexModel ?? "";
+  // P1-25: frozen hidesOutdatedModels — the unpinned catalog trims to
+  // each vendor's three newest versions; the thread's own model, pins
+  // and Hydra pair models always stay (frozen protectedModelIDs).
+  const protectedIds = protectedModelIds(
+    { modelList: pinnedList, hydraPairs: settings?.hydraPairs },
+    "codex",
+    selected0 === "" ? [] : [selected0],
+  );
+  const visibleModels =
+    (settings?.hideOutdatedModels ?? true) && !usePins
+      ? simplifiedModels(models, { isProtected: (m) => protectedIds.has(m.id) })
+      : models;
   const optionById = new Map(models.map((m) => [m.id, m]));
   const groups: { label: string | null; pins: ModelPin[] }[] = [];
   for (const item of modelListItems(pinnedList, pinnedSections)) {
@@ -169,7 +184,7 @@ export function ModelPicker(props: {
                 </optgroup>
               ),
             )
-          : models.map((m) => (
+          : visibleModels.map((m) => (
               <option key={m.id} value={m.id} title={m.detail}>
                 {m.name}
                 {m.isDefault ? " ★" : ""}

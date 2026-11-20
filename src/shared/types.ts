@@ -283,6 +283,11 @@ export interface Settings {
   modelSections?: ModelSection[];
   collapsedModelSections?: string[];
   modelPreferences?: Record<string, ModelPreference>;
+  /** P1-25: frozen hidesOutdatedModels (default ON) — pickers and the
+   *  Settings catalog trim to each vendor's three newest versions while
+   *  chosen/pinned/Hydra/in-use rows always show. Absent = ON so stores
+   *  written before this change load with it on. */
+  hideOutdatedModels?: boolean;
   /**
    * F18 bounded slice: local MCP servers over stdio (frozen MCPStore
    * connections). Probing spawns the real command; bridging servers

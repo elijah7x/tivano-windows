@@ -350,6 +350,78 @@ export async function runModelListChecks({
       modelPreferences: {},
     }),
   );
+
+  // ML-17: Hide outdated models (P1-25) — default ON. The unpinned
+  // picker and the Settings catalog keep the three newest fixture
+  // versions; versionless rows always stay, "… High" folds behind its
+  // base, search still lists the full catalog, off restores it.
+  // The restarted app has no bound session yet, so models:list is still
+  // pending — run a turn to bind one (same path as the first session).
+  await page.locator(".composer textarea").fill("bind session again");
+  await page.keyboard.press("Enter");
+  await waitSnapshot(page, (st) => {
+    const t = st.threads.find((x) => x.id === threadId)?.turn;
+    return t?.status === "done" || t?.status === "error";
+  });
+  await page.waitForFunction(
+    async () => (await window.tivano.invoke("models:list", {})).state === "ready",
+    null,
+    { timeout: 10000, polling: 200 },
+  );
+  await page.locator(".model-select").focus(); // onFocus refetches the catalog
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { hideOutdatedModels: true }),
+  );
+  await page.waitForSelector(".model-select", { timeout: 8000 });
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".model-select option")].some((o) => o.value !== ""),
+    null,
+    { timeout: 8000 },
+  );
+  const trimmedVals = (await optionValues(page)).sort();
+  verify(
+    "ML-17a picker keeps three newest versions + versionless rows",
+    trimmedVals.join() ===
+      ["", "fixture-model", "fixture-max", "fixture-v3", "fixture-v4", "fixture-v5"]
+        .sort()
+        .join(),
+    trimmedVals,
+  );
+  await openSettings(page);
+  const shownNames = await page.locator(".ml-pin.static .ml-name").allInnerTexts();
+  verify(
+    "ML-17b Settings catalog trims the same way",
+    shownNames.length === 5 && !shownNames.some((n) => n.includes("1.0")),
+    shownNames,
+  );
+  await page.locator(".ml-search").fill("1.0");
+  await page.waitForTimeout(150);
+  const searched = await page.locator(".ml-pin.static .ml-name").allInnerTexts();
+  verify(
+    "ML-17c search still finds outdated rows",
+    searched.some((n) => n.includes("1.0")),
+    searched,
+  );
+  await page.locator(".ml-search").fill("");
+  await page.locator('.ml-settings [role="switch"]').click();
+  await waitSnapshot(page, async () => (await settingsOf(page)).hideOutdatedModels === false);
+  const fullNames = await page.locator(".ml-pin.static .ml-name").allInnerTexts();
+  verify(
+    "ML-17d switch off lists the full catalog",
+    fullNames.length === 8,
+    fullNames,
+  );
+  const offVals = (await optionValues(page)).sort();
+  verify(
+    "ML-17e picker shows the full catalog when off",
+    offVals.length === 9,
+    offVals,
+  );
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { hideOutdatedModels: true }),
+  );
+  await closeSettings(page);
+
   {
     const c = await boundedClose(app, proc);
     ledger.exited = c.exited;
