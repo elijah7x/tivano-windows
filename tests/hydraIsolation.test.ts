@@ -452,6 +452,38 @@ describe.skipIf(!haveDirectGit)("hydra isolation — engine slice (frozen makeHy
     await waitFor(() => thread(r.engine, lead.id).turn?.status === "done");
   });
 
+  it("P1-35: a stopped isolated head continues from the panel in its own copy", async () => {
+    const repo = mkRepo();
+    const r = rig(repo, 30);
+    r.engine.setSettings({ hydraIsolateHeads: true });
+    const lead = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(lead.id, "go [mock:hydra-wait]");
+    await waitFor(
+      () =>
+        heads(r.engine, lead.id).length === 1 &&
+        heads(r.engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+    const hank = heads(r.engine, lead.id)[0]!;
+    const kept = hank.worktreeDir!;
+    r.engine.stopHydraHead(hank.id);
+    await waitFor(() => hank.hydraHead!.status === "stopped");
+    expect(hank.hydraHead!.copyKept).toBe(true);
+
+    // Frozen continueFailedHydraHead: the panel Continue sends the
+    // canned resume prompt in the head's own session — the SAME kept
+    // copy, a fresh batch, never a fresh capture.
+    r.engine.continueHydraHead(hank.id);
+    await waitFor(() => hank.turn?.status === "running");
+    expect(hank.hydraHead!.status).toBe("running");
+    expect(hank.worktreeDir).toBe(kept);
+    const sent = hank.messages.filter((m) => m.role === "user").at(-1)!;
+    expect(sent.content).toContain("continue the task from where you left off");
+    await waitFor(() =>
+      hank.hydraHead!.status === "completed" && hank.hydraHead!.landingPending !== true,
+    );
+    expect(hank.worktreeDir).toBeUndefined();
+  });
+
   it("a steer mid-landing defers the old report to the new turn", async () => {
     const repo = mkRepo();
     const r = rig(repo, 30);
