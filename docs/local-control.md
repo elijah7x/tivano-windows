@@ -51,7 +51,10 @@ tivano settings [get [KEY]] [set KEY=VALUE]...
   `unsupported` / `hydra_disabled` — and a saved Hydra pair for this
   provider, otherwise `unsupported` / `hydra_pair_missing`. With
   `--model` omitted, the pair's saved lead model and effort apply.
-  Bounded: `workspace=worktree` and foreign providers are
+  Bounded deviation: upstream `createExternalThread` tolerates a nil
+  pair (Hydra on, heads run on the chat's model); this build refuses
+  the create instead so a Hydra-led remote chat never starts
+  pair-less. Bounded: `workspace=worktree` and foreign providers are
   `unsupported`.
 - A Hydra-LED chat accepts `send` and `interrupt`. `send` replies
   `busy` while any of its heads is working or its head reports wait to

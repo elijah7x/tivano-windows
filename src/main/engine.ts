@@ -2787,9 +2787,11 @@ export class Engine {
    * their work has not come back.
    */
   hydraLeadBusy(leadId: string): boolean {
-    if (this.hydraPendingReports.has(leadId)) return true;
+    if ((this.hydraPendingReports.get(leadId)?.length ?? 0) > 0) return true;
     return this.store.state.threads.some(
-      (t) => t.hydraHead?.leadId === leadId && t.hydraHead.status === "running",
+      (t) =>
+        t.hydraHead?.leadId === leadId &&
+        (t.hydraHead.status === "running" || t.hydraHead.landingPending === true),
     );
   }
 

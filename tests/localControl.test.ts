@@ -550,9 +550,23 @@ describe("local control (F33)", () => {
     expect(headItems.map((t) => t.id)).toEqual([head.id]);
     expect(headItems[0]?.role).toBe("head");
     expect(headItems[0]?.hydra).toBe(false);
-    // Finish the head -> the lead accepts a send and an interrupt again.
+    // Finish the head -> still busy while its landing is in flight
+    // (frozen: landing counts as working until the report queues).
     store.update((d) => {
-      d.threads.find((t) => t.id === head.id)!.hydraHead!.status = "completed";
+      const h = d.threads.find((t) => t.id === head.id)!.hydraHead!;
+      h.status = "completed";
+      h.landingPending = true;
+    });
+    const landingBusy = await call(sock, svc.instance, "submit", {
+      ticket: ticket(svc), threadId: lead.id, text: "more work",
+    });
+    expect((landingBusy.error as Record<string, unknown>).code).toBe("busy");
+    // Landing done and an empty leftover report queue -> the lead is free.
+    (
+      engine as unknown as { hydraPendingReports: Map<string, unknown[]> }
+    ).hydraPendingReports.set(lead.id, []);
+    store.update((d) => {
+      d.threads.find((t) => t.id === head.id)!.hydraHead!.landingPending = false;
     });
     const sent = await call(sock, svc.instance, "submit", {
       ticket: ticket(svc), threadId: lead.id, text: "more work",
@@ -568,6 +582,18 @@ describe("local control (F33)", () => {
     expect(
       ((intr.result as Record<string, unknown>).operation as { state: string }).state,
     ).toBe("ended");
+    // A report still queued for the lead holds it busy; the empty map
+    // entry a finished flush leaves behind does not.
+    (
+      engine as unknown as { hydraPendingReports: Map<string, unknown[]> }
+    ).hydraPendingReports.set(lead.id, [{ headIndex: 0 }]);
+    const queuedBusy = await call(sock, svc.instance, "submit", {
+      ticket: ticket(svc), threadId: lead.id, text: "more work",
+    });
+    expect((queuedBusy.error as Record<string, unknown>).code).toBe("busy");
+    (
+      engine as unknown as { hydraPendingReports: Map<string, unknown[]> }
+    ).hydraPendingReports.delete(lead.id);
     store.close();
   });
 
