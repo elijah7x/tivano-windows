@@ -691,6 +691,10 @@ export interface ChatThread {
     summary?: string | undefined;
     /** Watchdog stop note, prepended to the report (frozen). */
     stalledNote?: string | undefined;
+    /** Frozen HydraHeadInfo.stopReason — set only when the quiet
+     *  watchdog stopped the head for sitting still, so the panel and
+     *  the report can say Tivano stopped it, not the user. */
+    stopReason?: "stalled" | undefined;
     toolCalls?: number | undefined;
     /** Wall-clock run time, filled at finish (frozen report effort). */
     elapsedMs?: number | undefined;

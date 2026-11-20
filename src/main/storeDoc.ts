@@ -650,6 +650,7 @@ const vThreadHead = vObject({
       status: vEnum(["running", "completed", "stopped", "failed"] as const),
       summary: vOptional(vMaxString(64 * 1024)),
       stalledNote: vOptional(vMaxString(4000)),
+      stopReason: vOptional(vEnum(["stalled"] as const)),
       toolCalls: vOptional(vInt(0, 1_000_000)),
       elapsedMs: vOptional(vNumber(0, 1e12)),
       profile: vOptional(vMaxString(120)),
