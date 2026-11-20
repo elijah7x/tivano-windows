@@ -2825,6 +2825,15 @@ export class Engine {
     this.assertMutable();
     const thread = this.mustThread(threadId);
     if (thread.hydraHead) throw new EngineError("heads have no sub-agent mode");
+    // Frozen canSwitchChimera: the adaptive switch is locked while the
+    // chat's sub-agents are at work.
+    if (
+      mode === "adaptive" &&
+      this.store.state.threads.some(
+        (t) => t.hydraHead?.leadId === threadId && t.hydraHead.status === "running",
+      )
+    )
+      throw new EngineError("switch to Adaptive when no sub-agents are at work");
     if (
       thread.subagentMode === mode &&
       this.store.state.settings.subagentModeDefault === mode
@@ -4789,30 +4798,6 @@ export class Engine {
     const stillWorking = this.store.state.threads
       .filter((t) => t.hydraHead?.leadId === leadId && t.hydraHead.status === "running")
       .map((t) => t.hydraHead!.name);
-    // Frozen refundRound: a flushed batch whose every head provably did
-    // nothing hands its round back (≤ MAX_REFUNDED_ROUNDS per request,
-    // only while the budget generation it was charged under still runs).
-    const byBatch = new Map<string, HydraReport[]>();
-    for (const r of flushable) {
-      const k = r.batchId ?? "";
-      byBatch.set(k, [...(byBatch.get(k) ?? []), r]);
-    }
-    for (const [batchId, rs] of byBatch) {
-      const nothing = rs.every(
-        (r) =>
-          (r.status === "failed" || r.status === "stopped") &&
-          r.landing === undefined &&
-          (r.copyPath !== undefined || r.startupFailure === true),
-      );
-      if (!nothing) continue;
-      const gen = this.hydraBudgetGen.get(leadId) ?? 0;
-      const refunds = this.hydraRefunds.get(leadId) ?? 0;
-      if (this.hydraBatchGen.get(batchId) !== gen) continue;
-      if (refunds >= MAX_REFUNDED_ROUNDS) continue;
-      const rounds = this.hydraRounds.get(leadId) ?? 0;
-      if (rounds > 0) this.hydraRounds.set(leadId, rounds - 1);
-      this.hydraRefunds.set(leadId, refunds + 1);
-    }
     // Frozen HydraTreeCache lifetime: a batch's captures die with its
     // reports — the next block captures the checkout afresh.
     for (const r of flushable) {
@@ -4824,6 +4809,32 @@ export class Engine {
         authored: false,
         hydraReport: flushable.map((r) => r.headIndex),
       });
+      // Frozen refundRound: a flushed batch whose every head provably
+      // did nothing hands its round back (≤ MAX_REFUNDED_ROUNDS per
+      // request, only while the generation it was charged under still
+      // runs). After the send: a failed send re-queues the reports and
+      // the same round must never refund twice.
+      const byBatch = new Map<string, HydraReport[]>();
+      for (const r of flushable) {
+        const k = r.batchId ?? "";
+        byBatch.set(k, [...(byBatch.get(k) ?? []), r]);
+      }
+      for (const [batchId, rs] of byBatch) {
+        const nothing = rs.every(
+          (r) =>
+            (r.status === "failed" || r.status === "stopped") &&
+            r.landing === undefined &&
+            (r.copyPath !== undefined || r.startupFailure === true),
+        );
+        if (!nothing) continue;
+        const gen = this.hydraBudgetGen.get(leadId) ?? 0;
+        const refunds = this.hydraRefunds.get(leadId) ?? 0;
+        if (this.hydraBatchGen.get(batchId) !== gen) continue;
+        if (refunds >= MAX_REFUNDED_ROUNDS) continue;
+        const rounds = this.hydraRounds.get(leadId) ?? 0;
+        if (rounds > 0) this.hydraRounds.set(leadId, rounds - 1);
+        this.hydraRefunds.set(leadId, refunds + 1);
+      }
     } catch {
       // Busy/closed raced — reports go back pending; the next endTurn
       // retries the flush.

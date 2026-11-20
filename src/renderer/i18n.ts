@@ -1030,6 +1030,7 @@ const zhHans: Record<string, string> = {
   // P1-36: sub-agent modes — frozen verbatim zh-Hans.
   "Sub-agents": "子代理",
   "Sub-agent mode": "子代理模式",
+  "Sub-agent mode — applies to the next turn": "子代理模式 — 下一轮生效",
   "Same-model sub-agents": "同模型子代理",
   "Preset sub-agents": "模型搭配",
   "Adaptive sub-agents": "自适应子代理",
@@ -1039,7 +1040,6 @@ const zhHans: Record<string, string> = {
     "使用已保存的主代理与子代理的模型搭配，子代理运行搭配指定的模型。",
   "The lead splits the work into roles and matches each to a model across providers.":
     "主代理把工作拆成不同角色，并为每个角色匹配合适服务商的模型。",
-  "Default for new chats": "新对话的默认模式",
   "New chats start on this mode; each chat switches it in the model picker. With no saved pair, Preset falls back to Same-model.":
     "新对话使用该模式；每个对话可在模型选择器中切换。没有保存的组合时，“模型搭配”回退为“同模型”。",
   "Only newly dispatched heads": "仅限新派发的子智能体",
