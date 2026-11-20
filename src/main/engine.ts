@@ -1706,7 +1706,11 @@ export class Engine {
 
   /** Queue the text behind the running turn; idle, it goes out at once
    *  (unless the last turn was stopped — that queue waits for the user). */
-  enqueueFollowUp(threadId: string, text: string): void {
+  enqueueFollowUp(
+    threadId: string,
+    text: string,
+    opts?: { unauthored?: boolean },
+  ): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
     const trimmed = text.trim();
@@ -1715,7 +1719,12 @@ export class Engine {
     if (items.length >= Engine.FOLLOWUP_MAX)
       throw new EngineError("follow-up queue is full");
     this.store.update(() => {
-      items.push({ id: randomUUID(), text: trimmed, createdAt: Date.now() });
+      items.push({
+        id: randomUUID(),
+        text: trimmed,
+        createdAt: Date.now(),
+        ...(opts?.unauthored ? { unauthored: true } : {}),
+      });
       thread.updatedAt = Date.now();
     });
     this.emit({ type: "thread-updated", thread });
@@ -1811,13 +1820,14 @@ export class Engine {
     const items = this.queueOf(thread);
     const index = items.findIndex((i) => i.id === id);
     if (index < 0) throw new EngineError("no such queued follow-up");
+    const unauthored = items[index]!.unauthored === true;
     const text = this.takeBundleText(thread, index);
     if (!text.trim()) {
       this.emitQueue(thread);
       return;
     }
     if (!this.threadBusy(thread)) {
-      this.sendTurn(threadId, text);
+      this.sendTurn(threadId, text, unauthored ? { authored: false } : undefined);
       return;
     }
     if (!this.pendingSends.has(threadId)) {
@@ -1827,7 +1837,12 @@ export class Engine {
       // Return already has a message going out the moment the turn stops;
       // this one goes right behind it (frozen insert at 0).
       this.store.update(() => {
-        items.unshift({ id: randomUUID(), text, createdAt: Date.now() });
+        items.unshift({
+          id: randomUUID(),
+          text,
+          createdAt: Date.now(),
+          ...(unauthored ? { unauthored: true } : {}),
+        });
       });
       this.emitQueue(thread);
     }
@@ -2828,15 +2843,13 @@ export class Engine {
     this.assertMutable();
     const thread = this.mustThread(threadId);
     if (thread.hydraHead) throw new EngineError("heads have no sub-agent mode");
-    // Frozen canSwitchChimera: the adaptive switch is locked while the
-    // chat's sub-agents are at work.
-    if (
-      mode === "adaptive" &&
-      this.store.state.threads.some(
-        (t) => t.hydraHead?.leadId === threadId && t.hydraHead.status === "running",
-      )
-    )
-      throw new EngineError("switch to Adaptive when no sub-agents are at work");
+    // Frozen canSwitchChimera: the adaptive switch is locked in both
+    // directions while the chat's sub-agents are at work or delegations
+    // still wait to report (hydraLeadBusy covers running heads and
+    // pending reports).
+    const leavingAdaptive = this.subagentModeFor(thread) === "adaptive" && mode !== "adaptive";
+    if ((mode === "adaptive" || leavingAdaptive) && this.hydraLeadBusy(threadId))
+      throw new EngineError("switch modes when no sub-agents are at work");
     if (
       thread.subagentMode === mode &&
       this.store.state.settings.subagentModeDefault === mode
@@ -2844,6 +2857,9 @@ export class Engine {
       return;
     this.store.update((d) => {
       thread.subagentMode = mode;
+      // Frozen leaveHydraPair: Same-model drops the saved pair so a
+      // later Preset pick does not silently resurrect it.
+      if (mode === "same") delete thread.hydraPairId;
       thread.updatedAt = Date.now();
       d.settings.subagentModeDefault = mode;
     });
@@ -3905,21 +3921,13 @@ export class Engine {
    *  the existing follow-up queue); never a silent drop. */
   private refuseDelegation(lead: ChatThread, why: string): void {
     try {
-      const items = this.queueOf(lead);
-      if (items.length >= Engine.FOLLOWUP_MAX) return;
-      this.store.update(() => {
-        items.push({
-          id: randomUUID(),
-          text: `Hydra did not send the head you just asked for — ${why}. Do that part yourself and answer the user.`,
-          createdAt: Date.now(),
-          // Frozen refuse semantics: the refusal gets a turn of its own
-          // but is not user-authored — it must not restart the budget.
-          unauthored: true,
-        });
-        lead.updatedAt = Date.now();
-      });
-      this.emit({ type: "thread-updated", thread: lead });
-      this.flushFollowUpsIfIdle(lead);
+      // Frozen refuse semantics: the refusal gets a turn of its own but
+      // is not user-authored — it must not restart the budget.
+      this.enqueueFollowUp(
+        lead.id,
+        `Hydra did not send the head you just asked for — ${why}. Do that part yourself and answer the user.`,
+        { unauthored: true },
+      );
     } catch {
       // A full queue must not break the lead's own turn.
     }
@@ -4829,10 +4837,14 @@ export class Engine {
             r.landing === undefined &&
             (r.copyPath !== undefined || r.startupFailure === true),
         );
-        if (!nothing) continue;
+        if (!nothing) {
+          this.hydraBatchGen.delete(batchId);
+          continue;
+        }
         const gen = this.hydraBudgetGen.get(leadId) ?? 0;
         const refunds = this.hydraRefunds.get(leadId) ?? 0;
         if (this.hydraBatchGen.get(batchId) !== gen) continue;
+        this.hydraBatchGen.delete(batchId);
         if (refunds >= MAX_REFUNDED_ROUNDS) continue;
         const rounds = this.hydraRounds.get(leadId) ?? 0;
         if (rounds > 0) this.hydraRounds.set(leadId, rounds - 1);
@@ -5043,7 +5055,9 @@ export class Engine {
     // against this model's limit — a model change ends it, nothing sends.
     if (thread.codexModel !== wait.model) return;
     try {
-      this.enqueueFollowUp(threadId, Engine.LIMIT_CONTINUE_MESSAGE);
+      this.enqueueFollowUp(threadId, Engine.LIMIT_CONTINUE_MESSAGE, {
+        unauthored: true,
+      });
       const items = this.queueOf(thread);
       const item = [...items]
         .reverse()

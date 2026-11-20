@@ -4,6 +4,9 @@
 
 import type { KeyChord } from "./shortcuts";
 import type { HydraPair } from "./hydra";
+import type { ModelPin, ModelSection, ModelPreference } from "./modelList";
+import type { McpServerConfig } from "./mcp";
+import type { WallpaperSetting } from "./wallpaper";
 
 /** P1-36: frozen v3.0.0 sub-agent modes (the picker's SubagentModeRow
  *  set). Same-model = heads on this chat's model; Preset = heads on a
@@ -13,9 +16,6 @@ import type { HydraPair } from "./hydra";
  *  P1-37). Absent on a thread = derived: a saved pair means "preset",
  *  otherwise "same". */
 export type SubagentMode = "same" | "preset" | "adaptive";
-import type { ModelPin, ModelSection, ModelPreference } from "./modelList";
-import type { McpServerConfig } from "./mcp";
-import type { WallpaperSetting } from "./wallpaper";
 
 export const SCHEMA_VERSION = 1;
 
