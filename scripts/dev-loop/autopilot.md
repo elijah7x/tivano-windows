@@ -17,7 +17,7 @@ Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, 
   ```json
   {"state":"working|idle|done","issue":<n or 0>,"step":"short text","updatedAt":"ISO time","merged":[{"issue":n,"pr":n,"date":"yyyy-MM-dd"}],"needsHuman":[numbers]}
   ```
-- Update `progress.json` at every step change (e.g., `queue`, `worktree`, `implement`, `verify`, `pr-create`, `gate`, `fix-1`, `merge`, `needs-human`, `daily merge cap`, `done`).
+- Update `progress.json` at every step change (e.g., `queue`, `worktree`, `implement`, `verify`, `pr-create`, `gate`, `fix-1`, `consult`, `merge`, `needs-human`, `daily merge cap`, `done`).
 - Write it via `[IO.File]::WriteAllText('C:\tivano\dev-loop\autopilot\progress.json', ($json + "`n"), [Text.UTF8Encoding]::new($false))`.
 - If `progress.json` exists when you start, read it and resume from it, preserving `merged` and `needsHuman` and continuing any unfinished issue first.
 
@@ -100,8 +100,12 @@ Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, 
   ```powershell
   powershell -NoProfile -ExecutionPolicy Bypass -File C:\tivano\pr-bot\tool\scripts\dev-loop\Invoke-AutopilotGate.ps1 -PrNumber <pr>
   ```
-- Its last stdout line is JSON `{"pr":n,"headSha":"...","verdict":"pass|fail|unavailable","failures":["..."],"gatePath":"..."}`; exit code `0` = pass, `1` = fail, `2` = unavailable.
-- On `fail` (exit `1`): inspect `failures` and `gatePath`. Fix the listed failures in the same branch with a new commit (never force-push, never amend or rewrite pushed history; if `main` conflicts, run `git merge origin/main`, never rebase). Do not weaken tests or checks. Run `npm run verify`, stop worktree processes, push, and run the gate again. At most 2 fix rounds.
+- The gate runs two independent reviewers on the same head: the isolated Devin PR reviewer and GLM-5.3 (which posts its own PR comment; GLM `unavailable` never blocks by itself).
+- Its last stdout line is JSON `{"pr":n,"headSha":"...","verdict":"pass|fail|unavailable","failures":["..."],"gatePath":"...","glm":{"status":"ok|unavailable|skipped","verdict":"pass|changes","blocking":<count>,"runDir":"..."},"notes":[...]}`; exit code `0` = pass, `1` = fail, `2` = unavailable.
+- On `fail` (exit `1`): inspect `failures`, `gatePath`, `glm`, and `notes`. Fix every listed failure, whether from the Devin reviewer or prefixed with `GLM-5.3:`, in the same branch with a new commit (never force-push, never amend or rewrite pushed history; if `main` conflicts, run `git merge origin/main`, never rebase).
+  - If the two reviewers contradict each other, follow the issue text and `AGENTS.md`, implement the safer option, and state in the commit message and a short PR comment (one sentence, public-text safe) which demand was not followed and why.
+  - Treat a `GLM-5.3:` demand that is outside the issue's scope or is style-only as advisory, and note it the same way in the commit message and a one-sentence public-text-safe PR comment.
+- Do not weaken tests or checks. Run `npm run verify`, stop worktree processes, push, and run the gate again. At most 2 fix rounds before consulting (`Second opinion when stuck`).
 - On `unavailable` (exit `2`): wait 5 minutes (`Start-Sleep -Seconds 300`) and retry, at most 3 times.
 
 ## 8. Merge on pass
@@ -119,16 +123,31 @@ Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, 
   ```
 - Append `{"issue":<n>,"pr":<pr>,"date":"<local yyyy-MM-dd>"}` to `merged` in `progress.json`.
 
-## 9. Give up on an issue
+## 9. Second opinion when stuck
 
-- When blocked by the issue's nature, needing a guarded path or dependency change, needing a product decision, gate staying `unavailable` after 3 retries, or still failing after 2 fix rounds:
+- When an issue is about to be given up because the gate still fails after the 2 fix rounds, OR the same `npm run verify` test fails 3 times in a row, OR you are about to declare it blocked as ambiguous:
+  1. Write the current failures (the gate `failures` list or the failing test output, trimmed to the relevant part) to `C:\tivano\dev-loop\autopilot\runs\<n>\failures-<k>.md`.
+  2. Update `progress.json` `step` to `consult` and run the consult command (use a timeout >= 25 minutes; it takes up to ~20 minutes):
+     ```powershell
+     powershell -NoProfile -ExecutionPolicy Bypass -File C:\tivano\pr-bot\tool\scripts\dev-loop\Invoke-GlmReview.ps1 -Mode consult -PrNumber <pr> -FailuresFile C:\tivano\dev-loop\autopilot\runs\<n>\failures-<k>.md
+     ```
+  3. Its last stdout line is JSON `{"mode":"consult","pr":n,"status":"ok|unavailable","consultPath":"...","diagnosis":"...","plan":[...],"message":""}`; exit code `0` = ok, `2` = unavailable.
+  4. If `unavailable` (exit `2`), go straight to `needs-human` as below.
+  5. Otherwise, read `consultPath` and do exactly one more fix round guided by it: fix the code yourself, run `npm run verify`, stop worktree processes, commit, push, and run the gate again.
+  6. Only if that fix round or gate also fails, apply the `needs-human` rule below.
+- Never run more than one consult per issue per resume.
+- Never let GLM edit files: it only advises.
+
+## 10. Give up on an issue
+
+- When blocked by the issue's nature, needing a guarded path or dependency change, needing a product decision, gate staying `unavailable` after 3 retries, consult returning `unavailable` after hitting a stuck trigger, or still failing after the consult fix round:
   1. Add label `needs-human`: `gh issue edit <n> -R elijah7x/tivano-windows --add-label needs-human`.
-  2. Write `C:\tivano\dev-loop\autopilot\runs\<n>\needs-human.md` starting with this exact line, a blank line, and two plain sentences on what is missing:
+  2. Write `C:\tivano\dev-loop\autopilot\runs\<n>\needs-human.md` starting with this exact line, a blank line, and two plain sentences on what is missing (if a consult ran, add one sentence summarizing GLM's diagnosis, public-text safe):
      `> Automated by the dev-loop runner (coding agent on a Windows test machine). Agent self-tested; not a maintainer decision.`
   3. Post the comment: `gh issue comment <n> -R elijah7x/tivano-windows --body-file C:\tivano\dev-loop\autopilot\runs\<n>\needs-human.md`.
   4. Leave any open PR open, append `<n>` to `needsHuman` in `progress.json`, and move on to the next issue.
 
-## 10. Tracking
+## 11. Tracking
 
 - After each issue outcome, find the open tracking issue (`gh issue list -R elijah7x/tivano-windows --state open --search "Automated dev loop: progress log in:title" --json number,title`; it is `#34` today) and post one line via `--body-file`:
   - `<ISO time> #<n> <title>: merged in #<pr>`
@@ -136,6 +155,6 @@ Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, 
 - When the `nyx-auto` queue is empty, post `No open nyx-auto issues left; idle until new ones are labelled.` once to that tracking issue, set `progress.json` `state` to `"done"` (`issue: 0`), reply with one summary line, and stop.
 - Do not open new issues yourself.
 
-## 11. Public text hygiene
+## 12. Public text hygiene
 
 - Issue, PR, commit, and comment text must contain no machine names, user names, local paths, tokens, or secrets; refer to this host only as `a Windows test machine`.

@@ -425,14 +425,38 @@ export function renderMarkdown(
   veil?: StreamVeil | null,
 ): ReactNode[] {
   const v = streaming ? (veil ?? null) : null;
-  const out: ReactNode[] = [];
   const lines = source.split(LINE_SPLIT);
-  let i = 0;
-  let block = 0;
+  return renderBlocks(lines, 0, 0, labels, streaming, v).nodes;
+}
+
+/**
+ * The block pass behind renderMarkdown. `lines[start..]` is walked
+ * top-down; `keyBase` seeds element keys so a resumed parse keeps the key
+ * each block would have had from the beginning. Returns the rendered nodes
+ * and, for each, the line index where its block began — the data a
+ * streaming caller needs to decide what may be reused (frozen
+ * `blockLines`).
+ */
+function renderBlocks(
+  lines: string[],
+  start: number,
+  keyBase: number,
+  labels: MarkdownLabels | undefined,
+  streaming: boolean,
+  v: StreamVeil | null,
+): { nodes: ReactNode[]; starts: number[] } {
+  const out: ReactNode[] = [];
+  const starts: number[] = [];
+  let i = start;
+  let block = keyBase;
   while (i < lines.length) {
     const before = i;
     const line = lines[i]!;
     const key = `b${block++}`;
+    const push = (node: ReactNode): void => {
+      starts.push(before);
+      out.push(node);
+    };
 
     // Fenced code block. The info string is everything after the opening
     // backtick run that is not itself a backtick; its first token becomes
@@ -458,7 +482,7 @@ export function renderMarkdown(
         labels?.renderDelegation &&
         (langSafe === "hydra" || langSafe === "hydra-sent" || langSafe === "hydra-leaving")
       ) {
-        out.push(
+        push(
           createElement(
             "div",
             { key, className: "md-delegation" },
@@ -470,7 +494,7 @@ export function renderMarkdown(
       // Frozen parity: a copy affordance on the block header. The actual
       // clipboard write is delegated to a document click handler (app.tsx)
       // so this renderer stays pure.
-      out.push(
+      push(
         createElement(
           "div",
           { key, className: "md-preblock" },
@@ -521,7 +545,7 @@ export function renderMarkdown(
     if (h) {
       const level = h[1]!.length as 1 | 2 | 3 | 4 | 5 | 6;
       const lastHead = streaming && i === lines.length - 1;
-      out.push(
+      push(
         createElement(`h${level}`, { key }, renderInline(h[2]!, key, lastHead, lastHead ? v : null)),
       );
       i++;
@@ -530,7 +554,7 @@ export function renderMarkdown(
 
     // Thematic break — before lists so `- - -`/`***`/`___` break, not list.
     if (HR.test(line)) {
-      out.push(createElement("hr", { key, className: "md-rule" }));
+      push(createElement("hr", { key, className: "md-rule" }));
       i++;
       continue;
     }
@@ -540,7 +564,7 @@ export function renderMarkdown(
       const buf: string[] = [];
       while (i < lines.length && QUOTE.test(lines[i]!)) buf.push(lines[i++]!.replace(/^>\s?/, ""));
       const mend = streaming && i === lines.length;
-      out.push(
+      push(
         createElement(
           "blockquote",
           { key },
@@ -560,7 +584,7 @@ export function renderMarkdown(
     if (LIST_ITEM.test(line)) {
       const { items, next } = parseList(lines, i);
       const lastList = streaming && next === lines.length;
-      out.push(renderList(items, key, lastList, lastList ? v : null));
+      push(renderList(items, key, lastList, lastList ? v : null));
       i = next;
       continue;
     }
@@ -585,7 +609,7 @@ export function renderMarkdown(
         i++;
       }
       const mend = streaming && i === lines.length;
-      out.push(
+      push(
         createElement(
           "table",
           { key, className: "md-table" },
@@ -648,7 +672,7 @@ export function renderMarkdown(
       buf.push(lines[i++]!);
     }
     const lastPara = streaming && i === lines.length;
-    out.push(
+    push(
       createElement("p", { key }, renderInline(buf.join("\n"), key, lastPara, lastPara ? v : null)),
     );
 
@@ -656,11 +680,77 @@ export function renderMarkdown(
     // line as plain paragraph text. Unreachable while recognizers and
     // consumers stay paired, but a parser must never be able to stall.
     if (i === before) {
-      out.push(createElement("p", { key: `b${block++}` }, renderInline(line, `b${block}`)));
+      push(createElement("p", { key: `b${block++}` }, renderInline(line, `b${block}`)));
       i++;
     }
   }
-  return out;
+  return { nodes: out, starts };
+}
+
+/**
+ * Frozen `MarkdownParser.Parse`: a streamed parse remembers how much of it
+ * survives the reply growing underneath. The parser decides each line from
+ * that line and the next, so a block that starts at least two lines above
+ * the end is final — the nodes before it are `stableNodes`, and a longer
+ * text parses again from `restart`, the boundary block's own start line.
+ */
+export interface StreamingParse {
+  /** Nodes of the stable prefix — the same element objects every chunk. */
+  stableNodes: ReactNode[];
+  /** Line index where the unstable tail begins; always a block start. */
+  restart: number;
+  /** Line count the last parse covered. */
+  lines: number;
+  /** The source the last parse covered — reuse requires a pure append. */
+  source: string;
+}
+
+/**
+ * Frozen `MarkdownParser.parse(_:extending:)`: while a reply only appends,
+ * its stable leading blocks are reused — identical element references, so
+ * React bails out of reconciling them — and just the tail re-renders. The
+ * per-chunk cost tracks the arriving text, not the whole message; whole
+ * reparse was the measured cause of long-reply lag (P1-29 replay).
+ *
+ * `prev` comes from the previous call for the same message; pass null the
+ * first time. Non-append edits or a shrinking source fall back to a full
+ * parse.
+ */
+export function renderMarkdownStreaming(
+  source: string,
+  labels: MarkdownLabels | undefined,
+  prev: StreamingParse | null,
+  veil: StreamVeil | null,
+): { nodes: ReactNode[]; state: StreamingParse } {
+  const lines = source.split(LINE_SPLIT);
+  // Frozen requires text.startsWith(previous.text): a pure append keeps
+  // every earlier line frozen, so the stable prefix is still correct. A
+  // replaced or rewritten text — Codex may re-send whole items — parses
+  // from scratch.
+  const resume = prev !== null && source.startsWith(prev.source);
+  const stable = resume ? prev.stableNodes : [];
+  const start = resume ? prev.restart : 0;
+  const { nodes, starts } = renderBlocks(lines, start, stable.length, labels, true, veil);
+  // The last block that begins at least two lines above the end marks
+  // everything before it final (frozen `stable`); parsing resumes AT its
+  // own start next time, so the boundary block itself renders again.
+  let boundary = -1;
+  for (let s = starts.length - 1; s >= 0; s--) {
+    if (starts[s]! <= lines.length - 3) {
+      boundary = s;
+      break;
+    }
+  }
+  const state: StreamingParse =
+    boundary >= 0
+      ? {
+          stableNodes: [...stable, ...nodes.slice(0, boundary)],
+          restart: starts[boundary]!,
+          lines: lines.length,
+          source,
+        }
+      : { stableNodes: stable, restart: start, lines: lines.length, source };
+  return { nodes: [...stable, ...nodes], state };
 }
 
 /** Test helper: true when a URL would render as an anchor. */

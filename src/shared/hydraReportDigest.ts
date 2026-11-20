@@ -191,11 +191,19 @@ const LEAD_PREFIXES = [
   "The user sent",
 ];
 
+/** Lead-only closings that start with a head's name rather than a fixed
+ *  prefix — the per-provider startup-failure cause (frozen v2ReportMessage). */
+const LEAD_PATTERNS = [/failed on .+ before doing any work/];
+
 function withoutLeadInstructions(body: string): string {
   const at = body.lastIndexOf("\n\n");
   if (at < 0) return body;
   const tail = body.slice(at + 2).trim();
-  if (!LEAD_PREFIXES.some((p) => tail.startsWith(p))) return body;
+  if (
+    !LEAD_PREFIXES.some((p) => tail.startsWith(p)) &&
+    !LEAD_PATTERNS.some((p) => p.test(tail))
+  )
+    return body;
   return body.slice(0, at).trim();
 }
 
