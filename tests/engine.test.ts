@@ -614,6 +614,21 @@ describe("P1-35 continue (frozen sendContinuation)", () => {
     };
     expect(() => engine.continueHydraHead(noCopy.id)).toThrow(EngineError);
 
+    // A head whose own copy was released also refuses (frozen
+    // worktreePath gate) — never a silent re-capture.
+    const released = engine.createThread(null, "x");
+    released.hydraHead = {
+      leadId: released.id,
+      headIndex: 0,
+      name: "hank",
+      task: "t",
+      batchId: "b",
+      status: "stopped",
+      baseTree: "a".repeat(40),
+      spawnedAt: Date.now(),
+    };
+    expect(() => engine.continueHydraHead(released.id)).toThrow(EngineError);
+
     const running = engine.createThread(null, "r");
     running.hydraHead = {
       leadId: running.id,

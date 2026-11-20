@@ -192,7 +192,8 @@ export function HydraPanel(props: {
                   stopped head with its own copy continues in its own
                   session; a shared-checkout head keeps no Continue. */}
               {(info.status === "stopped" || info.status === "failed") &&
-                info.baseTree !== undefined && (
+                info.baseTree !== undefined &&
+                h.worktreeDir !== undefined && (
                   <button
                     className="hydra-continue"
                     title={t("Continue this head in its own session")}

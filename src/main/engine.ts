@@ -4772,7 +4772,7 @@ export class Engine {
     if (!info) throw new EngineError("not a hydra head");
     if (info.status !== "stopped" && info.status !== "failed")
       throw new EngineError("only a failed or stopped head can be continued");
-    if (info.baseTree === undefined)
+    if (info.baseTree === undefined || thread.worktreeDir === undefined)
       throw new EngineError("the head has no retained copy to continue in");
     return this.sendTurn(threadId, Engine.FAILED_TURN_CONTINUE_MESSAGE);
   }
