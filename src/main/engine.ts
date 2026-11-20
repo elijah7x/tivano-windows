@@ -2063,6 +2063,7 @@ export class Engine {
     hasSeenHydraIntro?: boolean | undefined;
     hydraPairs?: import("../shared/hydra").HydraPair[] | undefined;
     lastHydraPairId?: string | null | undefined;
+    subagentModeDefault?: SubagentMode | undefined;
     modelList?: import("../shared/modelList").ModelPin[] | undefined;
     modelSections?: import("../shared/modelList").ModelSection[] | undefined;
     collapsedModelSections?: string[] | undefined;
@@ -2196,6 +2197,8 @@ export class Engine {
         if (patch.lastHydraPairId === null) delete d.settings.lastHydraPairId;
         else d.settings.lastHydraPairId = patch.lastHydraPairId;
       }
+      if (patch.subagentModeDefault !== undefined)
+        d.settings.subagentModeDefault = patch.subagentModeDefault;
       // F17 model-list — whole-array writes; the shared layout ops already
       // produced valid ordering, so each slice persists verbatim (empty
       // arrays delete, mirroring frozen "absent = empty" semantics).
