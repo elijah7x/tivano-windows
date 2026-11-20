@@ -453,6 +453,8 @@ const zhHans: Record<string, string> = {
   "Turn already running": "已有轮次在运行",
   "A turn is already running on this thread": "此对话已有轮次在运行",
   "a turn is already running on this thread": "此对话已有轮次在运行",
+  "heads have no sub-agent mode": "子智能体没有子代理模式",
+  "switch modes when no sub-agents are at work": "请在没有子代理正在工作时切换模式",
   "Open link": "打开链接",
   "Tivano Windows": "Tivano Windows",
   "A previous turn was interrupted": "上一个轮次被中断",
@@ -482,8 +484,10 @@ const zhHans: Record<string, string> = {
   "no such pending approval": "没有对应的待审批请求",
   "approval already resolved": "该审批已处理",
   "unknown approval option": "未知审批选项",
-  "Synthetic provider error (prompt contained [mock:fail]).":
-    "合成提供方错误（提示包含 [mock:fail]）。",
+  "Synthetic provider error (synthetic fail).":
+    "合成提供方错误（synthetic fail）。",
+  "Synthetic provider error (synthetic fail-quiet).":
+    "合成提供方错误（synthetic fail-quiet）。",
   "Mock Provider (synthetic — no real model, tools or commands)":
     "模拟提供方（合成 —— 无真实模型、工具或命令）",
   "Synthetic action requested by the Mock Provider. Nothing will be executed regardless of the answer.":
@@ -1027,6 +1031,21 @@ const zhHans: Record<string, string> = {
   "Reports back to the lead": "向主导模型汇报",
   "A finished head hands its report to the lead, which checks the work and answers you. Completed heads collapse automatically; their reports stay in completion cards in the chat.":
     "子智能体完成后将报告交给主导模型，由它检查工作并回复你。完成的子智能体会自动收起，工作报告保留在聊天里的完成卡片中。",
+  // P1-36: sub-agent modes — frozen verbatim zh-Hans.
+  "Sub-agents": "子代理",
+  "Sub-agent mode": "子代理模式",
+  "Sub-agent mode — applies to the next turn": "子代理模式 — 下一轮生效",
+  "Same-model sub-agents": "同模型子代理",
+  "Preset sub-agents": "模型搭配",
+  "Adaptive sub-agents": "自适应子代理",
+  "This model splits the work and hands parts to sub-agents running the same model.":
+    "由当前模型拆分任务，交给同一模型的子代理执行。",
+  "A saved lead and sub-agent combo; sub-agents run the combo's models.":
+    "使用已保存的主代理与子代理的模型搭配，子代理运行搭配指定的模型。",
+  "The lead splits the work into roles and matches each to a model across providers.":
+    "主代理把工作拆成不同角色，并为每个角色匹配合适服务商的模型。",
+  "New chats start on this mode; each chat switches it in the model picker. With no saved pair, Preset falls back to Same-model.":
+    "新对话使用该模式；每个对话可在模型选择器中切换。没有保存的组合时，“模型搭配”回退为“同模型”。",
   "Only newly dispatched heads": "仅限新派发的子智能体",
   "Only newly dispatched Codex heads managed by Tivano can be archived after successful completion. Lead chats, older sessions, heads with user follow-ups or descendant sessions, and heads not confirmed idle stay visible.":
     "仅新派发且由 Tivano 管理的 Codex 子智能体会在成功完成后归档。主会话、较早会话，以及收到用户后续消息、有后代会话或尚未确认空闲的子智能体会话，均保持可见。",

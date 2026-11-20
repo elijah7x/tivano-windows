@@ -94,6 +94,10 @@ export class MockProvider implements ProviderAdapter {
    *  cumulative shape lets the engine's spend tracker exercise its real
    *  delta accounting; the numbers themselves are not real usage. */
   private readonly sessionTotals = new Map<string, number>();
+  /** P1-36: lead threads whose report turns keep re-delegating
+   *  (`[mock:hydra-loop*]` fixtures) — the loop flavor decides whether
+   *  the next batch's heads work or quiet-fail. */
+  private readonly hydraLoops = new Map<string, "ok" | "fail">();
 
   constructor(private readonly opts: MockProviderOptions = {}) {}
 
@@ -160,6 +164,19 @@ export class MockProvider implements ProviderAdapter {
     const wantsHydraFailStart = prompt.includes("[mock:hydra-failstart]");
     const wantsHydraFailAll = prompt.includes("[mock:hydra-failall]");
     const wantsHydraFailTransient = prompt.includes("[mock:hydra-failtransient]");
+    // P1-36 fixtures: `[mock:hydra-role]` = one delegation whose entry
+    // carries the adaptive mode's `role` job-title field;
+    // `[mock:hydra-loop]` re-delegates on every report turn (round
+    // budget) and `[mock:hydra-loop-fail]` the same with quiet-fail
+    // heads (producedNothing refunds). Loops stick per lead thread —
+    // the report turn itself carries no token.
+    const wantsHydraRole = prompt.includes("[mock:hydra-role]");
+    const wantsHydraLoop = prompt.includes("[mock:hydra-loop]");
+    const wantsHydraLoopFail = prompt.includes("[mock:hydra-loop-fail]");
+    if (wantsHydraLoop) this.hydraLoops.set(ctx.threadId, "ok");
+    if (wantsHydraLoopFail) this.hydraLoops.set(ctx.threadId, "fail");
+    const looped =
+      this.hydraLoops.has(ctx.threadId) && prompt.includes("Hydra reports:");
     // `[mock:fail-quiet]` errors the turn before ANY chunk — a head that
     // failed having said nothing and run no tool (frozen startupFailure);
     // `[mock:fail-quiet-transient]` the same with a transient error.
@@ -207,7 +224,8 @@ export class MockProvider implements ProviderAdapter {
       wantsHydraProfile || wantsHydraTouch || wantsHydraBadRoute ||
       wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraWaitQ ||
       wantsHydraQuiet || wantsHydraFailStart || wantsHydraFailAll ||
-      wantsHydraFailTransient
+      wantsHydraFailTransient || wantsHydraRole ||
+      wantsHydraLoop || wantsHydraLoopFail || looped
     ) {
       const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute || wantsHydraWaitQ
         ? wantsHydraWaitMany
@@ -233,6 +251,12 @@ export class MockProvider implements ProviderAdapter {
           ? '[{"task":"Quiet fail one","prompt":"Try it. [mock:fail-quiet]"},{"task":"Quiet fail two","prompt":"Try it. [mock:fail-quiet]"}]'
         : wantsHydraFailTransient
           ? '[{"task":"Flaky start","prompt":"Try it. [mock:fail-quiet-transient]"},{"task":"Steady part","prompt":"Normal work."}]'
+        : wantsHydraRole
+          ? '[{"role":"Outline it","prompt":"Normal work."}]'
+        : wantsHydraLoopFail || (looped && this.hydraLoops.get(ctx.threadId) === "fail")
+          ? '[{"task":"Quiet fail","prompt":"Try it. [mock:fail-quiet]"}]'
+        : wantsHydraLoop || looped
+          ? '[{"task":"Loop part","prompt":"Normal work."}]'
           : '[{"task":"Draft the outline","prompt":"Write a short outline."},{"task":"Verify the numbers","prompt":"Check the arithmetic."}]';
       // Split so the first entry closes one chunk BEFORE the second —
       // deterministic incremental dispatch (a head spawns while the
@@ -284,7 +308,9 @@ export class MockProvider implements ProviderAdapter {
       );
     } else if (wantsFailQuiet) {
       driver.queue.push(() =>
-        cb.onError("Synthetic provider error (prompt contained [mock:fail-quiet])."),
+        // No literal fixture token in the error: a quoted error landing
+        // in the lead's report-turn prompt must not re-arm the fixture.
+        cb.onError("Synthetic provider error (synthetic fail-quiet)."),
       );
     } else if (wantsLimitNoTime) {
       driver.queue.push(() =>
@@ -297,7 +323,7 @@ export class MockProvider implements ProviderAdapter {
       });
     } else if (wantsFail) {
       driver.queue.push(() =>
-        cb.onError("Synthetic provider error (prompt contained [mock:fail])."),
+        cb.onError("Synthetic provider error (synthetic fail)."),
       );
     } else if (wantsApproval) {
       driver.queue.push(() => {

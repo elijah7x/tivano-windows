@@ -376,6 +376,9 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("hydra:stop", (p) => engine.stopHydraHead(p.threadId));
   handle("hydra:continue", (p) => engine.continueHydraHead(p.threadId));
   handle("threads:set-hydra", (p) => engine.setThreadHydra(p.threadId, p.enabled));
+  handle("threads:set-subagent-mode", (p) =>
+    engine.setSubagentMode(p.threadId, p.mode),
+  );
   handle("approvals:resolve", (p) =>
     engine.resolveApproval(p.threadId, p.approvalId, p.optionId),
   );

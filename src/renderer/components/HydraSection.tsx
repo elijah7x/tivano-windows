@@ -804,6 +804,25 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
         )}
       </p>
 
+      <h4>{t("Sub-agent mode")}</h4>
+      <ChoiceRow
+        options={
+          [
+            ["same", "Same-model sub-agents"],
+            ["preset", "Preset sub-agents"],
+            ["adaptive", "Adaptive sub-agents"],
+          ] as const
+        }
+        value={settings.subagentModeDefault ?? ""}
+        aria="Sub-agent mode"
+        onPick={(v) => tryCall("settings:set", { subagentModeDefault: v })}
+      />
+      <p className="codex-note">
+        {t(
+          "New chats start on this mode; each chat switches it in the model picker. With no saved pair, Preset falls back to Same-model.",
+        )}
+      </p>
+
       <div className="hydra-pairs-head">
         <h4>{t("Pairs")}</h4>
         <span className="cook-anchor" ref={cookAnchor}>

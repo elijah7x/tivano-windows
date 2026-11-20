@@ -28,6 +28,7 @@ import {
   HYDRA_PERSONAS,
   HYDRA_UNCAPPED_CONCURRENCY,
   type HydraCatalog,
+  type HydraPair,
   type HydraPersona,
   type ResolvedHydraLaunch,
 } from "../shared/hydra";
@@ -35,12 +36,15 @@ import {
   HydraDelegationStreamParser,
   MAX_DELEGATED_TASKS,
   MAX_DELEGATION_ROUNDS,
+  MAX_REFUNDED_ROUNDS,
   QUIET_STALL_NOTE,
   STALLED_NOTE,
   delegatedHeadPrompt,
+  hydraAdaptiveNote,
   hydraDelegationRequest,
   hydraIsTransientFailure,
   hydraLeadPolicy,
+  hydraQueuedHeadsNote,
   hydraReportNote,
   hydraTeamStatus,
   hydraTurnNote,
@@ -90,6 +94,7 @@ import type {
   InteractionMode,
   RuntimeMode,
   Snapshot,
+  SubagentMode,
   TodoStep,
   Turn,
   WorktreeResult,
@@ -229,6 +234,14 @@ export class Engine {
   private readonly hydraTexts = new Map<string, string>();
   private readonly hydraSent = new Map<string, number>();
   private readonly hydraRounds = new Map<string, number>();
+  /** P1-36 frozen HydraDelegationBudget: refunds already handed back
+   *  per lead (≤ MAX_REFUNDED_ROUNDS), the budget generation per lead
+   *  (bumped on every authored message so a refund can only touch the
+   *  request it was charged under), and the generation each batchId
+   *  was charged under. */
+  private readonly hydraRefunds = new Map<string, number>();
+  private readonly hydraBudgetGen = new Map<string, number>();
+  private readonly hydraBatchGen = new Map<string, number>();
   private readonly hydraPendingReports = new Map<string, HydraReport[]>();
   private readonly hydraWatchdogs = new Map<
     string,
@@ -775,6 +788,11 @@ export class Engine {
         : settings.lastHydraPairId
           ? { hydraPairId: settings.lastHydraPairId }
           : {}),
+      ...(opts?.externalHydra
+        ? {}
+        : settings.subagentModeDefault
+          ? { subagentMode: settings.subagentModeDefault }
+          : {}),
     };
     this.store.update((d) => {
       d.threads.push(thread);
@@ -1079,8 +1097,16 @@ export class Engine {
   ): Turn {
     this.assertMutable();
     // Frozen beginTurn(userAuthored): a real user request restarts the
-    // delegation-round budget; Hydra report/refusal turns don't.
-    if (opts?.authored !== false) this.hydraRounds.delete(threadId);
+    // delegation-round budget; Hydra report/refusal turns don't. The
+    // generation bump voids refunds charged under earlier requests.
+    if (opts?.authored !== false) {
+      this.hydraRounds.delete(threadId);
+      this.hydraRefunds.delete(threadId);
+      this.hydraBudgetGen.set(
+        threadId,
+        (this.hydraBudgetGen.get(threadId) ?? 0) + 1,
+      );
+    }
     const thread = this.mustThread(threadId);
     // Frozen: sending in a shelved project wakes it — real work resumes.
     this.wakeShelvedProject(thread.projectId);
@@ -1680,7 +1706,11 @@ export class Engine {
 
   /** Queue the text behind the running turn; idle, it goes out at once
    *  (unless the last turn was stopped — that queue waits for the user). */
-  enqueueFollowUp(threadId: string, text: string): void {
+  enqueueFollowUp(
+    threadId: string,
+    text: string,
+    opts?: { unauthored?: boolean },
+  ): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
     const trimmed = text.trim();
@@ -1689,7 +1719,12 @@ export class Engine {
     if (items.length >= Engine.FOLLOWUP_MAX)
       throw new EngineError("follow-up queue is full");
     this.store.update(() => {
-      items.push({ id: randomUUID(), text: trimmed, createdAt: Date.now() });
+      items.push({
+        id: randomUUID(),
+        text: trimmed,
+        createdAt: Date.now(),
+        ...(opts?.unauthored ? { unauthored: true } : {}),
+      });
       thread.updatedAt = Date.now();
     });
     this.emit({ type: "thread-updated", thread });
@@ -1785,13 +1820,14 @@ export class Engine {
     const items = this.queueOf(thread);
     const index = items.findIndex((i) => i.id === id);
     if (index < 0) throw new EngineError("no such queued follow-up");
+    const unauthored = items[index]!.unauthored === true;
     const text = this.takeBundleText(thread, index);
     if (!text.trim()) {
       this.emitQueue(thread);
       return;
     }
     if (!this.threadBusy(thread)) {
-      this.sendTurn(threadId, text);
+      this.sendTurn(threadId, text, unauthored ? { authored: false } : undefined);
       return;
     }
     if (!this.pendingSends.has(threadId)) {
@@ -1801,7 +1837,12 @@ export class Engine {
       // Return already has a message going out the moment the turn stops;
       // this one goes right behind it (frozen insert at 0).
       this.store.update(() => {
-        items.unshift({ id: randomUUID(), text, createdAt: Date.now() });
+        items.unshift({
+          id: randomUUID(),
+          text,
+          createdAt: Date.now(),
+          ...(unauthored ? { unauthored: true } : {}),
+        });
       });
       this.emitQueue(thread);
     }
@@ -1895,18 +1936,24 @@ export class Engine {
     this.drainFollowUps(thread);
   }
 
-  /** Pop the merged head item and send it as an ordinary turn. */
+  /** Pop the merged head item and send it as an ordinary turn. A
+   *  system-authored item (a Hydra refusal, never bundled) drains as a
+   *  non-authored turn so it cannot restart the delegation budget
+   *  (frozen refuse-turn semantics). */
   private drainFollowUps(thread: ChatThread): void {
     if (this.threadBusy(thread) || this.drainingFollowUps.has(thread.id)) return;
     if (!thread.followUps?.length) return;
     this.drainingFollowUps.add(thread.id);
     try {
+      const unauthored =
+        thread.followUps[0]!.unauthored === true &&
+        thread.followUps[0]!.bundleId === undefined;
       const text = this.takeBundleText(thread, 0);
       if (!text.trim()) {
         this.emitQueue(thread);
         return;
       }
-      this.sendTurn(thread.id, text);
+      this.sendTurn(thread.id, text, unauthored ? { authored: false } : undefined);
     } finally {
       this.drainingFollowUps.delete(thread.id);
     }
@@ -2031,6 +2078,7 @@ export class Engine {
     hasSeenHydraIntro?: boolean | undefined;
     hydraPairs?: import("../shared/hydra").HydraPair[] | undefined;
     lastHydraPairId?: string | null | undefined;
+    subagentModeDefault?: SubagentMode | undefined;
     modelList?: import("../shared/modelList").ModelPin[] | undefined;
     modelSections?: import("../shared/modelList").ModelSection[] | undefined;
     collapsedModelSections?: string[] | undefined;
@@ -2164,6 +2212,8 @@ export class Engine {
         if (patch.lastHydraPairId === null) delete d.settings.lastHydraPairId;
         else d.settings.lastHydraPairId = patch.lastHydraPairId;
       }
+      if (patch.subagentModeDefault !== undefined)
+        d.settings.subagentModeDefault = patch.subagentModeDefault;
       // F17 model-list — whole-array writes; the shared layout ops already
       // produced valid ordering, so each slice persists verbatim (empty
       // arrays delete, mirroring frozen "absent = empty" semantics).
@@ -2781,6 +2831,37 @@ export class Engine {
       thread.hydraEnabled = enabled;
       thread.updatedAt = Date.now();
       d.settings.hydraDefaultEnabled = enabled;
+    });
+    this.emit({ type: "thread-updated", thread });
+    this.emit({ type: "settings-changed", settings: this.store.state.settings });
+  }
+
+  /** P1-36: the chat's sub-agent mode (frozen picker row taps — the
+   *  choice persists on the thread and seeds new chats through
+   *  `subagentModeDefault`, like hydraDefaultEnabled). */
+  setSubagentMode(threadId: string, mode: SubagentMode): void {
+    this.assertMutable();
+    const thread = this.mustThread(threadId);
+    if (thread.hydraHead) throw new EngineError("heads have no sub-agent mode");
+    // Frozen canSwitchChimera: the adaptive switch is locked in both
+    // directions while the chat's sub-agents are at work or delegations
+    // still wait to report (hydraLeadBusy covers running heads and
+    // pending reports).
+    const leavingAdaptive = this.subagentModeFor(thread) === "adaptive" && mode !== "adaptive";
+    if ((mode === "adaptive" || leavingAdaptive) && this.hydraLeadBusy(threadId))
+      throw new EngineError("switch modes when no sub-agents are at work");
+    if (
+      thread.subagentMode === mode &&
+      this.store.state.settings.subagentModeDefault === mode
+    )
+      return;
+    this.store.update((d) => {
+      thread.subagentMode = mode;
+      // Frozen leaveHydraPair: Same-model drops the saved pair so a
+      // later Preset pick does not silently resurrect it.
+      if (mode === "same") delete thread.hydraPairId;
+      thread.updatedAt = Date.now();
+      d.settings.subagentModeDefault = mode;
     });
     this.emit({ type: "thread-updated", thread });
     this.emit({ type: "settings-changed", settings: this.store.state.settings });
@@ -3840,9 +3921,12 @@ export class Engine {
    *  the existing follow-up queue); never a silent drop. */
   private refuseDelegation(lead: ChatThread, why: string): void {
     try {
+      // Frozen refuse semantics: the refusal gets a turn of its own but
+      // is not user-authored — it must not restart the budget.
       this.enqueueFollowUp(
         lead.id,
         `Hydra did not send the head you just asked for — ${why}. Do that part yourself and answer the user.`,
+        { unauthored: true },
       );
     } catch {
       // A full queue must not break the lead's own turn.
@@ -3852,11 +3936,33 @@ export class Engine {
   /** The pair-bound launch view for a lead (frozen AppModel.hydraLaunch,
    *  bounded): the stored pair applies only while it names this build's
    *  one provider; undefined while Hydra is off for app or chat. */
+  /** P1-36: the chat's sub-agent mode (frozen picker semantics —
+   *  absent = derived: a saved pair means Preset, otherwise
+   *  Same-model). */
+  private subagentModeFor(lead: ChatThread): SubagentMode {
+    return lead.subagentMode ?? (lead.hydraPairId ? "preset" : "same");
+  }
+
+  /** P1-36: the pair as the chat's mode allows — Same-model mode never
+   *  consults a saved pair (frozen selectCurrentModelHydra); Preset
+   *  and Adaptive resolve it, a missing one degrading to the
+   *  same-model launch (bounded — the combo editor lives in
+   *  Settings › Hydra). */
+  private hydraPairForMode(lead: ChatThread): HydraPair | undefined {
+    if (this.subagentModeFor(lead) === "same") return undefined;
+    const s = this.store.state.settings;
+    return hydraPairForLead(
+      lead.hydraPairId,
+      s.hydraPairs ?? [],
+      this.provider.descriptor.mode,
+    );
+  }
+
   private hydraLaunchFor(lead: ChatThread): ResolvedHydraLaunch | undefined {
     const s = this.store.state.settings;
     if (s.hydraEnabled === false || lead.hydraEnabled === false) return undefined;
     const mode = this.provider.descriptor.mode;
-    const pair = hydraPairForLead(lead.hydraPairId, s.hydraPairs ?? [], mode);
+    const pair = this.hydraPairForMode(lead);
     return resolveHydraLaunch(
       pair,
       s.hydraMaxHeads ?? undefined,
@@ -3905,14 +4011,34 @@ export class Engine {
           : id,
     });
     const team = this.hydraTeamLine(lead.id);
+    // Frozen v2QueuedHeadsNote: while the cap holds delegations back,
+    // every lead prompt opens with the queue state so the lead never
+    // re-sends them.
+    const queued = this.hydraWaiting.get(lead.id)?.length ?? 0;
+    const queuedNote =
+      queued > 0
+        ? hydraQueuedHeadsNote(
+            queued,
+            launch.maxHeads ?? HYDRA_UNCAPPED_CONCURRENCY,
+          )
+        : "";
     if (isReport) {
       const canDelegate =
         (this.hydraRounds.get(lead.id) ?? 0) < MAX_DELEGATION_ROUNDS;
-      return policy + "\n\n" + hydraReportNote(team, canDelegate);
+      return queuedNote + policy + "\n\n" + hydraReportNote(team, canDelegate);
     }
+    // P1-36: the adaptive mode's bounded Chimera slice — role titles +
+    // profile routing ride the delegation request.
+    const adaptive =
+      this.subagentModeFor(lead) === "adaptive"
+        ? "\n\n" +
+          hydraAdaptiveNote(launch.headProfiles.map((p) => p.name))
+        : "";
     return (
+      queuedNote +
       hydraDelegationRequest() +
       policy +
+      adaptive +
       "\n\n" +
       (hydraTurnNote(team) || "---\n\n")
     );
@@ -3976,6 +4102,7 @@ export class Engine {
     // frozen per-block accounting).
     const leadTurn = lead.turn;
     const roundKey = leadTurn ? `${lead.id}:${leadTurn.id}` : null;
+    const batchId = leadTurn?.id ?? "batch";
     if (roundKey && !this.hydraRounds.has(roundKey)) {
       const rounds = this.hydraRounds.get(lead.id) ?? 0;
       if (rounds >= MAX_DELEGATION_ROUNDS) {
@@ -3986,6 +4113,10 @@ export class Engine {
       }
       this.hydraRounds.set(lead.id, rounds + 1);
       this.hydraRounds.set(roundKey, 1);
+      this.hydraBatchGen.set(
+        batchId,
+        this.hydraBudgetGen.get(lead.id) ?? 0,
+      );
     }
     const team = this.store.state.threads.filter(
       (t) => t.hydraHead?.leadId === lead.id,
@@ -3993,7 +4124,6 @@ export class Engine {
     const running = team.filter((t) => t.hydraHead?.status === "running").length;
     const launch = this.hydraLaunchFor(lead);
     const cap = launch?.maxHeads ?? HYDRA_UNCAPPED_CONCURRENCY;
-    const batchId = leadTurn?.id ?? "batch";
     // The pair's cap paces the rest through hydraWaiting (frozen
     // parity): over-cap entries wait for room, they are never refused.
     if (running >= cap) {
@@ -4018,7 +4148,7 @@ export class Engine {
     const s = this.store.state.settings;
     launch = launch ?? this.hydraLaunchFor(lead);
     const mode = this.provider.descriptor.mode;
-    const pair = hydraPairForLead(lead.hydraPairId, s.hydraPairs ?? [], mode);
+    const pair = this.hydraPairForMode(lead);
     // A pair that names a heads-provider this build cannot run: the
     // heads stay on the lead's and the lead hears it once per job.
     if (pair && launch?.headsFallbackNote) {
@@ -4686,6 +4816,39 @@ export class Engine {
         if (k.startsWith(`${leadId}:${r.batchId}:`)) this.hydraCaptures.delete(k);
     }
     try {
+      // Frozen refundRound: a flushed batch whose every head provably
+      // did nothing hands its round back (≤ MAX_REFUNDED_ROUNDS per
+      // request, only while the generation it was charged under still
+      // runs). Before the send: the report turn's wire prompt reads
+      // hydraRounds for canDelegate, so the refund must land first or
+      // the lead is told "no more heads" while its round comes back.
+      // hydraBatchGen.delete makes each batch single-fire even when the
+      // send throws and the reports re-queue.
+      const byBatch = new Map<string, HydraReport[]>();
+      for (const r of flushable) {
+        const k = r.batchId ?? "";
+        byBatch.set(k, [...(byBatch.get(k) ?? []), r]);
+      }
+      for (const [batchId, rs] of byBatch) {
+        const nothing = rs.every(
+          (r) =>
+            (r.status === "failed" || r.status === "stopped") &&
+            r.landing === undefined &&
+            (r.copyPath !== undefined || r.startupFailure === true),
+        );
+        if (!nothing) {
+          this.hydraBatchGen.delete(batchId);
+          continue;
+        }
+        const gen = this.hydraBudgetGen.get(leadId) ?? 0;
+        const refunds = this.hydraRefunds.get(leadId) ?? 0;
+        if (this.hydraBatchGen.get(batchId) !== gen) continue;
+        this.hydraBatchGen.delete(batchId);
+        if (refunds >= MAX_REFUNDED_ROUNDS) continue;
+        const rounds = this.hydraRounds.get(leadId) ?? 0;
+        if (rounds > 0) this.hydraRounds.set(leadId, rounds - 1);
+        this.hydraRefunds.set(leadId, refunds + 1);
+      }
       this.sendTurn(leadId, reportMessage(flushable, stillWorking), {
         authored: false,
         hydraReport: flushable.map((r) => r.headIndex),
@@ -4895,7 +5058,9 @@ export class Engine {
     // against this model's limit — a model change ends it, nothing sends.
     if (thread.codexModel !== wait.model) return;
     try {
-      this.enqueueFollowUp(threadId, Engine.LIMIT_CONTINUE_MESSAGE);
+      this.enqueueFollowUp(threadId, Engine.LIMIT_CONTINUE_MESSAGE, {
+        unauthored: true,
+      });
       const items = this.queueOf(thread);
       const item = [...items]
         .reverse()

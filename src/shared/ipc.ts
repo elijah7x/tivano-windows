@@ -172,6 +172,7 @@ export const REQUEST_CHANNELS = [
   "threads:set-runtime-mode",
   "threads:set-pinned",
   "threads:set-hydra",
+  "threads:set-subagent-mode",
   "threads:set-interaction-mode",
   "threads:forward",
   "threads:revert",
@@ -358,6 +359,10 @@ export const requestValidators = {
   }),
   "threads:set-pinned": vObject({ threadId: vId, pinned: vBoolean }),
   "threads:set-hydra": vObject({ threadId: vId, enabled: vBoolean }),
+  "threads:set-subagent-mode": vObject({
+    threadId: vId,
+    mode: vEnum(["same", "preset", "adaptive"] as const),
+  }),
   "threads:set-interaction-mode": vObject({
     threadId: vId,
     mode: vEnum(["build", "plan"] as const),
@@ -498,6 +503,9 @@ export const requestValidators = {
     hydraTempersHeadEffort: vOptional(vBoolean),
     hasSeenHydraIntro: vOptional(vBoolean),
     hydraPairs: vOptional(vArray(vHydraPair, 64)),
+    subagentModeDefault: vOptional(
+      vEnum(["same", "preset", "adaptive"] as const),
+    ),
     lastHydraPairId: vOptional(vNullable(vNonEmptyString(120))),
     // F17: frozen modelList / modelSections / collapsedModelSections /
     // modelPreferences — whole-array writes (layout ops are computed
