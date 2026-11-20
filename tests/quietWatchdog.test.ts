@@ -110,3 +110,94 @@ describe("quiet watchdog (F03)", () => {
     expect(live.turn?.quietMinutes).toBeUndefined();
   });
 });
+
+describe("quiet watchdog on Hydra heads (P2-06, frozen)", () => {
+  const headOf = (engine: Engine, leadId: string) =>
+    engine.snapshot().threads.find((t) => t.hydraHead?.leadId === leadId)!;
+
+  it("stops a silent head past the stop threshold and marks it stalled", () => {
+    const engine = makeEngine(freshRoot());
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-quiet]");
+    pump(400); // lead streams the block; the head spawns mid-stream
+    expect(headOf(engine, lead.id).hydraHead).toBeTruthy();
+    pump(1500); // silent past the 1200ms stop, stable across two looks
+    const head = headOf(engine, lead.id);
+    expect(head.hydraHead!.status).toBe("stopped");
+    expect(head.hydraHead!.stopReason).toBe("stalled");
+    expect(head.hydraHead!.stalledNote).toContain(
+      "no edits or tool calls for 10 minutes",
+    );
+    const report = engine
+      .snapshot()
+      .threads.find((t) => t.id === lead.id)!
+      .messages.find((m) => m.content.includes("Hydra reports:"));
+    expect(report?.content).toContain("stopped by Tivano");
+    expect(report?.content).toContain("you can continue it");
+  });
+
+  it("a user stop keeps the head stopped, never stalled", () => {
+    const engine = makeEngine(freshRoot());
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-quiet]");
+    pump(400);
+    const head = headOf(engine, lead.id);
+    engine.stopHydraHead(head.id);
+    pump(100);
+    expect(head.hydraHead!.status).toBe("stopped");
+    expect(head.hydraHead!.stopReason).toBeUndefined();
+    const report = engine
+      .snapshot()
+      .threads.find((t) => t.id === lead.id)!
+      .messages.find((m) => m.content.includes("Hydra reports:"));
+    expect(report?.content).toContain("stopped by the user before finishing");
+    expect(report?.content).not.toContain("stopped by Tivano");
+  });
+
+  it("a held head stays exempt — pending approval is not silent", () => {
+    const engine = makeEngine(freshRoot());
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-wait]");
+    pump(5000); // far past the stop threshold, but the card waits on the user
+    const head = headOf(engine, lead.id);
+    expect(head.turn?.status).toBe("waiting-approval");
+    expect(head.hydraHead!.status).toBe("running");
+    expect(head.hydraHead!.stopReason).toBeUndefined();
+  });
+
+  it("the stalled marker survives a store round-trip and clears on continue", () => {
+    const root = freshRoot();
+    const store = new Store(root);
+    store.open();
+    const engine = new Engine(store, new MockProvider({ tickMs: 5 }), root, "0.0.0-test");
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-quiet]");
+    pump(400);
+    pump(1500);
+    const head = headOf(engine, lead.id);
+    expect(head.hydraHead!.stopReason).toBe("stalled");
+    store.close();
+
+    const store2 = new Store(root);
+    store2.open();
+    const reloaded = store2.state.threads.find((t) => t.hydraHead)!;
+    expect(reloaded.hydraHead?.status).toBe("stopped");
+    expect(reloaded.hydraHead?.stopReason).toBe("stalled");
+
+    // Continuing the reloaded head reuses the stopped-head path and the
+    // marker is gone the moment it runs again.
+    const engine2 = new Engine(
+      store2,
+      new MockProvider({ tickMs: 5 }),
+      root,
+      "0.0.0-test",
+    );
+    engine2.sendTurn(reloaded.id, "smaller step now");
+    const head2 = engine2.snapshot().threads.find((t) => t.id === reloaded.id)!;
+    expect(head2.hydraHead!.status).toBe("running");
+    expect(head2.hydraHead!.stopReason).toBeUndefined();
+    expect(head2.hydraHead!.stalledNote).toBeUndefined();
+    pump(200);
+    store2.close();
+  });
+});

@@ -146,6 +146,9 @@ export class MockProvider implements ProviderAdapter {
     const wantsHydraBadRoute = prompt.includes("[mock:hydra-badroute]");
     const wantsHydraDeadCheckout = prompt.includes("[mock:hydra-deadcheckout]");
     const wantsHydraWaitRoute = prompt.includes("[mock:hydra-waitroute]");
+    // F03/P2-06 fixture: `[mock:hydra-quiet]` = one head whose own prompt
+    // goes silent — the quiet watchdog owns what happens to it.
+    const wantsHydraQuiet = prompt.includes("[mock:hydra-quiet]");
     // 2.2.12 startup-failure fixtures: `[mock:hydra-failstart]` = two
     // heads whose turns error before a word or a tool plus one that
     // completes (likely-temporary wording); `[mock:hydra-failall]` = all
@@ -196,8 +199,8 @@ export class MockProvider implements ProviderAdapter {
     if (
       wantsHydra || wantsHydraWait || wantsHydraWaitMany ||
       wantsHydraProfile || wantsHydraTouch || wantsHydraBadRoute ||
-      wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraFailStart ||
-      wantsHydraFailAll || wantsHydraFailTransient
+      wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraQuiet ||
+      wantsHydraFailStart || wantsHydraFailAll || wantsHydraFailTransient
     ) {
       const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute
         ? wantsHydraWaitMany
@@ -213,6 +216,8 @@ export class MockProvider implements ProviderAdapter {
           ? '[{"task":"Lost errand","prompt":"Try it.","project":"ghost-proj"}]'
         : wantsHydraDeadCheckout
           ? '[{"task":"Dead checkout","prompt":"Try it.","project":"ghost-checkout"}]'
+        : wantsHydraQuiet
+          ? '[{"task":"Sit still","prompt":"Open up then sit silent. [mock:quiet]"}]'
         : wantsHydraFailStart
           ? '[{"task":"Quiet fail one","prompt":"Try it. [mock:fail-quiet]"},{"task":"Quiet fail two","prompt":"Try it. [mock:fail-quiet]"},{"task":"Steady part","prompt":"Normal work."}]'
         : wantsHydraFailAll
