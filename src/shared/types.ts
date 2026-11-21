@@ -662,8 +662,9 @@ export interface ChatThread {
   followUps?: FollowUpItem[];
   /**
    * F02: archived threads leave the main list but keep their store
-   * record — restorable and deletable from the Archived section. A
-   * running turn is NOT cancelled by archiving.
+   * record — restorable and deletable from the Archived section.
+   * P1-40 (frozen stopSession): a running turn ENDS cancelled on
+   * archive — no late callback can stream into a shelved chat.
    */
   isArchived?: boolean;
   /**

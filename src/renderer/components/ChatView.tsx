@@ -534,7 +534,7 @@ export function ChatView(props: {
                 <span className="notice-glyph" aria-hidden="true">
                   {lv === "error" ? "⛔" : lv === "warning" ? "⚠" : "ⓘ"}
                 </span>
-                <span className="notice-text">{m.content}</span>
+                <span className="notice-text">{translateError(t, m.content)}</span>
               </div>
             );
           }

@@ -376,7 +376,7 @@ describe("archive", () => {
     store.close();
   });
 
-  it("archive does not cancel a running turn; unarchive is a no-op when live", async () => {
+  it("archive stops a running turn like stopSession(); unarchive is a no-op when live", async () => {
     const { store, engine } = make();
     const th = engine.createThread(null, "run");
     engine.sendTurn(th.id, "[mock:approval] hold");
@@ -384,7 +384,10 @@ describe("archive", () => {
     engine.archiveThread(th.id);
     const after = threadOf(engine, th.id)!;
     expect(after.isArchived).toBe(true);
-    expect(after.turn?.status).toBe("waiting-approval");
+    // P1-40 (frozen archive() → runtime.stopSession()): archiving an
+    // in-flight turn ends it cancelled — no late provider callback can
+    // stream into a shelved chat.
+    expect(after.turn?.status).toBe("cancelled");
     engine.unarchiveThread(th.id);
     engine.unarchiveThread(th.id); // idempotent
     engine.shutdown();

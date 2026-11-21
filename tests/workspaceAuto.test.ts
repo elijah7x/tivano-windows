@@ -274,36 +274,53 @@ describe("P1-39 workspace auto mode", () => {
     expect(seen[1]!.workspace?.directory).toBe(r.repoDir);
   });
 
-  it("a busy checkout that cannot host a worktree fails with the frozen note", async () => {
+  it("a busy checkout that cannot host a worktree retains the send with the frozen note", async () => {
     const seen: TurnContext[] = [];
     const r = rig("unavailable", seen, { hold: true });
+    const unsent: string[] = [];
+    r.engine.onEvent((e) => {
+      if (e.type === "turn-unsent" && e.threadId) unsent.push(e.text);
+    });
     const a = r.engine.createThread(r.projectId);
     r.engine.sendTurn(a.id, "holder");
     const b = r.engine.createThread(r.projectId);
     r.engine.sendTurn(b.id, "no room");
-    await waitFor(() => turnStatus(r.engine, b.id) === "error");
+    // Frozen retainUnsentMessage: no failed-turn scar — the bubble pair
+    // and turn record roll back, the note lands as a notice row, and
+    // the text returns to the composer.
+    await waitFor(() => unsent.length === 1);
     const t = thread(r.engine, b.id);
+    expect(unsent[0]).toBe("no room");
     expect(t.worktreeDir).toBeUndefined();
-    expect(t.turn?.error).toBe(UNAVAILABLE_NOTE);
-    // The provider never started the failed send.
+    expect(t.turn).toBeNull();
+    const notice = t.messages.at(-1)!;
+    expect(notice.kind).toBe("notice");
+    expect(notice.content).toBe(UNAVAILABLE_NOTE);
+    // The provider never started the retained send.
     expect(seen.length).toBe(1);
   });
 
-  it("a gate-failed first send re-arms the busy check on resend", async () => {
+  it("a gate-retained first send re-arms the busy check on resend", async () => {
     const seen: TurnContext[] = [];
     const r = rig("unavailable", seen, { hold: true });
+    const unsent: string[] = [];
+    r.engine.onEvent((e) => {
+      if (e.type === "turn-unsent") unsent.push(e.text);
+    });
     const a = r.engine.createThread(r.projectId);
     r.engine.sendTurn(a.id, "holder");
     const b = r.engine.createThread(r.projectId);
     r.engine.sendTurn(b.id, "no room");
-    await waitFor(() => turnStatus(r.engine, b.id) === "error");
-    expect(thread(r.engine, b.id).turn?.error).toBe(UNAVAILABLE_NOTE);
-    expect(thread(r.engine, b.id).hasStartedTurn).not.toBe(true);
+    await waitFor(() => unsent.length === 1);
+    const t = thread(r.engine, b.id);
+    expect(t.turn).toBeNull();
+    expect(t.hasStartedTurn).not.toBe(true);
     // Resend while the checkout is still busy: the gate fires AGAIN —
     // never a silent local write into the claimed folder.
     r.engine.sendTurn(b.id, "try again");
-    await waitFor(() => turnStatus(r.engine, b.id) === "error");
-    expect(thread(r.engine, b.id).turn?.error).toBe(UNAVAILABLE_NOTE);
+    await waitFor(() => unsent.length === 2);
+    expect(unsent[1]).toBe("try again");
+    expect(thread(r.engine, b.id).turn).toBeNull();
     expect(seen.length).toBe(1);
   });
 

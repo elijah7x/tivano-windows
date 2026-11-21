@@ -862,7 +862,10 @@ export class Engine {
     ) {
       void this.createThreadWorktree(thread.id)
         .then((res) => {
-          if (res.kind === "unavailable")
+          // "abandoned" is the lifecycle race's silent outcome — the
+          // thread is already gone or shelved, so there is no banner to
+          // confuse with a real creation failure.
+          if (res.kind === "unavailable" && res.reason !== "abandoned")
             this.emit({
               type: "worktree-failed",
               threadId: thread.id,
@@ -990,6 +993,25 @@ export class Engine {
     const thread = this.mustThread(id);
     if (thread.isArchived) return;
     thread.isArchived = true;
+    // Frozen archive() → runtime.stopSession() + pendingLocalTurnStarts
+    // release: a turn still running ends with the archive — its provider
+    // session is torn down here so no late callback can stream into a
+    // shelved chat or start a provider it no longer owns. The latches
+    // clear BEFORE endTurn for the same cancel-during-capture race
+    // cancelTurn guards against.
+    const turn = thread.turn;
+    if (
+      turn &&
+      (turn.status === "running" || turn.status === "waiting-approval")
+    ) {
+      this.pendingSends.delete(id);
+      this.checkpoints?.turnCancelled(id, turn.id);
+      this.handles.get(id)?.cancel();
+      this.handles.delete(id);
+      this.endTurn(thread, turn, "cancelled");
+    } else {
+      this.pendingSends.delete(id);
+    }
     // Frozen parity: an archived thread loses its pin with its row, and
     // archive() dismisses its auto-continue — the limit wait ends with the
     // thread leaving the list; queued follow-ups stay.
@@ -1173,6 +1195,33 @@ export class Engine {
       // starts a fresh `g<n>` bucket by construction — nothing to clear.
     }
     const thread = this.mustThread(threadId);
+    // Frozen beginThreadTurnAsync save: the library must own writes
+    // before anything is consumed — `store.update` silently no-ops when
+    // it doesn't, which would either queue a follow-up the library
+    // drops or start a provider for a turn it never recorded. The throw
+    // rides the IPC rejection back to the renderer, whose draft
+    // discipline keeps the composer text AND pending attachments.
+    if (!this.store.ownsWrites)
+      throw new EngineError("Could not save the library");
+    // Frozen send() guard !initialThread.isArchived: a send landing on
+    // an archived chat queues as a follow-up — it never starts a turn
+    // on a shelved row. The detached turn satisfies the IPC return
+    // contract; nothing persists.
+    if (thread.isArchived) {
+      // The unauthored flag rides the queue too — a drained system item
+      // on an archived lead must not reset the delegation budget.
+      this.enqueueFollowUp(threadId, text, {
+        unauthored: opts?.authored === false,
+      });
+      return {
+        id: `unsent-${randomUUID()}`,
+        threadId,
+        status: "cancelled",
+        seq: 0,
+        startedAt: Date.now(),
+        assistantMessageId: "",
+      };
+    }
     // Frozen: sending in a shelved project wakes it — real work resumes.
     this.wakeShelvedProject(thread.projectId);
     if (thread.turn && (thread.turn.status === "running" || thread.turn.status === "waiting-approval"))
@@ -1274,22 +1323,24 @@ export class Engine {
     let workspace: WorkspaceGrant | undefined;
     if (this.provider.descriptor.mode !== "mock") {
       if (!thread.projectId) {
-        this.failTurnSync(thread, turn, "WORKSPACE_NOT_CONFIGURED: thread has no project");
+        this.preProviderFail(
+          thread, turn, text, opts,
+          "WORKSPACE_NOT_CONFIGURED: thread has no project",
+         attached);
         return turn;
       }
       workspace = this.paths?.lookup(thread.projectId);
       if (!workspace) {
-        this.failTurnSync(
-          thread,
-          turn,
+        this.preProviderFail(
+          thread, turn, text, opts,
           "WORKSPACE_NOT_CONFIGURED: no authorized directory is bound to this project",
-        );
+         attached);
         return turn;
       }
       try {
         this.paths!.verify(workspace);
       } catch (err) {
-        this.failTurnSync(thread, turn, (err as Error).message);
+        this.preProviderFail(thread, turn, text, opts, (err as Error).message, attached);
         return turn;
       }
       // F11: a worktree-bound thread executes in its own directory —
@@ -1297,11 +1348,10 @@ export class Engine {
       // dead worktree refuses rather than silently falling back.
       if (thread.worktreeDir !== undefined) {
         if (!this.paths!.dirLive(thread.worktreeDir)) {
-          this.failTurnSync(
-            thread,
-            turn,
+          this.preProviderFail(
+            thread, turn, text, opts,
             "WORKSPACE_NOT_CONFIGURED: the thread's worktree is missing or moved",
-          );
+           attached);
           return turn;
         }
         workspace = { projectId: thread.projectId, directory: thread.worktreeDir };
@@ -1380,13 +1430,17 @@ export class Engine {
               );
             }
           })
-          .catch((err) =>
-            this.failTurnSync(
-              thread,
-              turn,
-              (err as Error)?.message ?? String(err),
-            ),
-          );
+          .catch((err) => {
+            const cur = live();
+            if (cur)
+              this.preProviderFail(
+                cur,
+                turn,
+                text,
+                opts,
+                (err as Error)?.message ?? String(err),
+               attached);
+          });
         return turn;
       }
     }
@@ -1455,11 +1509,15 @@ export class Engine {
               // terminal mean the send waits for the user, never runs
               // half-configured.
               if (res.setup && res.setup.ran + res.setup.failed.length > 0) {
-                this.failTurnSync(
+                // Frozen .deferred → retainUnsent + .info notice.
+                this.preProviderFail(
                   cur,
                   turn,
+                  text,
+                  opts,
                   "Created a new Git worktree and started its setup scripts in Terminal. Send again once setup finishes.",
-                );
+                  attached,
+                  "info");
                 return;
               }
               // The bound worktree outranks the checkout grant resolved
@@ -1474,11 +1532,13 @@ export class Engine {
               // provider fails honestly instead of writing into the
               // shared folder.
               } else if (this.provider.descriptor.mode !== "mock") {
-                this.failTurnSync(
+                this.preProviderFail(
                   cur,
                   turn,
+                  text,
+                  opts,
                   "WORKSPACE_NOT_CONFIGURED: the thread's worktree is missing or moved",
-                );
+                 attached);
                 return;
               }
               try {
@@ -1495,7 +1555,13 @@ export class Engine {
             // A failed bind is an honest failure (frozen
             // .failed("Could not create a worktree")) — no silent local
             // fallback that would write into the busy checkout.
-            this.failTurnSync(cur, turn, "Could not create a worktree");
+            this.preProviderFail(
+              cur,
+              turn,
+              text,
+              opts,
+              "Could not create a worktree",
+             attached);
             return;
           }
           // .unavailable — root mismatch, no commits, or an operation in
@@ -1503,20 +1569,24 @@ export class Engine {
           // claim, so a still-busy checkout fails honestly here.
           const cur = live();
           if (!cur) return;
-          this.failTurnSync(
+          this.preProviderFail(
             cur,
             turn,
+            text,
+            opts,
             "Another chat is active in this repository, and a separate Git worktree isn't available right now. Wait for it to finish, then send again.",
-          );
+           attached);
         })
         .catch((err) => {
           const cur = live();
           if (cur)
-            this.failTurnSync(
-              thread,
+            this.preProviderFail(
+              cur,
               turn,
+              text,
+              opts,
               (err as Error)?.message ?? String(err),
-            );
+             attached);
         });
       return turn;
     }
@@ -1727,6 +1797,95 @@ export class Engine {
     this.endTurn(thread, turn, "error");
   }
 
+  /** Frozen retainUnsentMessage + removeItem: a send that never reached
+   *  a provider (workspace prep failed, the auto gate deferred or
+   *  refused it) leaves no failed-turn scar — the bubble pair and the
+   *  turn record roll back, a notice row lands in their place, and the
+   *  text returns to the composer through `turn-unsent` (or to the
+   *  front of the follow-up queue when the composer already holds a
+   *  draft — the renderer decides). Only user-authored sends retain;
+   *  an unauthored report turn keeps its failed record, and a failure
+   *  after `provider.start` stays an ordinary errored turn. */
+  private retainUnsent(
+    thread: ChatThread,
+    turn: Turn,
+    text: string,
+    notice: string,
+    level: "info" | "warning" | "error" = "error",
+    attachments?: { id: string; name: string; size: number; path: string }[],
+  ): void {
+    // Attachments consumed at send return with the text — the library
+    // copies stay main-owned (pendingAttachments) and the renderer
+    // restores the display refs from the event. Merge by id: anything
+    // the user attached meanwhile survives next to the restored set.
+    if (attachments?.length) {
+      const existing = this.pendingAttachments.get(thread.id) ?? [];
+      const have = new Set(existing.map((a) => a.id));
+      this.pendingAttachments.set(thread.id, [
+        ...existing,
+        ...attachments.filter((a) => !have.has(a.id)),
+      ]);
+    }
+    this.store.update(() => {
+      thread.messages = thread.messages.filter((m) => m.turnId !== turn.id);
+      if (thread.turn?.id === turn.id) thread.turn = null;
+      thread.messages.push({
+        id: `codexnote-${turn.id}-${randomUUID()}`,
+        role: "system",
+        content: boundedText(notice),
+        status: "done",
+        ts: Date.now(),
+        kind: "notice",
+        noticeLevel: level,
+      });
+      thread.updatedAt = Date.now();
+    });
+    this.turnLastEvent.delete(turn.id);
+    // The detached record the caller still holds reads honestly —
+    // cancelled, never started — while the thread itself keeps no turn.
+    turn.status = "cancelled";
+    turn.endedAt = Date.now();
+    this.emit({ type: "thread-updated", thread });
+    // The running status emitted at send time needs a terminal twin so
+    // the renderer's busy state releases — cancelled is the honest end.
+    this.emit({
+      type: "turn-status",
+      threadId: thread.id,
+      turnId: turn.id,
+      status: "cancelled",
+    });
+    this.emit({
+      type: "turn-unsent",
+      threadId: thread.id,
+      text,
+      ...(attachments?.length
+        ? { attachments: attachments.map(({ id, name, size }) => ({ id, name, size })) }
+        : {}),
+    });
+    this.updateSleepGuard();
+  }
+
+  /** Pre-provider failure boundary: authored sends roll back into the
+   *  composer (frozen retainUnsentMessage); anything else keeps the
+   *  honest errored-turn record. */
+  private preProviderFail(
+    thread: ChatThread,
+    turn: Turn,
+    text: string,
+    opts: { authored?: boolean; hydraBrief?: boolean } | undefined,
+    notice: string,
+    attachments?: { id: string; name: string; size: number; path: string }[],
+    level: "info" | "warning" | "error" = "error",
+  ): void {
+    // Composer restore is a user-send concept — a Hydra report turn or
+    // an internal brief keeps the honest errored-turn record.
+    if (opts?.authored !== false && opts?.hydraBrief !== true) {
+      this.retainUnsent(thread, turn, text, notice, level, attachments);
+    } else {
+      this.failTurnSync(thread, turn, notice);
+    }
+  }
+
   cancelTurn(threadId: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
@@ -1935,7 +2094,7 @@ export class Engine {
   enqueueFollowUp(
     threadId: string,
     text: string,
-    opts?: { unauthored?: boolean; reviewId?: string },
+    opts?: { unauthored?: boolean; reviewId?: string; front?: boolean },
   ): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
@@ -1945,17 +2104,25 @@ export class Engine {
     if (items.length >= Engine.FOLLOWUP_MAX)
       throw new EngineError("follow-up queue is full");
     this.store.update(() => {
-      items.push({
+      const item: FollowUpItem = {
         id: randomUUID(),
         text: trimmed,
         createdAt: Date.now(),
         ...(opts?.unauthored ? { unauthored: true } : {}),
         ...(opts?.reviewId ? { reviewId: opts.reviewId } : {}),
-      });
+      };
+      // Frozen retainUnsentMessage: a restored send takes the head of
+      // the queue so nothing already waiting jumps ahead of it.
+      if (opts?.front === true) items.unshift(item);
+      else items.push(item);
       thread.updatedAt = Date.now();
     });
     this.emit({ type: "thread-updated", thread });
-    this.flushFollowUpsIfIdle(thread);
+    // Frozen: a queue-head retain never flushes — it waits for the next
+    // turn-end drain or a manual send-now. Flushing here would re-enter
+    // sendTurn while the failure that produced the retain still holds,
+    // looping retain→enqueue→drain→fail and appending a notice per lap.
+    if (opts?.front !== true) this.flushFollowUpsIfIdle(thread);
   }
 
   removeFollowUp(threadId: string, id: string): void {
@@ -2168,7 +2335,9 @@ export class Engine {
    *  a turn the user cancelled waits for the user instead (frozen
    *  flushFollowUpsIfIdle + lastStatus != .interrupted). */
   private flushFollowUpsIfIdle(thread: ChatThread): void {
-    if (this.threadBusy(thread)) return;
+    // Frozen: an archived chat holds its queue silently — nothing
+    // drains into a shelved row.
+    if (thread.isArchived || this.threadBusy(thread)) return;
     const last = thread.turn?.status;
     if (last === "cancelled" || last === "interrupted") return;
     this.drainFollowUps(thread);
@@ -2192,10 +2361,29 @@ export class Engine {
         this.emitQueue(thread);
         return;
       }
-      this.sendTurn(thread.id, text, unauthored ? { authored: false } : undefined);
-      // P1-38: a drained findings turn re-arms its card's verdict watch —
-      // after the send lands, so a failed send never leaves a stale id.
-      if (reviewId) this.hydraReviewAwaiting.set(thread.id, reviewId);
+      try {
+        this.sendTurn(thread.id, text, unauthored ? { authored: false } : undefined);
+        // P1-38: a drained findings turn re-arms its card's verdict watch —
+        // after the send lands, so a failed send never leaves a stale id.
+        if (reviewId) this.hydraReviewAwaiting.set(thread.id, reviewId);
+      } catch {
+        // A drained item that cannot record (closed library) returns to
+        // the front of the queue rather than vanishing — the same retain
+        // the composer path gets, one channel down. (Bounded: on the
+        // only reachable throw today — !ownsWrites — the store.update
+        // below no-ops like the splice above, so this is belt-and-braces
+        // for any future sendTurn failure on a live store.)
+        this.store.update(() => {
+          this.queueOf(thread).unshift({
+            id: randomUUID(),
+            text,
+            createdAt: Date.now(),
+            ...(unauthored ? { unauthored: true } : {}),
+            ...(reviewId ? { reviewId } : {}),
+          });
+        });
+        this.emitQueue(thread);
+      }
     } finally {
       this.drainingFollowUps.delete(thread.id);
     }
@@ -2702,6 +2890,18 @@ export class Engine {
       check.name,
     );
     if (res.kind !== "created") return res;
+    // Frozen abandonCreatedWorktree: the chat may have been deleted or
+    // archived while the git ops ran — an app-owned copy with no live,
+    // unarchived thread to serve is removed on the spot instead of
+    // stranding a checkout. (Bounded: the wt-* branch survives —
+    // `git worktree remove` only drops the checkout.)
+    const surviving = this.store.state.threads.find((x) => x.id === threadId);
+    if (!surviving || surviving.isArchived) {
+      void this.worktrees
+        .worktreeRemove(thread.projectId, res.directory)
+        .catch(() => {});
+      return { kind: "unavailable", reason: "abandoned" };
+    }
     this.store.update((d) => {
       const t = d.threads.find((x) => x.id === threadId);
       if (!t) return;
@@ -2713,8 +2913,7 @@ export class Engine {
     // never silently skipped and never a worktree-creation failure.
     const setup = this.runWorktreeSetupScripts(threadId, project);
     if (setup.ran + setup.failed.length > 0) res.setup = setup;
-    const updated = this.mustThread(threadId);
-    this.emit({ type: "thread-updated", thread: updated });
+    this.emit({ type: "thread-updated", thread: surviving });
     return res;
   }
 

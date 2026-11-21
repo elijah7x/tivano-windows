@@ -17,6 +17,7 @@ import type { ChatThread, Message, Settings } from "../../shared/types";
 import { useT } from "../locale";
 import { renderMarkdown } from "../markdown";
 import { tryCall } from "../client";
+import { translateError } from "../i18n";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
@@ -204,7 +205,7 @@ export function HelperPanel(props: {
           <span className="notice-glyph" aria-hidden="true">
             {lv === "error" ? "⛔" : lv === "warning" ? "⚠" : "ⓘ"}
           </span>
-          <span className="notice-text">{m.content}</span>
+          <span className="notice-text">{translateError(t, m.content)}</span>
         </div>
       );
     }
