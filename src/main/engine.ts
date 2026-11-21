@@ -4963,7 +4963,8 @@ export class Engine {
           { note: true },
         );
       }
-      if (!this.routeHydraHead(head, lead, expanded, persona.name)) return;
+      if (!this.routeHydraHead(head, lead, expanded, persona.name, routeRef))
+        return;
     }
     // Frozen probes the checkout for every head, not only path-routed
     // ones: a sidebar project bound to a plain folder gets the same
@@ -4972,14 +4973,11 @@ export class Engine {
       const headDir = this.store.state.projects.find(
         (p) => p.id === head.projectId,
       )?.directory;
-      // Frozen marks identity==nil non-Git: a plain folder AND a repo
-      // whose .git cannot be read both edit in place.
-      if (
-        headDir !== undefined &&
-        this.hydraGitProbe(headDir) !== "git"
-      ) {
-        head.hydraHead!.isNonGitCheckout = true;
-      }
+      // Frozen records identity==nil either way: a plain folder AND a
+      // repo whose .git cannot be read edit in place (true); a real
+      // checkout still records false rather than staying undefined.
+      if (headDir !== undefined)
+        head.hydraHead!.isNonGitCheckout = this.hydraGitProbe(headDir) !== "git";
     }
     // F22 isolation (frozen makeHydraCopy): with copies on and a copyable
     // checkout the head gets its own detached worktree first and runs
@@ -5265,6 +5263,9 @@ export class Engine {
     lead: ChatThread,
     reference: string,
     personaName: string,
+    // Refusals name what the lead typed (e.g. "~/work"), not the
+    // expanded absolute — matching frozen's notice text.
+    display = reference,
   ): boolean {
     const refuse = (msg: string): boolean => {
       this.failHydraStart(head, msg, { note: true });
@@ -5281,7 +5282,7 @@ export class Engine {
     // it would fall through to mkdirSync in the process CWD.
     if (!isAbsolute(raw)) {
       return refuse(
-        `Hydra: ${reference} is not a folder on this PC, so ${personaName} did not start.`,
+        `Hydra: ${display} is not a folder on this PC, so ${personaName} did not start.`,
       );
     }
     // HydraPaths.canonical resolves symlinks in the EXISTING prefix —
@@ -5354,7 +5355,7 @@ export class Engine {
       );
     if (!inTaskWs && touches) {
       return refuse(
-        `Hydra: ${reference} is a system folder, so ${personaName} did not start.`,
+        `Hydra: ${display} is a system folder, so ${personaName} did not start.`,
       );
     }
     // Missing folder → created only when its parent is a live folder
@@ -5375,7 +5376,7 @@ export class Engine {
       }
       if (exists)
         return refuse(
-          `Hydra: ${reference} is not a folder on this PC, so ${personaName} did not start.`,
+          `Hydra: ${display} is not a folder on this PC, so ${personaName} did not start.`,
         );
       let parentIsDir = false;
       try {
@@ -5385,13 +5386,13 @@ export class Engine {
       }
       if (!parentIsDir)
         return refuse(
-          `Hydra: ${reference} is not a folder on this PC, so ${personaName} did not start.`,
+          `Hydra: ${display} is not a folder on this PC, so ${personaName} did not start.`,
         );
       try {
         mkdirSync(canonical);
       } catch {
         return refuse(
-          `Hydra: ${reference} is not a folder on this PC, so ${personaName} did not start.`,
+          `Hydra: ${display} is not a folder on this PC, so ${personaName} did not start.`,
         );
       }
       // The folder was born this instant — its canonical form is itself.
@@ -5404,7 +5405,7 @@ export class Engine {
     const probe = this.hydraGitProbe(canonical);
     if (probe === "broken")
       return refuse(
-        `Hydra: ${reference} is not a Git checkout Tivano can read, so ${personaName} did not start.`,
+        `Hydra: ${display} is not a Git checkout Tivano can read, so ${personaName} did not start.`,
       );
     const info = head.hydraHead!;
     info.targetCheckout = canonical;
@@ -5464,14 +5465,20 @@ export class Engine {
         this.store.flushNow();
         this.emit({ type: "project-added", project });
       } catch {
-        // A throw after the grant leaves an orphan — take it back so
-        // the next route starts clean, then refuse rather than let the
-        // head run in the lead's checkout under a routed brief.
+        // A throw after the grant leaves an orphan — take it back and
+        // drop the pushed row so the next route starts clean, then
+        // refuse rather than let the head run in the lead's checkout
+        // under a routed brief.
         try {
           this.paths.revoke(id);
         } catch {
           /* nothing to undo */
         }
+        this.store.update((d) => {
+          const i = d.projects.findIndex((p) => p.id === id);
+          if (i >= 0) d.projects.splice(i, 1);
+        });
+        project = undefined;
         return refuse(
           `Hydra: ${personaName} did not start because its checkout could not be read.`,
         );
