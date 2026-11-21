@@ -348,6 +348,16 @@ public static class DevLoopWindows {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+  [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT p);
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
+  // True when the top-level window under screen point (x, y) is h, so a click there lands on h.
+  public static bool IsPointOnWindow(IntPtr h, int x, int y) {
+    var pt = new POINT { X = x, Y = y };
+    IntPtr hit = WindowFromPoint(pt);
+    if (hit == IntPtr.Zero) return false;
+    return GetAncestor(hit, 2) == h;
+  }
   static string GetWindowTitle(IntPtr h) {
     var sb = new StringBuilder(1024);
     int len = GetWindowText(h, sb, sb.Capacity);
@@ -535,6 +545,34 @@ function Set-DevinForeground {
     [DevLoopWindows]::SetForegroundWindow($Window) | Out-Null
     Start-Sleep -Milliseconds 800
     if (Test-DevinForeground $Window) { return $true }
+    if ($attempt -eq 1) {
+      # On Nyx every SetForegroundWindow variant (Alt tap, AttachThreadInput, SwitchToThisWindow,
+      # a zero foreground-lock timeout) is refused for the scheduled-task process, but a real click
+      # activates the window. Click the chat input point Focus-DevinChatInput uses, and only when
+      # that point is on the Devin window itself.
+      [DevLoopWindows]::ShowWindow($Window, 3) | Out-Null
+      Start-Sleep -Milliseconds 800
+      $rect = New-Object DevLoopWindows+RECT
+      if ([DevLoopWindows]::GetWindowRect($Window, [ref]$rect)) {
+        $width = $rect.Right - $rect.Left
+        $height = $rect.Bottom - $rect.Top
+        $x = [int]($rect.Right - $width * 0.17)
+        $y = [int]($rect.Bottom - $height * 0.16)
+        if ([DevLoopWindows]::IsPointOnWindow($Window, $x, $y)) {
+          [DevLoopWindows]::SetCursorPos($x, $y) | Out-Null
+          Start-Sleep -Milliseconds 200
+          [DevLoopWindows]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+          [DevLoopWindows]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+          Start-Sleep -Milliseconds 800
+          if (Test-DevinForeground $Window) {
+            Write-Log 'focused Devin window by clicking its chat input (SetForegroundWindow refused)'
+            return $true
+          }
+        } else {
+          Write-Log 'focus click skipped: another window covers the Devin chat input'
+        }
+      }
+    }
     if ($attempt -eq 0) {
       $fgRetry = [DevLoopWindows]::GetForegroundInfo()
       if (Test-ShellFlyoutForeground $fgRetry) {
