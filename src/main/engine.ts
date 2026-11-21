@@ -3542,6 +3542,10 @@ export class Engine {
     const set = this.hydraTouched.get(key) ?? new Set<string>();
     for (const p of paths) if (set.size < 2000) set.add(p);
     this.hydraTouched.set(key, set);
+    // Bounded: a lead that never reviews keeps one g<gen> bucket per
+    // request forever — evict the oldest beyond 64 keys.
+    if (this.hydraTouched.size > 64)
+      this.hydraTouched.delete(this.hydraTouched.keys().next().value!);
   }
 
   /** Per-turn checkpoint records for one OWNED thread (IPC). */
@@ -4984,10 +4988,11 @@ export class Engine {
           ...flushable.map((r) => r.batchId ?? "").filter(Boolean),
         ]),
       ],
+      // No flush-time fallback to the latest user message: a batch
+      // missing its dispatch-time origin must not inherit a mid-job
+      // message as the review's "User request".
       request:
-        prior?.request ||
-        origins.map((o) => o.request).find((x) => x.trim()) ||
-        this.hydraJobRequest(lead),
+        prior?.request || origins.map((o) => o.request).find((x) => x.trim()) || "",
       leadGens: [
         ...new Set([...(prior?.leadGens ?? []), ...origins.map((o) => o.gen)]),
       ],
