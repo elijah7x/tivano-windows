@@ -195,6 +195,26 @@ const vProviderThread = vObject({
   savedAt: vTs,
 });
 
+// P1-38: the independent review's reviewer pick and its persisted card.
+const vHydraReviewChoice = vObject({
+  provider: vOptional(vMaxString(100)),
+  model: vOptional(vMaxString(200)),
+  effort: vOptional(vMaxString(100)),
+});
+const vHydraReview = vObject({
+  id: vNonEmptyString(120),
+  batchId: vNonEmptyString(200),
+  reviewer: vNonEmptyString(400),
+  provider: vOptional(vNonEmptyString(100)),
+  findings: vMaxString(40_000),
+  findingCount: vInt(0, 1000),
+  diffBytes: vInt(0, 100_000_000),
+  durationMs: vInt(0, 100_000_000),
+  accepted: vOptional(vInt(0, 1000)),
+  rejected: vOptional(vInt(0, 1000)),
+  createdAt: vTs,
+});
+
 const vThread = vObject({
   id: vNonEmptyString(120),
   projectId: vNullable(vNonEmptyString(120)),
@@ -268,6 +288,8 @@ const vThread = vObject({
   hydraPairId: vOptional(vNonEmptyString(120)),
   // P1-36: the chat's sub-agent mode (absent = derived).
   subagentMode: vOptional(vEnum(["same", "preset", "adaptive"] as const)),
+  // P1-38: persisted independent-review cards.
+  hydraReviews: vOptional(vArray(vHydraReview, 200)),
   // v2.2.34 keep-updated titles — see ChatThread.
   titleUserSet: vOptional(vBoolean),
   titleReviewTurns: vOptional(vInt(0, 1_000_000)),
@@ -382,26 +404,6 @@ const vChimeraPreset = vObject({
     vEnum(["scout", "builder", "reviewer", "designer", "researcher", "writer"] as const),
   ),
   enabled: vOptional(vBoolean),
-});
-
-// P1-38: the independent review's reviewer pick and its persisted card.
-const vHydraReviewChoice = vObject({
-  provider: vOptional(vMaxString(100)),
-  model: vOptional(vMaxString(200)),
-  effort: vOptional(vMaxString(100)),
-});
-const vHydraReview = vObject({
-  id: vNonEmptyString(120),
-  batchId: vNonEmptyString(200),
-  reviewer: vNonEmptyString(400),
-  provider: vOptional(vNonEmptyString(100)),
-  findings: vMaxString(40_000),
-  findingCount: vInt(0, 1000),
-  diffBytes: vInt(0, 100_000_000),
-  durationMs: vInt(0, 100_000_000),
-  accepted: vOptional(vInt(0, 1000)),
-  rejected: vOptional(vInt(0, 1000)),
-  createdAt: vTs,
 });
 
 // F17 model-list slices — provider fixed to the one adapter this build

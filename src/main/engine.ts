@@ -257,6 +257,14 @@ export class Engine {
   private readonly hydraBudgetGen = new Map<string, number>();
   private readonly hydraBatchGen = new Map<string, number>();
   private readonly hydraPendingReports = new Map<string, HydraReport[]>();
+  /** P1-38: each dispatched batch's job origin — the lead's budget
+   *  generation and request text at DISPATCH time (frozen job.turnID /
+   *  job.request), so a mid-job user message can never re-scope the
+   *  settled job's review diff or rename its request. */
+  private readonly hydraBatchRequest = new Map<
+    string,
+    { gen: number; request: string }
+  >();
   /** P1-38: a settled report batch awaiting its independent review —
    *  batchId plus the request text the review prompt names (frozen
    *  job.reviewEngine gate: one review per batch). */
@@ -1015,8 +1023,23 @@ export class Engine {
     this.pendingAttachments.delete(id);
     // F22: a deleted lead's runtime Hydra state dies with it — queued
     // delegations never spawn into a removed checkout.
+    for (const q of this.hydraWaiting.get(id) ?? []) {
+      this.hydraBatchRequest.delete(q.batchId);
+      this.hydraBatchGen.delete(q.batchId);
+    }
     this.hydraWaiting.delete(id);
+    for (const r of this.hydraPendingReports.get(id) ?? []) {
+      if (r.batchId) {
+        this.hydraBatchRequest.delete(r.batchId);
+        this.hydraBatchGen.delete(r.batchId);
+      }
+    }
     this.hydraPendingReports.delete(id);
+    this.hydraReviewPending.delete(id);
+    this.hydraReviewAwaiting.delete(id);
+    this.hydraReviewRunning.delete(id);
+    for (const k of [...this.hydraTouched.keys()])
+      if (k.startsWith(id + "")) this.hydraTouched.delete(k);
     for (const k of [...this.hydraFallbackNoted])
       if (k.startsWith(id + ":")) this.hydraFallbackNoted.delete(k);
     for (const k of [...this.hydraCaptures.keys()])
@@ -1719,7 +1742,10 @@ export class Engine {
 
   private static readonly FOLLOWUP_MAX = 32;
   /** Text to send the moment the running turn's stop lands. */
-  private readonly pendingSends = new Map<string, string>();
+  private readonly pendingSends = new Map<
+    string,
+    { text: string; unauthored?: boolean; reviewId?: string }
+  >();
   /** Reentrancy guard: a drain that starts a turn must not re-drain. */
   private drainingFollowUps = new Set<string>();
 
@@ -1865,12 +1891,16 @@ export class Engine {
       return;
     }
     if (!this.threadBusy(thread)) {
-      if (reviewId) this.hydraReviewAwaiting.set(threadId, reviewId);
       this.sendTurn(threadId, text, unauthored ? { authored: false } : undefined);
+      if (reviewId) this.hydraReviewAwaiting.set(threadId, reviewId);
       return;
     }
     if (!this.pendingSends.has(threadId)) {
-      this.pendingSends.set(threadId, text);
+      this.pendingSends.set(threadId, {
+        text,
+        ...(unauthored ? { unauthored: true } : {}),
+        ...(reviewId ? { reviewId } : {}),
+      });
       this.cancelTurn(threadId);
     } else {
       // Return already has a message going out the moment the turn stops;
@@ -1881,6 +1911,7 @@ export class Engine {
           text,
           createdAt: Date.now(),
           ...(unauthored ? { unauthored: true } : {}),
+          ...(reviewId ? { reviewId } : {}),
         });
       });
       this.emitQueue(thread);
@@ -1899,7 +1930,7 @@ export class Engine {
       return;
     }
     if (!this.pendingSends.has(threadId)) {
-      this.pendingSends.set(threadId, trimmed);
+      this.pendingSends.set(threadId, { text: trimmed });
       this.cancelTurn(threadId);
     } else {
       // 2.2.12 parity: a second message sent while the stop is still landing
@@ -1993,9 +2024,10 @@ export class Engine {
         this.emitQueue(thread);
         return;
       }
-      // P1-38: a drained findings turn re-arms its card's verdict watch.
-      if (reviewId) this.hydraReviewAwaiting.set(thread.id, reviewId);
       this.sendTurn(thread.id, text, unauthored ? { authored: false } : undefined);
+      // P1-38: a drained findings turn re-arms its card's verdict watch —
+      // after the send lands, so a failed send never leaves a stale id.
+      if (reviewId) this.hydraReviewAwaiting.set(thread.id, reviewId);
     } finally {
       this.drainingFollowUps.delete(thread.id);
     }
@@ -3899,7 +3931,12 @@ export class Engine {
     if (pending !== undefined) {
       this.pendingSends.delete(thread.id);
       try {
-        this.sendTurn(thread.id, pending);
+        this.sendTurn(
+          thread.id,
+          pending.text,
+          pending.unauthored ? { authored: false } : undefined,
+        );
+        if (pending.reviewId) this.hydraReviewAwaiting.set(thread.id, pending.reviewId);
       } catch (err) {
         // A send-now that cannot start must still be SEEN — a system
         // message on the thread, never a silent drop.
@@ -4190,6 +4227,12 @@ export class Engine {
         this.hydraBudgetGen.get(lead.id) ?? 0,
       );
     }
+    // P1-38: the batch's job origin is fixed at dispatch — a later user
+    // message bumps the generation but never rewrites this job's scope.
+    this.hydraBatchRequest.set(batchId, {
+      gen: this.hydraBudgetGen.get(lead.id) ?? 0,
+      request: this.hydraJobRequest(lead),
+    });
     const team = this.store.state.threads.filter(
       (t) => t.hydraHead?.leadId === lead.id,
     );
@@ -4864,6 +4907,24 @@ export class Engine {
     this.hydraPendingReports.set(info.leadId, reports);
   }
 
+  /** The job's request: the last real user message — never a Hydra
+   *  system turn (reports carry hydraHeads; "[Hydra]" turns and the
+   *  refusal notice are prefixed). Read at dispatch time, so it is the
+   *  message the delegation answered. */
+  private hydraJobRequest(lead: ChatThread): string {
+    return (
+      lead.messages
+        .filter(
+          (m) =>
+            m.role === "user" &&
+            m.hydraHeads === undefined &&
+            !m.content.startsWith("[Hydra]") &&
+            !m.content.startsWith("Hydra did not send"),
+        )
+        .at(-1)?.content ?? ""
+    );
+  }
+
   /** Frozen pendingReports: a batch's reports flush together once every
    *  head in the batch is back AND the lead is idle. Reports whose
    *  batch still has running heads keep waiting; unrelated batches
@@ -4900,19 +4961,18 @@ export class Engine {
     // P1-38: a settled batch is a job's end — the independent review of
     // its diff queues behind the report turn (frozen reviewHydraJob's
     // pending outcome; maybeReviewHydra runs it once the lead idles).
-    // The job's request is the last real user message — never a Hydra
-    // system turn (reports carry hydraHeads; "[Hydra]" turns and the
-    // refusal notice are prefixed).
-    const request = lead.messages
-      .filter(
-        (m) =>
-          m.role === "user" &&
-          m.hydraHeads === undefined &&
-          !m.content.startsWith("[Hydra]") &&
-          !m.content.startsWith("Hydra did not send"),
-      )
-      .at(-1)?.content;
+    // The job's origin was fixed per batch at dispatch (frozen
+    // job.turnID/job.request) — collect each settled batch's own
+    // generation and request text; a mid-job message can't leak in.
     const prior = this.hydraReviewPending.get(leadId);
+    const origins = flushable.map(
+      (r) =>
+        this.hydraBatchRequest.get(r.batchId ?? "") ?? {
+          gen: this.hydraBudgetGen.get(leadId) ?? 0,
+          request: "",
+        },
+    );
+    for (const r of flushable) this.hydraBatchRequest.delete(r.batchId ?? "");
     this.hydraReviewPending.set(leadId, {
       batchIds: [
         ...new Set([
@@ -4920,9 +4980,12 @@ export class Engine {
           ...flushable.map((r) => r.batchId ?? "").filter(Boolean),
         ]),
       ],
-      request: prior?.request || (request ?? ""),
+      request:
+        prior?.request ||
+        origins.map((o) => o.request).find((x) => x.trim()) ||
+        this.hydraJobRequest(lead),
       leadGens: [
-        ...new Set([...(prior?.leadGens ?? []), this.hydraBudgetGen.get(leadId) ?? 0]),
+        ...new Set([...(prior?.leadGens ?? []), ...origins.map((o) => o.gen)]),
       ],
     });
     const stillWorking = this.store.state.threads
@@ -5105,11 +5168,24 @@ export class Engine {
     if (awaited !== undefined && !thread.hydraHead) {
       this.hydraReviewAwaiting.delete(thread.id);
       const latest = thread.hydraReviews?.find((r) => r.id === awaited);
-      const reply = thread.messages.find((m) => m.id === turn.assistantMessageId);
-      const verdicts = parseReviewVerdicts(reply?.content ?? "");
+      // Frozen reviewReplies: join every assistant reply of the review
+      // turn, not just the last, and clamp counts to the card's
+      // findingCount (verdicts on nonexistent findings don't count).
+      const replies = thread.messages
+        .filter((m) => m.role === "assistant" && m.turnId === turn.id)
+        .map((m) => m.content)
+        .join("\n");
+      const verdicts = parseReviewVerdicts(replies);
       if (latest && status === "done" && verdicts.length) {
-        latest.accepted = verdicts.filter((v) => v.accepted).length;
-        latest.rejected = verdicts.filter((v) => !v.accepted).length;
+        const cap = latest.findingCount;
+        latest.accepted = Math.min(
+          verdicts.filter((v) => v.accepted).length,
+          cap,
+        );
+        latest.rejected = Math.min(
+          verdicts.filter((v) => !v.accepted).length,
+          cap,
+        );
         this.store.update(() => {});
         this.emit({ type: "thread-updated", thread });
       }
@@ -5286,8 +5362,8 @@ export class Engine {
     const text = hydraReviewMessage(selected.reviewer, findings);
     try {
       if (this.threadBusy(current) || this.pendingSends.has(leadId)) throw new Error("busy");
-      this.hydraReviewAwaiting.set(leadId, card.id);
       this.sendTurn(leadId, text, { authored: false });
+      this.hydraReviewAwaiting.set(leadId, card.id);
     } catch {
       // Frozen pendingReview: the user reached the lead first — the
       // findings wait in the follow-up queue with their card id, so the
