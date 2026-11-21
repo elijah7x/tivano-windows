@@ -17,7 +17,7 @@ This directory holds an independent auditor for Devin's autopilot pull requests 
    - Pre-merge primary audit: if the audit model is unavailable, times out, or crashes, the auditor never sets `nyx/audit` to `success`. After 3 failed attempts on a head SHA, it keeps status `error` or `failure` and retries at most once every 60 minutes (tracked via `lastAttemptAt` in per-PR state) indefinitely until a real audit runs.
    - Pre-merge arbitration: if the arbiter is unavailable or the daily cap is reached, `nyx/audit` stays `failure` with description `arbitration pending` and retries on a later run. The auditor never passes a PR without an `ok` arbiter result.
    - Post-merge: if the audit model is unavailable, the PR is **never** marked done in `workRoot\state\post-<n>.json` and is retried on the next run.
-4. **Three-vendor separation**: The primary auditor runs GLM via `zcode.cjs` in read-only mode against a detached trial-merge worktree, alongside deterministic checks in `AuditChecks.psm1`. When a post-rebuttal dispute requires arbitration, `Invoke-ArbiterModel` runs a separate vendor model (`arbiterModel`, default `claude-fable-5-2-medium`) via the headless Devin CLI (`devinCli`) against the same trial-merge worktree.
+4. **Three-vendor separation**: The primary auditor runs GLM via `zcode.cjs` in read-only mode against a detached trial-merge worktree, alongside deterministic checks in `AuditChecks.psm1`. When a post-rebuttal dispute requires arbitration, `Invoke-ArbiterModel` runs a separate vendor model (`arbiterModel`, default `claude-opus-5-5-medium`) via the headless Devin CLI (`devinCli`) against the same trial-merge worktree.
 
 ## Rebuttal and automatic arbitration protocol
 
