@@ -388,10 +388,6 @@ export interface HydraReportNotes {
   uncertain?: string | undefined;
 }
 
-export function hydraReportNotesFlag(n: HydraReportNotes): boolean {
-  return n.deviations !== undefined || n.unfinished !== undefined || n.uncertain !== undefined;
-}
-
 const REPORT_NOTE_LABELS = ["Deviations", "Unfinished", "Uncertain"] as const;
 const REPORT_NOTE_NILS = new Set(["none", "n/a", "无", "没有"]);
 
@@ -823,6 +819,9 @@ function policyProjectRule(
  * bound pair only; `team` is the live team line from `hydraTeamStatus`.
  */
 export function hydraLeadPolicy(opts: {
+  /** P1-12: the delegation level — its frozen rule names the kinds of
+   *  work that go out, on top of the standing delegate-first wording. */
+  tilt?: HydraTilt | undefined;
   maxHeads?: number | undefined;
   profiles?: HydraHeadProfile[] | undefined;
   projects?: { name: string; path: string }[] | undefined;
@@ -841,7 +840,8 @@ export function hydraLeadPolicy(opts: {
   const profileRule = profiles.length
     ? ` Some heads are tuned for a purpose: ${profiles.map((p) => headProfileBriefLabel(p, opts.providerLabel)).join(", ")}. Route a task to one with "profile", as in \`{"task": "...", "prompt": "...", "profile": "${profiles[0]!.name}"}\`; a task that fits none of them goes without a profile and runs on the heads' shared model, as does one whose profile names none of these.`
     : "";
-  return `[Hydra is on] You lead ${team} ("heads"). Delegate first, work second: anything bigger than a single obvious change to a single file is a job for heads. Audits, reviews, a feature across several files, a refactor, "check everything", research across many files, several tasks in one message: in your first reply, look at the code only long enough to write good briefs, a minute and a handful of files rather than ten, and then send the heads out, all of them in that one block. Never spend minutes reading before you delegate, and never do inline what heads could be doing in parallel. Only a truly single-focus request, one file and one obvious change, is yours to do alone, and size the team to the work rather than to how many heads are free: a small job whose pieces depend on each other is one head's task, or your own, not a team of heads.         Finish your reply with one fenced block
+  const tiltRule = opts.tilt ? ` ${hydraTiltRule(opts.tilt)}` : "";
+  return `[Hydra is on] You lead ${team} ("heads").${tiltRule} Delegate first, work second: anything bigger than a single obvious change to a single file is a job for heads. Audits, reviews, a feature across several files, a refactor, "check everything", research across many files, several tasks in one message: in your first reply, look at the code only long enough to write good briefs, a minute and a handful of files rather than ten, and then send the heads out, all of them in that one block. Never spend minutes reading before you delegate, and never do inline what heads could be doing in parallel. Only a truly single-focus request, one file and one obvious change, is yours to do alone, and size the team to the work rather than to how many heads are free: a small job whose pieces depend on each other is one head's task, or your own, not a team of heads.         Finish your reply with one fenced block
 
 \`\`\`hydra
 [{"task": "short title", "prompt": "complete, self-contained instructions with the exact files and acceptance criteria"}]

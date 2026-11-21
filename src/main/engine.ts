@@ -4509,6 +4509,7 @@ export class Engine {
     if (!launch) return "";
     const project = this.store.state.projects.find((p) => p.id === lead.projectId);
     const policy = hydraLeadPolicy({
+      tilt: s.hydraTilt ?? "active",
       maxHeads: launch.maxHeads,
       profiles: launch.headProfiles,
       projects: this.store.state.projects
@@ -4645,21 +4646,30 @@ export class Engine {
     // P1-12 (frozen "continue" rework send-back): the entry continues
     // in the named head's own session and copy — the steer path
     // re-arms it as running and its next report flushes as a fresh
-    // batch. An unknown name falls back to a fresh head wearing it.
+    // batch. Names match case-insensitively; a head still working is
+    // refused outright, and an unknown name falls back to a fresh head
+    // wearing it.
     if (d.continue) {
-      const target = team
-        .filter(
-          (t) =>
-            t.hydraHead!.name === d.continue &&
-            t.hydraHead!.status !== "running",
-        )
-        .at(-1);
+      const named = d.continue.toLowerCase();
+      const matches = team.filter(
+        (t) => t.hydraHead!.name.toLowerCase() === named,
+      );
+      if (matches.some((t) => t.hydraHead!.status === "running")) {
+        return this.refuseDelegation(
+          lead,
+          `${d.continue} is still working — its rework has to wait for its report`,
+        );
+      }
+      const target = matches.at(-1);
       if (target) {
         try {
-          this.sendTurn(target.id, d.prompt, {
-            authored: false,
-            hydraBrief: true,
-          });
+          // Frozen v2ContinuePrompt: the instruction plus the standing
+          // three-line report reminder.
+          this.sendTurn(
+            target.id,
+            `${d.prompt}\n\nReport as before: one or two sentences of result, then exactly the three lines \`Deviations: ...\`, \`Unfinished: ...\` and \`Uncertain: ...\`, each \`none\` when empty; do not list changed files.`,
+            { authored: false, hydraBrief: true },
+          );
         } catch (err) {
           this.refuseDelegation(
             lead,
