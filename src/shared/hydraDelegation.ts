@@ -820,17 +820,3 @@ export function hydraQueuedHeadsNote(queued: number, maxHeads: number): string {
   return `[Hydra] ${tasks} queued, not lost: the cap allows ${heads} at once. They start automatically as heads finish; do not send them again.\n\n---\n\n`;
 }
 
-/** Bounded `ChimeraPrompts.policy` slice — the adaptive mode's extra
- *  delegation guidance: role titles plus routing through the pair's
- *  head profiles (Windows' bounded stand-in for the frozen identities:
- *  casting cards and cross-provider matching are the P1-37 follow-up). */
-export function hydraAdaptiveNote(profiles: string[]): string {
-  const names = profiles.filter((p) => p.trim() !== "");
-  return (
-    `Every new entry needs a short clear job title in "role". ` +
-    (names.length
-      ? `When one of the head profiles fits that role, add "profile": <its name>. `
-      : "") +
-    `A role that fits no profile runs on your own model. Never name models elsewhere.`
-  );
-}
