@@ -4621,7 +4621,7 @@ export class Engine {
       if (running >= cap) break;
       const next = queue.shift()!;
       if (next.continueThreadId) {
-        this.sendBackHydraHead(lead, next.d, next.continueThreadId);
+        this.sendBackHydraHead(lead, next.d, next.batchId, next.continueThreadId);
       } else {
         this.spawnHydraHead(lead, next.d, next.batchId);
       }
@@ -4637,11 +4637,20 @@ export class Engine {
   private sendBackHydraHead(
     lead: ChatThread,
     d: HydraDelegation,
+    batchId: string,
     threadId: string,
   ): void {
     const target = this.store.state.threads.find((t) => t.id === threadId);
     const info = target?.hydraHead;
     const name = d.continue ?? d.task;
+    // The job may have rolled past while the entry queued — a new user
+    // message bumps the generation and voids the admission.
+    if (this.hydraBatchJob.get(batchId) !== (this.hydraBudgetGen.get(lead.id) ?? 0)) {
+      return this.refuseDelegation(
+        lead,
+        `${name} was not sent back: it belongs to an earlier request`,
+      );
+    }
     if (!target || info?.leadId !== lead.id) {
       return this.refuseDelegation(
         lead,
@@ -5780,6 +5789,7 @@ export class Engine {
     if (!pending || this.hydraReviewRunning.has(lead.id)) return;
     if (this.workGate !== "open") {
       this.hydraReviewPending.delete(lead.id);
+      for (const b of pending.batchIds) this.hydraBatchJob.delete(b);
       return;
     }
     if (lead.turn && (lead.turn.status === "running" || lead.turn.status === "waiting-approval"))
@@ -5787,6 +5797,8 @@ export class Engine {
     if (this.pendingSends.has(lead.id) || this.hydraLeadBusy(lead.id)) return;
     if (this.hydraWaiting.get(lead.id)?.length) return;
     this.hydraReviewPending.delete(lead.id);
+    // The job is closed — its batches' continue-scope entries go with it.
+    for (const b of pending.batchIds) this.hydraBatchJob.delete(b);
     if (this.store.state.settings.hydraReviewEnabled === false) {
       this.clearHydraTouched(lead.id, pending);
       return;

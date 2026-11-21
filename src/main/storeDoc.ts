@@ -547,6 +547,9 @@ const vSettings = vObject({
   hydraIsolateHeads: vOptional(vBoolean),
   hydraMaxHeads: vOptional(vInt(1, 8)),
   hydraAutoMerge: vOptional(vBoolean),
+  // Legacy key from before the switch was removed: accepted on load so
+  // stores carrying it still open, ignored everywhere else.
+  hydraReviewHeads: vOptional(vBoolean),
   hydraArchivesCodexHeads: vOptional(vBoolean),
   hydraShowsHeadDetails: vOptional(vBoolean),
   hydraAutoPopsHeads: vOptional(vBoolean),

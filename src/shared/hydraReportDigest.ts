@@ -227,7 +227,8 @@ function withoutTrailingFlags(text: string): string {
   const lines = text.split("\n");
   let start = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i]!.trim().startsWith("Deviations:")) start = i;
+    if (/^(?:[-*•]\s*)?(?:\*\*)?deviations\s*:/i.test(lines[i]!.trim()))
+      start = i;
   }
   if (start < 0) return text;
   if (parseHydraReportNotes(lines.slice(start).join("\n")) === undefined)

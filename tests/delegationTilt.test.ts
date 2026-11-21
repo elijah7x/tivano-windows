@@ -5,7 +5,7 @@
 // report lines parse only when all three are present, and a
 // `"continue"` entry reworks in the named head's own session.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -76,6 +76,43 @@ describe("P1-12 delegation levels (frozen HydraTilt)", () => {
     expect(store.state.settings.hydraTilt).toBe("aggressive");
     engine.setSettings({ hydraTilt: "restrained" });
     expect(store.state.settings.hydraTilt).toBe("restrained");
+  });
+
+  it("a store carrying the removed hydraReviewHeads key still opens", () => {
+    const root = tmp();
+    const ts = 1_000_000;
+    // The legacy monolith shape a pre-removal store presents: the
+    // dropped key is tolerated on load, never a corruption verdict.
+    writeFileSync(
+      join(root, "store.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        projects: [{ id: "p1", name: "p1", createdAt: ts, expanded: true }],
+        threads: [
+          {
+            id: "t1",
+            projectId: "p1",
+            title: "chat",
+            createdAt: ts,
+            updatedAt: ts,
+            sessionGrants: [],
+            messages: [],
+            turn: null,
+          },
+        ],
+        settings: {
+          theme: "dark",
+          language: "en",
+          alwaysAllow: [],
+          hydraReviewHeads: true,
+        },
+        ui: { selectedThreadId: "t1" },
+      }),
+    );
+    const store = new Store(root);
+    expect(() => store.open()).not.toThrow();
+    expect(store.state.threads).toHaveLength(1);
+    store.close();
   });
 });
 
