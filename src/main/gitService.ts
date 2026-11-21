@@ -1371,6 +1371,48 @@ export class GitService {
     }
   }
 
+  /** P1-39 (frozen `autoWorktreeEligibility`): may the checkout host an
+   *  automatic worktree? `.nonGit` — not a repository at all — means the
+   *  chat honestly stays local; `.unavailable` — root mismatch, no
+   *  commits, or an operation in progress — means the send fails with
+   *  the frozen wait note; `.eligible` means create one. */
+  async autoWorktreeEligibility(
+    projectId: string,
+  ): Promise<"eligible" | "nonGit" | "unavailable"> {
+    if (this.unavailableReason) return "unavailable";
+    const op = this.newOp(projectId);
+    let acquired = false;
+    try {
+      await this.acquire(op);
+      acquired = true;
+      const grant = this.gate(op);
+      const dir = realpathSync(grant.directory);
+      const inside = await this.awaitOp(
+        op,
+        this.runOp(op, ["rev-parse", "--is-inside-work-tree"], { cwd: dir }),
+      );
+      if (inside.code !== 0 || inside.stdout.trim() !== "true") return "nonGit";
+      const root = await this.awaitOp(
+        op,
+        this.runOp(op, ["rev-parse", "--path-format=absolute", "--show-toplevel"], { cwd: dir }),
+      );
+      if (root.code !== 0 || realpathSync(root.stdout.trim()) !== dir)
+        return "unavailable";
+      const head = await this.awaitOp(
+        op,
+        this.runOp(op, ["rev-parse", "--verify", "--quiet", "HEAD"], { cwd: dir }),
+      );
+      if (head.code !== 0) return "unavailable";
+      if (await this.operationInProgress(op, dir)) return "unavailable";
+      return "eligible";
+    } catch {
+      return "unavailable";
+    } finally {
+      if (acquired) this.release();
+      op.settle();
+    }
+  }
+
   /** Frozen applyHydraHead, bounded: diff `baseTree..endTree`, apply it
    *  three-way into `checkout`. An in-progress merge/rebase or a patch
    *  nothing could apply keeps its file under <dataRoot>/hydra-patches. */

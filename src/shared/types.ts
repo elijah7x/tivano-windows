@@ -98,13 +98,15 @@ export interface Settings {
    */
   defaultRuntimeMode?: RuntimeMode;
   /**
-   * F11: frozen defaultWorkspaceMode (default "local") — a
-   * project-bound ordinary new thread starts in a fresh git worktree
-   * when "worktree". Standalone threads have no project, so the
-   * default stays local for them. Optional so pre-A78 stores load
-   * verbatim.
+   * F11 + P1-39: frozen defaultWorkspaceMode (upstream default "auto"
+   * since v3.0.0) — a project-bound ordinary new thread starts in a
+   * fresh git worktree when "worktree"; under "auto" it edits the
+   * project folder directly while idle and gains a worktree on first
+   * send when another chat is already active in that checkout.
+   * Standalone threads have no project, so the default stays local for
+   * them. Optional so pre-A78 stores load verbatim.
    */
-  defaultWorkspaceMode?: "local" | "worktree";
+  defaultWorkspaceMode?: "local" | "worktree" | "auto";
   /**
    * F03: frozen showReasoning (default false) — the agent's thinking
    * stays hidden unless toggled on. Optional so pre-A78 stores load

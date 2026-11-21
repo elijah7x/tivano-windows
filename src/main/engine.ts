@@ -274,6 +274,10 @@ export class Engine {
     { batchIds: string[]; request: string; leadGens: number[] }
   >();
   private readonly hydraReviewRunning = new Set<string>();
+  /** P1-39: threads whose first-send auto-worktree bind is in flight —
+   *  the reservation that makes a second chat's busy-check see the first
+   *  one (frozen pendingLocalTurnStarts). */
+  private readonly pendingAutoWorktree = new Set<string>();
   /** P1-38: the review whose findings turn the lead is answering — its
    *  verdicts fold into that card only (never a later ordinary reply). */
   private readonly hydraReviewAwaiting = new Map<string, string>();
@@ -358,6 +362,7 @@ export class Engine {
     | "hydraLand"
     | "hydraCopyRemove"
     | "hydraReviewDiff"
+    | "autoWorktreeEligibility"
   >;
   attachWorktrees(w: NonNullable<Engine["worktrees"]>): void {
     this.worktrees = w;
@@ -1024,6 +1029,7 @@ export class Engine {
     this.pendingAttachments.delete(id);
     // F22: a deleted lead's runtime Hydra state dies with it — queued
     // delegations never spawn into a removed checkout.
+    this.pendingAutoWorktree.delete(id);
     for (const q of this.hydraWaiting.get(id) ?? []) {
       this.hydraBatchRequest.delete(q.batchId);
       this.hydraBatchGen.delete(q.batchId);
@@ -1383,6 +1389,130 @@ export class Engine {
           );
         return turn;
       }
+    }
+
+    // P1-39 (frozen prepareWorkspaceForFirstTurn, bounded): under
+    // Workspace "auto" — the upstream default — a FIRST authored send
+    // that finds the project checkout already claimed by an active chat
+    // binds a fresh worktree before the provider starts. A non-Git
+    // folder stays local; a checkout that cannot host a worktree fails
+    // honestly with the frozen wait note; a worktree whose creation
+    // launched setup scripts defers the send exactly like upstream
+    // (the notice tells the user to send again once setup finishes).
+    if (
+      opts?.authored !== false &&
+      !steeredHead &&
+      thread.projectId &&
+      thread.worktreeDir === undefined &&
+      !thread.hydraHead &&
+      !thread.parentThreadId &&
+      this.worktrees &&
+      (this.store.state.settings.defaultWorkspaceMode ?? "auto") === "auto" &&
+      thread.messages.filter((m) => m.role === "user").length === 1 &&
+      this.isLocalCheckoutBusy(thread.projectId, thread.id)
+    ) {
+      const projectId = thread.projectId;
+      const live = () => {
+        const c = this.store.state.threads.find((t) => t.id === threadId);
+        return c?.turn?.id === turn.id && c.turn.status === "running"
+          ? c
+          : undefined;
+      };
+      const startLocal = () => {
+        const cur = live();
+        if (!cur) return;
+        try {
+          this.startProvider(thread, turn, prompt, workspace, opts);
+        } catch (err) {
+          this.failTurnSync(
+            thread,
+            turn,
+            (err as Error)?.message ?? String(err),
+          );
+        }
+      };
+      this.pendingAutoWorktree.add(threadId);
+      void this.worktrees
+        .autoWorktreeEligibility(projectId)
+        .then(async (elig) => {
+          if (!live()) return;
+          // .nonGit — the folder can't hold a worktree at all, so the
+          // chat honestly edits the checkout it already shares.
+          if (elig === "nonGit") return startLocal();
+          if (elig === "eligible") {
+            const res = await this.createThreadWorktree(
+              threadId,
+              undefined,
+              turn.id,
+            );
+            const cur = live();
+            if (!cur) return;
+            if (res.kind === "created") {
+              // Frozen .deferred: setup scripts running in a real
+              // terminal mean the send waits for the user, never runs
+              // half-configured.
+              if (res.setup && res.setup.ran + res.setup.failed.length > 0) {
+                this.failTurnSync(
+                  cur,
+                  turn,
+                  "Created a new Git worktree and started its setup scripts in Terminal. Send again once setup finishes.",
+                );
+                return;
+              }
+              // The bound worktree outranks the checkout grant resolved
+              // above — same override the main path applies.
+              let ws = workspace;
+              const dir = cur.worktreeDir;
+              if (dir && this.paths?.dirLive(dir)) {
+                ws = { projectId: cur.projectId ?? "", directory: dir };
+              } else if (this.provider.descriptor.mode !== "mock") {
+                this.failTurnSync(
+                  cur,
+                  turn,
+                  "WORKSPACE_NOT_CONFIGURED: the thread's worktree is missing or moved",
+                );
+                return;
+              }
+              try {
+                this.startProvider(thread, turn, prompt, ws, opts);
+              } catch (err) {
+                this.failTurnSync(
+                  thread,
+                  turn,
+                  (err as Error)?.message ?? String(err),
+                );
+              }
+              return;
+            }
+            // A failed bind is an honest failure (frozen
+            // .failed("Could not create a worktree")) — no silent local
+            // fallback that would write into the busy checkout.
+            this.failTurnSync(cur, turn, "Could not create a worktree");
+            return;
+          }
+          // .unavailable — root mismatch, no commits, or an operation in
+          // progress; the busy re-check still frees a finished claim.
+          if (!this.isLocalCheckoutBusy(projectId, threadId))
+            return startLocal();
+          const cur = live();
+          if (!cur) return;
+          this.failTurnSync(
+            cur,
+            turn,
+            "Another chat is active in this repository, and a separate Git worktree isn't available right now. Wait for it to finish, then send again.",
+          );
+        })
+        .catch((err) => {
+          const cur = live();
+          if (cur)
+            this.failTurnSync(
+              thread,
+              turn,
+              (err as Error)?.message ?? String(err),
+            );
+        })
+        .finally(() => this.pendingAutoWorktree.delete(threadId));
+      return turn;
     }
 
     // Before-snapshot gate: when a checkpoint coordinator owns this
@@ -2122,7 +2252,7 @@ export class Engine {
     recentDownloadsPicker?: boolean | undefined;
     newThreadLocation?: "recent" | "standalone" | undefined;
     defaultRuntimeMode?: import("../shared/types").RuntimeMode | undefined;
-    defaultWorkspaceMode?: "local" | "worktree" | undefined;
+    defaultWorkspaceMode?: "local" | "worktree" | "auto" | undefined;
     showReasoning?: boolean | undefined;
     showsWorkingCard?: boolean | undefined;
     performanceMode?: boolean | undefined;
@@ -2485,13 +2615,43 @@ export class Engine {
    * reaches git after `check-ref-format` + a collision check; the
    * directory itself is always main-chosen.
    */
-  async createThreadWorktree(threadId: string, branch?: string): Promise<WorktreeResult> {
+  /** P1-39 (frozen isLocalCheckoutBusy, bounded): another chat already
+   *  works in this project's checkout — a live turn, a latched send-now,
+   *  or an in-flight auto-worktree reservation on a non-archived,
+   *  non-worktree thread bound to the same project. Worktree-bound and
+   *  head-with-copy threads isolate elsewhere and never claim it. */
+  private isLocalCheckoutBusy(projectId: string, excludingThreadId: string): boolean {
+    for (const t of this.store.state.threads) {
+      if (t.id === excludingThreadId || t.isArchived) continue;
+      if (t.projectId !== projectId || t.worktreeDir !== undefined) continue;
+      if (
+        t.turn?.status === "running" ||
+        t.turn?.status === "waiting-approval" ||
+        this.pendingSends.has(t.id) ||
+        this.pendingAutoWorktree.has(t.id)
+      )
+        return true;
+    }
+    return false;
+  }
+
+  async createThreadWorktree(
+    threadId: string,
+    branch?: string,
+    /** P1-39: the auto-prep call passes its own deferred turn — a turn
+     *  whose provider provably never started is not "active" work. */
+    allowTurnId?: string,
+  ): Promise<WorktreeResult> {
     this.assertMutable();
     const thread = this.mustThread(threadId);
     if (!this.worktrees) return { kind: "unavailable", reason: "worktrees-unavailable" };
     if (!thread.projectId) return { kind: "unavailable", reason: "thread-has-no-project" };
     if (thread.worktreeDir) return { kind: "unavailable", reason: "already-bound" };
-    if (thread.turn && (thread.turn.status === "running" || thread.turn.status === "waiting-approval"))
+    if (
+      thread.turn &&
+      (thread.turn.status === "running" || thread.turn.status === "waiting-approval") &&
+      thread.turn.id !== allowTurnId
+    )
       return { kind: "unavailable", reason: "turn-active" };
     const project = this.store.state.projects.find((p) => p.id === thread.projectId);
     if (!project?.directory || this.directoryStatusFor(project) !== "available")

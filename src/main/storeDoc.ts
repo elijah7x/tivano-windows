@@ -507,7 +507,7 @@ const vSettings = vObject({
   defaultRuntimeMode: vOptional(
     vEnum(["supervised", "autoAcceptEdits", "auto", "fullAccess"] as const),
   ),
-  defaultWorkspaceMode: vOptional(vEnum(["local", "worktree"] as const)),
+  defaultWorkspaceMode: vOptional(vEnum(["local", "worktree", "auto"] as const)),
   showReasoning: vOptional(vBoolean),
   showsWorkingCard: vOptional(vBoolean),
   performanceMode: vOptional(vBoolean),

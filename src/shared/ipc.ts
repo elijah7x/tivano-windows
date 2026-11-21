@@ -476,7 +476,7 @@ export const requestValidators = {
     defaultRuntimeMode: vOptional(
       vEnum(["supervised", "autoAcceptEdits", "auto", "fullAccess"] as const),
     ),
-    defaultWorkspaceMode: vOptional(vEnum(["local", "worktree"] as const)),
+    defaultWorkspaceMode: vOptional(vEnum(["local", "worktree", "auto"] as const)),
     showReasoning: vOptional(vBoolean),
     showsWorkingCard: vOptional(vBoolean),
     // F26: strips rendered effects for lowest GPU usage (frozen
