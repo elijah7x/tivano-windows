@@ -948,7 +948,7 @@ function Get-DeterministicFindings {
     }
   }
 
-  return @($findings)
+  return $findings.ToArray()
 }
 
 function Format-FindingsForPrompt {
