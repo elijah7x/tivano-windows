@@ -20,7 +20,7 @@ The owner does **not** participate during development, review, or audit, and ent
 
 Stuck work never blocks the queue or waits for a person:
 
-1. **Park and move on:** if a PR receives the `audit-parked` label (and `## Nyx audit - <sha7> - PARKED` comment) from the independent auditor, or an issue fails its own gate after the allowed fix rounds (2 fix rounds + 1 automated GLM-5.3 consult round, or consult/gate unavailable), autopilot leaves the PR open, records `{issue, pr, reason, attempt}` in `<Root>\autopilot\parked.json`, and moves on to the next issue.
+1. **Park and move on:** if the independent auditor's newest comment is `## Nyx audit - <sha7> - PARKED` for the PR's current head (the `audit-parked` label alone can be stale and is removed before each new push), or an issue fails its own gate after the allowed fix rounds (2 fix rounds + 1 automated GLM-5.3 consult round, or consult/gate unavailable), autopilot leaves the PR open, records `{issue, pr, reason, attempt}` in `<Root>\autopilot\parked.json`, and moves on to the next issue.
 2. **Revisit at most twice:** once no unparked open `nyx-auto` issues (or in-flight `awaitingAudit` PRs) remain, autopilot revisits each parked issue up to two times. On each revisit it closes the old PR with a one-line comment, starts a fresh branch (`nyx/<n>-<slug>-r<k>`) from current `origin/main` using a different approach informed by the audit and gate comments, and opens a new PR.
 3. **Permanent park:** if the second revisit attempt also fails (or an issue cannot be implemented without modifying a guarded path or `package.json` dependencies), autopilot labels the issue `parked`, leaves the open PR open, records the one-line reason in `parked.json`, and skips the issue for good.
 

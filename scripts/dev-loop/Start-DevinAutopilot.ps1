@@ -879,7 +879,11 @@ function Invoke-WatchTick {
       }
     }
     Write-Log 'autopilot unresponsive after 6 nudges with no new log activity; restarting Devin Desktop'
-    Get-Process -Name 'Devin' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    # Stop only Devin Desktop's own process tree; the Devin CLI (bin\devin.exe) used by the
+    # PR reviewer and the audit arbiter must keep running.
+    foreach ($desk in @(Get-CimInstance Win32_Process -Filter "Name='Devin.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -notmatch '\\bin\\devin\.exe$' -and $_.CommandLine -notmatch '--type=' })) {
+      $null = & taskkill.exe /T /F /PID ([int]$desk.ProcessId) 2>&1
+    }
     Start-Sleep -Seconds 3
     $watchdog['consecutiveNudges'] = 0
     $watchdog['stuckNotified'] = $false

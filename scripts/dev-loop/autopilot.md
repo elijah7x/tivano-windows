@@ -146,7 +146,7 @@ if (Test-Path -LiteralPath $dst) { [IO.File]::Replace($tmp, $dst, $null) } else 
   Expect `gh pr merge` to be rejected by the `main` ruleset until `nyx/audit` is `success` on that exact head SHA.
 - Act on the current audit state:
   1. **`nyx/audit` is `success` on exact `headSha`**: merge immediately (§9).
-  2. **PR has label `audit-parked` OR a `## Nyx audit - <sha7> - PARKED` comment for this head**: park the issue per §11 (leaving the PR open) and move on to the next issue.
+  2. **The newest auditor comment is `## Nyx audit - <sha7> - PARKED` and `<sha7>` matches the current `headSha`**: park the issue per §11 (leaving the PR open) and move on to the next issue. The `audit-parked` label alone is not a verdict: it can be left over from an earlier head. Whenever you push a new commit to a PR, remove the stale label first (`gh pr edit <pr> -R elijah7x/tivano-windows --remove-label audit-parked`).
   3. **`nyx/audit` is `pending`, absent, or its description says `arbitration pending`**: do **not** idle! Add `{"issue":<n>,"pr":<pr>,"headSha":"<headSha>"}` to `awaitingAudit` in `progress.json` and immediately move on to work another eligible issue in the queue. Disputes with `arbitration pending` are retried automatically by the auditor.
   4. **`nyx/audit` is `failure` or `error` (and not `audit-parked`)**: read the auditor's PR comment and do one of:
      - Fix every blocking finding in a new commit on the same branch (`npm run verify`, stop worktree processes, push, and re-run `Invoke-AutopilotGate.ps1`; the independent auditor automatically re-runs on the new head SHA).
@@ -244,7 +244,8 @@ Run this milestone whenever no open `nyx-auto` issue remains outside permanently
    Stop any leftover processes inside the milestone worktree or `<buildDir>` afterwards (§3). Confirm `BUILD-OK` exists in `<buildDir>\pkg` and `smoke:packaged` exited `0`.
 6. **If any check in step 3 or step 5 fails:**
    - Remove the milestone worktree (`git -C C:\tivano\dev-loop\repo worktree remove --force C:\tivano\dev-loop\work\milestone-<sha7>`).
-   - Fix the breakage through the **normal issue and PR path**: ensure label `build-break` exists, write a public-text-safe issue body under `C:\tivano\dev-loop\autopilot\runs\milestone\build-break.md` describing the failing command and trimmed error output, and open an issue:
+   - Record the failure in `hands-on.json` as `lastFailure` = `{"mainSha":"<mainSha>","step":"<failing step>","at":"<UTC ISO time>"}`. Do not re-run the milestone on the same `<mainSha>` with the same failing step within 24 hours; once `origin/main` moves, retry immediately. While waiting, poll for new issues as in §13 instead of re-running the milestone.
+   - Reuse an existing `build-break` issue for the same failing step (open, or labelled `parked`) instead of opening a duplicate: list them with `gh issue list -R elijah7x/tivano-windows --label build-break --state all --json number,title,state,labels --limit 50`, and comment the new error output on the match. Only when none matches, fix the breakage through the **normal issue and PR path**: ensure label `build-break` exists, write a public-text-safe issue body under `C:\tivano\dev-loop\autopilot\runs\milestone\build-break.md` describing the failing command and trimmed error output, and open an issue:
      ```powershell
      gh issue create -R elijah7x/tivano-windows --title "Build break: <short failing step summary>" --label nyx-auto --label build-break --body-file C:\tivano\dev-loop\autopilot\runs\milestone\build-break.md
      ```

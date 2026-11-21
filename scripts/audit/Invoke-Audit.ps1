@@ -1815,7 +1815,17 @@ try {
           continue
         } elseif ($state.verdict -eq 'block') {
           if ([int]$state.round -ge 2) {
-            if ($state.arbiterState -eq 'pending' -and -not [bool]$state.arbiterDone -and $null -ne $state.arbiterPending) {
+            if ($state.arbiterState -eq 'pending' -and -not [string]::IsNullOrWhiteSpace($mainSha) -and $state.baseSha -ne $mainSha) {
+              # main moved while arbitration waited: the pending findings came from a stale trial merge, so audit afresh.
+              Write-Log ('PR #' + $num + ' head ' + $sha7 + ': main moved during pending arbitration; restarting the audit')
+              $state.round = 0
+              $state.attempts = 0
+              $state.lastAttemptAt = ''
+              $state.verdict = ''
+              $state.priorFindings = @()
+              $state.arbiterState = ''
+              $state.arbiterPending = $null
+            } elseif ($state.arbiterState -eq 'pending' -and -not [bool]$state.arbiterDone -and $null -ne $state.arbiterPending) {
               $dailyCheck = Read-ArbiterDailyState -Path (Get-ArbiterDailyPath -StateDir $stateDir)
               if ([int]$dailyCheck.count -ge $arbiterDailyCap) {
                 $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'arbitration pending for head ' + $sha7 + ' (daily cap reached)' })
