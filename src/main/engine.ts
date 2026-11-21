@@ -862,7 +862,10 @@ export class Engine {
     ) {
       void this.createThreadWorktree(thread.id)
         .then((res) => {
-          if (res.kind === "unavailable")
+          // "abandoned" is the lifecycle race's silent outcome — the
+          // thread is already gone or shelved, so there is no banner to
+          // confuse with a real creation failure.
+          if (res.kind === "unavailable" && res.reason !== "abandoned")
             this.emit({
               type: "worktree-failed",
               threadId: thread.id,
@@ -2362,7 +2365,10 @@ export class Engine {
       } catch {
         // A drained item that cannot record (closed library) returns to
         // the front of the queue rather than vanishing — the same retain
-        // the composer path gets, one channel down.
+        // the composer path gets, one channel down. (Bounded: on the
+        // only reachable throw today — !ownsWrites — the store.update
+        // below no-ops like the splice above, so this is belt-and-braces
+        // for any future sendTurn failure on a live store.)
         this.store.update(() => {
           this.queueOf(thread).unshift({
             id: randomUUID(),
