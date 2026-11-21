@@ -5145,8 +5145,8 @@ export class Engine {
       const gitDir = join(cur, ".git");
       try {
         const st = lstatSync(gitDir);
-        // A .git symlink resolves before probing — a dangling one is a
-        // checkout Git cannot open, never a plain folder to edit.
+        // A .git symlink resolves before probing. A dangling one means
+        // no .git at this level (frozen fileExists) — keep walking.
         const eff = st.isSymbolicLink()
           ? (() => {
               try {
@@ -5397,10 +5397,19 @@ export class Engine {
         this.store.update((d) => {
           d.projects.push(project!);
         });
+        // openUserDirectory's bind is durable before it returns — a
+        // routed folder persists the same way.
+        this.store.flushNow();
         this.emit({ type: "project-added", project });
       } catch {
-        // No grant, no honest execution dir — refuse rather than let
-        // the head run in the lead's checkout under a routed brief.
+        // A throw after the grant leaves an orphan — take it back so
+        // the next route starts clean, then refuse rather than let the
+        // head run in the lead's checkout under a routed brief.
+        try {
+          this.paths.revoke(id);
+        } catch {
+          /* nothing to undo */
+        }
         return refuse(
           `Hydra: ${personaName} did not start because its checkout could not be read.`,
         );
