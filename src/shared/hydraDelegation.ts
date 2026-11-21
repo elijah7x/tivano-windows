@@ -25,6 +25,10 @@ export interface HydraDelegation {
   task: string;
   /** The brief the head runs on. */
   prompt: string;
+  /** P1-12 rework send-back (frozen `"continue"`): the name of a head
+   *  of this job to send the prompt back to — it continues in that
+   *  head's own session and copy instead of spawning a new head. */
+  continue?: string | undefined;
   /** Announced roster name ("name"/"head") — authoritative when on roster. */
   name?: string | undefined;
   /** Sidebar project name (or path) the head is sent to. */
@@ -58,6 +62,7 @@ export function delegationFromEntry(entry: unknown): HydraDelegation | null {
   return {
     task,
     prompt,
+    continue: get("continue"),
     name: get("name") ?? get("head"),
     project: get("project") ?? get("repo"),
     profile: get("profile"),
@@ -331,7 +336,99 @@ const HOW_TO_WORK = `- Start on the task right away: read what you need and no m
 - If something blocks you, stop and say so instead of guessing or working around it.`;
 
 const HOW_TO_REPORT =
-  "Report the result, the files you changed and material blockers once, in a few lines the lead can act on: what changed, where, and anything still open or uncertain. Name the caveats and the unfinished work plainly rather than leaving them out. No preamble, no restating the brief, no logs. The lead handles validation.";
+  "Report the result, the files you changed and material blockers once, in a few lines the lead can act on: what changed, where, and anything still open or uncertain. No preamble, no restating the brief, no logs. The lead handles validation. Then exactly the three lines `Deviations: ...`, `Unfinished: ...` and `Uncertain: ...`, each `none` when empty.";
+
+/** P1-12 (frozen HydraTilt): how readily the lead hands work to heads.
+ *  Restrained delegates only for parallel pieces or heavy reading;
+ *  active also sends bounded mechanical work out, even one piece;
+ *  aggressive makes heads the default for nearly all work. */
+export type HydraTilt = "restrained" | "active" | "aggressive";
+
+export const HYDRA_TILTS: readonly HydraTilt[] = [
+  "restrained",
+  "active",
+  "aggressive",
+];
+
+/** Frozen `v2TiltRule` — what each tilt asks of the lead, in its own
+ *  words: field data showed leads delegating about one agentic task in
+ *  ten whatever the tilt, so the rule names the kinds of work that go
+ *  out, not only the principle. */
+export function hydraTiltRule(tilt: HydraTilt): string {
+  switch (tilt) {
+    case "restrained":
+      return "Delegate the parts that would crowd your context or take long: an audit or sweep across many files, research across many sources, or several independent pieces that can run at once. Do the rest yourself.";
+    case "active":
+      return "Default to heads for any part you can brief on its own that would take you more than a few tool calls: research, an audit, a mechanical change, a clearly specified feature or fix, or several variants or modules built in parallel. Do a part yourself when it is short, or when you must judge it while reading.";
+    case "aggressive":
+      return "Heads are your default for nearly all work: brief every part you can describe on its own, investigations included, where heads gather and report while you decide. Do something yourself only when it is a quick answer or a one-step edit, or when it cannot be briefed without doing the reading yourself.";
+  }
+}
+
+/** Frozen `v2DelegationRequest` tilt clause — the named level and its
+ *  short rule for the front of the user's message. */
+function hydraTiltName(tilt: HydraTilt): { name: string; rule: string } {
+  switch (tilt) {
+    case "restrained":
+      return { name: "restrained", rule: "send heads only the parts that would crowd your context: audits, broad research, several parallel pieces" };
+    case "active":
+      return { name: "proactive", rule: "send heads any part you can brief that would take more than a few tool calls; keep short work and work you must judge while reading" };
+    case "aggressive":
+      return { name: "aggressive", rule: "send heads nearly everything you can brief; keep only quick answers, one-step edits and work you cannot brief" };
+  }
+}
+
+/** The three lines every head ends its report with (frozen
+ *  HydraReportNotes): nil fields mean the head wrote "none"; a report
+ *  without the lines parses to undefined and the raw reply stands
+ *  alone. */
+export interface HydraReportNotes {
+  deviations?: string | undefined;
+  unfinished?: string | undefined;
+  uncertain?: string | undefined;
+}
+
+const REPORT_NOTE_LABELS = ["Deviations", "Unfinished", "Uncertain"] as const;
+const REPORT_NOTE_NILS = new Set(["none", "n/a", "无", "没有"]);
+
+/** Frozen `HydraReportNotes.parse`: the `Deviations:`/`Unfinished:`/
+ *  `Uncertain:` lines anywhere in a reply, case-insensitive, markdown
+ *  bullets and bold allowed; a value runs until the next label or the
+ *  end. Undefined unless all three labels are present. */
+export function parseHydraReportNotes(reply: string): HydraReportNotes | undefined {
+  const found = new Map<string, string[]>();
+  let current: string | undefined;
+  for (const raw of reply.split("\n")) {
+    const line = raw
+      .trim()
+      .replace(/^[-*•\s]+/, "")
+      .replace(/\*\*/g, "");
+    const label = REPORT_NOTE_LABELS.find((l) =>
+      line.toLowerCase().startsWith(l.toLowerCase() + ":"),
+    );
+    if (label) {
+      current = label;
+      found.set(label, [line.slice(label.length + 1).trim()]);
+    } else if (current) {
+      if (line === "") current = undefined;
+      else found.get(current)!.push(line);
+    }
+  }
+  if (!REPORT_NOTE_LABELS.every((l) => found.has(l))) return undefined;
+  const value = (label: string): string | undefined => {
+    const text = (found.get(label) ?? []).join("\n").trim();
+    const lowered = text.toLowerCase().replace(/^[.\s]+|[.\s]+$/g, "");
+    return text === "" || REPORT_NOTE_NILS.has(lowered) ? undefined : text;
+  };
+  const notes: HydraReportNotes = {};
+  const d = value("Deviations");
+  if (d !== undefined) notes.deviations = d;
+  const u = value("Unfinished");
+  if (u !== undefined) notes.unfinished = u;
+  const q = value("Uncertain");
+  if (q !== undefined) notes.uncertain = q;
+  return notes;
+}
 
 function sharedWorkplaceRules(path: string): string {
   return `You work in the lead's checkout at ${path}, alongside the lead and the other heads, who are changing other files at the same time. Changes you did not make are expected there: leave every one of them alone, never stash, check out, reset, restore or clean anything, and never move work into a branch or worktree, whatever the project's own guidelines say about agents and worktrees. Do not use git status or git diff to check your work: they show everyone's changes, and the lead does the verifying.`;
@@ -405,6 +502,13 @@ export interface HydraReport {
    *  stopped the head, so the report says Tivano stopped it, not the
    *  user, and tells the lead it can be continued. */
   stopReason?: "stalled" | undefined;
+  /** Frozen HydraJobHeadRecord.notes — the structured Deviations/
+   *  Unfinished/Uncertain lines when the report carried all three. */
+  notes?: HydraReportNotes | undefined;
+  /** Frozen HydraJobHeadRecord.expectsNotes — true on heads of a v2
+   *  job, so a completed report missing the three lines is flagged
+   *  "Report format not followed." */
+  expectsNotes?: boolean | undefined;
 }
 
 /** Frozen `isTransientFailure`: a failure likely to clear on its own —
@@ -508,8 +612,21 @@ export function reportMessage(
         firstWithError.set(key, personaAt(r.headIndex).name);
       }
     }
+    // Frozen report flags: the structured notes ride the Flags block
+    // right after the header so the lead sees what to look at first;
+    // a completed report that should have carried notes but didn't is
+    // called out.
+    const flags: string[] = [];
+    if (r.notes) {
+      if (r.notes.deviations) flags.push(`Deviations: ${r.notes.deviations}`);
+      if (r.notes.unfinished) flags.push(`Unfinished: ${r.notes.unfinished}`);
+      if (r.notes.uncertain) flags.push(`Uncertain: ${r.notes.uncertain}`);
+    } else if (r.status === "completed" && r.expectsNotes) {
+      flags.push("Report format not followed.");
+    }
     sections.push(
       `## ${personaAt(r.headIndex).name}: ${r.task}${outcome}${took}\n` +
+        `Flags:\n${flags.length ? flags.join("\n") : "none"}\n` +
         `${land ? land + "\n" : ""}${bodyLine}`,
     );
   }
@@ -712,6 +829,9 @@ function policyProjectRule(
  * bound pair only; `team` is the live team line from `hydraTeamStatus`.
  */
 export function hydraLeadPolicy(opts: {
+  /** P1-12: the delegation level — its frozen rule names the kinds of
+   *  work that go out, on top of the standing delegate-first wording. */
+  tilt?: HydraTilt | undefined;
   maxHeads?: number | undefined;
   profiles?: HydraHeadProfile[] | undefined;
   projects?: { name: string; path: string }[] | undefined;
@@ -730,13 +850,14 @@ export function hydraLeadPolicy(opts: {
   const profileRule = profiles.length
     ? ` Some heads are tuned for a purpose: ${profiles.map((p) => headProfileBriefLabel(p, opts.providerLabel)).join(", ")}. Route a task to one with "profile", as in \`{"task": "...", "prompt": "...", "profile": "${profiles[0]!.name}"}\`; a task that fits none of them goes without a profile and runs on the heads' shared model, as does one whose profile names none of these.`
     : "";
-  return `[Hydra is on] You lead ${team} ("heads"). Delegate first, work second: anything bigger than a single obvious change to a single file is a job for heads. Audits, reviews, a feature across several files, a refactor, "check everything", research across many files, several tasks in one message: in your first reply, look at the code only long enough to write good briefs, a minute and a handful of files rather than ten, and then send the heads out, all of them in that one block. Never spend minutes reading before you delegate, and never do inline what heads could be doing in parallel. Only a truly single-focus request, one file and one obvious change, is yours to do alone, and size the team to the work rather than to how many heads are free: a small job whose pieces depend on each other is one head's task, or your own, not a team of heads.         Finish your reply with one fenced block
+  const tiltRule = opts.tilt ? ` ${hydraTiltRule(opts.tilt)}` : "";
+  return `[Hydra is on] You lead ${team} ("heads").${tiltRule} Delegate first, work second: anything bigger than a single obvious change to a single file is a job for heads. Audits, reviews, a feature across several files, a refactor, "check everything", research across many files, several tasks in one message: in your first reply, look at the code only long enough to write good briefs, a minute and a handful of files rather than ten, and then send the heads out, all of them in that one block. Never spend minutes reading before you delegate, and never do inline what heads could be doing in parallel. Only a truly single-focus request, one file and one obvious change, is yours to do alone, and size the team to the work rather than to how many heads are free: a small job whose pieces depend on each other is one head's task, or your own, not a team of heads.         Finish your reply with one fenced block
 
 \`\`\`hydra
 [{"task": "short title", "prompt": "complete, self-contained instructions with the exact files and acceptance criteria"}]
 \`\`\`
 
-and stop there: do not wait, poll or verify anything after it. When a request is yours to do alone, do it and end with no block at all: an empty block sends no heads and is not needed. An entry may also carry its head's announced name, as in \`{"task": "...", "prompt": "...", "name": "Otto"}\`: the announced name is authoritative and the spawned head carries exactly it, so repeating the same block spawns the same names. An entry for work in another project carries \`"project"\` with that project's name, as in \`{"task": "...", "prompt": "...", "project": "gaze-site"}\`. Name new heads with the next roster names in order after the team listed above (Hank, Walter, Ada, Otto, Nova, Remy, Iris, Milo, Juno, Ezra, Lena, Bo, Kai, Vera, Finn, Mira, Odin, Suki, Rex, Zola, Pip, Ivo, Lux, Tova, Gus, then Hank 2 and so on), and omit the name when unsure: the next heads in order go out instead. Never invent names outside the roster: there is no head called Ives (the roster has Ivo), and an unknown name falls back to the next head in order rather than renaming anyone.${profileRule} Inside a prompt never open a fenced code block of your own (three backticks would end the hydra block early and no head would go out): describe code in words, quote identifiers with single backticks, or indent a snippet by four spaces. Each entry goes out to a head the moment its closing brace streams, before the block is finished, so write the entries in the order the heads should start and complete one entry before beginning the next. ${whereHeadsWork}; heads never see your context, so write every prompt for a capable colleague who has read nothing yet, with the exact files, symbols and acceptance criteria, give no two heads the same file, and give no head work that rests on another head's unfinished changes: they run in parallel and never see each other's work. Keep each brief bounded: one head, one task, one report you can act on. ${POLICY_BRIEF_RULE} ${POLICY_VERIFICATION_RULE} ${policyProjectRule(opts.projects ?? [], opts.ownProjectName)} A head can be sent to read and report as well as to change files, so the reading goes out in parallel too. Say in one line which heads you sent out and what each one does. The block is the only way to send heads out: never use an agent, task, spawn_agent or sub-agent tool of your own, which would run the work inside your own session instead of as a head in Tivano. Every head runs on this chat's own provider and model, with whatever tools that provider gives a chat. The reports arrive as a later message with the work already in place: build on them, do not redo them, never send out heads to verify or redo other heads, and never use git status or git diff to check on heads, since the checkout changes under you while they work. A message that opens with [Hydra] is from Tivano, not the user. ${POLICY_REPORT_STYLE_RULE}`;
+and stop there: do not wait, poll or verify anything after it. When a request is yours to do alone, do it and end with no block at all: an empty block sends no heads and is not needed. An entry may also carry its head's announced name, as in \`{"task": "...", "prompt": "...", "name": "Otto"}\`: the announced name is authoritative and the spawned head carries exactly it, so repeating the same block spawns the same names. An entry for work in another project carries \`"project"\` with that project's name, as in \`{"task": "...", "prompt": "...", "project": "gaze-site"}\`. To send a finished head of this request back to its part, use an entry \`{"continue": "<head name>", "prompt": "..."}\`; heads of earlier requests cannot be sent back, so give their part to a new head. Name new heads with the next roster names in order after the team listed above (Hank, Walter, Ada, Otto, Nova, Remy, Iris, Milo, Juno, Ezra, Lena, Bo, Kai, Vera, Finn, Mira, Odin, Suki, Rex, Zola, Pip, Ivo, Lux, Tova, Gus, then Hank 2 and so on), and omit the name when unsure: the next heads in order go out instead. Never invent names outside the roster: there is no head called Ives (the roster has Ivo), and an unknown name falls back to the next head in order rather than renaming anyone.${profileRule} Inside a prompt never open a fenced code block of your own (three backticks would end the hydra block early and no head would go out): describe code in words, quote identifiers with single backticks, or indent a snippet by four spaces. Each entry goes out to a head the moment its closing brace streams, before the block is finished, so write the entries in the order the heads should start and complete one entry before beginning the next. ${whereHeadsWork}; heads never see your context, so write every prompt for a capable colleague who has read nothing yet, with the exact files, symbols and acceptance criteria, give no two heads the same file, and give no head work that rests on another head's unfinished changes: they run in parallel and never see each other's work. Keep each brief bounded: one head, one task, one report you can act on. ${POLICY_BRIEF_RULE} ${POLICY_VERIFICATION_RULE} ${policyProjectRule(opts.projects ?? [], opts.ownProjectName)} A head can be sent to read and report as well as to change files, so the reading goes out in parallel too. Say in one line which heads you sent out and what each one does. The block is the only way to send heads out: never use an agent, task, spawn_agent or sub-agent tool of your own, which would run the work inside your own session instead of as a head in Tivano. Every head runs on this chat's own provider and model, with whatever tools that provider gives a chat. The reports arrive as a later message with the work already in place: build on them, do not redo them, never send out heads to verify or redo other heads, and never use git status or git diff to check on heads, since the checkout changes under you while they work. A message that opens with [Hydra] is from Tivano, not the user. ${POLICY_REPORT_STYLE_RULE}`;
 }
 
 /** Frozen `teamStatus` — the lead's team in a line, for the front of
@@ -787,9 +908,12 @@ export function hydraTurnNote(team: string | undefined): string {
 
 /** Frozen `delegationRequest` — the user's enabled Hydra setting
  *  expressed alongside their request; kept off automatic reports. */
-export function hydraDelegationRequest(): string {
-  return `[Hydra setting: enabled]
-Use Hydra heads for this request when it involves multiple files, an audit, broad research, or independent tasks. Keep a single obvious change in one file with the lead. Delegate through the final hydra block so Tivano runs the selected heads; do not use native agent tools. Follow any explicit request below to work alone or limit delegation.
+export function hydraDelegationRequest(tilt: HydraTilt = "active"): string {
+  // Frozen v2DelegationRequest tilt clause: the level is named and the
+  // decision rule rides every user turn.
+  const t = hydraTiltName(tilt);
+  return `[Hydra setting: enabled, ${t.name}]
+Use Hydra heads for this request when it involves multiple files, an audit, broad research, or independent tasks. Keep a single obvious change in one file with the lead. Before you start, decide which parts go to heads: ${t.rule}. Delegate through the final hydra block so Tivano runs the selected heads; do not use native agent tools. Follow any explicit request below to work alone or limit delegation.
 
 ---
 
@@ -805,7 +929,7 @@ export function hydraReportNote(
   canDelegate: boolean,
 ): string {
   const more = canDelegate
-    ? "If the reports open up the next stage of the work, or a head failed, or a piece of the user's request is still undone, send heads out again for exactly that, with the same ```hydra block at the end of your reply; never for verifying, redoing or finishing what a head already did."
+    ? "If the reports open up the next stage of the work, or a head failed, or a piece of the user's request is still undone, send heads out again for exactly that, with the same ```hydra block at the end of your reply; to rework the own part of a head of this request, prefer an entry with \"continue\": \"<head name>\" and the instruction in \"prompt\", which continues in its own session and copy; never for verifying, redoing or finishing what a head already did."
     : "Send out no more heads for this request; whatever is left, do yourself.";
   return `[Hydra] Your heads reported back below.${team ? " " + team : ""} ${more}\n\n---\n\n`;
 }

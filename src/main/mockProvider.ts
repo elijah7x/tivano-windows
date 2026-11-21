@@ -107,6 +107,10 @@ export class MockProvider implements ProviderAdapter {
    *  (`[mock:hydra-loop*]` fixtures) — the loop flavor decides whether
    *  the next batch's heads work or quiet-fail. */
   private readonly hydraLoops = new Map<string, "ok" | "fail">();
+  /** P1-12: leads whose next report-turn reply carries a "continue"
+   *  entry (one-shot latch); "ghost" names a head that never spawned. */
+  private readonly hydraContinueLeads = new Set<string>();
+  private readonly hydraContinueGhosts = new Set<string>();
 
   constructor(private readonly opts: MockProviderOptions = {}) {}
 
@@ -183,6 +187,23 @@ export class MockProvider implements ProviderAdapter {
     // P1-37 fixture: `[mock:hydra-identity]` = one delegation whose entry
     // carries the adaptive mode's `identity` number plus `role` title.
     const wantsHydraIdentity = prompt.includes("[mock:hydra-identity]");
+    // P1-12 fixture: `[mock:hydra-continue]` — the lead's reply to the
+    // batch report emits one `"continue": "Hank"` entry, sending the
+    // rework back into Hank's own session and copy (same job). It
+    // latches like the loop fixtures and fires once.
+    const wantsHydraContinue = prompt.includes("[mock:hydra-continue]");
+    const wantsHydraContinueGhost = prompt.includes("[mock:hydra-continue-ghost]");
+    if (wantsHydraContinue) this.hydraContinueLeads.add(ctx.threadId);
+    if (wantsHydraContinueGhost) this.hydraContinueGhosts.add(ctx.threadId);
+    const continueReport =
+      prompt.includes("Hydra reports:") &&
+      (this.hydraContinueLeads.has(ctx.threadId) ||
+        this.hydraContinueGhosts.has(ctx.threadId));
+    const continueGhost = this.hydraContinueGhosts.has(ctx.threadId) && continueReport;
+    if (continueReport) {
+      this.hydraContinueLeads.delete(ctx.threadId);
+      this.hydraContinueGhosts.delete(ctx.threadId);
+    }
     const wantsHydraLoop = prompt.includes("[mock:hydra-loop]");
     const wantsHydraLoopFail = prompt.includes("[mock:hydra-loop-fail]");
     if (wantsHydraLoop) this.hydraLoops.set(ctx.threadId, "ok");
@@ -240,7 +261,7 @@ export class MockProvider implements ProviderAdapter {
       wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraWaitQ ||
       wantsHydraQuiet || wantsHydraFailStart || wantsHydraFailAll ||
       wantsHydraFailTransient || wantsHydraRole || wantsHydraIdentity ||
-      wantsHydraLoop || wantsHydraLoopFail || looped
+      wantsHydraLoop || wantsHydraLoopFail || continueReport || looped
     ) {
       const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute || wantsHydraWaitQ
         ? wantsHydraWaitMany
@@ -270,6 +291,10 @@ export class MockProvider implements ProviderAdapter {
           ? '[{"role":"Outline it","prompt":"Normal work."}]'
         : wantsHydraIdentity
           ? '[{"role":"Scout","prompt":"Map the area.","identity":1},{"role":"No pick","prompt":"Plain work."}]'
+        : continueReport
+          ? continueGhost
+            ? '[{"task":"Rework Nova","prompt":"Try again.","continue":"Nova"}]'
+            : '[{"task":"Rework Hank","prompt":"Rework your part: tighten the intro.","continue":"Hank"}]'
         : wantsHydraLoopFail || (looped && this.hydraLoops.get(ctx.threadId) === "fail")
           ? '[{"task":"Quiet fail","prompt":"Try it. [mock:fail-quiet]"}]'
         : wantsHydraLoop || looped

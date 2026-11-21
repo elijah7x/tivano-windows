@@ -520,7 +520,6 @@ export const requestValidators = {
     hydraIsolateHeads: vOptional(vBoolean),
     hydraMaxHeads: vOptional(vNullable(vInt(1, 8))),
     hydraAutoMerge: vOptional(vBoolean),
-    hydraReviewHeads: vOptional(vBoolean),
     hydraArchivesCodexHeads: vOptional(vBoolean),
     hydraShowsHeadDetails: vOptional(vBoolean),
     hydraAutoPopsHeads: vOptional(vBoolean),
@@ -532,6 +531,10 @@ export const requestValidators = {
     ),
     chimeraPresets: vOptional(vArray(vChimeraPreset, 64)),
     chimeraAutoDispatch: vOptional(vBoolean),
+    // P1-12: "How much sub-agents take on" — the delegation level.
+    hydraTilt: vOptional(
+      vEnum(["restrained", "active", "aggressive"] as const),
+    ),
     hydraReviewEnabled: vOptional(vBoolean),
     hydraReviewFirst: vOptional(vNullable(vHydraReviewChoice)),
     hydraReviewSecond: vOptional(vNullable(vHydraReviewChoice)),

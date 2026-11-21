@@ -2690,6 +2690,7 @@ select.runtime-mode:disabled {
 .hr-file { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; }
 .hr-file .ckpt-path { flex: 1; word-break: break-all; }
 .hr-conflict { color: var(--warning, var(--danger)); font-size: calc(11px + var(--fs-ui-off)); }
+.hr-flags { padding: 2px 12px 6px; font-size: calc(12px + var(--fs-ui-off)); color: var(--warning, var(--danger)); display: flex; flex-direction: column; gap: 4px; }
 .hr-body { padding: 0 12px 10px; font-size: calc(12.5px + var(--fs-content-off)); }
 
 /* F11 thread worktree dialog */

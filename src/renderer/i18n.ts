@@ -962,8 +962,6 @@ const zhHans: Record<string, string> = {
   "One chat leads a team of heads on big jobs.": "遇到大任务时，由一个对话带领一组子智能体协作完成。",
   "With “Own copy” each head works in a disposable worktree of the checkout and Tivano lands its changes back when it reports; checkouts that cannot be copied stay shared. Merge requests and review gating are not wired in this build yet.":
     "选择“独立副本”后，每个子智能体在检出目录的一次性 worktree 中工作，汇报时 Tivano 将其改动落回检出目录；无法复制的检出目录仍为共用。合并请求与评审门在本版本中尚未接通。",
-  "Adds a review step before the lead finishes. This uses additional time and tokens. Not wired in this build yet.":
-    "在主对话完成前增加一步对子智能体改动的评审，会消耗额外时间与 token。本版本尚未接通。",
   "Commits and pushes the team's changes, opens a pull/merge request, and attempts to merge it. Requires a configured remote and access. Not wired in this build yet.":
     "提交并推送团队改动，发起 pull/merge 请求并尝试合并。需要已配置的远端与访问权限。本版本尚未接通。",
   "Landing…": "正在落回…",
@@ -1058,6 +1056,22 @@ const zhHans: Record<string, string> = {
     "主代理把工作拆成不同角色，并为每个角色匹配合适服务商的模型。",
   "New chats start on this mode; each chat switches it in the model picker. With no saved pair, Preset falls back to Same-model.":
     "新对话使用该模式；每个对话可在模型选择器中切换。没有保存的组合时，“模型搭配”回退为“同模型”。",
+  // P1-12: delegation level picker — titles use the upstream canonical
+  // zh-Hans verbatim.
+  "How much sub-agents take on": "子代理承担多少工作",
+  "Restrained": "克制",
+  "Proactive": "主动",
+  "Aggressive": "激进",
+  "The lead does most of the work and sends sub-agents only the parts too big for one context: audits, broad research, several parallel pieces. Steadiest quality; the lead model does the most work.":
+    "主代理自己完成大部分工作，只把一个上下文装不下的部分交给子代理：审计、大范围调研、可并行的多个部分。质量最稳，主代理承担的工作最多。",
+  "The lead hands sub-agents any self-contained part that takes more than a few steps and keeps short or judgement-heavy work. A balance between quality and how much the lead model does.":
+    "主代理把需要几步以上、能单独写清的部分交给子代理，简短或需要判断的工作自己做。在质量和主代理的工作量之间取平衡。",
+  "Sub-agents take nearly every part the lead can brief; the lead plans, integrates and checks. The least work for the lead model; with weaker sub-agent models, quality can drop slightly.":
+    "能写清楚的部分几乎都交给子代理，主代理负责规划、集成和检查。主代理的工作量最少；子代理使用较弱的模型时，质量可能略有下降。",
+  "Report format not followed.": "报告未遵循规定格式。",
+  "Deviations: %@": "方案调整：%@",
+  "Unfinished: %@": "未完成：%@",
+  "Uncertain: %@": "不确定：%@",
   // P1-38/P1-09: independent review — title/detail use the upstream
   // canonical zh-Hans verbatim.
   "Independent review": "独立审查",
@@ -1178,9 +1192,6 @@ const zhHans: Record<string, string> = {
   "Use heads when there is room. Commands and messages that cannot be delegated stay with the lead.":
     "有可用名额时使用子智能体；命令及无法派发的消息仍由主智能体处理。",
   "When the team is done": "团队完成后",
-  "Ask the lead to review heads' changes": "要求主智能体审查子智能体的改动",
-  "Adds a review step before the lead finishes. This uses additional time and tokens.":
-    "在主智能体结束前增加审查步骤，会消耗更多时间和 token。",
   "Automatically publish and merge team changes": "自动发布并合并团队改动",
   "Commits and pushes the team's changes, opens a pull/merge request, and attempts to merge it. Requires a configured remote and access.":
     "提交并推送团队改动，创建拉取／合并请求并尝试合并；需要已配置远端及相应权限。",

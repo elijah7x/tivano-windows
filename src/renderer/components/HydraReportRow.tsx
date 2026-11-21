@@ -158,6 +158,14 @@ export function HydraReportRow(props: {
         {collapsible && <span className="hr-chev" aria-hidden="true" />}
       </button>
       {landingView(h.landing, t)}
+      {(h.reportFormatMissing || h.flags.unfinished || h.flags.deviations || h.flags.uncertain) && (
+        <div className="hr-flags">
+          {h.reportFormatMissing && <div>{t("Report format not followed.")}</div>}
+          {h.flags.unfinished && <div>{t("Unfinished: %@", h.flags.unfinished)}</div>}
+          {h.flags.deviations && <div>{t("Deviations: %@", h.flags.deviations)}</div>}
+          {h.flags.uncertain && <div>{t("Uncertain: %@", h.flags.uncertain)}</div>}
+        </div>
+      )}
       {isExpanded(h) && h.body && (
         <div className="hr-body">{renderMarkdown(h.body, { copy: t("Copy"), copied: t("Copied") })}</div>
       )}
