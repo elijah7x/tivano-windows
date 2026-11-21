@@ -520,7 +520,6 @@ export const requestValidators = {
     hydraIsolateHeads: vOptional(vBoolean),
     hydraMaxHeads: vOptional(vNullable(vInt(1, 8))),
     hydraAutoMerge: vOptional(vBoolean),
-    hydraReviewHeads: vOptional(vBoolean),
     hydraArchivesCodexHeads: vOptional(vBoolean),
     hydraShowsHeadDetails: vOptional(vBoolean),
     hydraAutoPopsHeads: vOptional(vBoolean),

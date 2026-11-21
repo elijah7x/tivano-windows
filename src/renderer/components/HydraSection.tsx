@@ -61,6 +61,20 @@ interface HydraCatalogView {
  *  the many select/label sites below. */
 const effortTitle = hydraReviewEffortTitle;
 
+/** Frozen tiltDetail: what each delegation level does and trades, so
+ *  the choice can be weighed. */
+const TILT_DETAIL: Record<
+  NonNullable<Settings["hydraTilt"]>,
+  string
+> = {
+  restrained:
+    "The lead does most of the work and sends sub-agents only the parts too big for one context: audits, broad research, several parallel pieces. Steadiest quality; the lead model does the most work.",
+  active:
+    "The lead hands sub-agents any self-contained part that takes more than a few steps and keeps short or judgement-heavy work. A balance between quality and how much the lead model does.",
+  aggressive:
+    "Sub-agents take nearly every part the lead can brief; the lead plans, integrates and checks. The least work for the lead model; with weaker sub-agent models, quality can drop slightly.",
+};
+
 /** Union of efforts the provider's catalog advertises, low→high-ish. */
 function allEfforts(models: { efforts: string[] }[]): string[] {
   const rank = (e: string) =>
@@ -1105,9 +1119,7 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
         onPick={(v) => tryCall("settings:set", { hydraTilt: v })}
       />
       <p className="codex-note">
-        {t(
-          "Restrained sends heads only parallel pieces or heavy reading; Proactive also sends bounded mechanical work; Aggressive makes heads the default for nearly every part the lead can brief.",
-        )}
+        {t(TILT_DETAIL[settings.hydraTilt ?? "active"])}
       </p>
 
       <IdentitySection
@@ -1324,12 +1336,6 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
           settings={settings}
           providers={providers}
           disabled={!on(settings.hydraReviewEnabled, true)}
-        />
-        <ToggleRow
-          title="Ask the lead to review heads' changes"
-          detail="Adds a review step before the lead finishes. This uses additional time and tokens. Not wired in this build yet."
-          on={on(settings.hydraReviewHeads, false)}
-          onFlip={(v) => toggle("hydraReviewHeads", v)}
         />
         <ToggleRow
           title="Automatically publish and merge team changes"

@@ -2514,7 +2514,6 @@ export class Engine {
     hydraIsolateHeads?: boolean | undefined;
     hydraMaxHeads?: number | null | undefined;
     hydraAutoMerge?: boolean | undefined;
-    hydraReviewHeads?: boolean | undefined;
     hydraArchivesCodexHeads?: boolean | undefined;
     hydraShowsHeadDetails?: boolean | undefined;
     hydraAutoPopsHeads?: boolean | undefined;
@@ -2638,8 +2637,6 @@ export class Engine {
       }
       if (patch.hydraAutoMerge !== undefined)
         d.settings.hydraAutoMerge = patch.hydraAutoMerge;
-      if (patch.hydraReviewHeads !== undefined)
-        d.settings.hydraReviewHeads = patch.hydraReviewHeads;
       if (patch.hydraArchivesCodexHeads !== undefined)
         d.settings.hydraArchivesCodexHeads = patch.hydraArchivesCodexHeads;
       if (patch.hydraShowsHeadDetails !== undefined)
@@ -4581,7 +4578,14 @@ export class Engine {
    *  fullness alone. Runtime-only like the frozen queue. */
   private readonly hydraWaiting = new Map<
     string,
-    { d: HydraDelegation; batchId: string; queuedAt: number }[]
+    {
+      d: HydraDelegation;
+      batchId: string;
+      queuedAt: number;
+      /** P1-12: a "continue" entry carries the head it reworks
+       *  (frozen continueHeadID) instead of spawning a new one. */
+      continueThreadId?: string;
+    }[]
   >();
   /** Pairs whose heads-provider note this lead already heard once per
    *  job (frozen hydraFallbackNoted, per lead+pair). */
@@ -4616,9 +4620,60 @@ export class Engine {
       const cap = launch.maxHeads ?? HYDRA_UNCAPPED_CONCURRENCY;
       if (running >= cap) break;
       const next = queue.shift()!;
-      this.spawnHydraHead(lead, next.d, next.batchId);
+      if (next.continueThreadId) {
+        this.sendBackHydraHead(lead, next.d, next.continueThreadId);
+      } else {
+        this.spawnHydraHead(lead, next.d, next.batchId);
+      }
     }
     if (!queue.length) this.hydraWaiting.delete(leadId);
+  }
+
+  /** P1-12 (frozen continue rework): send the named head's next brief
+   *  into its own session — the steer path re-arms status, keeps the
+   *  copy and gives the report its own batch. The target is re-proven
+   *  at dequeue: it may have been deleted, re-run or released since
+   *  the entry queued. */
+  private sendBackHydraHead(
+    lead: ChatThread,
+    d: HydraDelegation,
+    threadId: string,
+  ): void {
+    const target = this.store.state.threads.find((t) => t.id === threadId);
+    const info = target?.hydraHead;
+    const name = d.continue ?? d.task;
+    if (!target || info?.leadId !== lead.id) {
+      return this.refuseDelegation(
+        lead,
+        `${name} was not sent back: no head of that name`,
+      );
+    }
+    const reason =
+      info.status === "running"
+        ? "it is still at work"
+        : info.landing !== undefined && target.worktreeDir === undefined
+          ? "its copy was already released"
+          : undefined;
+    if (reason) {
+      return this.refuseDelegation(lead, `${name} was not sent back: ${reason}`);
+    }
+    try {
+      // Frozen v2ContinuePrompt: the send-back lead-in, the workplace
+      // rule (an isolated head keeps its own copy), then the standing
+      // three-line report reminder.
+      const workRule =
+        info.baseTree !== undefined ? "You keep your own copy and files. " : "";
+      this.sendTurn(
+        target.id,
+        `The lead sends you back to your part:\n${d.prompt}\n\n${workRule}Report as before: one or two sentences of result, then exactly the three lines \`Deviations: ...\`, \`Unfinished: ...\` and \`Uncertain: ...\`, each \`none\` when empty; do not list changed files.`,
+        { authored: false, hydraBrief: true },
+      );
+    } catch (err) {
+      this.refuseDelegation(
+        lead,
+        `the rework of ${name} could not start: ${(err as Error)?.message ?? String(err)}`,
+      );
+    }
   }
 
   private dispatchDelegation(lead: ChatThread, d: HydraDelegation): void {
@@ -4629,55 +4684,10 @@ export class Engine {
       return this.refuseDelegation(lead, "Hydra is off");
     if (lead.hydraEnabled === false)
       return this.refuseDelegation(lead, "this chat has Hydra off");
-    // P1-12 (frozen "continue" rework send-back): the entry continues
-    // in the named head's own session and copy — the steer path
-    // re-arms it as running and its next report flushes as a fresh
-    // batch. It spawns no head, so it stands outside the round
-    // accounting; names match case-insensitively, a head still working
-    // or an unknown name is refused (frozen v2ContinueRefusal).
-    if (d.continue) {
-      const named = d.continue.toLowerCase();
-      // Frozen info.jobID == job.id: only a head of THIS request's job
-      // (its delegation batch's generation) may be sent back — heads
-      // of earlier requests are unknown to the rework.
-      const jobGen = this.hydraBudgetGen.get(lead.id) ?? 0;
-      const known = this.store.state.threads.filter(
-        (t) =>
-          t.hydraHead?.leadId === lead.id &&
-          t.hydraHead.name.toLowerCase() === named &&
-          this.hydraBatchJob.get(t.hydraHead.batchId) === jobGen,
-      );
-      if (known.length === 0) {
-        return this.refuseDelegation(
-          lead,
-          `there is no head called ${d.continue} to send back to`,
-        );
-      }
-      if (known.some((t) => t.hydraHead!.status === "running")) {
-        return this.refuseDelegation(
-          lead,
-          `${d.continue} is still working — its rework has to wait for its report`,
-        );
-      }
-      try {
-        // Frozen v2ContinuePrompt: the instruction plus the standing
-        // three-line report reminder.
-        this.sendTurn(
-          known.at(-1)!.id,
-          `${d.prompt}\n\nReport as before: one or two sentences of result, then exactly the three lines \`Deviations: ...\`, \`Unfinished: ...\` and \`Uncertain: ...\`, each \`none\` when empty; do not list changed files.`,
-          { authored: false, hydraBrief: true },
-        );
-      } catch (err) {
-        this.refuseDelegation(
-          lead,
-          `the rework of ${d.continue} could not start: ${(err as Error)?.message ?? String(err)}`,
-        );
-      }
-      return;
-    }
     // Frozen maxDelegationRounds: one round per lead TURN that actually
     // dispatches heads (bounded slice — per-turn, stricter than the
-    // frozen per-block accounting).
+    // frozen per-block accounting). Frozen chargeRound covers the whole
+    // block, continue entries included — they ride the same queue.
     const leadTurn = lead.turn;
     const roundKey = leadTurn ? `${lead.id}:${leadTurn.id}` : null;
     const batchId = leadTurn?.id ?? "batch";
@@ -4706,6 +4716,71 @@ export class Engine {
       gen: this.hydraBudgetGen.get(lead.id) ?? 0,
       request: this.hydraJobRequest(lead),
     });
+    // P1-12 (frozen "continue" rework send-back): the entry continues
+    // in the named head's own session and copy — the steer path
+    // re-arms it as running and its next report flushes as a fresh
+    // batch. Only a head of THIS job (frozen info.jobID == job.id)
+    // may be sent back: names match case-insensitively; a finished
+    // earlier-request head, a released copy, a head still working and
+    // an already-queued rework are each refused, and an admitted entry
+    // waits under the same cap in hydraWaiting.
+    if (d.continue) {
+      const named = d.continue.toLowerCase();
+      const jobGen = this.hydraBudgetGen.get(lead.id) ?? 0;
+      const isNamed = (t: ChatThread) =>
+        t.hydraHead?.leadId === lead.id &&
+        t.hydraHead.name.toLowerCase() === named;
+      const target = this.store.state.threads.find(
+        (t) =>
+          isNamed(t) &&
+          this.hydraBatchJob.get(t.hydraHead!.batchId) === jobGen,
+      );
+      if (!target) {
+        // Frozen v2ConvertingEarlierHeads: a finished earlier-request
+        // head converts to a fresh head when its files resolve — this
+        // port has no "files" field, so the refusal is the reachable
+        // branch (upstream refuses identically without files).
+        const earlier = this.store.state.threads.find(
+          (t) =>
+            isNamed(t) &&
+            t.hydraHead!.status !== "running" &&
+            this.hydraBatchJob.get(t.hydraHead!.batchId) !== jobGen,
+        );
+        return this.refuseDelegation(
+          lead,
+          earlier
+            ? `${d.continue} was not sent back: it belongs to an earlier request`
+            : `${d.continue} was not sent back: no head of that name`,
+        );
+      }
+      const info = target.hydraHead!;
+      const reason =
+        info.status === "running"
+          ? "it is still at work"
+          : info.landing !== undefined && target.worktreeDir === undefined
+            ? "its copy was already released"
+            : this.hydraWaiting.get(lead.id)?.some(
+                    (w) => w.continueThreadId === target.id,
+                  )
+              ? "it is already queued for continuation"
+              : undefined;
+      if (reason) {
+        return this.refuseDelegation(
+          lead,
+          `${d.continue} was not sent back: ${reason}`,
+        );
+      }
+      const queue = this.hydraWaiting.get(lead.id) ?? [];
+      queue.push({
+        d,
+        batchId,
+        queuedAt: Date.now(),
+        continueThreadId: target.id,
+      });
+      this.hydraWaiting.set(lead.id, queue);
+      this.spawnWaitingHeads(lead.id);
+      return;
+    }
     const team = this.store.state.threads.filter(
       (t) => t.hydraHead?.leadId === lead.id,
     );
@@ -5373,6 +5448,10 @@ export class Engine {
       text: info.summary ?? "",
       batchId: info.batchId,
       ...(notes !== undefined ? { notes } : {}),
+      // Frozen expectsNotes = info.jobID != nil: every Tivano-job head
+      // owes the three lines, so a completed report without them is
+      // flagged rather than read as clean.
+      expectsNotes: true,
       elapsedMs: info.elapsedMs,
       toolCalls: info.toolCalls,
       provider: this.provider.descriptor.label,

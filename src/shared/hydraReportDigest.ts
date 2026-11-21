@@ -5,7 +5,11 @@
 // its report. The lead's closing instructions ride in the last head's
 // body and are dropped, since they are for the lead, not the user.
 
-import { rosterIndex } from "./hydraDelegation";
+import {
+  parseHydraReportNotes,
+  rosterIndex,
+  type HydraReportNotes,
+} from "./hydraDelegation";
 
 export interface HydraReportDigest {
   intro?: string;
@@ -18,6 +22,11 @@ export interface Head {
   outcome: "done" | "failed" | "stopped";
   effort?: string;
   landing: Landing;
+  /** Frozen head.flags — the structured notes the Flags: block named. */
+  flags: HydraReportNotes;
+  /** Frozen head.reportFormatMissing — a completed report whose Flags
+   *  block said the three lines never came. */
+  reportFormatMissing: boolean;
   body: string;
 }
 
@@ -207,6 +216,70 @@ function withoutLeadInstructions(body: string): string {
   return body.slice(0, at).trim();
 }
 
+/** The note labels a Flags: block carries (frozen
+ *  HydraReportNotes.labels). */
+const FLAG_LABELS = ["Deviations", "Unfinished", "Uncertain"] as const;
+
+/** Frozen HydraReportFlagsRows.withoutTrailingFlags: a report body that
+ *  itself ends with the three-line block has it stripped — the Flags
+ *  rows show it, the body should not repeat it. */
+function withoutTrailingFlags(text: string): string {
+  const lines = text.split("\n");
+  let start = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]!.trim().startsWith("Deviations:")) start = i;
+  }
+  if (start < 0) return text;
+  if (parseHydraReportNotes(lines.slice(start).join("\n")) === undefined)
+    return text;
+  return lines.slice(0, start).join("\n").trim();
+}
+
+/** Frozen digest Flags-block read: lines between `Flags:` and the
+ *  landing line become the head's notes; `Report format not followed.`
+ *  and `none` are markers, never values. A wrapped flag line joins its
+ *  label's value only while a landing follows (frozen hasLanding). */
+function parseFlagsBlock(
+  rest: string[],
+  hasLanding: boolean,
+): { flags: HydraReportNotes; reportFormatMissing: boolean; rest: string[] } {
+  const flags: HydraReportNotes = {};
+  let reportFormatMissing = false;
+  let currentLabel: (typeof FLAG_LABELS)[number] | undefined;
+  let i = 0;
+  for (; i < rest.length; i++) {
+    const line = rest[i]!.trim();
+    if (landingPrefix(line)) break;
+    if (line === "" || line.toLowerCase() === "none") continue;
+    if (line === "Report format not followed.") {
+      reportFormatMissing = true;
+      continue;
+    }
+    const label = FLAG_LABELS.find((l) => line.startsWith(`${l}:`));
+    if (label) {
+      currentLabel = label;
+      const value = line.slice(label.length + 1).trim();
+      const flag = value === "" || value.toLowerCase() === "none" ? undefined : value;
+      if (label === "Deviations") flags.deviations = flag;
+      else if (label === "Unfinished") flags.unfinished = flag;
+      else flags.uncertain = flag;
+      continue;
+    }
+    if (hasLanding && currentLabel) {
+      const key =
+        currentLabel === "Deviations"
+          ? "deviations"
+          : currentLabel === "Unfinished"
+            ? "unfinished"
+            : "uncertain";
+      flags[key] = [flags[key], line].filter(Boolean).join("\n");
+      continue;
+    }
+    break;
+  }
+  return { flags, reportFormatMissing, rest: rest.slice(i) };
+}
+
 /** The report off the lead's `reportMessage`: everything before the
  *  first head header is the intro, each head header starts a head,
  *  other `## ` headings stay in the report, and trailing `(...)` groups
@@ -231,14 +304,35 @@ export function parseHydraReportDigest(text: string): HydraReportDigest {
     const { name, task, outcome, effort } = parseHeader(section.header);
     let rest = section.lines;
     while (rest.length && rest[0]!.trim() === "") rest = rest.slice(1);
+    const flags: HydraReportNotes = {};
+    let reportFormatMissing = false;
+    const hasFlagsBlock = rest[0]?.trim() === "Flags:";
+    if (hasFlagsBlock) {
+      rest = rest.slice(1);
+      const hasLanding = rest.some((l) => landingPrefix(l));
+      const parsed = parseFlagsBlock(rest, hasLanding);
+      Object.assign(flags, parsed.flags);
+      reportFormatMissing = parsed.reportFormatMissing;
+      rest = parsed.rest;
+    }
     let landing: Landing = { kind: "none" };
     if (rest.length && landingPrefix(rest[0]!)) {
       landing = parseLanding(rest[0]!.trim());
       rest = rest.slice(1);
     }
     let body = rest.join("\n").trim();
+    if (hasFlagsBlock) body = withoutTrailingFlags(body);
     if (index === sections.length - 1) body = withoutLeadInstructions(body);
-    heads.push({ name, task, outcome, ...(effort ? { effort } : {}), landing, body });
+    heads.push({
+      name,
+      task,
+      outcome,
+      ...(effort ? { effort } : {}),
+      landing,
+      flags,
+      reportFormatMissing,
+      body,
+    });
   }
   return { ...(intro ? { intro } : {}), heads };
 }

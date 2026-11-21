@@ -258,9 +258,6 @@ export interface Settings {
   /** After the team is done, publish+merge its work (frozen default
    *  false — requires a configured remote and access). */
   hydraAutoMerge?: boolean;
-  /** The lead audits each head's landed work before finishing (frozen
-   *  default false). */
-  hydraReviewHeads?: boolean;
   /** Auto-archive finished Codex head sessions (provider-side history;
    *  frozen default false). */
   hydraArchivesCodexHeads?: boolean;

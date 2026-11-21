@@ -19,6 +19,7 @@ import {
   parseHydraReportNotes,
   reportMessage,
 } from "../src/shared/hydraDelegation";
+import { parseHydraReportDigest } from "../src/shared/hydraReportDigest";
 
 const roots: string[] = [];
 function tmp(): string {
@@ -115,7 +116,51 @@ describe("P1-12 structured head reports (frozen HydraReportNotes)", () => {
         notes: { unfinished: "edge case open" },
       },
     ]);
-    expect(msg).toContain("Unfinished: edge case open");
+    expect(msg).toContain("Flags:\nUnfinished: edge case open");
+  });
+
+  it("a completed report without notes is flagged not followed", () => {
+    const msg = reportMessage([
+      {
+        headIndex: 0,
+        task: "do it",
+        status: "completed",
+        text: "done",
+        expectsNotes: true,
+      },
+    ]);
+    expect(msg).toContain("Flags:\nReport format not followed.");
+    // A stopped head never owed the three lines.
+    const stopped = reportMessage([
+      { headIndex: 0, task: "t", status: "stopped", text: "", expectsNotes: true },
+    ]);
+    expect(stopped).toContain("Flags:\nnone");
+  });
+
+  it("the digest reads the Flags block and strips the trailing lines", () => {
+    const msg = reportMessage([
+      {
+        headIndex: 0,
+        task: "do it",
+        status: "completed",
+        text: "All set.\n\nDeviations: renamed the helper\nUnfinished: none\nUncertain: n/a",
+        notes: { deviations: "renamed the helper" },
+      },
+      {
+        headIndex: 1,
+        task: "other",
+        status: "completed",
+        text: "ok",
+        expectsNotes: true,
+      },
+    ]);
+    const digest = parseHydraReportDigest(msg);
+    expect(digest.heads).toHaveLength(2);
+    expect(digest.heads[0]!.flags.deviations).toBe("renamed the helper");
+    expect(digest.heads[0]!.reportFormatMissing).toBe(false);
+    // The raw three-line tail leaves the card body — the flag row shows it.
+    expect(digest.heads[0]!.body).toBe("All set.");
+    expect(digest.heads[1]!.reportFormatMissing).toBe(true);
   });
 });
 
@@ -176,7 +221,7 @@ describe("P1-12 rework send-back (frozen continue entry)", () => {
         (m) =>
           m.role === "user" &&
           m.content.includes("Hydra did not send") &&
-          m.content.includes("no head called Nova"),
+          m.content.includes("Nova was not sent back: no head of that name"),
       ),
     );
     expect(heads(engine, lead.id).length).toBe(2);

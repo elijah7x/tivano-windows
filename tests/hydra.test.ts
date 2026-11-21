@@ -264,7 +264,6 @@ describe("F21 Hydra settings persistence", () => {
       hydraAlwaysHeads: true,
       hydraIsolateHeads: false,
       hydraAutoMerge: true,
-      hydraReviewHeads: true,
       hydraArchivesCodexHeads: true,
       hydraShowsHeadDetails: true,
       hydraAutoPopsHeads: true,

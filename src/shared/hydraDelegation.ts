@@ -505,6 +505,10 @@ export interface HydraReport {
   /** Frozen HydraJobHeadRecord.notes — the structured Deviations/
    *  Unfinished/Uncertain lines when the report carried all three. */
   notes?: HydraReportNotes | undefined;
+  /** Frozen HydraJobHeadRecord.expectsNotes — true on heads of a v2
+   *  job, so a completed report missing the three lines is flagged
+   *  "Report format not followed." */
+  expectsNotes?: boolean | undefined;
 }
 
 /** Frozen `isTransientFailure`: a failure likely to clear on its own —
@@ -608,16 +612,22 @@ export function reportMessage(
         firstWithError.set(key, personaAt(r.headIndex).name);
       }
     }
-    // Frozen report flags: the structured notes ride the section so
-    // the lead sees what to look at first.
+    // Frozen report flags: the structured notes ride the Flags block
+    // right after the header so the lead sees what to look at first;
+    // a completed report that should have carried notes but didn't is
+    // called out.
     const flags: string[] = [];
-    if (r.notes?.deviations) flags.push(`Deviations: ${r.notes.deviations}`);
-    if (r.notes?.unfinished) flags.push(`Unfinished: ${r.notes.unfinished}`);
-    if (r.notes?.uncertain) flags.push(`Uncertain: ${r.notes.uncertain}`);
+    if (r.notes) {
+      if (r.notes.deviations) flags.push(`Deviations: ${r.notes.deviations}`);
+      if (r.notes.unfinished) flags.push(`Unfinished: ${r.notes.unfinished}`);
+      if (r.notes.uncertain) flags.push(`Uncertain: ${r.notes.uncertain}`);
+    } else if (r.status === "completed" && r.expectsNotes) {
+      flags.push("Report format not followed.");
+    }
     sections.push(
       `## ${personaAt(r.headIndex).name}: ${r.task}${outcome}${took}\n` +
-        `${land ? land + "\n" : ""}${bodyLine}` +
-        (flags.length ? `\n${flags.join("\n")}` : ""),
+        `Flags:\n${flags.length ? flags.join("\n") : "none"}\n` +
+        `${land ? land + "\n" : ""}${bodyLine}`,
     );
   }
   const closing: string[] = [];
@@ -847,7 +857,7 @@ export function hydraLeadPolicy(opts: {
 [{"task": "short title", "prompt": "complete, self-contained instructions with the exact files and acceptance criteria"}]
 \`\`\`
 
-and stop there: do not wait, poll or verify anything after it. When a request is yours to do alone, do it and end with no block at all: an empty block sends no heads and is not needed. An entry may also carry its head's announced name, as in \`{"task": "...", "prompt": "...", "name": "Otto"}\`: the announced name is authoritative and the spawned head carries exactly it, so repeating the same block spawns the same names. An entry for work in another project carries \`"project"\` with that project's name, as in \`{"task": "...", "prompt": "...", "project": "gaze-site"}\`. Name new heads with the next roster names in order after the team listed above (Hank, Walter, Ada, Otto, Nova, Remy, Iris, Milo, Juno, Ezra, Lena, Bo, Kai, Vera, Finn, Mira, Odin, Suki, Rex, Zola, Pip, Ivo, Lux, Tova, Gus, then Hank 2 and so on), and omit the name when unsure: the next heads in order go out instead. Never invent names outside the roster: there is no head called Ives (the roster has Ivo), and an unknown name falls back to the next head in order rather than renaming anyone.${profileRule} Inside a prompt never open a fenced code block of your own (three backticks would end the hydra block early and no head would go out): describe code in words, quote identifiers with single backticks, or indent a snippet by four spaces. Each entry goes out to a head the moment its closing brace streams, before the block is finished, so write the entries in the order the heads should start and complete one entry before beginning the next. ${whereHeadsWork}; heads never see your context, so write every prompt for a capable colleague who has read nothing yet, with the exact files, symbols and acceptance criteria, give no two heads the same file, and give no head work that rests on another head's unfinished changes: they run in parallel and never see each other's work. Keep each brief bounded: one head, one task, one report you can act on. ${POLICY_BRIEF_RULE} ${POLICY_VERIFICATION_RULE} ${policyProjectRule(opts.projects ?? [], opts.ownProjectName)} A head can be sent to read and report as well as to change files, so the reading goes out in parallel too. Say in one line which heads you sent out and what each one does. The block is the only way to send heads out: never use an agent, task, spawn_agent or sub-agent tool of your own, which would run the work inside your own session instead of as a head in Tivano. Every head runs on this chat's own provider and model, with whatever tools that provider gives a chat. The reports arrive as a later message with the work already in place: build on them, do not redo them, never send out heads to verify or redo other heads, and never use git status or git diff to check on heads, since the checkout changes under you while they work. A message that opens with [Hydra] is from Tivano, not the user. ${POLICY_REPORT_STYLE_RULE}`;
+and stop there: do not wait, poll or verify anything after it. When a request is yours to do alone, do it and end with no block at all: an empty block sends no heads and is not needed. An entry may also carry its head's announced name, as in \`{"task": "...", "prompt": "...", "name": "Otto"}\`: the announced name is authoritative and the spawned head carries exactly it, so repeating the same block spawns the same names. An entry for work in another project carries \`"project"\` with that project's name, as in \`{"task": "...", "prompt": "...", "project": "gaze-site"}\`. To send a finished head of this request back to its part, use an entry \`{"continue": "<head name>", "prompt": "..."}\`; heads of earlier requests cannot be sent back, so give their part to a new head. Name new heads with the next roster names in order after the team listed above (Hank, Walter, Ada, Otto, Nova, Remy, Iris, Milo, Juno, Ezra, Lena, Bo, Kai, Vera, Finn, Mira, Odin, Suki, Rex, Zola, Pip, Ivo, Lux, Tova, Gus, then Hank 2 and so on), and omit the name when unsure: the next heads in order go out instead. Never invent names outside the roster: there is no head called Ives (the roster has Ivo), and an unknown name falls back to the next head in order rather than renaming anyone.${profileRule} Inside a prompt never open a fenced code block of your own (three backticks would end the hydra block early and no head would go out): describe code in words, quote identifiers with single backticks, or indent a snippet by four spaces. Each entry goes out to a head the moment its closing brace streams, before the block is finished, so write the entries in the order the heads should start and complete one entry before beginning the next. ${whereHeadsWork}; heads never see your context, so write every prompt for a capable colleague who has read nothing yet, with the exact files, symbols and acceptance criteria, give no two heads the same file, and give no head work that rests on another head's unfinished changes: they run in parallel and never see each other's work. Keep each brief bounded: one head, one task, one report you can act on. ${POLICY_BRIEF_RULE} ${POLICY_VERIFICATION_RULE} ${policyProjectRule(opts.projects ?? [], opts.ownProjectName)} A head can be sent to read and report as well as to change files, so the reading goes out in parallel too. Say in one line which heads you sent out and what each one does. The block is the only way to send heads out: never use an agent, task, spawn_agent or sub-agent tool of your own, which would run the work inside your own session instead of as a head in Tivano. Every head runs on this chat's own provider and model, with whatever tools that provider gives a chat. The reports arrive as a later message with the work already in place: build on them, do not redo them, never send out heads to verify or redo other heads, and never use git status or git diff to check on heads, since the checkout changes under you while they work. A message that opens with [Hydra] is from Tivano, not the user. ${POLICY_REPORT_STYLE_RULE}`;
 }
 
 /** Frozen `teamStatus` — the lead's team in a line, for the front of
