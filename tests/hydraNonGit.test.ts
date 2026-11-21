@@ -6,7 +6,7 @@
 // Tivano cannot read — a non-Git folder is changed in place (no copy,
 // no merge) and joins the sidebar.
 
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -204,6 +204,28 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(head.hydraHead!.status).toBe("failed");
     expect(head.hydraHead!.summary).toContain("is not a folder");
     expect(existsSync("PhysicalDrive0")).toBe(false);
+  });
+
+  it("a missing leaf under a junction into a protected root is refused", async () => {
+    const { engine, dataRoot } = rig();
+    const base = tmp("tivano-junction-");
+    const junction = join(base, "junc");
+    try {
+      symlinkSync(dataRoot, junction, "junction");
+    } catch {
+      // Host cannot make junctions — nothing to prove here.
+      return;
+    }
+    const leaf = join(junction, "newleaf");
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]${leaf}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe("failed");
+    expect(head.hydraHead!.summary).toContain("is a system folder");
+    // The unresolved form pointed into the data root — nothing created.
+    expect(existsSync(join(dataRoot, "newleaf"))).toBe(false);
   });
 
   it("a file path and a missing parent are refused", async () => {

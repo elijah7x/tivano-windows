@@ -4926,11 +4926,30 @@ export class Engine {
     // absolute path, and a non-path unknown name is the frozen refusal.
     const routeRef = d.project?.trim();
     // Frozen expandingTildeInPath: a leading ~ resolves to the home
-    // folder before the absolute-path test, exactly like the shell.
-    const expanded =
-      routeRef === "~" || routeRef?.startsWith("~/") || routeRef?.startsWith("~\\")
-        ? join(homedir(), routeRef!.slice(1).replace(/^[/\\]/, ""))
-        : routeRef;
+    // folder, ~user to that user's profile dir (Windows: the sibling
+    // under the parent of the current home, only when it exists —
+    // otherwise the name stays unresolved like an unknown project).
+    const expanded = (() => {
+      if (
+        routeRef === "~" ||
+        routeRef?.startsWith("~/") ||
+        routeRef?.startsWith("~\\")
+      ) {
+        return join(homedir(), routeRef.slice(1).replace(/^[/\\]/, ""));
+      }
+      const m = /^~([^/\\]+)[/\\]?(.*)$/.exec(routeRef ?? "");
+      if (m) {
+        const profile = join(dirname(homedir()), m[1]!);
+        try {
+          if (lstatSync(profile).isDirectory()) {
+            return m[2] ? join(profile, m[2]) : profile;
+          }
+        } catch {
+          /* no such profile — leave unresolved */
+        }
+      }
+      return routeRef;
+    })();
     if (
       expanded &&
       !this.store.state.projects.some(
@@ -5095,8 +5114,24 @@ export class Engine {
       env("ProgramFiles", "C:\\Program Files"),
       env("ProgramFiles(x86)", "C:\\Program Files (x86)"),
       env("ProgramData", "C:\\ProgramData"),
-      this.dataRoot.replace(/[\\/]+$/, "").toLowerCase(),
+      this.hydraDataRootCanonical(),
     ];
+  }
+
+  /** The data root in the same resolved form routed paths take — a
+   *  symlinked install root must still compare true against canonical. */
+  private hydraDataRootCanonical(): string {
+    let dr = this.dataRoot;
+    try {
+      dr = realpathSync(dr);
+    } catch {
+      /* keep the configured form */
+    }
+    return dr
+      .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+      .replace(/^\\\\[?.]\\/i, "")
+      .replace(/[\\/]+$/, "")
+      .toLowerCase();
   }
 
   /** P1-08 (frozen HydraGitIdentityReader, bounded): a `.git` entry on
@@ -5112,8 +5147,10 @@ export class Engine {
         const st = lstatSync(gitDir);
         if (st.isFile()) {
           try {
-            readFileSync(gitDir, "utf8");
-            return "git";
+            // A worktree pointer must actually say gitdir: — any other
+            // readable file means a checkout Git itself cannot open.
+            const content = readFileSync(gitDir, "utf8");
+            return /^\s*gitdir\s*:/i.test(content) ? "git" : "broken";
           } catch {
             return "broken";
           }
@@ -5179,11 +5216,31 @@ export class Engine {
         `Hydra: ${reference} is not a folder on this PC, so ${personaName} did not start.`,
       );
     }
+    // HydraPaths.canonical resolves symlinks in the EXISTING prefix —
+    // walk up until an ancestor realpaths, then reattach the missing
+    // tail. Without that, a missing leaf under a junction into a
+    // protected root would slip the contains-check and be created there.
     let canonical = raw;
-    try {
-      canonical = realpathSync(raw);
-    } catch {
-      /* not created yet — keep the normalized form */
+    {
+      const tail: string[] = [];
+      let cur = raw;
+      for (;;) {
+        try {
+          canonical = tail.length
+            ? join(realpathSync(cur), ...tail)
+            : realpathSync(cur);
+          break;
+        } catch {
+          const parent = dirname(cur);
+          if (parent === cur) break;
+          tail.unshift(basename(cur));
+          cur = parent;
+        }
+      }
+      // A resolved path can come back namespace-prefixed too.
+      canonical = canonical
+        .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+        .replace(/^\\\\[?.]\\/i, "");
     }
     const norm = canonical.replace(/[\\/]+$/, "");
     const lower = norm.toLowerCase();
@@ -5192,11 +5249,28 @@ export class Engine {
     // IS a protected root, sits INSIDE one, or CONTAINS one — the
     // app's own task workspaces are the one exemption, so a routed
     // head can still be sent into a checkout Tivano itself made.
-    const taskWs = join(this.dataRoot, "worktrees")
+    const taskWs = join(this.hydraDataRootCanonical(), "worktrees")
       .replace(/[\\/]+$/, "")
       .toLowerCase();
     const inTaskWs = lower === taskWs || lower.startsWith(taskWs + "\\");
+    // Windows bound: frozen exempts the home folder because owned files
+    // narrow it per-file (P2-05); without that slice a head in home
+    // would edit the whole profile in place, so it stays refused.
+    const homeLower = (() => {
+      let home = homedir();
+      try {
+        home = realpathSync(home);
+      } catch {
+        /* keep the env form */
+      }
+      return home
+        .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+        .replace(/^\\\\[?.]\\/i, "")
+        .replace(/[\\/]+$/, "")
+        .toLowerCase();
+    })();
     const touches =
+      lower === homeLower ||
       /^[A-Za-z]:$/.test(norm) ||
       /^[\\/]+$/.test(norm) ||
       roots.some(
