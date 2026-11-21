@@ -5262,15 +5262,18 @@ export class Engine {
         .replace(/^\\\\[?.]\\/i, "");
     }
     const norm = canonical.replace(/[\\/]+$/, "");
-    const lower = norm.toLowerCase();
-    const roots = this.hydraSystemRoots();
+    // Compares run in one separator form — a `/`-separated canonical
+    // must not slip a `\`-joined root (and vice versa).
+    const sepN = (s: string) => s.replace(/\//g, "\\").toLowerCase();
+    const lower = sepN(norm);
+    const roots = this.hydraSystemRoots().map(sepN);
     // Frozen hydraPathTouchesProtectedRoot: a path is refused when it
     // IS a protected root, sits INSIDE one, or CONTAINS one — the
     // app's own task workspaces are the one exemption, so a routed
     // head can still be sent into a checkout Tivano itself made.
-    const taskWs = join(this.hydraDataRootCanonical(), "worktrees")
-      .replace(/[\\/]+$/, "")
-      .toLowerCase();
+    const taskWs = sepN(
+      join(this.hydraDataRootCanonical(), "worktrees").replace(/[\\/]+$/, ""),
+    );
     const inTaskWs = lower === taskWs || lower.startsWith(taskWs + "\\");
     // Windows bound: frozen exempts the home folder because owned files
     // narrow it per-file (P2-05); without that slice a head in home
@@ -5282,13 +5285,15 @@ export class Engine {
       } catch {
         /* keep the env form */
       }
-      return home
-        .replace(/^\\\\\?\\UNC\\/i, "\\\\")
-        .replace(/^\\\\[?.]\\/i, "")
-        .replace(/[\\/]+$/, "")
-        .toLowerCase();
+      return sepN(
+        home
+          .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+          .replace(/^\\\\[?.]\\/i, "")
+          .replace(/[\\/]+$/, ""),
+      );
     })();
     const touches =
+      lower === "" ||
       lower === homeLower ||
       homeLower.startsWith(lower + "\\") ||
       /^[A-Za-z]:$/.test(norm) ||

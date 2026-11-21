@@ -114,7 +114,7 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(head.hydraHead!.isNonGitCheckout).toBe(true);
   });
 
-  it("system folders are refused", async () => {
+  it.skipIf(process.platform !== "win32")("system folders are refused", async () => {
     const { engine } = rig();
     const sys = process.env.SystemRoot ?? "C:\\Windows";
     const lead = engine.createThread(null, "lead");
@@ -178,7 +178,7 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(head.hydraHead!.targetCheckout).toBe(canonical);
   });
 
-  it("a namespace-prefixed system folder is refused too", async () => {
+  it.skipIf(process.platform !== "win32")("a namespace-prefixed system folder is refused too", async () => {
     const { engine } = rig();
     const sys = process.env.SystemRoot ?? "C:\\Windows";
     const escaped = join(sys, "made-here");
@@ -192,7 +192,7 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(existsSync(escaped)).toBe(false);
   });
 
-  it("a device path that strips to a relative name is refused", async () => {
+  it.skipIf(process.platform !== "win32")("a device path that strips to a relative name is refused", async () => {
     const { engine } = rig();
     // \\.\PhysicalDrive0 loses its prefix and must not reach mkdirSync
     // as a CWD-relative name.
