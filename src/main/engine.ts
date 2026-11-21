@@ -5171,6 +5171,14 @@ export class Engine {
     let raw = resolve(reference);
     if (/^\\\\\?\\UNC\\/i.test(raw)) raw = "\\\\" + raw.slice(8);
     else if (/^\\\\[?.]\\/i.test(raw)) raw = raw.slice(4);
+    // A device path like \\.\PhysicalDrive0 survives resolve() but
+    // degrades to a relative name after the strip — without this check
+    // it would fall through to mkdirSync in the process CWD.
+    if (!isAbsolute(raw)) {
+      return refuse(
+        `Hydra: ${reference} is not a folder on this PC, so ${personaName} did not start.`,
+      );
+    }
     let canonical = raw;
     try {
       canonical = realpathSync(raw);
@@ -5256,10 +5264,27 @@ export class Engine {
     // match reuses its project; an unlisted routed folder joins the
     // sidebar as a bound project so the head's work is visible there.
     let project = this.projectForDirectory(canonical);
+    if (
+      project !== undefined &&
+      this.paths &&
+      this.paths.findProjectByDirectory(canonical) !== project.id
+    ) {
+      // A listed project that lost its grant is re-attached like
+      // openUserDirectory does — without it the exec gate refuses.
+      try {
+        this.paths.registerUser(project.id, canonical);
+      } catch {
+        return refuse(
+          `Hydra: ${personaName} did not start because its checkout could not be read.`,
+        );
+      }
+    }
     if (project === undefined && this.paths) {
       const id = randomUUID();
       try {
         this.paths.registerUser(id, canonical);
+        // Frozen addProject parity: tivano.json scripts ride the bind.
+        const fileScripts = readProjectFileScripts(canonical);
         project = {
           id,
           name: basename(canonical) || canonical,
@@ -5267,6 +5292,7 @@ export class Engine {
           expanded: true,
           directory: canonical,
           directoryStatus: "available",
+          ...(fileScripts.length ? { scripts: fileScripts } : {}),
         };
         this.store.update((d) => {
           d.projects.push(project!);

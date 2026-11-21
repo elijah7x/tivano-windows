@@ -1384,7 +1384,9 @@ export function translateNotice(
   message: string,
 ): string {
   noticeTemplates ??= zhHansKeys()
-    .filter((k) => /%@|%d/.test(k))
+    // Only substantial templates qualify: a stub like "%@ failed" could
+    // mis-recover an unrelated notice that happens to end the same way.
+    .filter((k) => k.split(/%@|%d/).join("").trim().length >= 12)
     .map((key) => ({
       key,
       re: new RegExp(

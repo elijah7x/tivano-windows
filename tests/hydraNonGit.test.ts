@@ -192,6 +192,20 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(existsSync(escaped)).toBe(false);
   });
 
+  it("a device path that strips to a relative name is refused", async () => {
+    const { engine } = rig();
+    // \\.\PhysicalDrive0 loses its prefix and must not reach mkdirSync
+    // as a CWD-relative name.
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "do it [mock:hydra-path]\\\\.\\PhysicalDrive0");
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe("failed");
+    expect(head.hydraHead!.summary).toContain("is not a folder");
+    expect(existsSync("PhysicalDrive0")).toBe(false);
+  });
+
   it("a file path and a missing parent are refused", async () => {
     const { engine } = rig();
     const parent = tmp("tivano-file-");
