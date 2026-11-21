@@ -12,6 +12,7 @@ import type { Settings } from "../../shared/types";
 import {
   HYDRA_REVIEW_DEFAULT_FIRST,
   HYDRA_REVIEW_PROVIDERS,
+  hydraReviewEffortTitle,
   type HydraReviewChoice,
 } from "../../shared/hydraReview";
 import {
@@ -55,12 +56,10 @@ interface HydraCatalogView {
   providers: CatalogProvider[];
 }
 
-/** Frozen ModelOption.effortTitle equivalent — "Extra High" for xhigh,
- *  otherwise the id capitalized. */
-function effortTitle(effort: string): string {
-  if (effort === "xhigh" || effort === "extra-high") return "Extra High";
-  return effort.charAt(0).toUpperCase() + effort.slice(1);
-}
+/** Frozen ModelOption.effortTitle equivalent — the shared
+ *  hydraReviewEffortTitle implements it; kept as a short local alias for
+ *  the many select/label sites below. */
+const effortTitle = hydraReviewEffortTitle;
 
 /** Union of efforts the provider's catalog advertises, low→high-ish. */
 function allEfforts(models: { efforts: string[] }[]): string[] {
