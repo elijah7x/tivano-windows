@@ -11,16 +11,28 @@ Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, 
   - If `STOP` exists, finish the current command, update `progress.json` (`"state":"idle","step":"stopped by STOP file"`), and stop.
 - After every issue outcome (merged, parked, or permanently parked) and whenever waking from a 30-minute poll to work new issues, re-read this entire file (`C:\tivano\pr-bot\tool\scripts\dev-loop\autopilot.md`), because your conversation may have been compacted and the watchdog self-syncs updated scripts from `main`.
 
+### Model roles
+
+| Role | Model | Responsibility |
+| --- | --- | --- |
+| Author & first-fix | Devin | Implements issues, runs `npm run verify`, makes the first fix commit on gate or `nyx/audit` failure, reviews/commits/pushes Neon fixes, and manages PRs/merges. |
+| Auditor & gate second reviewer | GLM-5.3 | Runs the independent `nyx/audit` checks and serves as the read-only second reviewer inside `Invoke-AutopilotGate.ps1`. Never edits code or fixes. |
+| Escalation fixer | Gemini 4 Neon (`agy`) | Fixes escalations via `Invoke-NeonFix.ps1` inside the PR worktree when an audit block survives Devin's fix round, when the gate fails after Devin's first fix round, or at the start of a parked-issue revisit. Never commits or pushes. |
+| Arbiter | Claude Sonnet | Settles post-rebuttal `nyx/audit` disputes inside the independent auditor. |
+
+The author, fixer, auditor, and arbiter are always different vendors.
+
 ## 2. State files
 
 Maintain these UTF-8 JSON files (without BOM) under `C:\tivano\dev-loop\autopilot\` (create the directory if missing), writing atomically via a `.tmp` file and `[IO.File]::Replace` / `[IO.File]::Move`:
 
 - `C:\tivano\dev-loop\autopilot\progress.json`:
   ```json
-  {"state":"working|idle|polling","issue":<n or 0>,"step":"short text","updatedAt":"ISO time","merged":[{"issue":n,"pr":n,"date":"yyyy-MM-dd"}],"awaitingAudit":[{"issue":n,"pr":n,"headSha":"..."}],"parked":[numbers]}
+  {"state":"working|idle|polling","issue":<n or 0>,"step":"short text","updatedAt":"ISO time","merged":[{"issue":n,"pr":n,"date":"yyyy-MM-dd"}],"awaitingAudit":[{"issue":n,"pr":n,"headSha":"..."}],"parked":[numbers],"neonRuns":{"nyx/<n>-<slug>":0}}
   ```
-  - Update `progress.json` at every step change (e.g., `queue`, `worktree`, `implement`, `verify`, `pr-create`, `gate`, `fix-1`, `consult`, `audit-check`, `merge`, `parked`, `revisit-1`, `revisit-2`, `daily merge cap`, `milestone`, `polling`).
-  - If `progress.json` exists when you start, read it and resume from it, preserving `merged`, `awaitingAudit`, and `parked`, and continuing any unfinished work first.
+  - Update `progress.json` at every step change (e.g., `queue`, `worktree`, `implement`, `verify`, `pr-create`, `gate`, `fix-1`, `neon-fix`, `audit-check`, `merge`, `parked`, `revisit-1`, `revisit-2`, `daily merge cap`, `milestone`, `polling`).
+  - `neonRuns` tracks how many Gemini 4 Neon fix runs have been executed per PR head lineage (keyed by branch name, e.g. `nyx/12-slug` or `nyx/12-slug-r1`), enforcing the cap of at most 2 Neon runs per head lineage.
+  - If `progress.json` exists when you start, read it and resume from it, preserving `merged`, `awaitingAudit`, `parked`, and `neonRuns`, and continuing any unfinished work first.
 - `C:\tivano\dev-loop\autopilot\parked.json`:
   ```json
   [{"issue":12,"pr":45,"reason":"one-line public-text-safe reason","attempt":0}]
@@ -132,7 +144,7 @@ if (Test-Path -LiteralPath $dst) { [IO.File]::Replace($tmp, $dst, $null) } else 
 - On `fail` (exit `1`): inspect `failures`, `gatePath`, `glm`, and `notes`. Fix every listed failure, whether from the Devin reviewer or prefixed with `GLM-5.3:`, in the same branch with a new commit (never force-push, never amend or rewrite pushed history; if `main` conflicts, run `git merge origin/main`, never rebase).
   - If the two reviewers contradict each other, follow the issue text and `AGENTS.md`, implement the safer option, and state in the commit message and a short PR comment (one sentence, public-text safe) which demand was not followed and why.
   - Treat a `GLM-5.3:` demand that is outside the issue's scope or is style-only as advisory (this rule applies **only** to the GLM-5.3 reviewer inside your own gate, never to independent `nyx/audit` findings), and note it the same way in the commit message and a one-sentence public-text-safe PR comment.
-- Do not weaken tests or checks. Run `npm run verify`, stop worktree processes, push, and run the gate again. At most 2 fix rounds before running the automated GLM consult (§10).
+- Do not weaken tests or checks. Run `npm run verify`, stop worktree processes, commit, push, and run the gate again. If the gate still fails after Devin's first fix round (or the same `npm run verify` test fails 3 times in a row), write the remaining blocking items to `C:\tivano\dev-loop\autopilot\runs\<n>\neon-<k>.md` and escalate to Gemini 4 Neon (`Invoke-NeonFix.ps1`, §10).
 - On `unavailable` (exit `2`): wait 5 minutes (`Start-Sleep -Seconds 300`, checking `STOP`) and retry, at most 3 times. If still `unavailable`, park the issue per §11 and move on.
 
 ## 8. Independent audit (non-blocking)
@@ -148,9 +160,10 @@ if (Test-Path -LiteralPath $dst) { [IO.File]::Replace($tmp, $dst, $null) } else 
   1. **`nyx/audit` is `success` on exact `headSha`**: merge immediately (§9).
   2. **The newest auditor comment is `## Nyx audit - <sha7> - PARKED` and `<sha7>` matches the current `headSha`**: park the issue per §11 (leaving the PR open) and move on to the next issue. The `audit-parked` label alone is not a verdict: it can be left over from an earlier head. Whenever you push a new commit to a PR, remove the stale label first (`gh pr edit <pr> -R elijah7x/tivano-windows --remove-label audit-parked`).
   3. **`nyx/audit` is `pending`, absent, or its description says `arbitration pending`**: do **not** idle! Add `{"issue":<n>,"pr":<pr>,"headSha":"<headSha>"}` to `awaitingAudit` in `progress.json` and immediately move on to work another eligible issue in the queue. Disputes with `arbitration pending` are retried automatically by the auditor.
-  4. **`nyx/audit` is `failure` or `error` (and not `audit-parked`)**: read the auditor's PR comment and do one of:
-     - Fix every blocking finding in a new commit on the same branch (`npm run verify`, stop worktree processes, push, and re-run `Invoke-AutopilotGate.ps1`; the independent auditor automatically re-runs on the new head SHA).
-     - Post **one** PR comment starting with `Audit rebuttal:` providing concrete `file:line` or test-output evidence for each disputed finding `id`, record/keep the PR in `awaitingAudit`, and work another issue while the auditor evaluates or arbitrates the rebuttal.
+  4. **`nyx/audit` is `failure` or `error` (and not `PARKED` on the current head)**: read the auditor's PR comment:
+     - **First failure on a PR:** Devin makes its own first fix commit on the same branch (`npm run verify`, stop worktree processes, remove `audit-parked` if present, commit with a plain message, push, and re-run `Invoke-AutopilotGate.ps1`; the independent auditor automatically re-runs on the new head SHA). Alternatively, if concrete `file:line` or test-output evidence proves a finding is factually wrong, post **one** PR comment starting with `Audit rebuttal:` citing that evidence for each disputed finding `id`, keep the PR in `awaitingAudit`, and work another issue while the auditor evaluates or Claude Sonnet arbitrates the rebuttal.
+     - **Surviving block after Devin's fix round:** if the next audit on the new head still blocks on an item with the same `id` or `title` (from blocking audit findings, failed acceptance items, or false claims), write the remaining blocking items to `C:\tivano\dev-loop\autopilot\runs\<n>\neon-<k>.md` and call `Invoke-NeonFix.ps1` on the PR worktree (§10), subject to the cap of at most 2 Neon fix runs per PR head lineage.
+     - **Fallback:** if `Invoke-NeonFix.ps1` returns `no-change` or `unavailable` (or the 2-run lineage cap is reached), fall back to the existing path: post **one** structured `Audit rebuttal:` comment if concrete evidence disproves the findings, or park the issue (§11).
 - Never ignore, downgrade, or relabel `nyx/audit` findings as advisory. The advisory rule in §7 applies **only** to the `GLM-5.3:` reviewer inside your own gate.
 - Poll all entries in `awaitingAudit` before starting each new issue (and after each issue step finishes). Sleep 5 minutes (`Start-Sleep -Seconds 300`, checking `STOP` before each poll) **only** when no other eligible issue can be worked right now.
 
@@ -170,27 +183,41 @@ if (Test-Path -LiteralPath $dst) { [IO.File]::Replace($tmp, $dst, $null) } else 
   ```
 - Remove the issue from `awaitingAudit` (and from `parked.json` if this was a revisit), append `{"issue":<n>,"pr":<pr>,"date":"<local yyyy-MM-dd>"}` to `merged` in `progress.json`, and post the one-line update to `#34` (§13).
 
-## 10. Automated second opinion when stuck (GLM-5.3 consult)
+## 10. Escalation fixer (Gemini 4 Neon via `Invoke-NeonFix.ps1`)
 
-- When an issue fails the gate after the 2 fix rounds, OR the same `npm run verify` test fails 3 times in a row:
-  1. Write the current failures (the gate `failures` list or the failing test output, trimmed to the relevant part) to `C:\tivano\dev-loop\autopilot\runs\<n>\failures-<k>.md`.
-  2. Update `progress.json` `step` to `consult` and run the automated consult command (use a timeout >= 25 minutes; it takes up to ~20 minutes):
+- **When to escalate to Gemini 4 Neon** (replaces GLM-5.3 consult; GLM-5.3 only audits in `nyx/audit` and serves as the read-only second reviewer inside `Invoke-AutopilotGate.ps1`):
+  1. **Surviving `nyx/audit` block:** after Devin's own first fix commit for a `nyx/audit` failure, the next audit on the new head still blocks on an item with the same `id` or `title`.
+  2. **Stuck gate or verify loop:** `Invoke-AutopilotGate.ps1` still fails after Devin's first fix round, OR the same `npm run verify` test fails 3 times in a row.
+  3. **Start of a parked-issue revisit (§11):** right after Devin creates the fresh revisit branch and worktree (`nyx/<n>-<slug>-r<k>`) and before Devin's own implementation attempt, passing the `PARKED` audit comment as the failures file.
+- **Lineage limit:** allow at most **2 Neon fix runs per PR head lineage** (tracked by branch name in `progress.json` `neonRuns`). Once a branch has already used 2 Neon fix runs, do not invoke `Invoke-NeonFix.ps1` again on that lineage; fall back to rebuttal (§8) or parking (§11).
+- **Execution steps:**
+  1. Write the remaining blocking items (audit findings, failed acceptance items, false claims, gate failures, or the `PARKED` audit comment) to `C:\tivano\dev-loop\autopilot\runs\<n>\neon-<k>.md` (where `<k>` is the 1-based sequence number for this issue/lineage).
+  2. Increment `progress.json` `neonRuns[<branch>]`, set `step` to `neon-fix`, save `progress.json`, and call `Invoke-NeonFix.ps1` directly from Devin's interactive desktop terminal (never over SSH; use a timeout >= 55 minutes):
      ```powershell
-     powershell -NoProfile -ExecutionPolicy Bypass -File C:\tivano\pr-bot\tool\scripts\dev-loop\Invoke-GlmReview.ps1 -Mode consult -PrNumber <pr> -FailuresFile C:\tivano\dev-loop\autopilot\runs\<n>\failures-<k>.md
+     powershell -NoProfile -ExecutionPolicy Bypass -File C:\tivano\pr-bot\tool\scripts\dev-loop\Invoke-NeonFix.ps1 `
+       -PrNumber <pr> -IssueNumber <n> -WorktreeDir C:\tivano\dev-loop\work\<worktree-dir> `
+       -FailuresFile C:\tivano\dev-loop\autopilot\runs\<n>\neon-<k>.md
      ```
-  3. Its last stdout line is JSON `{"mode":"consult","pr":n,"status":"ok|unavailable","consultPath":"...","diagnosis":"...","plan":[...],"message":""}`; exit code `0` = ok, `2` = unavailable.
-  4. If `unavailable` (exit `2`), park the issue per §11.
-  5. Otherwise, read `consultPath` and do exactly one more fix round guided by it: fix the code yourself, run `npm run verify`, stop worktree processes, commit, push, and run the gate again.
-  6. If that fix round or gate also fails, park the issue per §11.
-- Never run more than one GLM consult per issue per attempt.
-- Never let GLM edit files: it only advises. Never consult a person.
+     (On a parked revisit before the new PR is created, pass `-PrNumber <oldPr>` and `-IssueNumber <n>`.)
+  3. Its last stdout line is JSON `{"status":"ok|unavailable|no-change","changedFiles":[...],"reverted":[...],"error":"","retryable":bool,"runDir":""}`; exit codes: `0` = `ok`, `2` = `unavailable`, `3` = `no-change`.
+     - `Invoke-NeonFix.ps1` runs `agy.exe` (`gemini-4-neon-high`) inside the PR worktree with `--mode accept-edits` and `--add-dir C:\tivano\reference\tivano-v3.0.0`, kills the process tree on timeout, reverts any edits outside tracked source/tests or under guarded paths / `package.json` dependencies / `package-lock.json`, and never commits or pushes.
+     - If `agy` fails with a non-retryable error (such as `FAILED_PRECONDITION`), `Invoke-NeonFix.ps1` records it in `C:\tivano\dev-loop\autopilot\neon\health.json` and skips calling `agy` for 6 hours, returning `unavailable` immediately with the stored error.
+  4. **On `ok` (exit `0`):**
+     - Review `git diff` and `changedFiles` (and check any `reverted` entries) in the worktree to confirm all edits are minimal, in scope, and respect every guardrail.
+     - If an existing PR carries the `audit-parked` label, remove it (`gh pr edit <pr> -R elijah7x/tivano-windows --remove-label audit-parked`).
+     - Run `npm run verify`, then stop leftover worktree processes (§3).
+     - Commit with a **plain commit message** via `-F` (with **no** co-author trailer or tool/model attribution), push, open the new PR if this is a fresh revisit branch, and re-run `Invoke-AutopilotGate.ps1`. The independent `nyx/audit` re-runs automatically on the new head SHA.
+  5. **On `no-change` (exit `3`) or `unavailable` (exit `2`):**
+     - Fall back to the existing path: for an open PR blocked by `nyx/audit`, post a structured `Audit rebuttal:` (§8) if concrete evidence disproves the findings or park the issue (§11); for a stuck gate or verify failure, park the issue (§11); for the start of a parked-issue revisit (§11), proceed with Devin's own implementation attempt on the fresh branch.
+- Never run `Invoke-GlmReview.ps1 -Mode consult` from autopilot, and never consult a person.
 
 ## 11. Parking and revisiting stuck issues
 
 - **When to park an issue:**
-  - Its PR receives the `audit-parked` label or a `## Nyx audit - <sha7> - PARKED` comment on the current head SHA.
-  - The issue fails its own gate after the allowed fix rounds (2 fix rounds + 1 GLM consult guided fix round, or consult unavailable).
-  - The gate stays `unavailable` after 3 retries, or the same `npm run verify` test still fails after the consult fix round.
+  - Its PR receives a `## Nyx audit - <sha7> - PARKED` comment on the current head SHA.
+  - The issue fails its own gate after Devin's first fix round and up to 2 Gemini 4 Neon fix runs on that head lineage (or Neon returns `no-change`/`unavailable`).
+  - A `nyx/audit` block survives Devin's fix round and up to 2 Gemini 4 Neon fix runs on that head lineage (or Neon returns `no-change`/`unavailable`) with no valid rebuttal.
+  - The gate stays `unavailable` after 3 retries, or the same `npm run verify` test still fails after Neon escalation (or Neon returns `no-change`/`unavailable`).
 - **How to park (initial failure or revisit failure):**
   1. **Leave the PR open.** Remove the issue from `awaitingAudit` if present.
   2. Read `C:\tivano\dev-loop\autopilot\parked.json` (default `[]`).
@@ -202,6 +229,7 @@ if (Test-Path -LiteralPath $dst) { [IO.File]::Replace($tmp, $dst, $null) } else 
   - Only start revisiting parked issues once no unparked open `nyx-auto` issues remain (and `awaitingAudit` is empty).
   - Pick the next entry in `parked.json` whose issue is still open, lacks the `parked` label, and has `attempt < 2` (lowest `attempt`, then lowest `issue` number). Let `k = attempt + 1` (`1` or `2`).
   - Set `progress.json` `step` to `revisit-<k>`.
+  - Read the `PARKED` audit comment and all audit/gate comments on `<oldPr>` before closing it.
   - Close the old PR (if still open) with a one-line public-text-safe comment:
     ```powershell
     gh pr close <oldPr> -R elijah7x/tivano-windows --comment "Closing to retry #<n> from current main with a different approach informed by audit feedback."
@@ -211,8 +239,9 @@ if (Test-Path -LiteralPath $dst) { [IO.File]::Replace($tmp, $dst, $null) } else 
     ```powershell
     git -C C:\tivano\dev-loop\repo worktree add -b nyx/<n>-<slug>-r<k> C:\tivano\dev-loop\work\<n>-<slug>-r<k> origin/main
     ```
-  - Read all audit and gate comments on the closed PR and design a **genuinely different approach** that directly addresses the root cause of those findings.
-  - Implement, run `npm run verify`, stop worktree processes, push, open a new PR (`Closes #<n>`), and run the normal gate (§7) and independent audit (§8).
+  - **Start the revisit with `Invoke-NeonFix.ps1` before Devin's own attempt:** write the `PARKED` audit comment (plus relevant issue/gate context) to `C:\tivano\dev-loop\autopilot\runs\<n>\neon-<m>.md` and call `Invoke-NeonFix.ps1 -PrNumber <oldPr> -IssueNumber <n> -WorktreeDir C:\tivano\dev-loop\work\<n>-<slug>-r<k> -FailuresFile C:\tivano\dev-loop\autopilot\runs\<n>\neon-<m>.md` (§10), counting it against `progress.json` `neonRuns["nyx/<n>-<slug>-r<k>"]`.
+    - On `ok`: review the diff, complete any remaining issue requirements if needed, run `npm run verify`, stop worktree processes, commit with a plain message (without any co-author or tool attribution), push, open a new PR (`Closes #<n>`), and run the normal gate (§7) and independent audit (§8).
+    - On `no-change` or `unavailable`: design and implement Devin's own **genuinely different approach** directly addressing the root cause of the audit/gate findings, run `npm run verify`, stop worktree processes, commit, push, open a new PR (`Closes #<n>`), and run the normal gate (§7) and independent audit (§8).
   - If the new PR merges, remove the issue from `parked.json`. If it fails again, leave it open and record `attempt = k` as above.
 - **Permanent park (skip for good):**
   - Triggered when the second revisit attempt fails (`attempt == 2`), OR immediately if the issue genuinely cannot be implemented without modifying a guarded path or `package.json` dependencies.

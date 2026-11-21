@@ -16,12 +16,23 @@ The owner does **not** participate during development, review, or audit, and ent
   2. reopened issues (`state_reason == "reopened"`), lowest number first;
   3. remaining parity issues.
 
+## Model roles
+
+| Role | Model | Responsibility |
+| --- | --- | --- |
+| Author & first-fix | Devin | Implements issues, runs `npm run verify`, makes the first fix commit on gate or `nyx/audit` failure, reviews/commits/pushes Neon fixes, and manages PRs/merges. |
+| Auditor & gate second reviewer | GLM-5.3 | Runs the independent `nyx/audit` checks and serves as the read-only second reviewer inside `Invoke-AutopilotGate.ps1`. Never edits code or fixes. |
+| Escalation fixer | Gemini 4 Neon (`agy`) | Fixes escalations via `Invoke-NeonFix.ps1` inside the PR worktree when an audit block survives Devin's fix round, when the gate fails after Devin's first fix round, or at the start of a parked-issue revisit. Never commits or pushes. |
+| Arbiter | Claude Sonnet | Settles post-rebuttal `nyx/audit` disputes inside the independent auditor. |
+
+The author, fixer, auditor, and arbiter are always different vendors.
+
 ## Parking and revisits
 
 Stuck work never blocks the queue or waits for a person:
 
-1. **Park and move on:** if the independent auditor's newest comment is `## Nyx audit - <sha7> - PARKED` for the PR's current head (the `audit-parked` label alone can be stale and is removed before each new push), or an issue fails its own gate after the allowed fix rounds (2 fix rounds + 1 automated GLM-5.3 consult round, or consult/gate unavailable), autopilot leaves the PR open, records `{issue, pr, reason, attempt}` in `<Root>\autopilot\parked.json`, and moves on to the next issue.
-2. **Revisit at most twice:** once no unparked open `nyx-auto` issues (or in-flight `awaitingAudit` PRs) remain, autopilot revisits each parked issue up to two times. On each revisit it closes the old PR with a one-line comment, starts a fresh branch (`nyx/<n>-<slug>-r<k>`) from current `origin/main` using a different approach informed by the audit and gate comments, and opens a new PR.
+1. **Park and move on:** if the independent auditor's newest comment is `## Nyx audit - <sha7> - PARKED` for the PR's current head (the `audit-parked` label alone can be stale and is removed before each new push), or an issue still fails its own gate or `nyx/audit` after Devin's first fix round and up to 2 Gemini 4 Neon fix runs on that head lineage (or Neon returns `no-change`/`unavailable` with no valid rebuttal, or the gate stays unavailable), autopilot leaves the PR open, records `{issue, pr, reason, attempt}` in `<Root>\autopilot\parked.json`, and moves on to the next issue.
+2. **Revisit at most twice:** once no unparked open `nyx-auto` issues (or in-flight `awaitingAudit` PRs) remain, autopilot revisits each parked issue up to two times. On each revisit it closes the old PR with a one-line comment, starts a fresh branch (`nyx/<n>-<slug>-r<k>`) from current `origin/main`, runs `Invoke-NeonFix.ps1` first with the `PARKED` audit comment as failures (falling back to Devin's own implementation attempt if Neon returns `no-change` or `unavailable`), and opens a new PR.
 3. **Permanent park:** if the second revisit attempt also fails (or an issue cannot be implemented without modifying a guarded path or `package.json` dependencies), autopilot labels the issue `parked`, leaves the open PR open, records the one-line reason in `parked.json`, and skips the issue for good.
 
 ## Hands-on testing milestone and continuous polling
@@ -68,12 +79,32 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Invoke-
 - Prints one compact JSON line to stdout (`{"pr":n,"headSha":"...","verdict":"pass|fail|unavailable","failures":["..."],"gatePath":"...","glm":{"status":"ok|unavailable|skipped","verdict":"pass|changes","blocking":<count>,"runDir":"..."},"notes":[...]}`) and exits `0` on `pass`, `1` on `fail`, or `2` on `unavailable`.
 - Never merges, labels, or comments itself beyond the review comments from `Invoke-PrReview.ps1` and `Invoke-GlmReview.ps1`.
 
-### GLM-5.3 second reviewer and automated consult
+### GLM-5.3 second reviewer
 
-- **What it checks and what blocks:** `Invoke-AutopilotGate.ps1` also runs `scripts/dev-loop/Invoke-GlmReview.ps1` (GLM-5.3) as an independent second reviewer on the same PR head and posts its own PR comment. Blocking findings appear in `failures` prefixed with `GLM-5.3: ` and fail the gate; non-blocking, out-of-scope, or style-only points are advisory. If the two reviewers contradict each other, autopilot follows the issue text and `AGENTS.md`, takes the safer option, and explains why in the commit message and a short PR comment. If GLM-5.3 is `unavailable`, it never blocks the gate by itself.
+- **What it checks and what blocks:** `Invoke-AutopilotGate.ps1` runs `scripts/dev-loop/Invoke-GlmReview.ps1` (GLM-5.3) as an independent read-only second reviewer on the same PR head and posts its own PR comment. Blocking findings appear in `failures` prefixed with `GLM-5.3: ` and fail the gate; non-blocking, out-of-scope, or style-only points are advisory. If the two reviewers contradict each other, autopilot follows the issue text and `AGENTS.md`, takes the safer option, and explains why in the commit message and a short PR comment. If GLM-5.3 is `unavailable`, it never blocks the gate by itself.
 - **Credentials and isolation:** GLM-5.3 runs through the ZCode CLI with an isolated `ZCODE_DATA_BASE_DIR` (`C:\tivano\zcode\home`) whose `provider_config` holds a BigModel Coding Plan API key. That directory sits outside the repository (never committed) and must be readable only by the runner account.
-- **Automated consult step:** when an issue fails the gate after 2 fix rounds or hits 3 identical `npm run verify` failures, autopilot writes trimmed failures to `<Root>\autopilot\runs\<n>\failures-<k>.md` and runs `Invoke-GlmReview.ps1 -Mode consult -PrNumber <pr> -FailuresFile <file>` (up to ~20 minutes; exit `0` ok, `2` unavailable) once per attempt. It applies one guided fix round and re-gates; if that also fails or consult is unavailable, it parks the issue in `parked.json` and moves on.
-- **Disabling and read-only boundary:** pass `-SkipGlm` to `Invoke-AutopilotGate.ps1` to skip the GLM review (`glm.status` becomes `"skipped"`). GLM never edits repository files or commits; it only reviews and advises.
+- **Audit and review only:** GLM-5.3 never edits repository files or commits, and autopilot no longer runs GLM-5.3 consult for stuck gates; escalations go to Gemini 4 Neon (`Invoke-NeonFix.ps1`). Pass `-SkipGlm` to `Invoke-AutopilotGate.ps1` to skip the gate's GLM review (`glm.status` becomes `"skipped"`).
+
+### Gemini 4 Neon escalation fixer (`Invoke-NeonFix.ps1`)
+
+Autopilot dispatches Gemini 4 Neon through the Antigravity CLI (`%LOCALAPPDATA%\agy\bin\agy.exe`, called directly inside Devin's interactive desktop session — never over SSH) via `scripts/dev-loop/Invoke-NeonFix.ps1`:
+
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Invoke-NeonFix.ps1 `
+  -PrNumber 45 -IssueNumber 12 -WorktreeDir C:\tivano\dev-loop\work\12-slug `
+  -FailuresFile C:\tivano\dev-loop\autopilot\runs\12\neon-1.md
+```
+
+- **When it runs (max 2 runs per PR head lineage, tracked in `progress.json` `neonRuns`):**
+  1. A `nyx/audit` block survives Devin's first fix commit on an item with the same `id` or `title`.
+  2. `Invoke-AutopilotGate.ps1` still fails after Devin's first fix round (or the same `npm run verify` test fails 3 times in a row).
+  3. A parked-issue revisit begins on a fresh branch (`nyx/<n>-<slug>-r<k>`), before Devin's own attempt, passing the `PARKED` audit comment as `-FailuresFile`.
+- **Execution and prompt:** fills `scripts/dev-loop/neon-fix-prompt.md` with the PR number, issue number, failures text, and reference root (`C:\tivano\reference\tivano-v3.0.0`) into the run dir (`<Root>\autopilot\neon\pr-<n>-<timestamp>\`), and runs `agy.exe` in the PR worktree with `--model gemini-4-neon-high` (default), `--mode accept-edits`, `--add-dir` for the run dir and reference root, `--print-timeout <TimeoutMinutes>m` (default `45m`), `--output-format text`, and `--log-file`. On timeout it kills the process tree via `taskkill /T /F` and cleans up leftover worktree processes.
+- **Boundary enforcement and handoff:** collects `git status --porcelain` and `git diff --stat`, unwinds any accidental commit, and reverts (with path-scoped `git checkout` and `git clean`) any change outside tracked source/tests or under `scripts/audit/`, `scripts/dev-loop/`, `scripts/pr-review/`, `scripts/windows-acceptance/`, `.github/`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `TRADEMARK.md`, `docs/source-baseline.json`, `package.json` dependency sections, or `package-lock.json`. It never commits or pushes.
+- **Output and exit codes:** prints one compact JSON line to stdout (`{"status":"ok|unavailable|no-change","changedFiles":[...],"reverted":[...],"error":"","retryable":bool,"runDir":""}`) with exit codes `0` (`ok`), `2` (`unavailable`), and `3` (`no-change`).
+- **On `ok`:** Devin reviews the diff, removes the `audit-parked` label if present, runs `npm run verify`, commits with a plain message without any co-author or tool attribution, pushes, and re-runs its gate (which automatically triggers a new `nyx/audit`).
+- **6-hour unavailability cooldown:** if `agy` fails with a non-retryable error (such as `AGY_ERROR` with `"retryable": false`, e.g. `FAILED_PRECONDITION ... User location is not supported`), `Invoke-NeonFix.ps1` writes `<Root>\autopilot\neon\health.json` and skips calling `agy` for 6 hours, returning `unavailable` immediately with the stored error.
+- **Fallbacks:** if `Invoke-NeonFix.ps1` returns `no-change` or `unavailable` (or the 2-run lineage cap is reached), autopilot falls back to the existing path: a structured `Audit rebuttal:` comment or parking (`parked.json`) for open PRs, or Devin's own implementation attempt on parked revisits.
 
 ### Independent audit
 
@@ -103,20 +134,22 @@ Before merging, autopilot PRs require a `success` commit status on context `nyx/
 
 ### State and files (relative to `-Root`, default `C:\tivano\dev-loop`)
 
-- `<Root>\autopilot\progress.json`: current autopilot progress (`state`, `issue`, `step`, `merged`, `awaitingAudit`, `parked`, `updatedAt`).
+- `<Root>\autopilot\progress.json`: current autopilot progress (`state`, `issue`, `step`, `merged`, `awaitingAudit`, `parked`, `neonRuns`, `updatedAt`).
 - `<Root>\autopilot\parked.json`: parked issues with `issue`, `pr`, `reason`, and `attempt` (`0`, `1`, `2`).
 - `<Root>\autopilot\hands-on.json`: last hands-on build commit SHA, prerelease tag/number, and open `hands-on` issue number.
 - `<Root>\autopilot\solo-v3.json`: phase/queue/worked-row state when running `solo-v3.md`.
 - `<Root>\autopilot\watchdog.json`: `lastSyncedSha`, consecutive nudge counter, nudge history, and `stuckNotified` flag.
 - `<Root>\autopilot\builds\<tag>\`: external packaging outputs (`pkg\`) and smoke evidence (`smoke\`), never inside a worktree.
 - `<Root>\autopilot\gate\pr-<n>-<timestamp>\`: gate run logs and `failures.md`.
-- `<Root>\autopilot\runs\<n>\`: commit messages, PR bodies, and failure snippets.
+- `<Root>\autopilot\neon\`: Gemini 4 Neon escalation fixer runs (`pr-<n>-<timestamp>\` with filled prompt, `agy` logs, git status/diff artifacts, and `result.json`) and `health.json` (6-hour non-retryable unavailability cooldown).
+- `<Root>\autopilot\runs\<n>\`: commit messages, PR bodies, and `neon-<k>.md` failure inputs.
 - `<Root>\state\logs\autopilot-yyyyMMdd.log`: kickoff, self-sync, and watchdog logs.
 - `<Root>\state\STOP`: stop file checked by autopilot and `-Watch` / `-Kickoff`.
 
 ### Prerequisites
 
 - Devin Desktop signed in, chat set to **Local**, and workspace trust disabled (`"security.workspace.trust.enabled": false`).
+- Antigravity CLI (`%LOCALAPPDATA%\agy\bin\agy.exe`) signed in within the interactive desktop session on Nyx for Gemini 4 Neon escalation fixes (optional: if unavailable, autopilot records a 6-hour cooldown in `health.json` and falls back automatically).
 - Everything under [Prerequisites in the PR review README](../pr-review/README.md#prerequisites): Windows PowerShell 5.1, Git, GitHub CLI (`gh` signed in and `gh auth setup-git` configured), Node.js with npm, Devin CLI signed in as the operating account, standard check account credential file, and console session for e2e/GUI.
 - `C:\tivano\audit\tool` cloned on `main` (source for watchdog self-sync into `C:\tivano\pr-bot\tool\scripts`), `C:\tivano\dev-loop\repo` cloned for worktrees, and `-Root` (`C:\tivano\dev-loop`) outside any git checkout.
 
