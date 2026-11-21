@@ -257,6 +257,11 @@ export class Engine {
   private readonly hydraRefunds = new Map<string, number>();
   private readonly hydraBudgetGen = new Map<string, number>();
   private readonly hydraBatchGen = new Map<string, number>();
+  /** P1-12: durable batchId → job generation for "continue" scoping.
+   *  hydraBatchGen/hydraBatchRequest are consumed when a batch's
+   *  reports flush (refund + review-origin accounting); this map is
+   *  not, so a head stays reachable from its own job's report reply. */
+  private readonly hydraBatchJob = new Map<string, number>();
   private readonly hydraPendingReports = new Map<string, HydraReport[]>();
   /** P1-38: each dispatched batch's job origin — the lead's budget
    *  generation and request text at DISPATCH time (frozen job.turnID /
@@ -1056,12 +1061,14 @@ export class Engine {
     for (const q of this.hydraWaiting.get(id) ?? []) {
       this.hydraBatchRequest.delete(q.batchId);
       this.hydraBatchGen.delete(q.batchId);
+      this.hydraBatchJob.delete(q.batchId);
     }
     this.hydraWaiting.delete(id);
     for (const r of this.hydraPendingReports.get(id) ?? []) {
       if (r.batchId) {
         this.hydraBatchRequest.delete(r.batchId);
         this.hydraBatchGen.delete(r.batchId);
+        this.hydraBatchJob.delete(r.batchId);
       }
     }
     this.hydraPendingReports.delete(id);
@@ -1307,6 +1314,12 @@ export class Engine {
       // A fresh batch: this turn's report flushes on its own, never
       // folded into the batch it was originally spawned under.
       info.batchId = `steer-${turn.id}`;
+      // P1-12: the steered head joins the current job's generation so
+      // a "continue" entry can still reach it.
+      this.hydraBatchJob.set(
+        info.batchId,
+        this.hydraBudgetGen.get(info.leadId) ?? 0,
+      );
       info.summary = undefined;
       info.landing = undefined;
       info.finishedAt = undefined;
@@ -4624,10 +4637,15 @@ export class Engine {
     // or an unknown name is refused (frozen v2ContinueRefusal).
     if (d.continue) {
       const named = d.continue.toLowerCase();
+      // Frozen info.jobID == job.id: only a head of THIS request's job
+      // (its delegation batch's generation) may be sent back — heads
+      // of earlier requests are unknown to the rework.
+      const jobGen = this.hydraBudgetGen.get(lead.id) ?? 0;
       const known = this.store.state.threads.filter(
         (t) =>
           t.hydraHead?.leadId === lead.id &&
-          t.hydraHead.name.toLowerCase() === named,
+          t.hydraHead.name.toLowerCase() === named &&
+          this.hydraBatchJob.get(t.hydraHead.batchId) === jobGen,
       );
       if (known.length === 0) {
         return this.refuseDelegation(
@@ -4674,6 +4692,10 @@ export class Engine {
       this.hydraRounds.set(lead.id, rounds + 1);
       this.hydraRounds.set(roundKey, 1);
       this.hydraBatchGen.set(
+        batchId,
+        this.hydraBudgetGen.get(lead.id) ?? 0,
+      );
+      this.hydraBatchJob.set(
         batchId,
         this.hydraBudgetGen.get(lead.id) ?? 0,
       );

@@ -68,6 +68,14 @@ describe("P1-12 delegation levels (frozen HydraTilt)", () => {
     // Absent setting reads as the frozen default.
     expect(hydraDelegationRequest()).toContain("enabled, proactive");
   });
+
+  it("settings:set persists the delegation level", () => {
+    const { engine, store } = make();
+    engine.setSettings({ hydraTilt: "aggressive" });
+    expect(store.state.settings.hydraTilt).toBe("aggressive");
+    engine.setSettings({ hydraTilt: "restrained" });
+    expect(store.state.settings.hydraTilt).toBe("restrained");
+  });
 });
 
 describe("P1-12 structured head reports (frozen HydraReportNotes)", () => {
@@ -125,27 +133,20 @@ describe("P1-12 rework send-back (frozen continue entry)", () => {
   it("a continue reworks in the named head's own session — no new head", { timeout: 20_000 }, async () => {
     const { engine } = make();
     const lead = engine.createThread(null, "lead");
-    engine.sendTurn(lead.id, "split this up [mock:hydra]");
+    // The latch arms the lead's report-turn reply with a continue entry.
+    engine.sendTurn(lead.id, "split this up [mock:hydra] [mock:hydra-continue]");
     await waitFor(() => heads(engine, lead.id).length === 2);
     await waitFor(() =>
       heads(engine, lead.id).every((h) => h.hydraHead!.status === "completed"),
-    );
-    // The batch report turn must fully land before the next send.
-    await waitFor(
-      () =>
-        !["running", "waiting-approval"].includes(
-          thread(engine, lead.id).turn?.status ?? "",
-        ),
     );
     const hank = heads(engine, lead.id).find(
       (h) => h.hydraHead!.name === "Hank",
     )!;
     const before = hank.messages.length;
 
-    // The lead sends Hank's part back for rework in its own session.
-    engine.sendTurn(lead.id, "rework it [mock:hydra-continue]");
+    // The lead's report-reply sends Hank's part back for rework in its
+    // own session — no third head spawns.
     await waitFor(() => thread(engine, hank.id).messages.length > before);
-    // No third head spawned — Hank itself runs again on the instruction.
     expect(heads(engine, lead.id).length).toBe(2);
     await waitFor(
       () => thread(engine, hank.id).hydraHead!.status === "completed",
@@ -162,16 +163,22 @@ describe("P1-12 rework send-back (frozen continue entry)", () => {
   it("an unknown continue name is refused (frozen v2ContinueRefusal)", { timeout: 20_000 }, async () => {
     const { engine } = make();
     const lead = engine.createThread(null, "lead");
-    engine.sendTurn(lead.id, "first job [mock:hydra-continue]");
-    // No head exists to rework — the lead hears the refusal instead.
+    engine.sendTurn(
+      lead.id,
+      "first job [mock:hydra] [mock:hydra-continue-ghost]",
+    );
+    await waitFor(() =>
+      heads(engine, lead.id).every((h) => h.hydraHead!.status === "completed"),
+    );
+    // "Nova" never spawned — the lead hears the refusal, no head runs.
     await waitFor(() =>
       thread(engine, lead.id).messages.some(
         (m) =>
           m.role === "user" &&
           m.content.includes("Hydra did not send") &&
-          m.content.includes("no head called Hank"),
+          m.content.includes("no head called Nova"),
       ),
     );
-    expect(heads(engine, lead.id).length).toBe(0);
+    expect(heads(engine, lead.id).length).toBe(2);
   });
 });
