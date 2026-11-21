@@ -5449,11 +5449,15 @@ export class Engine {
     // P1-12 (frozen HydraReportNotes): the three report lines parse
     // only when all three are present — otherwise the raw reply stands
     // alone.
-    const notes = parseHydraReportNotes(info.summary ?? "");
+    const status = info.status === "running" ? "stopped" : info.status;
+    const notes =
+      status === "completed"
+        ? parseHydraReportNotes(info.summary ?? "")
+        : undefined;
     reports.push({
       headIndex: info.headIndex,
       task: info.task,
-      status: info.status === "running" ? "stopped" : info.status,
+      status,
       text: info.summary ?? "",
       batchId: info.batchId,
       ...(notes !== undefined ? { notes } : {}),

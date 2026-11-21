@@ -199,6 +199,22 @@ describe("P1-12 structured head reports (frozen HydraReportNotes)", () => {
     expect(digest.heads[0]!.body).toBe("All set.");
     expect(digest.heads[1]!.reportFormatMissing).toBe(true);
   });
+
+  it("an early 'deviations:' mention does not truncate the card body", () => {
+    const msg = reportMessage([
+      {
+        headIndex: 0,
+        task: "do it",
+        status: "completed",
+        text: "See deviations: renamed the helper\n\nAll done.\n\nDeviations: renamed the helper\nUnfinished: none\nUncertain: none",
+        notes: { deviations: "renamed the helper" },
+      },
+    ]);
+    const digest = parseHydraReportDigest(msg);
+    expect(digest.heads[0]!.body).toBe(
+      "See deviations: renamed the helper\n\nAll done.",
+    );
+  });
 });
 
 describe("P1-12 rework send-back (frozen continue entry)", () => {
