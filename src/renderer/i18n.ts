@@ -365,6 +365,17 @@ const zhHans: Record<string, string> = {
   "Where a new thread makes its changes": "新对话在哪里做出修改",
   "Local": "本地",
   "New worktree": "新 worktree",
+  // P1-39: workspace modes — frozen verbatim zh-Hans.
+  "Edits your project folder directly, and creates a Git worktree when another chat is already active there.":
+    "默认直接修改当前文件夹；同一 Git 项目已有对话运行时，自动新建 worktree 隔离改动。",
+  "Edits files directly in your project folder.": "始终直接在当前项目文件夹中修改文件。",
+  "Isolates each chat in its own Git worktree copy. Non-Git folders stay local.":
+    "每个对话在独立的 Git worktree 副本中修改；非 Git 文件夹自动使用本地目录。",
+  "Another chat is active in this repository, and a separate Git worktree isn't available right now. Wait for it to finish, then send again.":
+    "当前仓库已有对话正在运行，且暂时无法创建独立的 Git worktree。请等待该对话完成后再发送。",
+  "Created a new Git worktree and started its setup scripts in Terminal. Send again once setup finishes.":
+    "已创建新的 Git worktree 并在终端启动初始化脚本，请等脚本完成后再次发送。",
+  "Could not create a worktree": "无法创建 worktree",
   "Conversation": "对话",
   "Show thinking": "显示思考过程",
   "The working line opens to the agent's thinking": "工作行可展开查看 agent 的思考过程",

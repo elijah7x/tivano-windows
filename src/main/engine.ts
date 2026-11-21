@@ -358,6 +358,7 @@ export class Engine {
     | "hydraLand"
     | "hydraCopyRemove"
     | "hydraReviewDiff"
+    | "autoWorktreeEligibility"
   >;
   attachWorktrees(w: NonNullable<Engine["worktrees"]>): void {
     this.worktrees = w;
@@ -812,6 +813,11 @@ export class Engine {
       messages: [],
       turn: null,
       sessionGrants: [],
+      // P1-39: explicit false — not merely absent — so a first send that
+      // fails at the auto gate persists "attempted but not started":
+      // the store backfill only fills the ABSENT field (pre-P1-39
+      // docs), never this build's gate-failed threads.
+      hasStartedTurn: false,
       // F06: seed the thread's runtime mode from the saved default
       // (frozen makeThread — absent setting = fullAccess).
       runtimeMode: settings.defaultRuntimeMode ?? "fullAccess",
@@ -1385,40 +1391,188 @@ export class Engine {
       }
     }
 
-    // Before-snapshot gate: when a checkpoint coordinator owns this
-    // project's turns, the provider may start ONLY after the capture
-    // resolved and the turn is still alive — a cancel/delete/close
-    // during capture must never start it (P2L). Checkpoint preparation
-    // failure must never strand the turn: an unexpected coordinator
-    // rejection still lets ordinary chat proceed (visibly failed via
-    // the coordinator's own record), and a provider-start failure ends
-    // the turn honestly instead of leaving it running forever.
-    // Checkpoints are bound to the project's grant directory — a
-    // worktree thread's snapshots would silently describe the WRONG
-    // directory, so capture is skipped honestly (F11 bounded scope).
-    if (this.checkpoints && workspace && thread.projectId && thread.worktreeDir === undefined) {
+    // P1-39 (frozen prepareWorkspaceForFirstTurn, bounded): under
+    // Workspace "auto" — the upstream default — a FIRST authored send
+    // that finds the project checkout already claimed by an active chat
+    // binds a fresh worktree before the provider starts. A non-Git
+    // folder stays local; a checkout that cannot host a worktree fails
+    // honestly with the frozen wait note; a worktree whose creation
+    // launched setup scripts defers the send exactly like upstream
+    // (the notice tells the user to send again once setup finishes).
+    if (
+      opts?.authored !== false &&
+      !steeredHead &&
+      thread.projectId &&
+      thread.worktreeDir === undefined &&
+      !thread.hydraHead &&
+      !thread.parentThreadId &&
+      this.worktrees &&
+      (this.store.state.settings.defaultWorkspaceMode ?? "auto") === "auto" &&
+      // Frozen !hasStartedTurn: latched only when a turn reaches a
+      // provider, so a send that failed AT this gate (wait-note,
+      // create-failed, deferred-by-scripts, cancelled mid-probe)
+      // re-arms it on resend — a message-count proxy would let that
+      // resend write into the still-busy checkout.
+      thread.hasStartedTurn !== true &&
+      this.isLocalCheckoutBusy(thread.projectId, thread.id)
+    ) {
+      const projectId = thread.projectId;
+      const live = () => {
+        const c = this.store.state.threads.find((t) => t.id === threadId);
+        return c?.turn?.id === turn.id && c.turn.status === "running"
+          ? c
+          : undefined;
+      };
+      const startLocal = () => {
+        const cur = live();
+        if (!cur) return;
+        // Same before-snapshot gate every local start passes through —
+        // a send landing local gets its checkpoint capture first.
+        this.startProviderThroughGate(thread, turn, prompt, workspace, opts);
+      };
+      void this.worktrees
+        .autoWorktreeEligibility(projectId)
+        .then(async (elig) => {
+          if (!live()) return;
+          // .nonGit — the folder can't hold a worktree at all, so the
+          // chat honestly edits the checkout it already shares.
+          if (elig === "nonGit") return startLocal();
+          // Frozen re-check before binding: the claim may have freed
+          // while the probe ran — a free checkout takes the send
+          // locally, no worktree wasted.
+          if (!this.isLocalCheckoutBusy(projectId, threadId))
+            return startLocal();
+          if (elig === "eligible") {
+            const res = await this.createThreadWorktree(
+              threadId,
+              undefined,
+              turn.id,
+            );
+            const cur = live();
+            if (!cur) return;
+            if (res.kind === "created") {
+              // Frozen .deferred: setup scripts running in a real
+              // terminal mean the send waits for the user, never runs
+              // half-configured.
+              if (res.setup && res.setup.ran + res.setup.failed.length > 0) {
+                this.failTurnSync(
+                  cur,
+                  turn,
+                  "Created a new Git worktree and started its setup scripts in Terminal. Send again once setup finishes.",
+                );
+                return;
+              }
+              // The bound worktree outranks the checkout grant resolved
+              // above — same override the main path applies.
+              let ws = workspace;
+              const dir = cur.worktreeDir;
+              if (dir && this.paths?.dirLive(dir)) {
+                ws = { projectId: cur.projectId ?? "", directory: dir };
+              // Test-only: under a mock provider a bound-but-dead
+              // worktree keeps the checkout workspace — the suites that
+              // stub the bind have no real dir to verify. Every real
+              // provider fails honestly instead of writing into the
+              // shared folder.
+              } else if (this.provider.descriptor.mode !== "mock") {
+                this.failTurnSync(
+                  cur,
+                  turn,
+                  "WORKSPACE_NOT_CONFIGURED: the thread's worktree is missing or moved",
+                );
+                return;
+              }
+              try {
+                this.startProviderThroughGate(thread, turn, prompt, ws, opts);
+              } catch (err) {
+                this.failTurnSync(
+                  thread,
+                  turn,
+                  (err as Error)?.message ?? String(err),
+                );
+              }
+              return;
+            }
+            // A failed bind is an honest failure (frozen
+            // .failed("Could not create a worktree")) — no silent local
+            // fallback that would write into the busy checkout.
+            this.failTurnSync(cur, turn, "Could not create a worktree");
+            return;
+          }
+          // .unavailable — root mismatch, no commits, or an operation in
+          // progress; the busy re-check above already freed a finished
+          // claim, so a still-busy checkout fails honestly here.
+          const cur = live();
+          if (!cur) return;
+          this.failTurnSync(
+            cur,
+            turn,
+            "Another chat is active in this repository, and a separate Git worktree isn't available right now. Wait for it to finish, then send again.",
+          );
+        })
+        .catch((err) => {
+          const cur = live();
+          if (cur)
+            this.failTurnSync(
+              thread,
+              turn,
+              (err as Error)?.message ?? String(err),
+            );
+        });
+      return turn;
+    }
+
+    this.startProviderThroughGate(thread, turn, prompt, workspace, opts);
+    return turn;
+  }
+
+  /** Before-snapshot gate: when a checkpoint coordinator owns this
+   *  project's turns, the provider may start ONLY after the capture
+   *  resolved and the turn is still alive — a cancel/delete/close
+   *  during capture must never start it (P2L). Checkpoint preparation
+   *  failure must never strand the turn: an unexpected coordinator
+   *  rejection still lets ordinary chat proceed (visibly failed via
+   *  the coordinator's own record), and a provider-start failure ends
+   *  the turn honestly instead of leaving it running forever.
+   *  Checkpoints are bound to the project's grant directory — a
+   *  worktree thread's snapshots would silently describe the WRONG
+   *  directory, so capture is skipped honestly (F11 bounded scope).
+   *  The P1-39 auto-worktree deferred paths start through this same
+   *  gate: a send that ends up local still gets its snapshot. */
+  private startProviderThroughGate(
+    thread: ChatThread,
+    turn: Turn,
+    prompt: string,
+    workspace: WorkspaceGrant | undefined,
+    opts?: { authored?: boolean; hydraReport?: number[]; hydraBrief?: boolean },
+  ): void {
+    const live = this.store.state.threads.find((t) => t.id === thread.id);
+    if (
+      this.checkpoints &&
+      workspace &&
+      thread.projectId &&
+      (live?.worktreeDir ?? thread.worktreeDir) === undefined
+    ) {
       const ckpt = this.checkpoints;
       void ckpt
         .beginTurn(thread, turn.id)
         .then((mayStart) => {
           if (!mayStart) return;
           try {
-            this.startProvider(thread, turn, prompt, workspace!, opts);
+            this.startProvider(thread, turn, prompt, workspace, opts);
           } catch (err) {
             this.failTurnSync(thread, turn, (err as Error)?.message ?? String(err));
           }
         })
         .catch((err) => {
           try {
-            this.startProvider(thread, turn, prompt, workspace!, opts);
+            this.startProvider(thread, turn, prompt, workspace, opts);
           } catch (e) {
             this.failTurnSync(thread, turn, (e as Error)?.message ?? String(e ?? err));
           }
         });
-      return turn;
+      return;
     }
     this.startProvider(thread, turn, prompt, workspace, opts);
-    return turn;
   }
 
   /** Start the provider for a live turn. Re-proves thread+turn identity
@@ -1535,6 +1689,16 @@ export class Engine {
         },
       );
       this.handles.set(threadId, handle);
+      // Frozen hasStartedTurn: latched the moment a turn actually
+      // reaches a provider — never by a send that failed at a gate. The
+      // P1-39 auto gate reads it to decide whether the chat is still on
+      // its first turn.
+      if (live.hasStartedTurn !== true) {
+        this.store.update(() => {
+          const t = this.store.state.threads.find((x) => x.id === threadId);
+          if (t) t.hasStartedTurn = true;
+        });
+      }
       if (antiSlopPending) {
         // Spent only on an actual start — like the frozen epoch check,
         // a session rebound in the meantime keeps the delivery pending.
@@ -2122,7 +2286,7 @@ export class Engine {
     recentDownloadsPicker?: boolean | undefined;
     newThreadLocation?: "recent" | "standalone" | undefined;
     defaultRuntimeMode?: import("../shared/types").RuntimeMode | undefined;
-    defaultWorkspaceMode?: "local" | "worktree" | undefined;
+    defaultWorkspaceMode?: "local" | "worktree" | "auto" | undefined;
     showReasoning?: boolean | undefined;
     showsWorkingCard?: boolean | undefined;
     performanceMode?: boolean | undefined;
@@ -2485,13 +2649,46 @@ export class Engine {
    * reaches git after `check-ref-format` + a collision check; the
    * directory itself is always main-chosen.
    */
-  async createThreadWorktree(threadId: string, branch?: string): Promise<WorktreeResult> {
+  /** P1-39 (frozen isLocalCheckoutBusy, bounded): another chat already
+   *  works in this project's checkout — a live turn or a latched
+   *  send-now on a non-archived, non-worktree thread bound to the same
+   *  project. A deferred auto-bind's turn reads "running" the whole
+   *  probe, so no separate reservation is needed; worktree-bound and
+   *  head-with-copy threads isolate elsewhere and never claim it.
+   *  Bounded: the match is same-project only — upstream's
+   *  `workspacePathsOverlap` also catches a DIFFERENT project nested
+   *  inside this folder, which this port does not track. */
+  private isLocalCheckoutBusy(projectId: string, excludingThreadId: string): boolean {
+    for (const t of this.store.state.threads) {
+      if (t.id === excludingThreadId || t.isArchived) continue;
+      if (t.projectId !== projectId || t.worktreeDir !== undefined) continue;
+      if (
+        t.turn?.status === "running" ||
+        t.turn?.status === "waiting-approval" ||
+        this.pendingSends.has(t.id)
+      )
+        return true;
+    }
+    return false;
+  }
+
+  async createThreadWorktree(
+    threadId: string,
+    branch?: string,
+    /** P1-39: the auto-prep call passes its own deferred turn — a turn
+     *  whose provider provably never started is not "active" work. */
+    allowTurnId?: string,
+  ): Promise<WorktreeResult> {
     this.assertMutable();
     const thread = this.mustThread(threadId);
     if (!this.worktrees) return { kind: "unavailable", reason: "worktrees-unavailable" };
     if (!thread.projectId) return { kind: "unavailable", reason: "thread-has-no-project" };
     if (thread.worktreeDir) return { kind: "unavailable", reason: "already-bound" };
-    if (thread.turn && (thread.turn.status === "running" || thread.turn.status === "waiting-approval"))
+    if (
+      thread.turn &&
+      (thread.turn.status === "running" || thread.turn.status === "waiting-approval") &&
+      thread.turn.id !== allowTurnId
+    )
       return { kind: "unavailable", reason: "turn-active" };
     const project = this.store.state.projects.find((p) => p.id === thread.projectId);
     if (!project?.directory || this.directoryStatusFor(project) !== "available")
@@ -2772,6 +2969,7 @@ export class Engine {
       // default runtime mode — a continuation is a new thread too.
       runtimeMode: this.store.state.settings.defaultRuntimeMode ?? "fullAccess",
       continuation,
+      hasStartedTurn: false,
     };
     this.store.update((d) => {
       d.threads.push(thread);
@@ -4440,6 +4638,7 @@ export class Engine {
       // global default (frozen heads share the chat's lane).
       runtimeMode: lead.runtimeMode ?? this.store.state.settings.defaultRuntimeMode ?? "fullAccess",
       sessionGrants: [],
+      hasStartedTurn: false,
       hydraEnabled: false,
       hydraHead: {
         leadId: lead.id,
@@ -5564,6 +5763,7 @@ export class Engine {
       messages: [],
       turn: null,
       sessionGrants: [],
+      hasStartedTurn: false,
       hydraEnabled: this.store.state.settings.hydraDefaultEnabled !== false,
       ...(this.store.state.settings.lastHydraPairId
         ? { hydraPairId: this.store.state.settings.lastHydraPairId }
