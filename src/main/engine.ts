@@ -5160,10 +5160,14 @@ export class Engine {
       return false;
     };
     // HydraPaths.canonical: normalized absolute, realpath when live.
-    const abs = resolve(reference);
-    let canonical = abs;
+    // NT namespace prefixes are stripped first — \\?\C:\Windows would
+    // otherwise slip the system-root compare while still opening.
+    let raw = resolve(reference);
+    if (/^\\\\\?\\UNC\\/i.test(raw)) raw = "\\\\" + raw.slice(8);
+    else if (/^\\\\[?.]\\/i.test(raw)) raw = raw.slice(4);
+    let canonical = raw;
     try {
-      canonical = realpathSync(abs);
+      canonical = realpathSync(raw);
     } catch {
       /* not created yet — keep the normalized form */
     }

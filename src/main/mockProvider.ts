@@ -189,11 +189,15 @@ export class MockProvider implements ProviderAdapter {
     const wantsHydraIdentity = prompt.includes("[mock:hydra-identity]");
     // P1-08 fixture: `[mock:hydra-path]` followed by the absolute path —
     // the delegation routes the head at that folder so a test drives
-    // non-Git/system/broken-Git routing with a real directory.
-    const hydraPathMatch = prompt.match(/\[mock:hydra-path\](\S+)/);
+    // non-Git/system/broken-Git routing with a real directory. A quoted
+    // path exercises folders whose names contain spaces.
+    const hydraPathMatch = prompt.match(/\[mock:hydra-path\]("[^"]+"|\S+)/);
     const wantsHydraPath = hydraPathMatch !== null;
+    const hydraPathArg = wantsHydraPath
+      ? hydraPathMatch![1].replace(/^"|"$/g, "")
+      : "";
     const hydraPathEntry = wantsHydraPath
-      ? `[{"task":"Folder work","prompt":"Try it.","project":${JSON.stringify(hydraPathMatch![1])}}]`
+      ? `[{"task":"Folder work","prompt":"Try it.","project":${JSON.stringify(hydraPathArg)}}]`
       : "";
     // P1-12 fixture: `[mock:hydra-continue]` — the lead's reply to the
     // batch report emits one `"continue": "Hank"` entry, sending the

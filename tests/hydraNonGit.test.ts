@@ -129,6 +129,20 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     ).toBe(true);
   });
 
+  it("a namespace-prefixed system folder is refused too", async () => {
+    const { engine } = rig();
+    const sys = process.env.SystemRoot ?? "C:\\Windows";
+    const escaped = join(sys, "made-here");
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]\\\\?\\${escaped}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe("failed");
+    expect(head.hydraHead!.summary).toContain("is a system folder");
+    expect(existsSync(escaped)).toBe(false);
+  });
+
   it("a file path and a missing parent are refused", async () => {
     const { engine } = rig();
     const parent = tmp("tivano-file-");
