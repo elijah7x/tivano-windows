@@ -6,7 +6,7 @@
   "zcode": "C:\\tivano\\zcode\\zcode.cjs",
   "model": "glm-5.3",
   "devinCli": "C:\\Users\\elijah\\AppData\\Local\\Programs\\Devin\\resources\\app\\extensions\\windsurf\\devin\\bin\\devin.exe",
-  "arbiterModel": "claude-opus-5-5-medium",
+  "arbiterModel": "claude-sonnet-5-5-xhigh",
   "arbiterTimeoutMinutes": 30,
   "arbiterDailyCap": 6,
   "referenceRoot": "C:\\tivano\\reference\\tivano-v3.0.0",

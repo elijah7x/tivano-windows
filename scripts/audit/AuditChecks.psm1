@@ -14,7 +14,7 @@ $script:TokenCache = @{}
 $script:CmdExe = Join-Path ([Environment]::GetFolderPath('System')) 'cmd.exe'
 $script:TaskkillExe = Join-Path ([Environment]::GetFolderPath('System')) 'taskkill.exe'
 $script:DefaultDevinCli = 'C:\Users\elijah\AppData\Local\Programs\Devin\resources\app\extensions\windsurf\devin\bin\devin.exe'
-$script:DefaultArbiterModel = 'claude-opus-5-5-medium'
+$script:DefaultArbiterModel = 'claude-sonnet-5-5-xhigh'
 
 function Write-AuditText {
   param(
