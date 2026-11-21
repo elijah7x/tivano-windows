@@ -510,9 +510,14 @@ function Close-ExtraDevinWindows {
   if ($all[0].Rank -gt 0) {
     $preferred = $all[0].Handle
   }
+  # Close only what is provably ours: duplicate windows for this workspace, and empty
+  # folderless chats ("Devin - <untitled or /bypass>") left by failed kickoffs. Sessions in other
+  # folders are kept, and nothing is closed while no window matches this workspace.
+  if ($preferred -eq [IntPtr]::Zero) { return 0 }
   $closed = 0
   foreach ($win in $all) {
-    if ($preferred -ne [IntPtr]::Zero -and $win.Handle -eq $preferred) { continue }
+    if ($win.Handle -eq $preferred) { continue }
+    if (-not ($win.Rank -gt 0 -or [string]$win.Title -match '^Devin( - |$)')) { continue }
     if ([DevLoopWindows]::CloseWindow($win.Handle)) {
       $closed++
     }
@@ -1134,6 +1139,11 @@ function Invoke-WatchTick {
       }
     }
     if ($kickoffFailures -ge 3) {
+      $busyReset = @(Get-BusyAutopilotProcesses)
+      if ($busyReset.Count -gt 0) {
+        Write-Log ('kickoff reset deferred: ' + $busyReset.Count + ' task process(es) are running')
+        return
+      }
       Write-Log ('kickoff retry (' + $kickoffReason + '): performing full reset of Devin Desktop before relaunch')
       $null = Stop-DevinDesktop
       $null = Invoke-Kickoff -WaitForIdle $false
