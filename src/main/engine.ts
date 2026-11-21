@@ -265,9 +265,10 @@ export class Engine {
     string,
     { gen: number; request: string }
   >();
-  /** P1-38: a settled report batch awaiting its independent review —
-   *  batchId plus the request text the review prompt names (frozen
-   *  job.reviewEngine gate: one review per batch). */
+  /** P1-38: settled report batches awaiting their independent review —
+   *  every batchId that settled since the last review ran, merged into
+   *  one job-scoped review (frozen job.reviewEngine gate: one review per
+   *  job, not per batch) with the dispatch-time request it names. */
   private readonly hydraReviewPending = new Map<
     string,
     { batchIds: string[]; request: string; leadGens: number[] }
@@ -1884,6 +1885,9 @@ export class Engine {
     if (index < 0) throw new EngineError("no such queued follow-up");
     const unauthored =
       items[index]!.unauthored === true && items[index]!.bundleId === undefined;
+    // A review findings item the user bundled drains authored — reviewId
+    // is intentionally dropped so an ordinary user reply never rewrites
+    // the card's verdict counts.
     const reviewId = unauthored ? items[index]!.reviewId : undefined;
     const text = this.takeBundleText(thread, index);
     if (!text.trim()) {
@@ -5342,7 +5346,10 @@ export class Engine {
     const current = this.store.state.threads.find((t) => t.id === leadId);
     if (!current || findings === null || this.workGate !== "open") return;
     findings = findings.trim().slice(0, 40_000);
-    const findingCount = countReviewFindings(findings);
+    // Clamped to the strict storeDoc range (vInt 0..1000): a reviewer
+    // emitting more Finding lines inside the findings cap must never
+    // persist a card the loader would reject on the next open.
+    const findingCount = Math.min(countReviewFindings(findings), 1000);
     const card: HydraReview = {
       id: randomUUID(),
       batchId: (job.batchIds.join(",") || leadId).slice(0, 200),

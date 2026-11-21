@@ -3355,8 +3355,10 @@ html[data-performance] .md-veil { animation: none; }
   gap: 8px 10px;
   align-items: end;
 }
-.hydra-editor .model-select { width: 100%; min-width: 0; }
-.hydra-editor .hydra-model-choice {
+.hydra-editor .model-select,
+.hydra-reviewer-card .model-select { width: 100%; min-width: 0; }
+.hydra-editor .hydra-model-choice,
+.hydra-reviewer-card .hydra-model-choice {
   align-self: flex-start;
   field-sizing: content;
   width: auto;
