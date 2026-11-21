@@ -4925,20 +4925,26 @@ export class Engine {
     // sidebar project routes by name; anything else routes only as an
     // absolute path, and a non-path unknown name is the frozen refusal.
     const routeRef = d.project?.trim();
+    // Frozen expandingTildeInPath: a leading ~ resolves to the home
+    // folder before the absolute-path test, exactly like the shell.
+    const expanded =
+      routeRef === "~" || routeRef?.startsWith("~/") || routeRef?.startsWith("~\\")
+        ? join(homedir(), routeRef!.slice(1).replace(/^[/\\]/, ""))
+        : routeRef;
     if (
-      routeRef &&
+      expanded &&
       !this.store.state.projects.some(
-        (p) => p.name.toLowerCase() === routeRef.toLowerCase(),
+        (p) => p.name.toLowerCase() === routeRef!.toLowerCase(),
       )
     ) {
-      if (!isAbsolute(routeRef)) {
+      if (!isAbsolute(expanded)) {
         return this.failHydraStart(
           head,
           `Hydra: no project named ${routeRef} is in the sidebar, so ${persona.name} did not start.`,
           { note: true },
         );
       }
-      if (!this.routeHydraHead(head, lead, routeRef, persona.name)) return;
+      if (!this.routeHydraHead(head, lead, expanded, persona.name)) return;
     }
     // F22 isolation (frozen makeHydraCopy): with copies on and a copyable
     // checkout the head gets its own detached worktree first and runs
@@ -5174,11 +5180,22 @@ export class Engine {
     const norm = canonical.replace(/[\\/]+$/, "");
     const lower = norm.toLowerCase();
     const roots = this.hydraSystemRoots();
-    if (
+    // Frozen hydraPathTouchesProtectedRoot: a path is refused when it
+    // IS a protected root, sits INSIDE one, or CONTAINS one — the
+    // app's own task workspaces are the one exemption, so a routed
+    // head can still be sent into a checkout Tivano itself made.
+    const taskWs = join(this.dataRoot, "worktrees")
+      .replace(/[\\/]+$/, "")
+      .toLowerCase();
+    const inTaskWs = lower === taskWs || lower.startsWith(taskWs + "\\");
+    const touches =
       /^[A-Za-z]:$/.test(norm) ||
       /^[\\/]+$/.test(norm) ||
-      roots.some((r) => lower === r || lower.startsWith(r + "\\"))
-    ) {
+      roots.some(
+        (r) =>
+          lower === r || lower.startsWith(r + "\\") || r.startsWith(lower + "\\"),
+      );
+    if (!inTaskWs && touches) {
       return refuse(
         `Hydra: ${reference} is a system folder, so ${personaName} did not start.`,
       );
@@ -5239,7 +5256,7 @@ export class Engine {
     // match reuses its project; an unlisted routed folder joins the
     // sidebar as a bound project so the head's work is visible there.
     let project = this.projectForDirectory(canonical);
-    if (project === undefined && probe === "none" && this.paths) {
+    if (project === undefined && this.paths) {
       const id = randomUUID();
       try {
         this.paths.registerUser(id, canonical);
@@ -5256,7 +5273,11 @@ export class Engine {
         });
         this.emit({ type: "project-added", project });
       } catch {
-        /* grant write failed — the head stays under the lead's project */
+        // No grant, no honest execution dir — refuse rather than let
+        // the head run in the lead's checkout under a routed brief.
+        return refuse(
+          `Hydra: ${personaName} did not start because its checkout could not be read.`,
+        );
       }
     }
     if (project !== undefined) head.projectId = project.id;

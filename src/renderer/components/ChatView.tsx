@@ -9,7 +9,7 @@ import { INTERRUPTED_MARKER } from "../../shared/types";
 import { AttachChip } from "./AttachChip";
 import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
 import { useT } from "../locale";
-import { translateError } from "../i18n";
+import { translateError, translateNotice } from "../i18n";
 import {
   renderMarkdown,
   renderMarkdownStreaming,
@@ -534,7 +534,7 @@ export function ChatView(props: {
                 <span className="notice-glyph" aria-hidden="true">
                   {lv === "error" ? "⛔" : lv === "warning" ? "⚠" : "ⓘ"}
                 </span>
-                <span className="notice-text">{translateError(t, m.content)}</span>
+                <span className="notice-text">{translateNotice(t, m.content)}</span>
               </div>
             );
           }

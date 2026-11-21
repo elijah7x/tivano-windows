@@ -1368,6 +1368,37 @@ export function translateError(t: (k: string) => string, message: string): strin
   return `${localized}: ${message.slice(i + 1).trim()}`;
 }
 
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+let noticeTemplates: { key: string; re: RegExp }[] | undefined;
+
+/**
+ * Engine-emitted notices carry already-substituted English — a catalog
+ * key like "Hydra: %@ is a system folder, so %@ did not start." never
+ * matches the literal text, so a zh-Hans UI would read English. Recover
+ * the template by matching every parameterized key against the message,
+ * then translate with the captured values. Falls back to the prefix
+ * path for untemplated notices.
+ */
+export function translateNotice(
+  t: (k: string, ...vars: string[]) => string,
+  message: string,
+): string {
+  noticeTemplates ??= zhHansKeys()
+    .filter((k) => /%@|%d/.test(k))
+    .map((key) => ({
+      key,
+      re: new RegExp(
+        "^" + key.split(/%@|%d/).map(escapeRe).join("(.+?)") + "$",
+        "s",
+      ),
+    }));
+  for (const { key, re } of noticeTemplates) {
+    const m = re.exec(message);
+    if (m) return t(key, ...m.slice(1));
+  }
+  return translateError(t, message);
+}
+
 /** Keys present in zh-Hans; used by the completeness test. */
 export function zhHansKeys(): string[] {
   return Object.keys(zhHans);

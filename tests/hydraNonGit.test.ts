@@ -7,8 +7,8 @@
 // no merge) and joins the sidebar.
 
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
@@ -129,6 +129,55 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     ).toBe(true);
   });
 
+  it("a folder containing a protected root is refused", async () => {
+    const { engine, dataRoot } = rig();
+    // Frozen hydraPathTouchesProtectedRoot is bidirectional: the data
+    // root's parent would let a head write next to Tivano's own state.
+    const ancestor = dirname(dataRoot);
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]${ancestor}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe("failed");
+    expect(head.hydraHead!.summary).toContain("is a system folder");
+  });
+
+  it("a leading ~ expands to the home folder before routing", async () => {
+    const { engine } = rig();
+    // The expanded route must behave exactly like spelling the home
+    // folder out — an unexpanded ~ would fail "no project named".
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "do it [mock:hydra-path]~");
+    const lead2 = engine.createThread(null, "lead2");
+    engine.sendTurn(lead2.id, `do it [mock:hydra-path]${homedir()}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    await waitFor(() => heads(engine, lead2.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    const twin = heads(engine, lead2.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+    await waitFor(() => twin.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe(twin.hydraHead!.status);
+    expect(head.hydraHead!.summary).not.toContain("no project named");
+    expect(head.hydraHead!.targetCheckout).toBe(
+      twin.hydraHead!.targetCheckout,
+    );
+  });
+
+  it("a quoted path with a space routes whole", async () => {
+    const { engine } = rig();
+    const folder = join(tmp("tivano-space-"), "with space");
+    mkdirSync(folder, { recursive: true });
+    const canonical = realpathSync(folder);
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]"${folder}"`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe("completed");
+    expect(head.hydraHead!.targetCheckout).toBe(canonical);
+  });
+
   it("a namespace-prefixed system folder is refused too", async () => {
     const { engine } = rig();
     const sys = process.env.SystemRoot ?? "C:\\Windows";
@@ -192,6 +241,16 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(head2.hydraHead!.status).toBe("completed");
     expect(head2.hydraHead!.isNonGitCheckout).toBe(false);
     expect(head2.hydraHead!.targetCheckout).toBe(repo);
+    // The routed repo joins the sidebar as a bound project — the head's
+    // execution dir resolves through it on every provider path.
+    const norm = (p: string) => p.replace(/[\\/]+$/, "").toLowerCase();
+    const bound = engine
+      .snapshot()
+      .projects.find(
+        (p) => p.directory !== undefined && norm(p.directory) === norm(repo),
+      );
+    expect(bound).toBeDefined();
+    expect(head2.projectId).toBe(bound!.id);
   });
 
   it("a name that is no sidebar project and no path is still refused", async () => {

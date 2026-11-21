@@ -194,7 +194,7 @@ export class MockProvider implements ProviderAdapter {
     const hydraPathMatch = prompt.match(/\[mock:hydra-path\]("[^"]+"|\S+)/);
     const wantsHydraPath = hydraPathMatch !== null;
     const hydraPathArg = wantsHydraPath
-      ? hydraPathMatch![1].replace(/^"|"$/g, "")
+      ? hydraPathMatch[1]!.replace(/^"|"$/g, "")
       : "";
     const hydraPathEntry = wantsHydraPath
       ? `[{"task":"Folder work","prompt":"Try it.","project":${JSON.stringify(hydraPathArg)}}]`
