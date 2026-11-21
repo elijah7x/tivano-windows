@@ -343,7 +343,7 @@ function Get-OpenNyxPulls {
   $all = New-Object Collections.Generic.List[object]
   for ($page = 1; $page -le 20; $page++) {
     $resp = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $repo + '/pulls?state=open&base=main&per_page=100&page=' + $page)
-    $items = if ($null -ne $resp) { @($resp | ForEach-Object { $_ }) } else { @() }
+    $items = @($resp | Where-Object { $null -ne $_ })
     foreach ($pr in $items) {
       $state = ([string](Get-JsonProp $pr 'state')).ToLowerInvariant()
       $headRef = [string](Get-JsonProp (Get-JsonProp $pr 'head') 'ref')
@@ -365,7 +365,7 @@ function Get-PrComments {
   $all = New-Object Collections.Generic.List[object]
   for ($page = 1; $page -le 20; $page++) {
     $resp = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $Config.repo + '/issues/' + $Number + '/comments?per_page=100&page=' + $page)
-    $items = if ($null -ne $resp) { @($resp | ForEach-Object { $_ }) } else { @() }
+    $items = @($resp | Where-Object { $null -ne $_ })
     foreach ($c in $items) { $null = $all.Add($c) }
     if ($items.Count -lt 100) { break }
   }
@@ -953,7 +953,7 @@ function Get-DeterministicFindings {
 
 function Format-FindingsForPrompt {
   param($Findings)
-  $items = if ($null -ne $Findings) { @($Findings | ForEach-Object { $_ }) } else { @() }
+  $items = @($Findings | Where-Object { $null -ne $_ })
   if ($items.Count -eq 0) { return 'none' }
   $lines = New-Object Collections.Generic.List[string]
   foreach ($f in $items) {
@@ -994,7 +994,7 @@ function Build-AuditCommentBody {
 
   $null = $lines.Add('')
   $null = $lines.Add('### Acceptance')
-  $accList = if ($null -ne $Acceptance) { @($Acceptance | ForEach-Object { $_ }) } else { @() }
+  $accList = @($Acceptance | Where-Object { $null -ne $_ })
   if ($accList.Count -eq 0) {
     $null = $lines.Add('none')
   } else {
@@ -1010,7 +1010,7 @@ function Build-AuditCommentBody {
 
   $null = $lines.Add('')
   $null = $lines.Add('### Findings')
-  $findList = if ($null -ne $Findings) { @($Findings | ForEach-Object { $_ }) } else { @() }
+  $findList = @($Findings | Where-Object { $null -ne $_ })
   if ($findList.Count -eq 0) {
     $null = $lines.Add('none')
   } else {
@@ -1026,7 +1026,7 @@ function Build-AuditCommentBody {
 
   $null = $lines.Add('')
   $null = $lines.Add('### Claims')
-  $claimList = if ($null -ne $Claims) { @($Claims | ForEach-Object { $_ }) } else { @() }
+  $claimList = @($Claims | Where-Object { $null -ne $_ })
   if ($claimList.Count -eq 0) {
     $null = $lines.Add('none')
   } else {
@@ -1043,7 +1043,7 @@ function Build-AuditCommentBody {
 
   $null = $lines.Add('')
   $null = $lines.Add('### Withdrawn')
-  $wdList = if ($null -ne $Withdrawn) { @($Withdrawn | ForEach-Object { $_ }) } else { @() }
+  $wdList = @($Withdrawn | Where-Object { $null -ne $_ })
   if ($wdList.Count -eq 0) {
     $null = $lines.Add('none')
   } else {
