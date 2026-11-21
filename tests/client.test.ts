@@ -184,4 +184,59 @@ describe("per-thread drafts", () => {
     expect(store.draft("t1")).toBe("");
     expect(store.isPending("t1")).toBe(false);
   });
+
+  it("keeps the in-flight draft when its own send rolls back mid-flight", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const invoke = vi.fn(async (c: string) => {
+      if (c === "turns:send") await gate;
+      return {};
+    });
+    const store = new ClientStore(invoke);
+    const gen = store.beginHydration();
+    store.hydrate(snap(1), gen);
+    store.setDraft("t1", "hello");
+    const send = store.sendDraft("t1");
+    // The engine's turn-unsent lands BEFORE the turns:send reply — the
+    // composer still holds exactly the rolled-back draft.
+    store.apply({ type: "turn-unsent", threadId: "t1", text: "hello" });
+    release();
+    await send;
+    expect(store.draft("t1")).toBe("hello");
+    expect(invoke.mock.calls.some(([c]) => c === "followUps:enqueue")).toBe(false);
+  });
+
+  it("queues the rolled-back text when the composer moved on mid-flight", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const invoke = vi.fn(async (c: string) => {
+      if (c === "turns:send") await gate;
+      return {};
+    });
+    const store = new ClientStore(invoke);
+    const gen = store.beginHydration();
+    store.hydrate(snap(1), gen);
+    store.setDraft("t1", "first");
+    const send = store.sendDraft("t1");
+    store.setDraft("t1", "typed while in flight");
+    store.apply({ type: "turn-unsent", threadId: "t1", text: "first" });
+    release();
+    await send;
+    expect(store.draft("t1")).toBe("typed while in flight");
+    expect(invoke).toHaveBeenCalledWith("followUps:enqueue", {
+      threadId: "t1",
+      text: "first",
+      front: true,
+    });
+  });
+
+  it("restores a late rollback (no send in flight) to an empty composer", async () => {
+    const invoke = vi.fn(async (_c: string) => ({}));
+    const store = new ClientStore(invoke);
+    const gen = store.beginHydration();
+    store.hydrate(snap(1), gen);
+    store.apply({ type: "turn-unsent", threadId: "t1", text: "back" });
+    expect(store.draft("t1")).toBe("back");
+    expect(invoke.mock.calls.some(([c]) => c === "followUps:enqueue")).toBe(false);
+  });
 });

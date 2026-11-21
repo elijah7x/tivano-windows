@@ -112,6 +112,10 @@ export class ClientStore {
    *  threads:resend while it is set. Ephemeral like drafts. */
   private editTargets = new Map<string, { turnId: string; messageId: string }>();
   private pendingSends = new Set<string>();
+  /** The draft version each in-flight send submitted — lets turn-unsent
+   *  tell "the composer still holds exactly this send" (the rollback is
+   *  already sitting in the box) from "the user typed meanwhile". */
+  private sentVersions = new Map<string, number>();
   /** F20: threads waiting for a usage-limit reset (ephemeral mirror). */
   limitResumes: Record<string, number> = {};
   private readonly invoke: InvokeFn;
@@ -392,6 +396,7 @@ export class ClientStore {
     if ((!text && !(d?.attachments?.length)) || this.pendingSends.has(threadId)) return;
     const version = d!.version;
     this.pendingSends.add(threadId);
+    this.sentVersions.set(threadId, version);
     this.notify();
     // F09/F06 local commands — frozen handleLocalCommand: "/plan" toggles
     // the interaction mode on every provider; "/compact" runs only where
@@ -430,6 +435,7 @@ export class ClientStore {
       this.reportError(e instanceof Error ? e.message : String(e));
     } finally {
       this.pendingSends.delete(threadId);
+      this.sentVersions.delete(threadId);
       this.notify();
     }
   }
@@ -617,6 +623,20 @@ export class ClientStore {
         // holds a draft the text waits at the FRONT of the follow-up
         // queue instead, so nothing typed meanwhile is clobbered.
         const d = this.drafts.get(event.threadId);
+        // The event lands BEFORE the turns:send reply — for the send
+        // that just rolled back, the composer still holds exactly that
+        // draft (same submitted version). That draft IS the restore:
+        // bump its version so sendDraft's success-clear skips it, and
+        // enqueue/re-set nothing — text, quotes and chips stay as they
+        // were, no duplicates.
+        const selfRollback =
+          this.pendingSends.has(event.threadId) &&
+          d !== undefined &&
+          d.version === (this.sentVersions.get(event.threadId) ?? -1);
+        if (selfRollback) {
+          this.drafts.set(event.threadId, { ...d, version: d.version + 1 });
+          break;
+        }
         const composerBusy =
           !!d &&
           (!!(d.text ?? "").trim() ||
@@ -625,13 +645,13 @@ export class ClientStore {
         if (!composerBusy) {
           this.setDraft(event.threadId, event.text);
         } else {
-          // callApi already lands a rejection in the global error
-          // banner — the catch only keeps the re-thrown promise quiet.
-          void callApi("followUps:enqueue", {
+          this.invoke("followUps:enqueue", {
             threadId: event.threadId,
             text: event.text,
             front: true,
-          }).catch(() => {});
+          }).catch((e) =>
+            this.reportError(e instanceof Error ? e.message : String(e)),
+          );
         }
         // Sent attachments come back to the draft strip — merge by id so
         // nothing the user picked is silently lost (they ride the queue
