@@ -290,6 +290,8 @@ const vThread = vObject({
   subagentMode: vOptional(vEnum(["same", "preset", "adaptive"] as const)),
   // P1-38: persisted independent-review cards.
   hydraReviews: vOptional(vArray(vHydraReview, 200)),
+  // P1-39: frozen hasStartedTurn — a turn reached a provider.
+  hasStartedTurn: vOptional(vBoolean),
   // v2.2.34 keep-updated titles — see ChatThread.
   titleUserSet: vOptional(vBoolean),
   titleReviewTurns: vOptional(vInt(0, 1_000_000)),
@@ -747,6 +749,8 @@ const vThreadHead = vObject({
   ),
   // P1-38: the lead's independent-review cards.
   hydraReviews: vOptional(vArray(vHydraReview, 200)),
+  // P1-39: frozen hasStartedTurn — a turn reached a provider.
+  hasStartedTurn: vOptional(vBoolean),
   // F25: helper-chat binding (frozen parentThreadID / isInPanel).
   parentThreadId: vOptional(vNonEmptyString(120)),
   isInPanel: vOptional(vBoolean),

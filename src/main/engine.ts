@@ -1403,7 +1403,12 @@ export class Engine {
       !thread.parentThreadId &&
       this.worktrees &&
       (this.store.state.settings.defaultWorkspaceMode ?? "auto") === "auto" &&
-      thread.messages.filter((m) => m.role === "user").length === 1 &&
+      // Frozen !hasStartedTurn: latched only when a turn reaches a
+      // provider, so a send that failed AT this gate (wait-note,
+      // create-failed, deferred-by-scripts, cancelled mid-probe)
+      // re-arms it on resend — a message-count proxy would let that
+      // resend write into the still-busy checkout.
+      thread.hasStartedTurn !== true &&
       this.isLocalCheckoutBusy(thread.projectId, thread.id)
     ) {
       const projectId = thread.projectId;
@@ -1674,6 +1679,16 @@ export class Engine {
         },
       );
       this.handles.set(threadId, handle);
+      // Frozen hasStartedTurn: latched the moment a turn actually
+      // reaches a provider — never by a send that failed at a gate. The
+      // P1-39 auto gate reads it to decide whether the chat is still on
+      // its first turn.
+      if (live.hasStartedTurn !== true) {
+        this.store.update(() => {
+          const t = this.store.state.threads.find((x) => x.id === threadId);
+          if (t) t.hasStartedTurn = true;
+        });
+      }
       if (antiSlopPending) {
         // Spent only on an actual start — like the frozen epoch check,
         // a session rebound in the meantime keeps the delivery pending.
@@ -2629,7 +2644,10 @@ export class Engine {
    *  send-now on a non-archived, non-worktree thread bound to the same
    *  project. A deferred auto-bind's turn reads "running" the whole
    *  probe, so no separate reservation is needed; worktree-bound and
-   *  head-with-copy threads isolate elsewhere and never claim it. */
+   *  head-with-copy threads isolate elsewhere and never claim it.
+   *  Bounded: the match is same-project only — upstream's
+   *  `workspacePathsOverlap` also catches a DIFFERENT project nested
+   *  inside this folder, which this port does not track. */
   private isLocalCheckoutBusy(projectId: string, excludingThreadId: string): boolean {
     for (const t of this.store.state.threads) {
       if (t.id === excludingThreadId || t.isArchived) continue;

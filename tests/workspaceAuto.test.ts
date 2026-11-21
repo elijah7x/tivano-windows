@@ -203,6 +203,24 @@ describe("P1-39 workspace auto mode", () => {
     expect(seen.length).toBe(1);
   });
 
+  it("a gate-failed first send re-arms the busy check on resend", async () => {
+    const seen: TurnContext[] = [];
+    const r = rig("unavailable", seen, { hold: true });
+    const a = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(a.id, "holder");
+    const b = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(b.id, "no room");
+    await waitFor(() => turnStatus(r.engine, b.id) === "error");
+    expect(thread(r.engine, b.id).turn?.error).toBe(UNAVAILABLE_NOTE);
+    expect(thread(r.engine, b.id).hasStartedTurn).not.toBe(true);
+    // Resend while the checkout is still busy: the gate fires AGAIN —
+    // never a silent local write into the claimed folder.
+    r.engine.sendTurn(b.id, "try again");
+    await waitFor(() => turnStatus(r.engine, b.id) === "error");
+    expect(thread(r.engine, b.id).turn?.error).toBe(UNAVAILABLE_NOTE);
+    expect(seen.length).toBe(1);
+  });
+
   it("explicit local and worktree modes are unaffected by a busy checkout", async () => {
     const seen: TurnContext[] = [];
     const r = rig("eligible", seen, { hold: true });

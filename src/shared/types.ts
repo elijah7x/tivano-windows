@@ -811,6 +811,14 @@ export interface ChatThread {
    */
   worktreeDir?: string | undefined;
   /**
+   * P1-39: frozen hasStartedTurn — latched the moment a turn actually
+   *   reaches a provider. The Workspace "auto" gate reads it to tell
+   *   "still on the first turn" apart from "a send that failed before
+   *   the provider ran": a gate-failed or cancelled first send keeps it
+   *   false and re-arms the busy-checkout check on resend.
+   */
+  hasStartedTurn?: boolean;
+  /**
    * F25: helper chat (frozen spawnSubagent) — a chat a merge/PR link in
    * `parentThreadId`'s timeline handed its request to. At most one helper
    * per parent; it inherits the parent's project and provider choices and
