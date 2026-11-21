@@ -6,8 +6,8 @@
 // events can never contaminate a session.
 
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { basename, isAbsolute, join, relative } from "node:path";
+import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { Store } from "./store";
 import {
@@ -40,6 +40,7 @@ import {
   QUIET_STALL_NOTE,
   STALLED_NOTE,
   delegatedHeadPrompt,
+  HYDRA_SHARED_FOLDER_RULE,
   hydraDelegationRequest,
   hydraIsTransientFailure,
   hydraLeadPolicy,
@@ -1376,7 +1377,10 @@ export class Engine {
       // authorized directory a real adapter would run in. Passing an
       // existing grant adds no requirement: no live dir → the fixture
       // simply does nothing (never a turn failure).
-      const dir = thread.worktreeDir ?? this.paths?.lookup(thread.projectId!)?.directory;
+      const dir =
+        thread.worktreeDir ??
+        thread.hydraHead?.targetCheckout ??
+        this.paths?.lookup(thread.projectId!)?.directory;
       if (dir && this.paths?.dirLive(dir))
         workspace = { projectId: thread.projectId ?? "", directory: dir };
     }
@@ -1390,6 +1394,7 @@ export class Engine {
     if (
       steeredHead?.projectId &&
       this.worktrees &&
+      steeredHead.hydraHead!.isNonGitCheckout !== true &&
       (steeredHead.worktreeDir === undefined ||
         steeredHead.hydraHead!.landingPending === true)
     ) {
@@ -2820,6 +2825,10 @@ export class Engine {
     if (thread.worktreeDir !== undefined) {
       return this.paths?.dirLive(thread.worktreeDir) ? thread.worktreeDir : null;
     }
+    // P1-08: a path-routed head's checkout wins over the project dir.
+    const routed = thread.hydraHead?.targetCheckout;
+    if (routed !== undefined)
+      return this.paths?.dirLive(routed) ? routed : null;
     if (!thread.projectId) return null;
     const project = this.store.state.projects.find((p) => p.id === thread.projectId);
     if (!project?.directory) return null;
@@ -4671,7 +4680,11 @@ export class Engine {
       // rule (an isolated head keeps its own copy), then the standing
       // three-line report reminder.
       const workRule =
-        info.baseTree !== undefined ? "You keep your own copy and files. " : "";
+        info.baseTree !== undefined
+          ? "You keep your own copy and files. "
+          : info.isNonGitCheckout === true
+            ? `${HYDRA_SHARED_FOLDER_RULE} `
+            : "";
       this.sendTurn(
         target.id,
         `The lead sends you back to your part:\n${d.prompt}\n\n${workRule}Report as before: one or two sentences of result, then exactly the three lines \`Deviations: ...\`, \`Unfinished: ...\` and \`Uncertain: ...\`, each \`none\` when empty; do not list changed files.`,
@@ -4908,28 +4921,37 @@ export class Engine {
       identityPick?.effort ?? routed?.effort ?? launch?.workerEffort ?? lead.codexEffort;
     if (headModel) head.codexModel = headModel;
     if (headEffort) head.codexEffort = headEffort;
-    // Frozen routeHydraHead: a delegation naming a project that is not
-    // in the sidebar cannot start — this build routes by name only, so
-    // the head ends failed with the routing error, shown to the lead
-    // once rather than again with each later message.
+    // Frozen hydraRouteReference + routeHydraHead: a "project" naming a
+    // sidebar project routes by name; anything else routes only as an
+    // absolute path, and a non-path unknown name is the frozen refusal.
+    const routeRef = d.project?.trim();
     if (
-      d.project?.trim() &&
+      routeRef &&
       !this.store.state.projects.some(
-        (p) => p.name.toLowerCase() === d.project!.toLowerCase(),
+        (p) => p.name.toLowerCase() === routeRef.toLowerCase(),
       )
     ) {
-      return this.failHydraStart(
-        head,
-        `Hydra: no project named ${d.project} is in the sidebar, so ${persona.name} did not start.`,
-        { note: true },
-      );
+      if (!isAbsolute(routeRef)) {
+        return this.failHydraStart(
+          head,
+          `Hydra: no project named ${routeRef} is in the sidebar, so ${persona.name} did not start.`,
+          { note: true },
+        );
+      }
+      if (!this.routeHydraHead(head, lead, routeRef, persona.name)) return;
     }
     // F22 isolation (frozen makeHydraCopy): with copies on and a copyable
     // checkout the head gets its own detached worktree first and runs
     // there; a checkout that cannot be copied honestly keeps the shared
-    // one — the head's record shows which it was.
+    // one — the head's record shows which it was. A non-Git checkout is
+    // never copied: it is changed in place (frozen isNonGitCheckout).
     const copySource = this.hydraCopySource(lead, head);
-    if (launch?.isolatesHeads && copySource && this.worktrees) {
+    if (
+      launch?.isolatesHeads &&
+      copySource &&
+      this.worktrees &&
+      head.hydraHead?.isNonGitCheckout !== true
+    ) {
       void this.prepareIsolatedHead(head.id, lead, d, persona, copySource, batchId, identityPrompt);
       return;
     }
@@ -4944,7 +4966,7 @@ export class Engine {
       );
     }
     try {
-      this.sendTurn(head.id, delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)", identityPrompt), {
+      this.sendTurn(head.id, delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)", identityPrompt, head.hydraHead?.isNonGitCheckout === true), {
         authored: false,
         hydraBrief: true,
       });
@@ -5020,6 +5042,8 @@ export class Engine {
   private hydraCheckoutUsable(head: ChatThread): boolean {
     if (head.worktreeDir !== undefined)
       return this.paths?.dirLive(head.worktreeDir) === true;
+    const routed = head.hydraHead?.targetCheckout;
+    if (routed !== undefined) return this.paths?.dirLive(routed) === true;
     if (!head.projectId) return true;
     const grantDir = this.paths?.lookup(head.projectId)?.directory;
     if (grantDir !== undefined && this.paths!.dirLive(grantDir)) return true;
@@ -5035,13 +5059,206 @@ export class Engine {
   /** The checkout a head's copy is made OF (frozen): a head kept in the
    *  lead's project copies the lead's own worktree when it has one;
    *  a head sent to another project copies that project's directory.
+   *  A path-routed head's targetCheckout wins over both.
    *  undefined = no live directory to copy. */
   private hydraCopySource(lead: ChatThread, head: ChatThread): string | undefined {
+    const routed = head.hydraHead?.targetCheckout;
+    if (routed !== undefined)
+      return this.paths?.dirLive(routed) ? routed : undefined;
     if (head.projectId === lead.projectId && lead.worktreeDir)
       return this.paths?.dirLive(lead.worktreeDir) ? lead.worktreeDir : undefined;
     const project = this.store.state.projects.find((p) => p.id === head.projectId);
     if (!project?.directory) return undefined;
     return this.paths?.dirLive(project.directory) ? project.directory : undefined;
+  }
+
+  /** P1-08: the Windows analog of the frozen system-root list — drive
+   *  roots, the Windows/Program Files/ProgramData trees and Tivano's
+   *  own data root (the task-workspaces folder lives there). Lower-
+   *  cased, separator-normalized for the `contains` test. */
+  private hydraSystemRoots(): string[] {
+    const env = (k: string, fallback: string) => {
+      const v = process.env[k];
+      return (v && isAbsolute(v) ? v : fallback)
+        .replace(/[\\/]+$/, "")
+        .toLowerCase();
+    };
+    return [
+      env("SystemRoot", "C:\\Windows"),
+      env("windir", "C:\\Windows"),
+      env("ProgramFiles", "C:\\Program Files"),
+      env("ProgramFiles(x86)", "C:\\Program Files (x86)"),
+      env("ProgramData", "C:\\ProgramData"),
+      this.dataRoot.replace(/[\\/]+$/, "").toLowerCase(),
+    ];
+  }
+
+  /** P1-08 (frozen HydraGitIdentityReader, bounded): a `.git` entry on
+   *  the folder or any ancestor marks a repository — a readable one
+   *  routes as a Git checkout, an unreadable one is refused instead of
+   *  being edited in place. `git` = `.git` file (worktree pointer) or
+   *  dir with a readable HEAD; `broken` = present but neither; `none`
+   *  = no `.git` anywhere up the chain. */
+  private hydraGitProbe(dir: string): "git" | "broken" | "none" {
+    for (let cur = dir; ; ) {
+      const gitDir = join(cur, ".git");
+      try {
+        const st = lstatSync(gitDir);
+        if (st.isFile()) {
+          try {
+            readFileSync(gitDir, "utf8");
+            return "git";
+          } catch {
+            return "broken";
+          }
+        }
+        if (st.isDirectory()) {
+          try {
+            lstatSync(join(gitDir, "HEAD"));
+            return "git";
+          } catch {
+            return "broken";
+          }
+        }
+      } catch {
+        /* no .git at this level — keep walking */
+      }
+      const parent = dirname(cur);
+      if (parent === cur) return "none";
+      cur = parent;
+    }
+  }
+
+  /** P1-08: the sidebar project bound to an exact directory, matching
+   *  both the durable grant and the display path (frozen
+   *  `projects.filter { HydraPaths.same($0.path, canonical) }`). */
+  private projectForDirectory(canonical: string): Project | undefined {
+    const norm = (p: string) => p.replace(/[\\/]+$/, "").toLowerCase();
+    const bound = this.paths?.findProjectByDirectory(canonical);
+    const listed = this.store.state.projects.filter(
+      (p) =>
+        p.id === bound ||
+        (p.directory !== undefined && norm(p.directory) === norm(canonical)),
+    );
+    return listed[0];
+  }
+
+  /** Frozen routeHydraHead: an absolute-path "project" resolves to a
+   *  working folder — created when its parent exists, refused on
+   *  system roots, on a file path, and on a repository Tivano cannot
+   *  read. A non-Git folder is changed in place (isNonGitCheckout:
+   *  no copy, no merge); a routed folder not yet in the sidebar joins
+   *  it. Returns false after ending the head with the refusal. */
+  private routeHydraHead(
+    head: ChatThread,
+    lead: ChatThread,
+    reference: string,
+    personaName: string,
+  ): boolean {
+    const refuse = (msg: string): boolean => {
+      this.failHydraStart(head, msg, { note: true });
+      return false;
+    };
+    // HydraPaths.canonical: normalized absolute, realpath when live.
+    const abs = resolve(reference);
+    let canonical = abs;
+    try {
+      canonical = realpathSync(abs);
+    } catch {
+      /* not created yet — keep the normalized form */
+    }
+    const norm = canonical.replace(/[\\/]+$/, "");
+    const lower = norm.toLowerCase();
+    const roots = this.hydraSystemRoots();
+    if (
+      /^[A-Za-z]:$/.test(norm) ||
+      /^[\\/]+$/.test(norm) ||
+      roots.some((r) => lower === r || lower.startsWith(r + "\\"))
+    ) {
+      return refuse(
+        `Hydra: ${reference} is a system folder, so ${personaName} did not start.`,
+      );
+    }
+    // Missing folder → created only when its parent is a live folder
+    // (frozen createDirectory, no intermediates); a file is refused.
+    let isDir = false;
+    try {
+      isDir = lstatSync(canonical).isDirectory();
+    } catch {
+      /* absent — try to create below */
+    }
+    if (!isDir) {
+      let exists = false;
+      try {
+        lstatSync(canonical);
+        exists = true;
+      } catch {
+        /* truly missing */
+      }
+      if (exists)
+        return refuse(
+          `Hydra: ${reference} is not a folder on this PC, so ${personaName} did not start.`,
+        );
+      let parentIsDir = false;
+      try {
+        parentIsDir = lstatSync(dirname(canonical)).isDirectory();
+      } catch {
+        /* parent missing */
+      }
+      if (!parentIsDir)
+        return refuse(
+          `Hydra: ${reference} is not a folder on this PC, so ${personaName} did not start.`,
+        );
+      try {
+        mkdirSync(canonical);
+      } catch {
+        return refuse(
+          `Hydra: ${reference} is not a folder on this PC, so ${personaName} did not start.`,
+        );
+      }
+      // The folder was born this instant — its canonical form is itself.
+      try {
+        canonical = realpathSync(canonical);
+      } catch {
+        /* keep the normalized path */
+      }
+    }
+    const probe = this.hydraGitProbe(canonical);
+    if (probe === "broken")
+      return refuse(
+        `Hydra: ${reference} is not a Git checkout Tivano can read, so ${personaName} did not start.`,
+      );
+    const info = head.hydraHead!;
+    info.targetCheckout = canonical;
+    info.isNonGitCheckout = probe === "none";
+    // Frozen applyHydraRoute + the slice's sidebar rule: an exact-dir
+    // match reuses its project; an unlisted routed folder joins the
+    // sidebar as a bound project so the head's work is visible there.
+    let project = this.projectForDirectory(canonical);
+    if (project === undefined && probe === "none" && this.paths) {
+      const id = randomUUID();
+      try {
+        this.paths.registerUser(id, canonical);
+        project = {
+          id,
+          name: basename(canonical) || canonical,
+          createdAt: Date.now(),
+          expanded: true,
+          directory: canonical,
+          directoryStatus: "available",
+        };
+        this.store.update((d) => {
+          d.projects.push(project!);
+        });
+        this.emit({ type: "project-added", project });
+      } catch {
+        /* grant write failed — the head stays under the lead's project */
+      }
+    }
+    if (project !== undefined) head.projectId = project.id;
+    this.store.update(() => {});
+    this.emit({ type: "thread-updated", thread: head });
+    return true;
   }
 
   /** Frozen makeHydraCopy's bind half: capture the checkout once per
@@ -5116,7 +5333,7 @@ export class Engine {
         { note: true },
       );
     }
-    const brief = delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)", identityPrompt);
+    const brief = delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)", identityPrompt, cur.hydraHead?.isNonGitCheckout === true);
     try {
       this.sendTurn(cur.id, brief, {
         authored: false,

@@ -759,6 +759,14 @@ export interface ChatThread {
       patchPath?: string | undefined;
       error?: string | undefined;
     } | undefined;
+    /** P1-08 (frozen HydraHeadInfo.targetCheckout): an absolute-path
+     *  route resolved this head's working folder explicitly — it wins
+     *  over the project directory everywhere the checkout is read. */
+    targetCheckout?: string | undefined;
+    /** P1-08 (frozen isNonGitCheckout): the routed folder is not a Git
+     *  repository — the head changes files in place, never gets a copy
+     *  and nothing merges on report. */
+    isNonGitCheckout?: boolean | undefined;
     /** F22 isolation: the copy could not be removed and is kept on
      *  disk at `worktreeDir` (frozen kept-copy path). */
     copyKept?: boolean | undefined;
