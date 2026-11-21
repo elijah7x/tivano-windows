@@ -31,6 +31,10 @@ export interface HydraDelegation {
   project?: string | undefined;
   /** Head profile name on the pair; unknown = shared worker model. */
   profile?: string | undefined;
+  /** P1-37: the adaptive mode's 1-based identity number (frozen
+   *  `preset` on Chimera entries) — resolves against the usable
+   *  presets the policy listed. */
+  identity?: number | undefined;
 }
 
 const singleLine = (s: string, limit: number): string => {
@@ -50,12 +54,17 @@ export function delegationFromEntry(entry: unknown): HydraDelegation | null {
   // `role` is the adaptive mode's job-title field (frozen Chimera
   // entries); it stands in for `task` when the lead names one.
   const task = get("task") ?? get("role") ?? singleLine(prompt, 60);
+  const idn = (entry as Record<string, unknown>).identity;
   return {
     task,
     prompt,
     name: get("name") ?? get("head"),
     project: get("project") ?? get("repo"),
     profile: get("profile"),
+    identity:
+      typeof idn === "number" && Number.isInteger(idn) && idn > 0
+        ? idn
+        : undefined,
   };
 }
 
@@ -332,10 +341,16 @@ export function delegatedHeadPrompt(
   persona: HydraPersona,
   delegation: HydraDelegation,
   checkoutPath: string,
+  identityPrompt?: string | undefined,
 ): string {
+  // P1-37: the adaptive mode's identity rides the brief (frozen
+  // rolePrompt on the waiting item) — one line under the task.
+  const identity = identityPrompt?.trim()
+    ? `\nYou work as this sub-agent identity: ${identityPrompt.trim()}\n`
+    : "";
   return `You are ${persona.name}, a Hydra head in Tivano: one of several helpers working in parallel for a lead agent. The lead delegated this task to you.
 
-## Your task: ${delegation.task}
+## Your task: ${delegation.task}${identity}
 ${withoutVerificationSteps(delegation.prompt)}
 
 ## Where you work
@@ -805,17 +820,3 @@ export function hydraQueuedHeadsNote(queued: number, maxHeads: number): string {
   return `[Hydra] ${tasks} queued, not lost: the cap allows ${heads} at once. They start automatically as heads finish; do not send them again.\n\n---\n\n`;
 }
 
-/** Bounded `ChimeraPrompts.policy` slice — the adaptive mode's extra
- *  delegation guidance: role titles plus routing through the pair's
- *  head profiles (Windows' bounded stand-in for the frozen identities:
- *  casting cards and cross-provider matching are the P1-37 follow-up). */
-export function hydraAdaptiveNote(profiles: string[]): string {
-  const names = profiles.filter((p) => p.trim() !== "");
-  return (
-    `Every new entry needs a short clear job title in "role". ` +
-    (names.length
-      ? `When one of the head profiles fits that role, add "profile": <its name>. `
-      : "") +
-    `A role that fits no profile runs on your own model. Never name models elsewhere.`
-  );
-}

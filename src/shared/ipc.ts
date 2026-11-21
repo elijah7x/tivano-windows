@@ -50,6 +50,23 @@ const vHydraPair = vObject({
   headProfiles: vArray(vHydraHeadProfile, 32),
 });
 
+// P1-37 Chimera presets — same persisted shape as storeDoc.
+const vChimeraPick = vObject({
+  provider: vOptional(vNonEmptyString(100)),
+  model: vOptional(vNonEmptyString(200)),
+  effort: vOptional(vNonEmptyString(100)),
+});
+const vChimeraPreset = vObject({
+  id: vNonEmptyString(120),
+  name: vOptional(vMaxString(200)),
+  specialty: vOptional(vMaxString(1000)),
+  pick: vOptional(vChimeraPick),
+  builtin: vOptional(
+    vEnum(["scout", "builder", "reviewer", "designer", "researcher", "writer"] as const),
+  ),
+  enabled: vOptional(vBoolean),
+});
+
 // F17 model-list slices — same persisted shape as storeDoc; pins only
 // organize the picker, the catalog stays provider-owned.
 const vModelPin = vObject({
@@ -506,6 +523,8 @@ export const requestValidators = {
     subagentModeDefault: vOptional(
       vEnum(["same", "preset", "adaptive"] as const),
     ),
+    chimeraPresets: vOptional(vArray(vChimeraPreset, 64)),
+    chimeraAutoDispatch: vOptional(vBoolean),
     lastHydraPairId: vOptional(vNullable(vNonEmptyString(120))),
     // F17: frozen modelList / modelSections / collapsedModelSections /
     // modelPreferences — whole-array writes (layout ops are computed
