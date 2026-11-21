@@ -6,7 +6,7 @@
 // events can never contaminate a session.
 
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { Store } from "./store";
@@ -5145,17 +5145,33 @@ export class Engine {
       const gitDir = join(cur, ".git");
       try {
         const st = lstatSync(gitDir);
-        if (st.isFile()) {
+        // A .git symlink resolves before probing — a dangling one is a
+        // checkout Git cannot open, never a plain folder to edit.
+        const eff = st.isSymbolicLink()
+          ? (() => {
+              try {
+                return statSync(gitDir);
+              } catch {
+                return undefined;
+              }
+            })()
+          : st;
+        if (eff?.isFile()) {
           try {
-            // A worktree pointer must actually say gitdir: — any other
-            // readable file means a checkout Git itself cannot open.
-            const content = readFileSync(gitDir, "utf8");
-            return /^\s*gitdir\s*:/i.test(content) ? "git" : "broken";
+            // A worktree pointer must say gitdir: AND land on a real
+            // gitdir — anything else is a checkout Git cannot open.
+            const m = /^\s*gitdir\s*:\s*(.+?)\s*$/im.exec(
+              readFileSync(gitDir, "utf8"),
+            );
+            if (!m) return "broken";
+            return lstatSync(resolve(cur, m[1]!)).isDirectory()
+              ? "git"
+              : "broken";
           } catch {
             return "broken";
           }
         }
-        if (st.isDirectory()) {
+        if (eff?.isDirectory()) {
           try {
             lstatSync(join(gitDir, "HEAD"));
             return "git";
@@ -5163,6 +5179,7 @@ export class Engine {
             return "broken";
           }
         }
+        if (eff !== undefined && eff !== null) return "broken";
       } catch {
         /* no .git at this level — keep walking */
       }
@@ -5183,7 +5200,9 @@ export class Engine {
         p.id === bound ||
         (p.directory !== undefined && norm(p.directory) === norm(canonical)),
     );
-    return listed[0];
+    // A grant-bound match outranks a stale directory field — grant
+    // identity decides binding, like openUserDirectory's boundId check.
+    return listed.find((p) => p.id === bound) ?? listed[0];
   }
 
   /** Frozen routeHydraHead: an absolute-path "project" resolves to a
@@ -5271,8 +5290,10 @@ export class Engine {
     })();
     const touches =
       lower === homeLower ||
+      homeLower.startsWith(lower + "\\") ||
       /^[A-Za-z]:$/.test(norm) ||
       /^[\\/]+$/.test(norm) ||
+      /^\\\\[^\\/]+[\\/][^\\/]+$/.test(norm) ||
       roots.some(
         (r) =>
           lower === r || lower.startsWith(r + "\\") || r.startsWith(lower + "\\"),
@@ -5381,6 +5402,16 @@ export class Engine {
       }
     }
     if (project !== undefined) head.projectId = project.id;
+    // Frozen applyHydraRoute: a routed head retitles to
+    // "Persona · task · folder" (+ " · profile" when routed to one).
+    const taskTitle = info.task.replace(/\s+/g, " ").trim().slice(0, 60);
+    const folderName =
+      project !== undefined && project.id !== lead.projectId
+        ? project.name
+        : basename(canonical) || canonical;
+    head.title =
+      `${personaName} · ${taskTitle} · ${folderName}` +
+      (info.profile ? ` · ${info.profile}` : "");
     this.store.update(() => {});
     this.emit({ type: "thread-updated", thread: head });
     return true;
