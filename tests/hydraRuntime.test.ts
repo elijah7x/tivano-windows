@@ -864,3 +864,78 @@ describe("P1-36 sub-agent modes and the delegation budget", () => {
     store.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// P1-37 (v3.0.0 parity): adaptive sub-agent identities — the six built-ins
+// plus custom presets numbered in the policy, "identity" entries resolving
+// to a preset prompt + model pick, and the auto-dispatch note.
+
+describe("P1-37 adaptive sub-agent identities", () => {
+  it("the adaptive policy lists identities and the auto-dispatch note", async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    engine.setSubagentMode(lead.id, "adaptive");
+    engine.setSettings({ chimeraAutoDispatch: true });
+    engine.sendTurn(lead.id, "hello");
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+    const reply = thread(engine, lead.id).messages.find(
+      (m) => m.role === "assistant",
+    )!;
+    expect(reply.content).toContain("sub-agent identities");
+    expect(reply.content).toContain("1. Scout:");
+    expect(reply.content).toContain("6. Writer:");
+    expect(reply.content).toContain('"identity"');
+    expect(reply.content).toContain("Heads go out at once");
+    expect(reply.content).toContain("replaces any Hydra delegation rules");
+    store.close();
+  });
+
+  it("an identity entry sends the preset prompt and its model pick", async () => {
+    const { engine, store } = make();
+    engine.setSettings({
+      chimeraPresets: [
+        {
+          id: "c1",
+          name: "Deep",
+          specialty: "You dig deep for roots.",
+          pick: { model: "deep-model" },
+          enabled: true,
+        },
+      ],
+    });
+    const lead = engine.createThread(null, "lead");
+    engine.setSubagentMode(lead.id, "adaptive");
+    engine.sendTurn(lead.id, "go [mock:hydra-identity]");
+    await waitFor(() => heads(engine, lead.id).length === 2);
+    const first = heads(engine, lead.id)[0]!;
+    // identity 1 -> the custom preset: its prompt rides the brief and
+    // its pick supplies the head model; the unnumbered head follows
+    // the lead (no pick).
+    const brief = first.messages.find((m) => m.role === "user")!.content;
+    expect(brief).toContain("You dig deep for roots.");
+    expect(first.codexModel).toBe("deep-model");
+    expect(first.hydraHead!.task).toBe("Scout");
+    expect(heads(engine, lead.id)[1]!.codexModel).not.toBe("deep-model");
+    store.close();
+  });
+
+  it("identity numbers skip disabled presets (frozen usable numbering)", async () => {
+    const { engine, store } = make();
+    engine.setSettings({
+      chimeraPresets: [
+        { id: "b-scout", builtin: "scout", enabled: false },
+        { id: "b-builder", builtin: "builder" },
+      ],
+    });
+    const lead = engine.createThread(null, "lead");
+    engine.setSubagentMode(lead.id, "adaptive");
+    engine.sendTurn(lead.id, "go [mock:hydra-identity]");
+    await waitFor(() => heads(engine, lead.id).length === 2);
+    const brief = heads(engine, lead.id)[0]!.messages.find(
+      (m) => m.role === "user",
+    )!.content;
+    expect(brief).toContain("You implement a clearly specified feature");
+    expect(brief).not.toContain("You explore the codebase fast");
+    store.close();
+  });
+});

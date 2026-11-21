@@ -171,6 +171,9 @@ export class MockProvider implements ProviderAdapter {
     // heads (producedNothing refunds). Loops stick per lead thread —
     // the report turn itself carries no token.
     const wantsHydraRole = prompt.includes("[mock:hydra-role]");
+    // P1-37 fixture: `[mock:hydra-identity]` = one delegation whose entry
+    // carries the adaptive mode's `identity` number plus `role` title.
+    const wantsHydraIdentity = prompt.includes("[mock:hydra-identity]");
     const wantsHydraLoop = prompt.includes("[mock:hydra-loop]");
     const wantsHydraLoopFail = prompt.includes("[mock:hydra-loop-fail]");
     if (wantsHydraLoop) this.hydraLoops.set(ctx.threadId, "ok");
@@ -224,7 +227,7 @@ export class MockProvider implements ProviderAdapter {
       wantsHydraProfile || wantsHydraTouch || wantsHydraBadRoute ||
       wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraWaitQ ||
       wantsHydraQuiet || wantsHydraFailStart || wantsHydraFailAll ||
-      wantsHydraFailTransient || wantsHydraRole ||
+      wantsHydraFailTransient || wantsHydraRole || wantsHydraIdentity ||
       wantsHydraLoop || wantsHydraLoopFail || looped
     ) {
       const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute || wantsHydraWaitQ
@@ -253,6 +256,8 @@ export class MockProvider implements ProviderAdapter {
           ? '[{"task":"Flaky start","prompt":"Try it. [mock:fail-quiet-transient]"},{"task":"Steady part","prompt":"Normal work."}]'
         : wantsHydraRole
           ? '[{"role":"Outline it","prompt":"Normal work."}]'
+        : wantsHydraIdentity
+          ? '[{"role":"Scout","prompt":"Map the area.","identity":1},{"role":"No pick","prompt":"Plain work."}]'
         : wantsHydraLoopFail || (looped && this.hydraLoops.get(ctx.threadId) === "fail")
           ? '[{"task":"Quiet fail","prompt":"Try it. [mock:fail-quiet]"}]'
         : wantsHydraLoop || looped
@@ -262,7 +267,7 @@ export class MockProvider implements ProviderAdapter {
       // deterministic incremental dispatch (a head spawns while the
       // block is still open), and a window exists to stop mid-block.
       const boundary = entries.indexOf("},");
-      const cut = boundary >= 0 ? boundary + 2 : 80;
+      const cut = Math.max(boundary + 2, 80);
       chunks.splice(
         3,
         0,

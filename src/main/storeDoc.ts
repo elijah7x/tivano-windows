@@ -365,6 +365,23 @@ const vHydraPair = vObject({
   headProfiles: vArray(vHydraHeadProfile, PERSIST_MAX_HEAD_PROFILES),
 });
 
+// P1-37 Chimera presets — adaptive sub-agent identities.
+const vChimeraPick = vObject({
+  provider: vOptional(vNonEmptyString(100)),
+  model: vOptional(vNonEmptyString(200)),
+  effort: vOptional(vNonEmptyString(100)),
+});
+const vChimeraPreset = vObject({
+  id: vNonEmptyString(120),
+  name: vOptional(vMaxString(200)),
+  specialty: vOptional(vMaxString(1000)),
+  pick: vOptional(vChimeraPick),
+  builtin: vOptional(
+    vEnum(["scout", "builder", "reviewer", "designer", "researcher", "writer"] as const),
+  ),
+  enabled: vOptional(vBoolean),
+});
+
 // F17 model-list slices — provider fixed to the one adapter this build
 // ships; preference keys carry the pin-id shape "provider/modelID" and
 // only reconcile against the live catalog at render time (a pin whose
@@ -517,6 +534,10 @@ const vSettings = vObject({
   subagentModeDefault: vOptional(
     vEnum(["same", "preset", "adaptive"] as const),
   ),
+  // P1-37: adaptive identities + auto-dispatch — optional so every
+  // pre-P1-37 store loads verbatim; absent presets = the six built-ins.
+  chimeraPresets: vOptional(vArray(vChimeraPreset, 64)),
+  chimeraAutoDispatch: vOptional(vBoolean),
   // F17: frozen modelList / modelSections / collapsedModelSections /
   // modelPreferences — pins organize the picker; the catalog stays
   // provider-owned. Optional so every pre-A53 store loads verbatim.

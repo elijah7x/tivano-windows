@@ -265,6 +265,23 @@ export function ModelPicker(props: {
           </option>
         </select>
       )}
+      {subagentVisible && subagentMode === "adaptive" && (
+        <label
+          className="fast-tier"
+          title={t("Adaptive heads go out at once; off, each role's model is confirmed first.")}
+        >
+          <input
+            type="checkbox"
+            className="fast-tier-check"
+            checked={settings?.chimeraAutoDispatch === true}
+            disabled={!!props.readOnly}
+            onChange={(e) =>
+              tryCall("settings:set", { chimeraAutoDispatch: e.target.checked })
+            }
+          />
+          {t("Auto-dispatch")}
+        </label>
+      )}
       {tierId !== null && (
         <label
           className="fast-tier"

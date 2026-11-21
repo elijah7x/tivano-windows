@@ -280,6 +280,12 @@ export interface Settings {
   /** P1-36: the sub-agent mode new chats seed from (frozen picker
    *  default); absent = derived per chat. */
   subagentModeDefault?: SubagentMode;
+  /** P1-37: the adaptive mode's sub-agent identities (frozen
+   *  settings.chimeraPresets); absent = the six built-ins. */
+  chimeraPresets?: import("./chimera").ChimeraPreset[];
+  /** P1-37: auto-dispatch — adaptive heads go out without the per-role
+   *  model confirm (frozen settings.chimeraAutoDispatch). */
+  chimeraAutoDispatch?: boolean;
   /**
    * F17: frozen modelList / modelSections / collapsedModelSections /
    * modelPreferences. Pins only ORGANIZE the model picker — the catalog
