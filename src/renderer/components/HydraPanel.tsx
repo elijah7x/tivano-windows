@@ -89,7 +89,7 @@ function HydraReviewCard(props: { review: HydraReview }): React.JSX.Element {
     <details className="hydra-review">
       <summary>
         <span className="hydra-review-title">
-          {t("Reviewed by")} {r.reviewer}
+          {t("Independent review by %@", r.reviewer)}
         </span>
         <span className="hydra-review-meta">{parts.join(" · ")}</span>
       </summary>

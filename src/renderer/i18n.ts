@@ -1057,7 +1057,7 @@ const zhHans: Record<string, string> = {
   "Default model": "默认模型",
   "The fallback reviews when the first cannot run. Grok, Pi and Antigravity appear here once this build supports them.":
     "首选模型无法运行时由备用模型审查。此版本支持 Grok、Pi 和 Antigravity 后，它们会出现在这里。",
-  "Reviewed by": "审查模型",
+  "Independent review by %@": "由 %@ 独立审查",
   "No findings": "未发现问题",
   "1 finding": "1 条发现",
   "findings": "条发现",

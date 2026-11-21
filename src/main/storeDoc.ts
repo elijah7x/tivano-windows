@@ -222,6 +222,8 @@ const vThread = vObject({
         bundleId: vOptional(vNonEmptyString(120)),
         // P1-36: system-authored items drain as non-authored turns.
         unauthored: vOptional(vBoolean),
+        // P1-38: a queued findings turn carries its review card id.
+        reviewId: vOptional(vNonEmptyString(120)),
       }),
       PERSIST_MAX_FOLLOWUPS,
     ),
@@ -655,6 +657,8 @@ const vThreadHead = vObject({
         bundleId: vOptional(vNonEmptyString(120)),
         // P1-36: system-authored items drain as non-authored turns.
         unauthored: vOptional(vBoolean),
+        // P1-38: a queued findings turn carries its review card id.
+        reviewId: vOptional(vNonEmptyString(120)),
       }),
       PERSIST_MAX_FOLLOWUPS,
     ),

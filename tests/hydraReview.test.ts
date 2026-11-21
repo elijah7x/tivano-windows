@@ -150,6 +150,35 @@ describe("P1-38 independent review", () => {
     expect(thread(r.engine, lead.id).hydraReviews).toBeUndefined();
   });
 
+  it("a queued findings turn fills its card's verdict counts when it drains (frozen pendingReview)", async () => {
+    const r = rig();
+    const lead = r.engine.createThread(r.projectId, "lead");
+    const card = {
+      id: "r-card",
+      batchId: "b",
+      reviewer: "Mock review-model",
+      findings: "Finding 1: x\nFinding 2: y",
+      findingCount: 2,
+      diffBytes: 40,
+      durationMs: 5,
+      createdAt: Date.now(),
+    };
+    (r.engine as unknown as { store: Store }).store.update(() => {
+      thread(r.engine, lead.id).hydraReviews = [card];
+    });
+    (
+      r.engine as unknown as {
+        enqueueFollowUp: (id: string, text: string, opts?: object) => void;
+      }
+    ).enqueueFollowUp(
+      lead.id,
+      "[Hydra] Review: an independent review by Mock review-model.\n\nFinding 1: x\nFinding 2: y",
+      { unauthored: true, reviewId: card.id },
+    );
+    await waitFor(() => thread(r.engine, lead.id).hydraReviews?.[0]?.accepted === 1);
+    expect(thread(r.engine, lead.id).hydraReviews![0]!.rejected).toBe(1);
+  });
+
   it("review cards and settings survive a store reload (strict validators)", async () => {
     const r = rig();
     r.engine.setSettings({ hydraReviewSecond: { provider: "codex", model: "m2" } });

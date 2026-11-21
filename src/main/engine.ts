@@ -1744,7 +1744,7 @@ export class Engine {
   enqueueFollowUp(
     threadId: string,
     text: string,
-    opts?: { unauthored?: boolean },
+    opts?: { unauthored?: boolean; reviewId?: string },
   ): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
@@ -1759,6 +1759,7 @@ export class Engine {
         text: trimmed,
         createdAt: Date.now(),
         ...(opts?.unauthored ? { unauthored: true } : {}),
+        ...(opts?.reviewId ? { reviewId: opts.reviewId } : {}),
       });
       thread.updatedAt = Date.now();
     });
@@ -1855,13 +1856,16 @@ export class Engine {
     const items = this.queueOf(thread);
     const index = items.findIndex((i) => i.id === id);
     if (index < 0) throw new EngineError("no such queued follow-up");
-    const unauthored = items[index]!.unauthored === true;
+    const unauthored =
+      items[index]!.unauthored === true && items[index]!.bundleId === undefined;
+    const reviewId = unauthored ? items[index]!.reviewId : undefined;
     const text = this.takeBundleText(thread, index);
     if (!text.trim()) {
       this.emitQueue(thread);
       return;
     }
     if (!this.threadBusy(thread)) {
+      if (reviewId) this.hydraReviewAwaiting.set(threadId, reviewId);
       this.sendTurn(threadId, text, unauthored ? { authored: false } : undefined);
       return;
     }
@@ -1983,11 +1987,14 @@ export class Engine {
       const unauthored =
         thread.followUps[0]!.unauthored === true &&
         thread.followUps[0]!.bundleId === undefined;
+      const reviewId = unauthored ? thread.followUps[0]!.reviewId : undefined;
       const text = this.takeBundleText(thread, 0);
       if (!text.trim()) {
         this.emitQueue(thread);
         return;
       }
+      // P1-38: a drained findings turn re-arms its card's verdict watch.
+      if (reviewId) this.hydraReviewAwaiting.set(thread.id, reviewId);
       this.sendTurn(thread.id, text, unauthored ? { authored: false } : undefined);
     } finally {
       this.drainingFollowUps.delete(thread.id);
@@ -4893,8 +4900,17 @@ export class Engine {
     // P1-38: a settled batch is a job's end — the independent review of
     // its diff queues behind the report turn (frozen reviewHydraJob's
     // pending outcome; maybeReviewHydra runs it once the lead idles).
+    // The job's request is the last real user message — never a Hydra
+    // system turn (reports carry hydraHeads; "[Hydra]" turns and the
+    // refusal notice are prefixed).
     const request = lead.messages
-      .filter((m) => m.role === "user" && !m.content.startsWith("[Hydra]"))
+      .filter(
+        (m) =>
+          m.role === "user" &&
+          m.hydraHeads === undefined &&
+          !m.content.startsWith("[Hydra]") &&
+          !m.content.startsWith("Hydra did not send"),
+      )
       .at(-1)?.content;
     const prior = this.hydraReviewPending.get(leadId);
     this.hydraReviewPending.set(leadId, {
@@ -5274,10 +5290,10 @@ export class Engine {
       this.sendTurn(leadId, text, { authored: false });
     } catch {
       // Frozen pendingReview: the user reached the lead first — the
-      // findings wait in the follow-up queue rather than being dropped.
-      this.hydraReviewAwaiting.delete(leadId);
+      // findings wait in the follow-up queue with their card id, so the
+      // drained turn's verdicts still fold back in.
       try {
-        this.enqueueFollowUp(leadId, text, { unauthored: true });
+        this.enqueueFollowUp(leadId, text, { unauthored: true, reviewId: card.id });
       } catch {
         /* a full queue keeps the card; the findings stay readable there */
       }

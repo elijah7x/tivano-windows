@@ -897,6 +897,10 @@ export interface FollowUpItem {
    *  non-authored turns — they never restart the delegation budget
    *  (frozen refuse-turn semantics). Absent = a user-queued item. */
   unauthored?: boolean;
+  /** P1-38: a queued independent-review findings turn carries its card
+   *  id, so the lead's verdicts still fold into that card when the item
+   *  drains (frozen pendingReview). */
+  reviewId?: string;
 }
 
 export interface StoreFile {
