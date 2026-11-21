@@ -46,7 +46,25 @@ const dirs: string[] = [];
 afterEach(async () => {
   for (const s of services.splice(0)) await s.dispose();
   for (const st of stores.splice(0)) st.close();
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs.splice(0)) {
+    // Windows handle-release lags behind process exit — a just-reaped
+    // git child can hold the dir a beat longer, so retry EPERM/EBUSY
+    // briefly before declaring the temp tree undeletable.
+    let lastErr: unknown;
+    for (let i = 0; i < 6; i++) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+        lastErr = undefined;
+        break;
+      } catch (err) {
+        lastErr = err;
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code !== "EPERM" && code !== "EBUSY" && code !== "ENOTEMPTY") throw err;
+        await new Promise((r) => setTimeout(r, 120));
+      }
+    }
+    if (lastErr !== undefined) throw lastErr;
+  }
 });
 
 function tmp(prefix: string): string {

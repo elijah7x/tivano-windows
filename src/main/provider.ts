@@ -295,6 +295,23 @@ export interface ProviderAdapter {
     instructions: string,
   ): Promise<string | null>;
   /**
+   * P1-38: one-shot independent review of a job's unified diff (frozen
+   *  TextGeneration.review). Optional — adapters without a detached
+   *  review engine omit it and the caller records "no review model
+   *  available". `opts.cwd` is the lead checkout; `readableDirs` the
+   *  checkouts the reviewer may read (read-only). Null means "no
+   *  usable findings reply"; the string is the reviewer's raw text.
+   */
+  generateHydraReview?(
+    prompt: string,
+    opts: {
+      cwd: string;
+      readableDirs: string[];
+      model?: string | undefined;
+      effort?: string | undefined;
+    },
+  ): Promise<string | null>;
+  /**
    * F09: run the provider's context compaction for a bound session
    * (frozen session.compact → thread/compact/start). Present only when
    * `descriptor.compact` is set. Throws CodexProviderError

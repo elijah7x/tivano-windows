@@ -286,6 +286,15 @@ export interface Settings {
   /** P1-37: auto-dispatch — adaptive heads go out without the per-role
    *  model confirm (frozen settings.chimeraAutoDispatch). */
   chimeraAutoDispatch?: boolean;
+  /** P1-38: once a team finishes, an independent reviewer model reads
+   *  its changes and sends findings to the lead (frozen
+   *  hydraReviewEnabled, default true). */
+  hydraReviewEnabled?: boolean;
+  /** P1-38: the independent review's first and second reviewer pick
+   *  (frozen hydraReviewFirst / hydraReviewSecond); the second is the
+   *  fallback when the first cannot run. */
+  hydraReviewFirst?: import("./hydraReview").HydraReviewChoice;
+  hydraReviewSecond?: import("./hydraReview").HydraReviewChoice;
   /**
    * F17: frozen modelList / modelSections / collapsedModelSections /
    * modelPreferences. Pins only ORGANIZE the model picker — the catalog
@@ -757,6 +766,9 @@ export interface ChatThread {
     spawnedAt: number;
     finishedAt?: number | undefined;
   };
+  /** P1-38: this lead's independent-review cards, newest last (frozen
+   *  job.reviewEngine/reviewFindings + verdict counts). */
+  hydraReviews?: import("./hydraReview").HydraReview[];
   /**
    * F01: manual position inside the thread's affiliation (frozen
    * ChatThread.sortOrder, ascending). Absent = never reordered — the
@@ -885,6 +897,10 @@ export interface FollowUpItem {
    *  non-authored turns — they never restart the delegation budget
    *  (frozen refuse-turn semantics). Absent = a user-queued item. */
   unauthored?: boolean;
+  /** P1-38: a queued independent-review findings turn carries its card
+   *  id, so the lead's verdicts still fold into that card when the item
+   *  drains (frozen pendingReview). */
+  reviewId?: string;
 }
 
 export interface StoreFile {
