@@ -5123,11 +5123,15 @@ export class Engine {
     // (Release/Dev/Preview share the parent folder) and the ~/.tivano*
     // dotdirs — all canonicalized like the routed candidate.
     const canonOr = (p: string) => {
+      let resolved = p;
       try {
-        return realpathSync(p);
+        resolved = realpathSync(p);
       } catch {
-        return p;
+        /* keep the raw form */
       }
+      return resolved
+        .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+        .replace(/^\\\\[?.]\\/i, "");
     };
     const parent = dirname(this.dataRoot);
     const siblings = ["Tivano", "Tivano Dev", "Tivano Preview"].map((n) =>
@@ -5214,8 +5218,10 @@ export class Engine {
           }
         }
         if (eff !== undefined && eff !== null) return "broken";
-      } catch {
-        /* no .git at this level — keep walking */
+      } catch (err) {
+        // ENOENT = no .git here — keep walking. Anything else (EACCES,
+        // EPERM) is a repo Git cannot read, not a plain folder.
+        if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") return "broken";
       }
       const parent = dirname(cur);
       if (parent === cur) return "none";
