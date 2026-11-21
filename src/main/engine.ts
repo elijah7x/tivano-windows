@@ -63,6 +63,7 @@ import {
 } from "../shared/chimera";
 import {
   countReviewFindings,
+  HYDRA_REVIEW_DEFAULT_FIRST,
   hydraReviewMessage,
   hydraReviewPrompt,
   hydraReviewerLabel,
@@ -261,16 +262,18 @@ export class Engine {
    *  job.reviewEngine gate: one review per batch). */
   private readonly hydraReviewPending = new Map<
     string,
-    { batchIds: string[]; request: string }
+    { batchIds: string[]; request: string; leadGens: number[] }
   >();
   private readonly hydraReviewRunning = new Set<string>();
   /** P1-38: the review whose findings turn the lead is answering — its
    *  verdicts fold into that card only (never a later ordinary reply). */
   private readonly hydraReviewAwaiting = new Map<string, string>();
-  /** P1-38: provider-declared touched paths per thread since its job
-   *  started (frozen turn.touchedPaths) — the shared-checkout heads' and
-   *  the lead's own part of the review diff. In memory: a restart
-   *  forgets them, and the review then covers landed files only. */
+  /** P1-38: provider-declared touched paths, scoped per job so a later
+   *  request's files can never leak into the settled job's diff (frozen
+   *  turn.touchedPaths under job.turnID). Key `"threadId\0scope"` where
+   *  scope is the head's batchId or the lead's `g<budget generation>`.
+   *  In memory: a restart forgets them and the review covers landed
+   *  files only. */
   private readonly hydraTouched = new Map<string, Set<string>>();
   private readonly hydraWatchdogs = new Map<
     string,
@@ -1136,10 +1139,8 @@ export class Engine {
         threadId,
         (this.hydraBudgetGen.get(threadId) ?? 0) + 1,
       );
-      // P1-38: a new request starts the next job's touched set (frozen
-      // job.turnID) — unless a settled job still waits on its review.
-      if (!this.hydraReviewPending.has(threadId) && !this.hydraReviewRunning.has(threadId))
-        this.hydraTouched.delete(threadId);
+      // P1-38: touched sets are scoped per generation, so a new request
+      // starts a fresh `g<n>` bucket by construction — nothing to clear.
     }
     const thread = this.mustThread(threadId);
     // Frozen: sending in a shelved project wakes it — real work resumes.
@@ -3491,9 +3492,13 @@ export class Engine {
     if (!turn || turn.id !== turnId) return;
     if (turn.status !== "running" && turn.status !== "waiting-approval") return;
     this.checkpoints?.recordEdits(turnId, paths);
-    const set = this.hydraTouched.get(threadId) ?? new Set<string>();
+    const scope = thread.hydraHead
+      ? thread.hydraHead.batchId
+      : `g${this.hydraBudgetGen.get(threadId) ?? 0}`;
+    const key = `${threadId}\0${scope}`;
+    const set = this.hydraTouched.get(key) ?? new Set<string>();
     for (const p of paths) if (set.size < 2000) set.add(p);
-    this.hydraTouched.set(threadId, set);
+    this.hydraTouched.set(key, set);
   }
 
   /** Per-turn checkpoint records for one OWNED thread (IPC). */
@@ -4900,6 +4905,9 @@ export class Engine {
         ]),
       ],
       request: prior?.request || (request ?? ""),
+      leadGens: [
+        ...new Set([...(prior?.leadGens ?? []), this.hydraBudgetGen.get(leadId) ?? 0]),
+      ],
     });
     const stillWorking = this.store.state.threads
       .filter((t) => t.hydraHead?.leadId === leadId && t.hydraHead.status === "running")
@@ -5103,7 +5111,7 @@ export class Engine {
     if (!this.provider.generateHydraReview) return undefined;
     const s = this.store.state.settings;
     const mode = this.provider.descriptor.mode;
-    for (const choice of [s.hydraReviewFirst ?? { provider: "codex" }, s.hydraReviewSecond]) {
+    for (const choice of [s.hydraReviewFirst ?? HYDRA_REVIEW_DEFAULT_FIRST, s.hydraReviewSecond]) {
       if (!choice?.provider?.trim()) continue;
       // The synthetic adapter stands in for Codex in mock runs.
       if (choice.provider !== mode && !(mode === "mock" && choice.provider === "codex"))
@@ -5119,13 +5127,17 @@ export class Engine {
   private maybeReviewHydra(lead: ChatThread): void {
     const pending = this.hydraReviewPending.get(lead.id);
     if (!pending || this.hydraReviewRunning.has(lead.id)) return;
+    if (this.workGate !== "open") {
+      this.hydraReviewPending.delete(lead.id);
+      return;
+    }
     if (lead.turn && (lead.turn.status === "running" || lead.turn.status === "waiting-approval"))
       return;
     if (this.pendingSends.has(lead.id) || this.hydraLeadBusy(lead.id)) return;
     if (this.hydraWaiting.get(lead.id)?.length) return;
     this.hydraReviewPending.delete(lead.id);
     if (this.store.state.settings.hydraReviewEnabled === false) {
-      this.clearHydraTouched(lead.id, pending.batchIds);
+      this.clearHydraTouched(lead.id, pending);
       return;
     }
     this.hydraReviewRunning.add(lead.id);
@@ -5133,15 +5145,31 @@ export class Engine {
       .catch(() => {})
       .finally(() => {
         this.hydraReviewRunning.delete(lead.id);
-        this.clearHydraTouched(lead.id, pending.batchIds);
+        this.clearHydraTouched(lead.id, pending);
       });
   }
 
-  private clearHydraTouched(leadId: string, batchIds: string[]): void {
-    this.hydraTouched.delete(leadId);
-    for (const t of this.store.state.threads)
-      if (t.hydraHead?.leadId === leadId && batchIds.includes(t.hydraHead.batchId))
-        this.hydraTouched.delete(t.id);
+  /** Drop the job's touched buckets: the lead's `g<gen>` sets and every
+   *  head set whose scope is one of this job's batchIds. A head steered
+   *  into a newer batch keeps its new scope; the lead's next request
+   *  wrote under a new generation and is likewise untouched. */
+  private clearHydraTouched(
+    leadId: string,
+    job: { batchIds: string[]; leadGens: number[] },
+  ): void {
+    for (const g of job.leadGens) this.hydraTouched.delete(`${leadId}\0g${g}`);
+    const batches = new Set(job.batchIds);
+    const headIds = new Set(
+      this.store.state.threads
+        .filter((t) => t.hydraHead?.leadId === leadId)
+        .map((t) => t.id),
+    );
+    for (const key of [...this.hydraTouched.keys()]) {
+      const sep = key.indexOf("\0");
+      if (sep < 0) continue;
+      if (headIds.has(key.slice(0, sep)) && batches.has(key.slice(sep + 1)))
+        this.hydraTouched.delete(key);
+    }
   }
 
   /** The review pass itself (frozen reviewHydraJob, bounded): collect
@@ -5152,7 +5180,7 @@ export class Engine {
    *  and leaves no card, like the frozen `reviewSkipped` outcome. */
   private async runHydraReview(
     leadId: string,
-    job: { batchIds: string[]; request: string },
+    job: { batchIds: string[]; request: string; leadGens: number[] },
   ): Promise<void> {
     const lead = this.store.state.threads.find((t) => t.id === leadId);
     const git = this.worktrees;
@@ -5183,10 +5211,17 @@ export class Engine {
       rootFor(root, head.projectId ?? lead.projectId, info.baseTree);
       for (const f of info.landing?.files ?? []) collect(f.path, root);
       if (info.baseTree === undefined)
-        for (const p of this.hydraTouched.get(head.id) ?? []) collect(p, root);
+        for (const p of this.hydraTouched.get(`${head.id}\0${info.batchId}`) ?? [])
+          collect(p, root);
     }
     rootFor(leadCheckout, lead.projectId);
-    for (const p of this.hydraTouched.get(leadId) ?? []) collect(p, leadCheckout);
+    // The lead's own turns since the request (frozen job.turnID scope —
+    // only buckets of this job's generations, so a newer request's files
+    // can never leak into the settled job's diff).
+    for (const g of job.leadGens)
+      for (const p of this.hydraTouched.get(`${leadId}\0g${g}`) ?? [])
+        collect(p, leadCheckout);
+    if (this.workGate !== "open") return;
     const started = Date.now();
     let patch = "";
     for (const root of [...roots.keys()].sort()) {

@@ -138,7 +138,7 @@ describe("P1-38 independent review", () => {
     const lead = r.engine.createThread(r.projectId, "lead");
     r.engine.sendTurn(lead.id, "split it [mock:hydra-touch]");
     await waitFor(() => (thread(r.engine, lead.id).hydraReviews?.length ?? 0) === 1);
-    expect(thread(r.engine, lead.id).hydraReviews![0]!.reviewer).toMatch(/^Mock .* review-model · high$/);
+    expect(thread(r.engine, lead.id).hydraReviews![0]!.reviewer).toMatch(/^Mock .* review-model · High$/);
   });
 
   it("a reviewer that returns nothing usable leaves no card", async () => {
@@ -187,7 +187,7 @@ describe("P1-38 review protocol helpers", () => {
 
   it("labels the reviewer with model and effort", () => {
     expect(hydraReviewerLabel({ provider: "codex", model: "m", effort: "low" }, () => "Codex")).toBe(
-      "Codex m · low",
+      "Codex m · Low",
     );
   });
 });

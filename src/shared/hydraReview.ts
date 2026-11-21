@@ -19,9 +19,25 @@ export interface HydraReviewChoice {
  *  blocked), so the bounded card lists Codex only. */
 export const HYDRA_REVIEW_PROVIDERS = ["codex"] as const;
 
+/** Frozen `HydraReviewChoice` defaults — `defaultFirst` is Codex at
+ *  high effort; `defaultSecond` is Claude, which this build cannot run,
+ *  so the bounded fallback defaults to Off. */
+export const HYDRA_REVIEW_DEFAULT_FIRST: HydraReviewChoice = {
+  provider: "codex",
+  effort: "high",
+};
+
+/** Frozen `ModelOption.effortTitle` — "Extra High" for xhigh, otherwise
+ *  the id capitalized. */
+export function hydraReviewEffortTitle(effort: string): string {
+  if (effort === "xhigh" || effort === "extra-high") return "Extra High";
+  return effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
 /** The reviewer label the card and report name (frozen
  *  `hydraReviewEngine` composition: provider display name + model +
- *  effort). */
+ *  effort title). The model id stands in for the display name — the
+ *  engine has no catalog access (documented bound). */
 export function hydraReviewerLabel(
   choice: HydraReviewChoice,
   providerLabel: (id: string) => string,
@@ -32,7 +48,7 @@ export function hydraReviewerLabel(
   const model = choice.model?.trim();
   if (model) label += ` ${model}`;
   const effort = choice.effort?.trim();
-  if (effort) label += ` · ${effort}`;
+  if (effort) label += ` · ${hydraReviewEffortTitle(effort)}`;
   return label;
 }
 

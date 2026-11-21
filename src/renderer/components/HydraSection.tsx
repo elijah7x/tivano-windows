@@ -10,6 +10,7 @@ import { InfoHover } from "./InfoHover";
 import { HydraInfo } from "./HydraInfo";
 import type { Settings } from "../../shared/types";
 import {
+  HYDRA_REVIEW_DEFAULT_FIRST,
   HYDRA_REVIEW_PROVIDERS,
   type HydraReviewChoice,
 } from "../../shared/hydraReview";
@@ -339,8 +340,12 @@ function ReviewerCard(props: {
 }): React.JSX.Element {
   const t = useT();
   const slots = [
-    ["hydraReviewFirst", "First reviewer", props.settings.hydraReviewFirst ?? { provider: "codex" }],
-    ["hydraReviewSecond", "Fallback reviewer", props.settings.hydraReviewSecond],
+    [
+      "hydraReviewFirst",
+      "First choice",
+      props.settings.hydraReviewFirst ?? HYDRA_REVIEW_DEFAULT_FIRST,
+    ],
+    ["hydraReviewSecond", "Second choice", props.settings.hydraReviewSecond],
   ] as const;
   const offered = HYDRA_REVIEW_PROVIDERS.map(
     (id) =>
@@ -355,6 +360,7 @@ function ReviewerCard(props: {
     tryCall("settings:set", { [key]: next });
   return (
     <div className="hydra-reviewer-card" aria-disabled={props.disabled}>
+      <span className="hydra-title">{t("Review models")}</span>
       {slots.map(([key, title, choice]) => {
         const provider = choice?.provider ?? "";
         const models = offered.find((p) => p.id === provider)?.models ?? [];

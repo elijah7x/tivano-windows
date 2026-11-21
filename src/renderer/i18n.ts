@@ -1051,8 +1051,9 @@ const zhHans: Record<string, string> = {
   "Independent review": "独立审查",
   "Once the lead and sub-agents finish, the model you choose reviews the team's changes and sends any findings to the lead, before auto-merge when that is on.":
     "主代理和子代理完成后，由你选择的模型审查团队改动，并把发现发给主代理；开启自动合并时会在合并前进行。",
-  "First reviewer": "首选审查模型",
-  "Fallback reviewer": "备用审查模型",
+  "Review models": "审查模型",
+  "First choice": "首选",
+  "Second choice": "次选",
   "Default model": "默认模型",
   "The fallback reviews when the first cannot run. Grok, Pi and Antigravity appear here once this build supports them.":
     "首选模型无法运行时由备用模型审查。此版本支持 Grok、Pi 和 Antigravity 后，它们会出现在这里。",
