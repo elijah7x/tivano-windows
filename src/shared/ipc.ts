@@ -794,6 +794,7 @@ type AppEventPayload =
       type: "turn-unsent";
       threadId: string;
       text: string;
+      attachments?: import("./types").AttachmentRef[];
     }
   | {
       type: "approval-requested";

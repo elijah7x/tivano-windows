@@ -376,6 +376,7 @@ const zhHans: Record<string, string> = {
   "Created a new Git worktree and started its setup scripts in Terminal. Send again once setup finishes.":
     "已创建新的 Git worktree 并在终端启动初始化脚本，请等脚本完成后再次发送。",
   "Could not create a worktree": "无法创建 worktree",
+  "Could not save the library": "无法保存资料库",
   "Conversation": "对话",
   "Show thinking": "显示思考过程",
   "The working line opens to the agent's thinking": "工作行可展开查看 agent 的思考过程",

@@ -631,6 +631,24 @@ export class ClientStore {
             front: true,
           }).catch(() => {});
         }
+        // Sent attachments come back to the draft strip — merge by id so
+        // nothing the user picked is silently lost (they ride the queue
+        // item only as text otherwise).
+        if (event.attachments?.length) {
+          const cur = this.drafts.get(event.threadId);
+          const have = new Set((cur?.attachments ?? []).map((a) => a.id));
+          const merged = [
+            ...(cur?.attachments ?? []),
+            ...event.attachments.filter((a) => !have.has(a.id)),
+          ];
+          this.drafts.set(event.threadId, {
+            text: cur?.text ?? event.text,
+            version: (cur?.version ?? 0) + 1,
+            ...(cur?.command ? { command: cur.command } : {}),
+            attachments: merged,
+            ...(cur?.quotes ? { quotes: cur.quotes } : {}),
+          });
+        }
         break;
       }
     }

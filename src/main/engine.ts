@@ -1322,7 +1322,7 @@ export class Engine {
         this.preProviderFail(
           thread, turn, text, opts,
           "WORKSPACE_NOT_CONFIGURED: thread has no project",
-        );
+         attached);
         return turn;
       }
       workspace = this.paths?.lookup(thread.projectId);
@@ -1330,13 +1330,13 @@ export class Engine {
         this.preProviderFail(
           thread, turn, text, opts,
           "WORKSPACE_NOT_CONFIGURED: no authorized directory is bound to this project",
-        );
+         attached);
         return turn;
       }
       try {
         this.paths!.verify(workspace);
       } catch (err) {
-        this.preProviderFail(thread, turn, text, opts, (err as Error).message);
+        this.preProviderFail(thread, turn, text, opts, (err as Error).message, attached);
         return turn;
       }
       // F11: a worktree-bound thread executes in its own directory —
@@ -1347,7 +1347,7 @@ export class Engine {
           this.preProviderFail(
             thread, turn, text, opts,
             "WORKSPACE_NOT_CONFIGURED: the thread's worktree is missing or moved",
-          );
+           attached);
           return turn;
         }
         workspace = { projectId: thread.projectId, directory: thread.worktreeDir };
@@ -1435,7 +1435,7 @@ export class Engine {
                 text,
                 opts,
                 (err as Error)?.message ?? String(err),
-              );
+               attached);
           });
         return turn;
       }
@@ -1512,8 +1512,8 @@ export class Engine {
                   text,
                   opts,
                   "Created a new Git worktree and started its setup scripts in Terminal. Send again once setup finishes.",
-                  "info",
-                );
+                  attached,
+                  "info");
                 return;
               }
               // The bound worktree outranks the checkout grant resolved
@@ -1534,7 +1534,7 @@ export class Engine {
                   text,
                   opts,
                   "WORKSPACE_NOT_CONFIGURED: the thread's worktree is missing or moved",
-                );
+                 attached);
                 return;
               }
               try {
@@ -1557,7 +1557,7 @@ export class Engine {
               text,
               opts,
               "Could not create a worktree",
-            );
+             attached);
             return;
           }
           // .unavailable — root mismatch, no commits, or an operation in
@@ -1571,7 +1571,7 @@ export class Engine {
             text,
             opts,
             "Another chat is active in this repository, and a separate Git worktree isn't available right now. Wait for it to finish, then send again.",
-          );
+           attached);
         })
         .catch((err) => {
           const cur = live();
@@ -1582,7 +1582,7 @@ export class Engine {
               text,
               opts,
               (err as Error)?.message ?? String(err),
-            );
+             attached);
         });
       return turn;
     }
@@ -1808,7 +1808,12 @@ export class Engine {
     text: string,
     notice: string,
     level: "info" | "warning" | "error" = "error",
+    attachments?: { id: string; name: string; size: number; path: string }[],
   ): void {
+    // Attachments consumed at send return with the text — the library
+    // copies stay main-owned (pendingAttachments) and the renderer
+    // restores the display refs from the event.
+    if (attachments?.length) this.pendingAttachments.set(thread.id, attachments);
     this.store.update(() => {
       thread.messages = thread.messages.filter((m) => m.turnId !== turn.id);
       if (thread.turn?.id === turn.id) thread.turn = null;
@@ -1837,7 +1842,14 @@ export class Engine {
       turnId: turn.id,
       status: "cancelled",
     });
-    this.emit({ type: "turn-unsent", threadId: thread.id, text });
+    this.emit({
+      type: "turn-unsent",
+      threadId: thread.id,
+      text,
+      ...(attachments?.length
+        ? { attachments: attachments.map(({ id, name, size }) => ({ id, name, size })) }
+        : {}),
+    });
     this.updateSleepGuard();
   }
 
@@ -1850,12 +1862,13 @@ export class Engine {
     text: string,
     opts: { authored?: boolean; hydraBrief?: boolean } | undefined,
     notice: string,
+    attachments?: { id: string; name: string; size: number; path: string }[],
     level: "info" | "warning" | "error" = "error",
   ): void {
     // Composer restore is a user-send concept — a Hydra report turn or
     // an internal brief keeps the honest errored-turn record.
     if (opts?.authored !== false && opts?.hydraBrief !== true) {
-      this.retainUnsent(thread, turn, text, notice, level);
+      this.retainUnsent(thread, turn, text, notice, level, attachments);
     } else {
       this.failTurnSync(thread, turn, notice);
     }
