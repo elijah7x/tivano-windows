@@ -146,6 +146,56 @@ const thread = (engine: Engine, id: string) =>
 const turnStatus = (engine: Engine, id: string) => thread(engine, id).turn?.status;
 
 describe("P1-39 workspace auto mode", () => {
+  it("backfills hasStartedTurn for threads written before the flag existed", async () => {
+    const dataRoot = tmp("wtauto-data-");
+    const ts = 1_000_000;
+    // A legacy monolith doc (no turnStorage): history inline, the flag
+    // absent — the exact shape an upgraded pre-P1-39 store presents.
+    writeFileSync(
+      join(dataRoot, "store.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        projects: [
+          { id: "p1", name: "p1", createdAt: ts, expanded: true },
+        ],
+        threads: [
+          {
+            id: "t-old",
+            projectId: "p1",
+            title: "old chat",
+            createdAt: ts,
+            updatedAt: ts,
+            sessionGrants: [],
+            messages: [
+              { id: "m1", role: "user", content: "hi", status: "done", ts },
+            ],
+            turn: null,
+          },
+          {
+            id: "t-blank",
+            projectId: "p1",
+            title: "blank",
+            createdAt: ts,
+            updatedAt: ts,
+            sessionGrants: [],
+            messages: [],
+            turn: null,
+          },
+        ],
+        settings: { theme: "dark", language: "en", alwaysAllow: [] },
+        ui: { selectedThreadId: "t-old" },
+      }),
+    );
+    const store = new Store(dataRoot);
+    stores.push(store);
+    store.open();
+    const t = store.state.threads.find((x) => x.id === "t-old")!;
+    expect(t.hasStartedTurn).toBe(true);
+    // A thread with NO history is not backfilled — it is still on its
+    // first turn and the auto gate must stay armed for it.
+    expect(store.state.threads.find((x) => x.id === "t-blank")!.hasStartedTurn).not.toBe(true);
+  });
+
   it("first send into a busy checkout binds a fresh worktree before the turn starts", async () => {
     const seen: TurnContext[] = [];
     const r = rig("eligible", seen, { hold: true });
