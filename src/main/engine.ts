@@ -4972,7 +4972,12 @@ export class Engine {
       const headDir = this.store.state.projects.find(
         (p) => p.id === head.projectId,
       )?.directory;
-      if (headDir !== undefined && this.hydraGitProbe(headDir) === "none") {
+      // Frozen marks identity==nil non-Git: a plain folder AND a repo
+      // whose .git cannot be read both edit in place.
+      if (
+        headDir !== undefined &&
+        this.hydraGitProbe(headDir) !== "git"
+      ) {
         head.hydraHead!.isNonGitCheckout = true;
       }
     }
@@ -5198,7 +5203,11 @@ export class Engine {
               readFileSync(gitDir, "utf8"),
             );
             if (!m) return "broken";
-            return lstatSync(resolve(cur, m[1]!)).isDirectory()
+            const target = resolve(cur, m[1]!);
+            // The pointer must land on a real gitdir — an existing dir
+            // without its own HEAD is still a checkout Git cannot open.
+            return lstatSync(target).isDirectory() &&
+              lstatSync(join(target, "HEAD")).isFile()
               ? "git"
               : "broken";
           } catch {
@@ -5405,6 +5414,19 @@ export class Engine {
     // sidebar as a bound project so the head's work is visible there.
     let project = this.projectForDirectory(canonical);
     if (
+      project === undefined &&
+      this.paths &&
+      this.paths.findProjectByDirectory(canonical) !== undefined
+    ) {
+      // openUserDirectory's orphan rule: a grant for a project the store
+      // no longer lists is revoked so the fresh bind stays clean.
+      try {
+        this.paths.revoke(this.paths.findProjectByDirectory(canonical)!);
+      } catch {
+        /* nothing to undo */
+      }
+    }
+    if (
       project !== undefined &&
       this.paths &&
       this.paths.findProjectByDirectory(canonical) !== project.id
@@ -5455,7 +5477,12 @@ export class Engine {
         );
       }
     }
-    if (project !== undefined) head.projectId = project.id;
+    if (project !== undefined) {
+      head.projectId = project.id;
+      // openUserDirectory wakes a shelved project its folder is re-added
+      // to — a head routed there must see it too.
+      if (project.isShelved) this.setProjectShelved(project.id, false);
+    }
     // Frozen applyHydraRoute: a routed head retitles to
     // "Persona · task · folder" (+ " · profile" when routed to one).
     const taskTitle = info.task.replace(/\s+/g, " ").trim().slice(0, 60);

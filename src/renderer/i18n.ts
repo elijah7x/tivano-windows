@@ -1384,6 +1384,13 @@ export function translateNotice(
   message: string,
 ): string {
   noticeTemplates ??= zhHansKeys()
+    // Recovery is only for the notices the engine itself interpolates —
+    // other parameterized keys stay on the translateError path.
+    .filter((k) =>
+      ["Hydra:", "Hydra settings:", "Sub-agents:"].some((p) =>
+        k.startsWith(p),
+      ),
+    )
     // Only substantial templates qualify: a stub like "%@ failed" could
     // mis-recover an unrelated notice that happens to end the same way.
     // Longest literal wins so a specific key beats a generic tail.
