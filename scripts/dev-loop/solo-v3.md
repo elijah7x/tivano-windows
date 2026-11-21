@@ -18,6 +18,7 @@ Long-horizon solo mission for Devin Desktop (single GUI chat, bypass mode, Windo
   if (Test-Path $dst) { [IO.File]::Replace($tmp, $dst, $null) } else { [IO.File]::Move($tmp, $dst) }
   ```
 - Update `solo-v3.json` at every phase and step change. Also keep `C:\tivano\dev-loop\autopilot\progress.json` updated as `autopilot.md` requires so daily merge tracking and the watchdog stay accurate.
+- Never end your turn to save a checkpoint, summarize, or hand over while work remains: nobody reads the chat, and an ended turn stops the mission until a watchdog nudge. Checkpoints go into `solo-v3.json`; then continue in the same turn with the next step.
 - On startup or after any interruption, compaction, or restart, read `solo-v3.json` and `progress.json` first and resume from the recorded `phase`, `step`, and `issue`.
 - Check for `C:\tivano\dev-loop\state\STOP` before every phase, every issue, and every major step (implement, verify, push, gate, merge). If it exists, finish the current command, record `"step":"stopped by STOP file"` in `solo-v3.json` and `progress.json`, and stop.
 - Per-issue mechanics (worktrees under `C:\tivano\dev-loop\work\`, `npm run verify`, PR template, `Invoke-AutopilotGate.ps1`, `Invoke-GlmReview.ps1 -Mode consult`, merge, `needs-human`, tracking issue `#34` titled `Automated dev loop: progress log`) come from `autopilot.md`. Where this file and `autopilot.md` differ, **this file wins**:

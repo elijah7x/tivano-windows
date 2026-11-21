@@ -797,7 +797,7 @@ function Invoke-WatchTick {
         Write-Log 'approval recovery aborted: focus changed before clear'
         return
       }
-      if (-not (Send-DevinTextSafe $window 'Bypass mode is on again. Continue the autopilot task from progress.json.')) {
+      if (-not (Send-DevinTextSafe $window 'Bypass mode is on again. Continue where you left off.')) {
         Write-Log 'approval recovery aborted: focus changed before paste'
         return
       }
@@ -841,6 +841,12 @@ function Invoke-WatchTick {
       return
     }
     $nudgeMessage = 'Continue the autopilot task: re-read ' + $script:PromptPath + ', resume from ' + $script:ProgressPath + ' and keep going until the queue is empty.'
+    # The v3 solo mission supersedes the per-issue loop while its state file says it is not finished.
+    $soloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
+    $soloState = Read-JsonFile (Join-Path $script:AutopilotDir 'solo-v3.json')
+    if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and [string](Get-JsonProp $soloState 'phase') -ne 'done') {
+      $nudgeMessage = 'Continue the mission: re-read ' + $soloPlan + ', resume from ' + (Join-Path $script:AutopilotDir 'solo-v3.json') + ' and keep working through every phase. Do not end your turn with a checkpoint while work remains.'
+    }
     if (-not (Send-DevinTextSafe $window $nudgeMessage)) {
       Write-Log 'idle nudge aborted: focus changed before paste'
       return
