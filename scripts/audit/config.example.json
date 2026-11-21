@@ -1,0 +1,12 @@
+{
+  "repo": "elijah7x/tivano-windows",
+  "appId": 123456,
+  "installationId": 12345678,
+  "keyPath": "C:\\tivano\\secrets\\audit\\app.pem",
+  "zcode": "C:\\tivano\\zcode\\zcode.cjs",
+  "model": "glm-5.3",
+  "referenceRoot": "C:\\tivano\\reference\\tivano-v3.0.0",
+  "workRoot": "C:\\tivano\\audit",
+  "statusContext": "nyx/audit",
+  "timeoutMinutes": 30
+}

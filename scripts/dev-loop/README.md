@@ -180,6 +180,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Invoke-
 - **Consult step:** When autopilot is about to give up (gate still fails after 2 fix rounds, the same `npm run verify` test fails 3 times in a row, or an issue appears blocked as ambiguous), it writes trimmed failures to `C:\tivano\dev-loop\autopilot\runs\<n>\failures-<k>.md` and runs `Invoke-GlmReview.ps1 -Mode consult -PrNumber <pr> -FailuresFile <file>` (up to ~20 minutes; exit `0` ok, `2` unavailable) once per issue per resume. It reads `consultPath`, runs one final fix round and re-gates, and falls back to `needs-human` (summarizing GLM's diagnosis) only if that fails or consult is unavailable.
 - **Disabling and read-only boundary:** Pass `-SkipGlm` to `Invoke-AutopilotGate.ps1` to skip the GLM review (`glm.status` becomes `"skipped"`). GLM never edits repository files or commits; it only reviews and advises.
 
+### Independent audit
+
+Before merging, autopilot PRs also require a `success` commit status on context `nyx/audit` from a separate GitHub App auditor running from its own scheduled tasks on Nyx (not using Devin's `gh` login). The same suite runs a daily post-merge audit and `main` ruleset integrity check; see [scripts/audit/README.md](../audit/README.md) for the independence model, rebuttal protocol, and setup instructions.
+
 ### Watchdog task and nudge rules (`Start-DevinAutopilot.ps1`)
 
 `scripts/dev-loop/Start-DevinAutopilot.ps1` launches the chat (`-Kickoff`) and keeps it moving via the scheduled task `\TivanoDevLoop\autopilot` (`-Watch`, run every `-IntervalMinutes`, default `15`, with a 30-minute execution limit, `MultipleInstances IgnoreNew`, and Interactive logon for GUI access):
