@@ -267,6 +267,7 @@ function Read-PrState {
     lastRebuttalCommentId = [long]0
     pendingRebuttalCommentId = [long]0
     verdict = ''
+    baseSha = ''
     priorFindings = @()
     updatedAt = ''
   }
@@ -293,6 +294,8 @@ function Read-PrState {
   if ($null -ne $rid) { $default['lastRebuttalCommentId'] = [long]$rid }
   $prid = Get-JsonProp $data 'pendingRebuttalCommentId'
   if ($null -ne $prid) { $default['pendingRebuttalCommentId'] = [long]$prid }
+  $bs = Get-JsonProp $data 'baseSha'
+  if ($null -ne $bs) { $default['baseSha'] = [string]$bs }
   $v = Get-JsonProp $data 'verdict'
   if ($null -ne $v) { $default['verdict'] = [string]$v }
   $pf = Get-JsonProp $data 'priorFindings'
@@ -639,7 +642,7 @@ function Get-DeterministicFindings {
   $seq = 1
   $isRebaselinePr = ($HeadRef -like 'nyx/rebaseline-v*')
 
-  if ($IssueNumber -le 0) {
+  if ($IssueNumber -le 0 -and -not $isRebaselinePr) {
     $null = $findings.Add([pscustomobject]@{
       id = ('D' + $seq)
       severity = 'blocking'
@@ -1123,8 +1126,11 @@ try {
     $pulls = @(Get-OpenNyxPulls -Config $config -OnlyPrNumber $PrNumber)
     Write-Log ('audit pass started: repo=' + $config.repo + ' openNyxPrs=' + $pulls.Count + ' dryRun=' + [bool]$DryRun)
 
+    $mainSha = ''
     if ($pulls.Count -gt 0) {
       Ensure-AuditRepo -Config $config -RepoDir $repoDir
+      $mainShaRes = Invoke-Git -Directory $repoDir -Arguments 'rev-parse origin/main'
+      $mainSha = if ($mainShaRes.exitCode -eq 0) { ([string]$mainShaRes.text).Trim() } else { '' }
     }
 
     foreach ($pr in $pulls) {
@@ -1160,7 +1166,8 @@ try {
       $rebuttalCommentId = [long]0
 
       if (-not $isNewHead) {
-        if ($state.verdict -eq 'pass') {
+        # A pass holds only for the main it was trial-merged onto; re-audit when main moves.
+        if ($state.verdict -eq 'pass' -and -not [string]::IsNullOrWhiteSpace($mainSha) -and $state.baseSha -eq $mainSha) {
           $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already passed for head ' + $sha7 })
           continue
         }
@@ -1472,6 +1479,7 @@ try {
           if ($rebuttalCommentId -gt 0) { $state.lastRebuttalCommentId = $rebuttalCommentId }
           $state.pendingRebuttalCommentId = [long]0
           $state.verdict = $finalVerdict
+          $state.baseSha = $mainSha
           $state.priorFindings = $findingsArray
           Save-PrState -Path $statePath -State $state
         }

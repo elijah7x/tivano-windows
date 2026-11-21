@@ -283,8 +283,8 @@ function Ensure-AuditRepoClone {
   $url = 'https://github.com/' + $Repo + '.git'
   if (-not (Test-Path -LiteralPath (Join-Path $RepoDir '.git'))) {
     Write-AuditLog ('cloning ' + $Repo + ' into ' + $RepoDir)
-    if (Test-Path -LiteralPath $RepoDir) {
-      $null = Invoke-ProcessCapture $script:CmdExe ('/d /c rmdir /s /q ' + (Quote-Arg $RepoDir)) (Join-Path $script:WorkRoot '.rmdir.out.tmp') (Join-Path $script:WorkRoot '.rmdir.err.tmp') $script:WorkRoot
+    if ((Test-Path -LiteralPath $RepoDir) -and @(Get-ChildItem -LiteralPath $RepoDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
+      throw ('refusing to clone into non-empty directory without .git: ' + $RepoDir)
     }
     $cloneRes = Invoke-GitCmd '' ('clone --no-checkout ' + (Quote-Arg $url) + ' ' + (Quote-Arg $RepoDir)) $script:WorkRoot
     if ($cloneRes.exitCode -ne 0) {
@@ -597,7 +597,8 @@ try {
   $script:WorkRoot = [IO.Path]::GetFullPath($workRoot).TrimEnd('\')
   $logsDir = Join-Path $script:WorkRoot 'logs'
   $stateDir = Join-Path $script:WorkRoot 'state'
-  $runsDir = Join-Path $script:WorkRoot 'runs'
+  # Separate from the PR auditor's runs dir: each auditor prunes only its own runs.
+  $runsDir = Join-Path $script:WorkRoot 'runs-post'
   $repoDir = Join-Path $script:WorkRoot 'repo'
   foreach ($d in @($script:WorkRoot, $logsDir, $stateDir, $runsDir)) {
     [IO.Directory]::CreateDirectory($d) | Out-Null
@@ -641,6 +642,20 @@ try {
 
   # 2. Select merged nyx/* PRs to audit.
   $targetPrs = @(Select-TargetPullRequests -Config $config -Repo $repo -Hours $SinceHours -ExplicitNumbers $PrNumbers -StateDir $stateDir)
+  # PRs left unaudited by an earlier run (unavailable or errored) are retried
+  # regardless of the time window until their state file is done.
+  $pendingPath = Join-Path $stateDir 'pending.json'
+  $pendingPrs = @()
+  if (Test-Path -LiteralPath $pendingPath -PathType Leaf) {
+    try { $pendingPrs = @((Read-TextUtf8 $pendingPath) | ConvertFrom-Json | ForEach-Object { [int]$_ }) } catch { $pendingPrs = @() }
+  }
+  if (-not ($PrNumbers -and $PrNumbers.Count -gt 0)) {
+    $selectedNums = @($targetPrs | ForEach-Object { [int](Get-Prop $_ 'number') })
+    $retryNums = @($pendingPrs | Where-Object { $selectedNums -notcontains $_ })
+    if ($retryNums.Count -gt 0) {
+      $targetPrs = @($targetPrs) + @(Select-TargetPullRequests -Config $config -Repo $repo -Hours $SinceHours -ExplicitNumbers $retryNums -StateDir $stateDir)
+    }
+  }
   Write-AuditLog ('selected ' + $targetPrs.Count + ' PR(s) for post-merge audit')
 
   if ($targetPrs.Count -gt 0) {
@@ -776,13 +791,13 @@ try {
       $acceptance = @(Get-Prop $modelResult 'acceptance' | Where-Object { $null -ne $_ })
       $failedAcceptance = @($acceptance | Where-Object {
         $st = ([string](Get-Prop $_ 'status')).ToLowerInvariant()
-        $st -eq 'missing' -or $st -eq 'substituted' -or $st -eq 'partial'
+        $st -eq 'missing' -or $st -eq 'substituted'
       })
       $claims = @(Get-Prop $modelResult 'claims' | Where-Object { $null -ne $_ })
       $falseClaims = @($claims | Where-Object { (Get-Prop $_ 'holds') -eq $false })
       $followups = @(Get-Prop $modelResult 'followups' | Where-Object { $null -ne $_ })
 
-      $effectiveVerdict = if ($rawVerdict -eq 'block' -or $blockingFindings.Count -gt 0) { 'block' } else { 'pass' }
+      $effectiveVerdict = if ($rawVerdict -eq 'block' -or $blockingFindings.Count -gt 0 -or $failedAcceptance.Count -gt 0 -or $falseClaims.Count -gt 0) { 'block' } else { 'pass' }
 
       $recordObj = [ordered]@{
         pr = $prNum
@@ -938,6 +953,13 @@ try {
         $null = Invoke-GitCmd $repoDir 'worktree prune' $runDir
       }
     }
+  }
+
+  if (-not $DryRun) {
+    $stillPending = @(@($pendingPrs) + @($targetPrs | ForEach-Object { [int](Get-Prop $_ 'number') }) | Sort-Object -Unique | Where-Object {
+      -not (Test-PrStateDone (Join-Path $stateDir ('post-' + $_ + '.json')))
+    })
+    Write-TextAtomic $pendingPath ((ConvertTo-Json -InputObject @($stillPending) -Compress) + "`n")
   }
 
   $summary.ok = ($summary.errors.Count -eq 0)
