@@ -274,10 +274,6 @@ export class Engine {
     { batchIds: string[]; request: string; leadGens: number[] }
   >();
   private readonly hydraReviewRunning = new Set<string>();
-  /** P1-39: threads whose first-send auto-worktree bind is in flight —
-   *  the reservation that makes a second chat's busy-check see the first
-   *  one (frozen pendingLocalTurnStarts). */
-  private readonly pendingAutoWorktree = new Set<string>();
   /** P1-38: the review whose findings turn the lead is answering — its
    *  verdicts fold into that card only (never a later ordinary reply). */
   private readonly hydraReviewAwaiting = new Map<string, string>();
@@ -1029,7 +1025,6 @@ export class Engine {
     this.pendingAttachments.delete(id);
     // F22: a deleted lead's runtime Hydra state dies with it — queued
     // delegations never spawn into a removed checkout.
-    this.pendingAutoWorktree.delete(id);
     for (const q of this.hydraWaiting.get(id) ?? []) {
       this.hydraBatchRequest.delete(q.batchId);
       this.hydraBatchGen.delete(q.batchId);
@@ -1421,17 +1416,10 @@ export class Engine {
       const startLocal = () => {
         const cur = live();
         if (!cur) return;
-        try {
-          this.startProvider(thread, turn, prompt, workspace, opts);
-        } catch (err) {
-          this.failTurnSync(
-            thread,
-            turn,
-            (err as Error)?.message ?? String(err),
-          );
-        }
+        // Same before-snapshot gate every local start passes through —
+        // a send landing local gets its checkpoint capture first.
+        this.startProviderThroughGate(thread, turn, prompt, workspace, opts);
       };
-      this.pendingAutoWorktree.add(threadId);
       void this.worktrees
         .autoWorktreeEligibility(projectId)
         .then(async (elig) => {
@@ -1439,6 +1427,11 @@ export class Engine {
           // .nonGit — the folder can't hold a worktree at all, so the
           // chat honestly edits the checkout it already shares.
           if (elig === "nonGit") return startLocal();
+          // Frozen re-check before binding: the claim may have freed
+          // while the probe ran — a free checkout takes the send
+          // locally, no worktree wasted.
+          if (!this.isLocalCheckoutBusy(projectId, threadId))
+            return startLocal();
           if (elig === "eligible") {
             const res = await this.createThreadWorktree(
               threadId,
@@ -1474,7 +1467,7 @@ export class Engine {
                 return;
               }
               try {
-                this.startProvider(thread, turn, prompt, ws, opts);
+                this.startProviderThroughGate(thread, turn, prompt, ws, opts);
               } catch (err) {
                 this.failTurnSync(
                   thread,
@@ -1491,9 +1484,8 @@ export class Engine {
             return;
           }
           // .unavailable — root mismatch, no commits, or an operation in
-          // progress; the busy re-check still frees a finished claim.
-          if (!this.isLocalCheckoutBusy(projectId, threadId))
-            return startLocal();
+          // progress; the busy re-check above already freed a finished
+          // claim, so a still-busy checkout fails honestly here.
           const cur = live();
           if (!cur) return;
           this.failTurnSync(
@@ -1511,44 +1503,61 @@ export class Engine {
               (err as Error)?.message ?? String(err),
             );
         })
-        .finally(() => this.pendingAutoWorktree.delete(threadId));
       return turn;
     }
 
-    // Before-snapshot gate: when a checkpoint coordinator owns this
-    // project's turns, the provider may start ONLY after the capture
-    // resolved and the turn is still alive — a cancel/delete/close
-    // during capture must never start it (P2L). Checkpoint preparation
-    // failure must never strand the turn: an unexpected coordinator
-    // rejection still lets ordinary chat proceed (visibly failed via
-    // the coordinator's own record), and a provider-start failure ends
-    // the turn honestly instead of leaving it running forever.
-    // Checkpoints are bound to the project's grant directory — a
-    // worktree thread's snapshots would silently describe the WRONG
-    // directory, so capture is skipped honestly (F11 bounded scope).
-    if (this.checkpoints && workspace && thread.projectId && thread.worktreeDir === undefined) {
+    this.startProviderThroughGate(thread, turn, prompt, workspace, opts);
+    return turn;
+  }
+
+  /** Before-snapshot gate: when a checkpoint coordinator owns this
+   *  project's turns, the provider may start ONLY after the capture
+   *  resolved and the turn is still alive — a cancel/delete/close
+   *  during capture must never start it (P2L). Checkpoint preparation
+   *  failure must never strand the turn: an unexpected coordinator
+   *  rejection still lets ordinary chat proceed (visibly failed via
+   *  the coordinator's own record), and a provider-start failure ends
+   *  the turn honestly instead of leaving it running forever.
+   *  Checkpoints are bound to the project's grant directory — a
+   *  worktree thread's snapshots would silently describe the WRONG
+   *  directory, so capture is skipped honestly (F11 bounded scope).
+   *  The P1-39 auto-worktree deferred paths start through this same
+   *  gate: a send that ends up local still gets its snapshot. */
+  private startProviderThroughGate(
+    thread: ChatThread,
+    turn: Turn,
+    prompt: string,
+    workspace: WorkspaceGrant | undefined,
+    opts?: { authored?: boolean; hydraReport?: number[]; hydraBrief?: boolean },
+  ): void {
+    const live = this.store.state.threads.find((t) => t.id === thread.id);
+    if (
+      this.checkpoints &&
+      workspace &&
+      thread.projectId &&
+      (live?.worktreeDir ?? thread.worktreeDir) === undefined
+    ) {
       const ckpt = this.checkpoints;
       void ckpt
         .beginTurn(thread, turn.id)
         .then((mayStart) => {
           if (!mayStart) return;
           try {
-            this.startProvider(thread, turn, prompt, workspace!, opts);
+            this.startProvider(thread, turn, prompt, workspace, opts);
           } catch (err) {
             this.failTurnSync(thread, turn, (err as Error)?.message ?? String(err));
           }
         })
         .catch((err) => {
           try {
-            this.startProvider(thread, turn, prompt, workspace!, opts);
+            this.startProvider(thread, turn, prompt, workspace, opts);
           } catch (e) {
             this.failTurnSync(thread, turn, (e as Error)?.message ?? String(e ?? err));
           }
         });
-      return turn;
+      return;
     }
     this.startProvider(thread, turn, prompt, workspace, opts);
-    return turn;
   }
 
   /** Start the provider for a live turn. Re-proves thread+turn identity
@@ -2616,9 +2625,10 @@ export class Engine {
    * directory itself is always main-chosen.
    */
   /** P1-39 (frozen isLocalCheckoutBusy, bounded): another chat already
-   *  works in this project's checkout — a live turn, a latched send-now,
-   *  or an in-flight auto-worktree reservation on a non-archived,
-   *  non-worktree thread bound to the same project. Worktree-bound and
+   *  works in this project's checkout — a live turn or a latched
+   *  send-now on a non-archived, non-worktree thread bound to the same
+   *  project. A deferred auto-bind's turn reads "running" the whole
+   *  probe, so no separate reservation is needed; worktree-bound and
    *  head-with-copy threads isolate elsewhere and never claim it. */
   private isLocalCheckoutBusy(projectId: string, excludingThreadId: string): boolean {
     for (const t of this.store.state.threads) {
@@ -2627,8 +2637,7 @@ export class Engine {
       if (
         t.turn?.status === "running" ||
         t.turn?.status === "waiting-approval" ||
-        this.pendingSends.has(t.id) ||
-        this.pendingAutoWorktree.has(t.id)
+        this.pendingSends.has(t.id)
       )
         return true;
     }

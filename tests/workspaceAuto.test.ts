@@ -12,16 +12,32 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Engine } from "../src/main/engine";
-import type { GitService } from "../src/main/gitService";
+import { GitService } from "../src/main/gitService";
 import type { ProviderAdapter, TurnContext } from "../src/main/provider";
 import { ProjectRuntimePaths } from "../src/main/projectRuntimePaths";
 import { Store } from "../src/main/store";
 
+const GIT = process.platform === "win32" ? "git.exe" : "/usr/bin/git";
+const haveGit = (() => {
+  try {
+    execFileSync(GIT, ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+// win32 GitService deliberately refuses direct Git without an injected
+// contained runner ("git-containment"): the real-git probe suite is
+// POSIX coverage; the stubbed engine cases still run everywhere.
+const haveDirectGit = haveGit && process.platform !== "win32";
+
 const stores: Store[] = [];
+const services: GitService[] = [];
 const dirs: string[] = [];
 
-afterEach(() => {
-  for (const s of stores.splice(0)) s.close();
+afterEach(async () => {
+  for (const s of services.splice(0)) await s.dispose();
+  for (const st of stores.splice(0)) st.close();
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
@@ -198,5 +214,83 @@ describe("P1-39 workspace auto mode", () => {
     await waitFor(() => seen.length === 2);
     expect(thread(r.engine, b.id).worktreeDir).toBeUndefined();
     expect(seen[1]!.workspace?.directory).toBe(r.repoDir);
+  });
+});
+
+function realGit(dir: string, args: string[]): string {
+  return execFileSync(GIT, args, {
+    cwd: dir,
+    env: {
+      PATH: process.platform === "win32" ? process.env.PATH : "/usr/bin:/bin",
+      HOME: dir,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+    },
+    encoding: "utf8",
+  });
+}
+
+function mkRepo(): string {
+  const dir = tmp("wtauto-real-");
+  realGit(dir, ["init", "-b", "main"]);
+  realGit(dir, ["config", "user.email", "test@example.com"]);
+  realGit(dir, ["config", "user.name", "Test"]);
+  writeFileSync(join(dir, "a.txt"), "one\n");
+  realGit(dir, ["add", "."]);
+  realGit(dir, ["commit", "-m", "init"]);
+  return dir;
+}
+
+function realGitService(repoDir: string) {
+  const dataRoot = tmp("wtauto-gdata-");
+  const store = new Store(dataRoot);
+  store.open();
+  stores.push(store);
+  const paths = new ProjectRuntimePaths([], join(dataRoot, "grants.json"), dataRoot);
+  const engine = new Engine(store, { descriptor: { id: "m", label: "M", mode: "mock", synthetic: true }, start() { throw new Error("never"); }, dispose: () => Promise.resolve({ children: [], orphanedPending: 0 }) } as ProviderAdapter, dataRoot, "0.0.0-test", paths);
+  const { project } = engine.openUserDirectory(repoDir);
+  const git = new GitService({
+    paths,
+    projects: () => engine.snapshot().projects,
+    mutable: () => true,
+    emit: () => {},
+    dataRoot,
+  });
+  services.push(git);
+  return { git, projectId: project.id };
+}
+
+describe.skipIf(!haveDirectGit)("autoWorktreeEligibility — real git probe", () => {
+  it("a plain folder answers nonGit so the send stays local", async () => {
+    const dir = tmp("wtauto-plain-");
+    const r = realGitService(dir);
+    expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("nonGit");
+  });
+
+  it("a repo root with commits and no operation answers eligible", async () => {
+    const r = realGitService(mkRepo());
+    expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("eligible");
+  });
+
+  it("an empty repo without commits answers unavailable", async () => {
+    const dir = tmp("wtauto-empty-");
+    realGit(dir, ["init", "-b", "main"]);
+    const r = realGitService(dir);
+    expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("unavailable");
+  });
+
+  it("a project inside a repo's subdirectory answers unavailable (root mismatch)", async () => {
+    const repo = mkRepo();
+    const sub = join(repo, "sub");
+    mkdirSync(sub);
+    const r = realGitService(sub);
+    expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("unavailable");
+  });
+
+  it("a repo mid-merge answers unavailable (frozen op-in-progress)", async () => {
+    const repo = mkRepo();
+    writeFileSync(join(repo, ".git", "MERGE_HEAD"), realGit(repo, ["rev-parse", "HEAD"]));
+    const r = realGitService(repo);
+    expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("unavailable");
   });
 });
