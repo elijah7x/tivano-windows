@@ -280,4 +280,25 @@ describe("P1-40 chat lifecycle races", () => {
     expect(cur.messages.at(-1)!.content).toBe("Could not create a worktree");
     expect(seen.length).toBe(1);
   });
+
+  it("a queue-head retain never flushes — it waits for the next drain", async () => {
+    const seen: TurnContext[] = [];
+    const r = rig(seen, { n: 0 });
+    const t = r.engine.createThread(r.projectId);
+    // Frozen: a retained send lands at the head of the queue WITHOUT
+    // flushing. Flushing would re-enter sendTurn while the failure that
+    // produced the retain still holds — retain→enqueue→drain→fail
+    // forever, one notice row per lap.
+    r.engine.enqueueFollowUp(t.id, "retained text", { front: true });
+    await new Promise((res) => setTimeout(res, 80));
+    expect(seen.length).toBe(0);
+    expect(thread(r.engine, t.id)!.followUps?.map((f) => f.text)).toEqual([
+      "retained text",
+    ]);
+    // A normal enqueue still flushes while idle — and the retained head
+    // of the queue goes first.
+    r.engine.enqueueFollowUp(t.id, "normal follow-up");
+    await waitFor(() => seen.length > 0);
+    expect(seen[0]?.prompt).toContain("retained text");
+  });
 });

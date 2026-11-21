@@ -2118,7 +2118,11 @@ export class Engine {
       thread.updatedAt = Date.now();
     });
     this.emit({ type: "thread-updated", thread });
-    this.flushFollowUpsIfIdle(thread);
+    // Frozen: a queue-head retain never flushes — it waits for the next
+    // turn-end drain or a manual send-now. Flushing here would re-enter
+    // sendTurn while the failure that produced the retain still holds,
+    // looping retain→enqueue→drain→fail and appending a notice per lap.
+    if (opts?.front !== true) this.flushFollowUpsIfIdle(thread);
   }
 
   removeFollowUp(threadId: string, id: string): void {
