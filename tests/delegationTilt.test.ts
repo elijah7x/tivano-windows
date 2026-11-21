@@ -159,14 +159,19 @@ describe("P1-12 rework send-back (frozen continue entry)", () => {
     ).toBe(true);
   });
 
-  it("an unknown continue name falls back to a head wearing it", { timeout: 20_000 }, async () => {
+  it("an unknown continue name is refused (frozen v2ContinueRefusal)", { timeout: 20_000 }, async () => {
     const { engine } = make();
     const lead = engine.createThread(null, "lead");
     engine.sendTurn(lead.id, "first job [mock:hydra-continue]");
-    await waitFor(() => heads(engine, lead.id).length === 1);
-    expect(heads(engine, lead.id)[0]!.hydraHead!.name).toBe("Hank");
-    await waitFor(
-      () => heads(engine, lead.id)[0]!.hydraHead!.status === "completed",
+    // No head exists to rework — the lead hears the refusal instead.
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some(
+        (m) =>
+          m.role === "user" &&
+          m.content.includes("Hydra did not send") &&
+          m.content.includes("no head called Hank"),
+      ),
     );
+    expect(heads(engine, lead.id).length).toBe(0);
   });
 });

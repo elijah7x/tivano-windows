@@ -2512,6 +2512,7 @@ export class Engine {
     subagentModeDefault?: SubagentMode | undefined;
     chimeraPresets?: import("../shared/chimera").ChimeraPreset[] | undefined;
     chimeraAutoDispatch?: boolean | undefined;
+    hydraTilt?: import("../shared/hydraDelegation").HydraTilt | undefined;
     hydraReviewEnabled?: boolean | undefined;
     hydraReviewFirst?: HydraReviewChoice | null | undefined;
     hydraReviewSecond?: HydraReviewChoice | null | undefined;
@@ -2656,6 +2657,8 @@ export class Engine {
       }
       if (patch.chimeraAutoDispatch !== undefined)
         d.settings.chimeraAutoDispatch = patch.chimeraAutoDispatch;
+      if (patch.hydraTilt !== undefined)
+        d.settings.hydraTilt = patch.hydraTilt;
       if (patch.hydraReviewEnabled !== undefined)
         d.settings.hydraReviewEnabled = patch.hydraReviewEnabled;
       for (const k of ["hydraReviewFirst", "hydraReviewSecond"] as const) {
@@ -4613,6 +4616,47 @@ export class Engine {
       return this.refuseDelegation(lead, "Hydra is off");
     if (lead.hydraEnabled === false)
       return this.refuseDelegation(lead, "this chat has Hydra off");
+    // P1-12 (frozen "continue" rework send-back): the entry continues
+    // in the named head's own session and copy — the steer path
+    // re-arms it as running and its next report flushes as a fresh
+    // batch. It spawns no head, so it stands outside the round
+    // accounting; names match case-insensitively, a head still working
+    // or an unknown name is refused (frozen v2ContinueRefusal).
+    if (d.continue) {
+      const named = d.continue.toLowerCase();
+      const known = this.store.state.threads.filter(
+        (t) =>
+          t.hydraHead?.leadId === lead.id &&
+          t.hydraHead.name.toLowerCase() === named,
+      );
+      if (known.length === 0) {
+        return this.refuseDelegation(
+          lead,
+          `there is no head called ${d.continue} to send back to`,
+        );
+      }
+      if (known.some((t) => t.hydraHead!.status === "running")) {
+        return this.refuseDelegation(
+          lead,
+          `${d.continue} is still working — its rework has to wait for its report`,
+        );
+      }
+      try {
+        // Frozen v2ContinuePrompt: the instruction plus the standing
+        // three-line report reminder.
+        this.sendTurn(
+          known.at(-1)!.id,
+          `${d.prompt}\n\nReport as before: one or two sentences of result, then exactly the three lines \`Deviations: ...\`, \`Unfinished: ...\` and \`Uncertain: ...\`, each \`none\` when empty; do not list changed files.`,
+          { authored: false, hydraBrief: true },
+        );
+      } catch (err) {
+        this.refuseDelegation(
+          lead,
+          `the rework of ${d.continue} could not start: ${(err as Error)?.message ?? String(err)}`,
+        );
+      }
+      return;
+    }
     // Frozen maxDelegationRounds: one round per lead TURN that actually
     // dispatches heads (bounded slice — per-turn, stricter than the
     // frozen per-block accounting).
@@ -4643,43 +4687,6 @@ export class Engine {
     const team = this.store.state.threads.filter(
       (t) => t.hydraHead?.leadId === lead.id,
     );
-    // P1-12 (frozen "continue" rework send-back): the entry continues
-    // in the named head's own session and copy — the steer path
-    // re-arms it as running and its next report flushes as a fresh
-    // batch. Names match case-insensitively; a head still working is
-    // refused outright, and an unknown name falls back to a fresh head
-    // wearing it.
-    if (d.continue) {
-      const named = d.continue.toLowerCase();
-      const matches = team.filter(
-        (t) => t.hydraHead!.name.toLowerCase() === named,
-      );
-      if (matches.some((t) => t.hydraHead!.status === "running")) {
-        return this.refuseDelegation(
-          lead,
-          `${d.continue} is still working — its rework has to wait for its report`,
-        );
-      }
-      const target = matches.at(-1);
-      if (target) {
-        try {
-          // Frozen v2ContinuePrompt: the instruction plus the standing
-          // three-line report reminder.
-          this.sendTurn(
-            target.id,
-            `${d.prompt}\n\nReport as before: one or two sentences of result, then exactly the three lines \`Deviations: ...\`, \`Unfinished: ...\` and \`Uncertain: ...\`, each \`none\` when empty; do not list changed files.`,
-            { authored: false, hydraBrief: true },
-          );
-        } catch (err) {
-          this.refuseDelegation(
-            lead,
-            `the rework of ${d.continue} could not start: ${(err as Error)?.message ?? String(err)}`,
-          );
-        }
-        return;
-      }
-      d = { ...d, name: d.continue, continue: undefined };
-    }
     const running = team.filter((t) => t.hydraHead?.status === "running").length;
     const launch = this.hydraLaunchFor(lead);
     const cap = launch?.maxHeads ?? HYDRA_UNCAPPED_CONCURRENCY;
