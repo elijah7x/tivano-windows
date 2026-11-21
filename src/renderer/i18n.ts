@@ -990,6 +990,12 @@ const zhHans: Record<string, string> = {
     "Hydra：侧边栏中没有名为 %@ 的项目，因此 %@ 未启动。",
   "Hydra: %@ did not start because its checkout could not be read.":
     "Hydra：无法读取 %@ 的检出目录，因此未启动。",
+  "Hydra: %@ is a system folder, so %@ did not start.":
+    "Hydra：%@ 是系统文件夹，因此 %@ 未启动。",
+  "Hydra: %@ is not a folder on this PC, so %@ did not start.":
+    "Hydra：%@ 不是这台电脑上的文件夹，因此 %@ 未启动。",
+  "Hydra: %@ is not a Git checkout Tivano can read, so %@ did not start.":
+    "Hydra：%@ 不是 Tivano 可读取的 Git 检出目录，因此 %@ 未启动。",
   "The turn failed without a recorded error.": "这一轮失败了，但没有记录下错误。",
   "Partial output before the failure:\n\n%@": "失败前的部分输出：\n\n%@",
   " and ": " 和 ",
@@ -1360,6 +1366,44 @@ export function translateError(t: (k: string) => string, message: string): strin
   if (i < 0) return localized;
   if (localized === head) return message; // unknown prefix → show raw
   return `${localized}: ${message.slice(i + 1).trim()}`;
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+let noticeTemplates: { key: string; re: RegExp }[] | undefined;
+
+/**
+ * Engine-emitted notices carry already-substituted English — a catalog
+ * key like "Hydra: %@ is a system folder, so %@ did not start." never
+ * matches the literal text, so a zh-Hans UI would read English. Recover
+ * the template by matching every parameterized key against the message,
+ * then translate with the captured values. Falls back to the prefix
+ * path for untemplated notices.
+ */
+export function translateNotice(
+  t: (k: string, ...vars: string[]) => string,
+  message: string,
+): string {
+  noticeTemplates ??= zhHansKeys()
+    // Only substantial templates qualify: a stub like "%@ failed" could
+    // mis-recover an unrelated notice that happens to end the same way.
+    // Longest literal wins so a specific key beats a generic tail.
+    .filter((k) => k.split(/%@|%d/).join("").trim().length >= 12)
+    .sort(
+      (a, b) =>
+        b.split(/%@|%d/).join("").length - a.split(/%@|%d/).join("").length,
+    )
+    .map((key) => ({
+      key,
+      re: new RegExp(
+        "^" + key.split(/%@|%d/).map(escapeRe).join("(.+?)") + "$",
+        "s",
+      ),
+    }));
+  for (const { key, re } of noticeTemplates) {
+    const m = re.exec(message);
+    if (m) return t(key, ...m.slice(1));
+  }
+  return translateError(t, message);
 }
 
 /** Keys present in zh-Hans; used by the completeness test. */

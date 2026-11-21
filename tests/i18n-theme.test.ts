@@ -4,7 +4,7 @@
 // valid and cover light+dark schemes.
 
 import { describe, expect, it } from "vitest";
-import { translate, zhHansKeys } from "../src/renderer/i18n";
+import { translate, translateError, translateNotice, zhHansKeys } from "../src/renderer/i18n";
 import { THEMES } from "../src/renderer/theme";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,26 @@ describe("i18n", () => {
   it("substitutes %@ variables", () => {
     expect(translate("en", 'Delete "%@"?', ["Thread A"])).toBe('Delete "Thread A"?');
     expect(translate("zh-Hans", 'Delete "%@"?', ["对话A"])).toBe("要删除“对话A”吗？");
+  });
+
+  it("translateNotice recovers the %@ template from an emitted notice", () => {
+    const t = (k: string, ...v: string[]) => translate("zh-Hans", k, v);
+    // The engine emits already-substituted English; the rendered row
+    // must still reach the parameterized zh-Hans key (frozen notices
+    // localise — a zh UI never reads English refusals).
+    const en =
+      "Hydra: C:\\Windows is a system folder, so Hank did not start.";
+    expect(translateNotice(t, en)).toBe(
+      translate(
+        "zh-Hans",
+        "Hydra: %@ is a system folder, so %@ did not start.",
+        ["C:\\Windows", "Hank"],
+      ),
+    );
+    expect(translateNotice(t, en)).toContain("系统文件夹");
+    // An untemplated notice falls through to the prefix path.
+    const raw = "UNLISTED_THING: happened";
+    expect(translateNotice(t, raw)).toBe(translateError(t, raw));
   });
 });
 

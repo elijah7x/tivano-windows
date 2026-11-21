@@ -748,6 +748,8 @@ const vThreadHead = vObject({
           error: vOptional(vMaxString(4000)),
         }),
       ),
+      targetCheckout: vOptional(vMaxString(2000)),
+      isNonGitCheckout: vOptional(vBoolean),
       copyKept: vOptional(vBoolean),
       landingPending: vOptional(vBoolean),
       spawnedAt: vTs,

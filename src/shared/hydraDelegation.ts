@@ -430,8 +430,14 @@ export function parseHydraReportNotes(reply: string): HydraReportNotes | undefin
   return notes;
 }
 
-function sharedWorkplaceRules(path: string): string {
-  return `You work in the lead's checkout at ${path}, alongside the lead and the other heads, who are changing other files at the same time. Changes you did not make are expected there: leave every one of them alone, never stash, check out, reset, restore or clean anything, and never move work into a branch or worktree, whatever the project's own guidelines say about agents and worktrees. Do not use git status or git diff to check your work: they show everyone's changes, and the lead does the verifying.`;
+/** Frozen `sharedFolderRule`, bounded: the owned-files list and its
+ *  backup/diff do not exist in this port (no "files" field), so the
+ *  rule narrows to change-in-place plus the Unfinished escape. */
+export const HYDRA_SHARED_FOLDER_RULE =
+  "This folder is not a Git repository, so you change files in place without a copy or merge. If you need to change a file the brief did not name, stop before changing it and report under Unfinished which file, what change and why; the lead decides whether to send you back to do it.";
+
+function sharedWorkplaceRules(path: string, isNonGit?: boolean): string {
+  return `${isNonGit ? HYDRA_SHARED_FOLDER_RULE + "\n" : ""}You work in the lead's checkout at ${path}, alongside the lead and the other heads, who are changing other files at the same time. Changes you did not make are expected there: leave every one of them alone, never stash, check out, reset, restore or clean anything, and never move work into a branch or worktree, whatever the project's own guidelines say about agents and worktrees. Do not use git status or git diff to check your work: they show everyone's changes, and the lead does the verifying.`;
 }
 
 export function delegatedHeadPrompt(
@@ -439,6 +445,7 @@ export function delegatedHeadPrompt(
   delegation: HydraDelegation,
   checkoutPath: string,
   identityPrompt?: string | undefined,
+  isNonGit?: boolean | undefined,
 ): string {
   // P1-37: the adaptive mode's identity rides the brief (frozen
   // rolePrompt on the waiting item) — one line under the task.
@@ -451,7 +458,7 @@ export function delegatedHeadPrompt(
 ${withoutVerificationSteps(delegation.prompt)}
 
 ## Where you work
-${sharedWorkplaceRules(checkoutPath)}
+${sharedWorkplaceRules(checkoutPath, isNonGit)}
 
 ## How to work
 ${HOW_TO_WORK}
@@ -806,9 +813,11 @@ const POLICY_VERIFICATION_RULE =
 const POLICY_REPORT_STYLE_RULE =
   "For each head, give one plain sentence starting with its name and describing the user-visible result; add the file details only when useful, and keep the whole account bounded to a line or two per head. Omit repeated summaries, audit jargon and decorative symbols. Say plainly what you still need from the user and what you settled or fixed yourself.";
 
-/** Frozen `projectRule`, bounded: this build routes a head only by a
- *  sidebar project's NAME — an unknown name keeps the head in this
- *  chat's project (no path routing, no sidebar growth). */
+/** Frozen `projectRule`/`v2DelegationRequest` route clause, bounded:
+ *  a head routes by a sidebar project's NAME or an ABSOLUTE PATH — the
+ *  path is created when its parent exists, system folders are refused
+ *  and a non-Git folder is changed in place without a copy or merge
+ *  (no "files" list or per-file narrowing in this port). */
 function policyProjectRule(
   projects: { name: string; path: string }[],
   ownName: string | undefined,
@@ -819,7 +828,7 @@ function policyProjectRule(
       projects.map((p) => `${p.name} (\`${p.path}\`)`).join(", ") +
       "."
     : "";
-  return `Heads may work in any project. A head works in ${own} unless it is sent to another: an entry of the delegation block names it with "project", a sidebar project's name — a name that matches no sidebar project keeps the head in this chat's project.${named} Whatever a head changes lands in the checkout it worked in, already there when its report arrives.`;
+  return `Heads may work in any project. A head works in ${own} unless it is sent to another: an entry of the delegation block names it with "project", a sidebar project's name or the absolute path of a worktree, another repository or any folder, including non-Git folders — a folder the path names is created when its parent exists, system folders are refused, and a name that matches no sidebar project and is no absolute path does not start the head. Non-Git folders are changed in place without a copy or merge.${named} Whatever a head changes lands in the checkout it worked in, already there when its report arrives.`;
 }
 
 /**
