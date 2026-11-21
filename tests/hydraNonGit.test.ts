@@ -276,14 +276,16 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     await waitFor(() => head2.hydraHead!.status !== "running");
     expect(head2.hydraHead!.status).toBe("completed");
     expect(head2.hydraHead!.isNonGitCheckout).toBe(false);
-    expect(head2.hydraHead!.targetCheckout).toBe(repo);
+    expect(head2.hydraHead!.targetCheckout).toBe(realpathSync(repo));
     // The routed repo joins the sidebar as a bound project — the head's
     // execution dir resolves through it on every provider path.
     const norm = (p: string) => p.replace(/[\\/]+$/, "").toLowerCase();
     const bound = engine
       .snapshot()
       .projects.find(
-        (p) => p.directory !== undefined && norm(p.directory) === norm(repo),
+        (p) =>
+          p.directory !== undefined &&
+          norm(p.directory) === norm(realpathSync(repo)),
       );
     expect(bound).toBeDefined();
     expect(head2.projectId).toBe(bound!.id);
