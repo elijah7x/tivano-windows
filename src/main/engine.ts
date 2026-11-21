@@ -5348,18 +5348,25 @@ export class Engine {
           .replace(/[\\/]+$/, ""),
       );
     })();
-    const touches =
-      lower === "" ||
-      lower === homeLower ||
-      homeLower.startsWith(lower + "\\") ||
-      /^[A-Za-z]:$/.test(norm) ||
-      /^[\\/]+$/.test(norm) ||
-      /^\\\\[^\\/]+[\\/][^\\/]+$/.test(norm) ||
-      roots.some(
-        (r) =>
-          lower === r || lower.startsWith(r + "\\") || r.startsWith(lower + "\\"),
+    // The same predicate runs on the resolved repo top below — a named
+    // folder may pass while its checkout (rev-parse --show-toplevel) is
+    // the home dir or a protected root, and the head must still refuse.
+    const touchesProtected = (p: string): boolean => {
+      const pn = p.replace(/[\\/]+$/, "");
+      const pl = sepN(pn);
+      return (
+        pl === "" ||
+        pl === homeLower ||
+        homeLower.startsWith(pl + "\\") ||
+        /^[A-Za-z]:$/.test(pn) ||
+        /^[\\/]+$/.test(pn) ||
+        /^\\\\[^\\/]+[\\/][^\\/]+$/.test(pn) ||
+        roots.some(
+          (r) => pl === r || pl.startsWith(r + "\\") || r.startsWith(pl + "\\"),
+        )
       );
-    if (!inTaskWs && touches) {
+    };
+    if (!inTaskWs && touchesProtected(canonical)) {
       return refuse(
         `Hydra: ${display} is a system folder, so ${personaName} did not start.`,
       );
@@ -5417,8 +5424,24 @@ export class Engine {
       );
     // Frozen applyHydraRoute(checkout: identity.checkout): a routed
     // subdir's checkout is the enclosing repo's top-level — the head
-    // copies and lands the whole checkout, not a slice of it.
-    if (probe.state === "git") canonical = probe.root;
+    // copies and lands the whole checkout, not a slice of it. The top
+    // must pass the same refusal gate as the named folder: a named
+    // subdir inside a home-rooted or protected-rooted repo is still a
+    // system-folder route (the task-workspaces exemption carries over
+    // because Tivano's own worktrees are repos).
+    if (probe.state === "git") {
+      const rootL = sepN(probe.root.replace(/[\\/]+$/, ""));
+      if (
+        rootL !== taskWs &&
+        !rootL.startsWith(taskWs + "\\") &&
+        touchesProtected(probe.root)
+      ) {
+        return refuse(
+          `Hydra: ${display} is a system folder, so ${personaName} did not start.`,
+        );
+      }
+      canonical = probe.root;
+    }
     const info = head.hydraHead!;
     info.targetCheckout = canonical;
     info.isNonGitCheckout = probe.state === "none";

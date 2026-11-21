@@ -321,6 +321,24 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(head.projectId).toBe(bound!.id);
   });
 
+  it("a routed folder whose repo top is protected is still refused", async () => {
+    const { engine, dataRoot } = rig();
+    // The named folder sits inside the exempt task-workspaces tree, but
+    // the enclosing repo's top is the data root itself — the head's
+    // checkout would land there, so the refusal must follow the root.
+    const ws = join(dataRoot, "worktrees", "repo", "sub");
+    mkdirSync(ws, { recursive: true });
+    mkdirSync(join(dataRoot, ".git"), { recursive: true });
+    writeFileSync(join(dataRoot, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]${ws}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe("failed");
+    expect(head.hydraHead!.summary).toContain("system folder");
+  });
+
   it("a name that is no sidebar project and no path is still refused", async () => {
     const { engine } = rig();
     const lead = engine.createThread(null, "lead");

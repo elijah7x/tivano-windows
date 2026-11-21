@@ -269,9 +269,13 @@ export class ProjectRuntimePaths {
 
   /** The project a directory is already bound to, or undefined. Both
    *  grant kinds count: selecting a dir another project owns re-opens
-   *  THAT project instead of minting a second binding. */
+   *  THAT project instead of minting a second binding. Grants written
+   *  before the NT-prefix strip may hold the resolved form — both
+   *  sides compare stripped. */
   findProjectByDirectory(canonicalDir: string): string | undefined {
-    for (const [id, g] of this.grants) if (g.directory === canonicalDir) return id;
+    const want = stripNsPrefix(canonicalDir);
+    for (const [id, g] of this.grants)
+      if (stripNsPrefix(g.directory) === want) return id;
     return undefined;
   }
 
