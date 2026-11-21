@@ -4239,6 +4239,17 @@ html[data-performance] .wp-backdrop { display: none; }
 }
 .hydra-stop:hover, .hydra-back:hover, .hydra-continue:hover { background: var(--hover); }
 .hydra-continue:disabled { opacity: 0.5; cursor: default; }
+/* P1-38 folding review card */
+.hydra-review {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  margin-top: 4px;
+}
+.hydra-review > summary { cursor: pointer; display: flex; gap: 8px; flex-wrap: wrap; }
+.hydra-review-meta { color: var(--muted); }
+.hydra-review-findings { margin: 4px 0; padding-left: 20px; }
+.hydra-reviewer-card[aria-disabled="true"] { opacity: 0.5; }
 .hydra-strip-text {
   overflow: hidden;
   text-overflow: ellipsis;

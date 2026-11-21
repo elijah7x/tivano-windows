@@ -1318,6 +1318,59 @@ export class GitService {
     }
   }
 
+  /** P1-38 (frozen `reviewHydraJob`'s diff step, bounded): the unified
+   *  diff `base..end` limited to `paths` in `cwd` — `end` is a temp-index
+   *  write-tree of the working state seeded from base, so uncommitted
+   *  work counts the same way a head's end state does. `base` may be a
+   *  recorded tree or a ref ("HEAD"). */
+  async hydraReviewDiff(
+    projectId: string,
+    cwd: string,
+    base: string,
+    paths: string[],
+  ): Promise<
+    { kind: "ok"; diff: string } | { kind: "unavailable"; reason: string }
+  > {
+    const fail = (r: string) => ({ kind: "unavailable" as const, reason: r });
+    if (this.unavailableReason) return fail(this.unavailableReason);
+    const op = this.newOp(projectId, OP_DEADLINE_MS * 2);
+    let acquired = false;
+    try {
+      await this.acquire(op);
+      acquired = true;
+      const grant = this.gate(op);
+      const dir = this.hydraCwdDir(op, grant, cwd);
+      if (!(await this.hydraRepoReady(op, dir))) return fail("not-a-repository");
+      const baseRes = await this.awaitOp(
+        op,
+        this.runOp(op, ["rev-parse", "--verify", "--quiet", `${base}^{tree}`], { cwd: dir }),
+      );
+      const baseTree = baseRes.stdout.trim();
+      if (baseRes.code !== 0 || !/^[0-9a-f]{40,64}$/.test(baseTree))
+        return fail("invalid-base");
+      const end = await this.hydraWriteTree(op, dir, baseTree);
+      if (end.kind !== "ok") return fail(end.reason);
+      const sorted = paths.slice(0, 2000).sort();
+      const args = ["--literal-pathspecs", "diff", "--no-ext-diff", baseTree, end.tree, "--"];
+      let patch = "";
+      for (let start = 0; start < sorted.length; start += 400) {
+        const chunk = sorted.slice(start, start + 400);
+        const d = await this.awaitOp(
+          op,
+          this.runOp(op, [...args, ...chunk], { cwd: dir, maxBytes: 2_000_000 }),
+        );
+        if (d.code !== 0) return fail("diff-failed");
+        patch += d.stdout;
+      }
+      return { kind: "ok", diff: patch };
+    } catch (e) {
+      return fail(reason(e));
+    } finally {
+      if (acquired) this.release();
+      op.settle();
+    }
+  }
+
   /** Frozen applyHydraHead, bounded: diff `baseTree..endTree`, apply it
    *  three-way into `checkout`. An in-progress merge/rebase or a patch
    *  nothing could apply keeps its file under <dataRoot>/hydra-patches. */

@@ -382,6 +382,26 @@ const vChimeraPreset = vObject({
   enabled: vOptional(vBoolean),
 });
 
+// P1-38: the independent review's reviewer pick and its persisted card.
+const vHydraReviewChoice = vObject({
+  provider: vOptional(vMaxString(100)),
+  model: vOptional(vMaxString(200)),
+  effort: vOptional(vMaxString(100)),
+});
+const vHydraReview = vObject({
+  id: vNonEmptyString(120),
+  batchId: vNonEmptyString(200),
+  reviewer: vNonEmptyString(400),
+  provider: vOptional(vNonEmptyString(100)),
+  findings: vMaxString(40_000),
+  findingCount: vInt(0, 1000),
+  diffBytes: vInt(0, 100_000_000),
+  durationMs: vInt(0, 100_000_000),
+  accepted: vOptional(vInt(0, 1000)),
+  rejected: vOptional(vInt(0, 1000)),
+  createdAt: vTs,
+});
+
 // F17 model-list slices — provider fixed to the one adapter this build
 // ships; preference keys carry the pin-id shape "provider/modelID" and
 // only reconcile against the live catalog at render time (a pin whose
@@ -538,6 +558,11 @@ const vSettings = vObject({
   // pre-P1-37 store loads verbatim; absent presets = the six built-ins.
   chimeraPresets: vOptional(vArray(vChimeraPreset, 64)),
   chimeraAutoDispatch: vOptional(vBoolean),
+  hydraReviewEnabled: vOptional(vBoolean),
+  // P1-38: the independent review's two reviewer picks — optional so
+  // every pre-P1-38 store loads verbatim.
+  hydraReviewFirst: vOptional(vHydraReviewChoice),
+  hydraReviewSecond: vOptional(vHydraReviewChoice),
   // F17: frozen modelList / modelSections / collapsedModelSections /
   // modelPreferences — pins organize the picker; the catalog stays
   // provider-owned. Optional so every pre-A53 store loads verbatim.
@@ -714,6 +739,8 @@ const vThreadHead = vObject({
       finishedAt: vOptional(vTs),
     }),
   ),
+  // P1-38: the lead's independent-review cards.
+  hydraReviews: vOptional(vArray(vHydraReview, 200)),
   // F25: helper-chat binding (frozen parentThreadID / isInPanel).
   parentThreadId: vOptional(vNonEmptyString(120)),
   isInPanel: vOptional(vBoolean),

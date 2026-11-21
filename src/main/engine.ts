@@ -7,7 +7,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, isAbsolute, join, relative } from "node:path";
 import { homedir } from "node:os";
 import type { Store } from "./store";
 import {
@@ -61,6 +61,15 @@ import {
   chimeraEffectivePrompt,
   chimeraPresetAt,
 } from "../shared/chimera";
+import {
+  countReviewFindings,
+  hydraReviewMessage,
+  hydraReviewPrompt,
+  hydraReviewerLabel,
+  parseReviewVerdicts,
+  type HydraReview,
+  type HydraReviewChoice,
+} from "../shared/hydraReview";
 import type {
   ProviderAdapter,
   ProviderTurnHandle,
@@ -247,6 +256,22 @@ export class Engine {
   private readonly hydraBudgetGen = new Map<string, number>();
   private readonly hydraBatchGen = new Map<string, number>();
   private readonly hydraPendingReports = new Map<string, HydraReport[]>();
+  /** P1-38: a settled report batch awaiting its independent review —
+   *  batchId plus the request text the review prompt names (frozen
+   *  job.reviewEngine gate: one review per batch). */
+  private readonly hydraReviewPending = new Map<
+    string,
+    { batchIds: string[]; request: string }
+  >();
+  private readonly hydraReviewRunning = new Set<string>();
+  /** P1-38: the review whose findings turn the lead is answering — its
+   *  verdicts fold into that card only (never a later ordinary reply). */
+  private readonly hydraReviewAwaiting = new Map<string, string>();
+  /** P1-38: provider-declared touched paths per thread since its job
+   *  started (frozen turn.touchedPaths) — the shared-checkout heads' and
+   *  the lead's own part of the review diff. In memory: a restart
+   *  forgets them, and the review then covers landed files only. */
+  private readonly hydraTouched = new Map<string, Set<string>>();
   private readonly hydraWatchdogs = new Map<
     string,
     ReturnType<typeof setTimeout>
@@ -320,6 +345,7 @@ export class Engine {
     | "hydraEndTree"
     | "hydraLand"
     | "hydraCopyRemove"
+    | "hydraReviewDiff"
   >;
   attachWorktrees(w: NonNullable<Engine["worktrees"]>): void {
     this.worktrees = w;
@@ -1110,6 +1136,10 @@ export class Engine {
         threadId,
         (this.hydraBudgetGen.get(threadId) ?? 0) + 1,
       );
+      // P1-38: a new request starts the next job's touched set (frozen
+      // job.turnID) — unless a settled job still waits on its review.
+      if (!this.hydraReviewPending.has(threadId) && !this.hydraReviewRunning.has(threadId))
+        this.hydraTouched.delete(threadId);
     }
     const thread = this.mustThread(threadId);
     // Frozen: sending in a shelved project wakes it — real work resumes.
@@ -2085,6 +2115,9 @@ export class Engine {
     subagentModeDefault?: SubagentMode | undefined;
     chimeraPresets?: import("../shared/chimera").ChimeraPreset[] | undefined;
     chimeraAutoDispatch?: boolean | undefined;
+    hydraReviewEnabled?: boolean | undefined;
+    hydraReviewFirst?: HydraReviewChoice | null | undefined;
+    hydraReviewSecond?: HydraReviewChoice | null | undefined;
     modelList?: import("../shared/modelList").ModelPin[] | undefined;
     modelSections?: import("../shared/modelList").ModelSection[] | undefined;
     collapsedModelSections?: string[] | undefined;
@@ -2226,6 +2259,13 @@ export class Engine {
       }
       if (patch.chimeraAutoDispatch !== undefined)
         d.settings.chimeraAutoDispatch = patch.chimeraAutoDispatch;
+      if (patch.hydraReviewEnabled !== undefined)
+        d.settings.hydraReviewEnabled = patch.hydraReviewEnabled;
+      for (const k of ["hydraReviewFirst", "hydraReviewSecond"] as const) {
+        const v = patch[k];
+        if (v === null) delete d.settings[k];
+        else if (v !== undefined) d.settings[k] = v;
+      }
       // F17 model-list — whole-array writes; the shared layout ops already
       // produced valid ordering, so each slice persists verbatim (empty
       // arrays delete, mirroring frozen "absent = empty" semantics).
@@ -3451,6 +3491,9 @@ export class Engine {
     if (!turn || turn.id !== turnId) return;
     if (turn.status !== "running" && turn.status !== "waiting-approval") return;
     this.checkpoints?.recordEdits(turnId, paths);
+    const set = this.hydraTouched.get(threadId) ?? new Set<string>();
+    for (const p of paths) if (set.size < 2000) set.add(p);
+    this.hydraTouched.set(threadId, set);
   }
 
   /** Per-turn checkpoint records for one OWNED thread (IPC). */
@@ -4842,6 +4885,22 @@ export class Engine {
       leadId,
       pending.filter((r) => runningBatches.has(r.batchId ?? "")),
     );
+    // P1-38: a settled batch is a job's end — the independent review of
+    // its diff queues behind the report turn (frozen reviewHydraJob's
+    // pending outcome; maybeReviewHydra runs it once the lead idles).
+    const request = lead.messages
+      .filter((m) => m.role === "user" && !m.content.startsWith("[Hydra]"))
+      .at(-1)?.content;
+    const prior = this.hydraReviewPending.get(leadId);
+    this.hydraReviewPending.set(leadId, {
+      batchIds: [
+        ...new Set([
+          ...(prior?.batchIds ?? []),
+          ...flushable.map((r) => r.batchId ?? "").filter(Boolean),
+        ]),
+      ],
+      request: prior?.request || (request ?? ""),
+    });
     const stillWorking = this.store.state.threads
       .filter((t) => t.hydraHead?.leadId === leadId && t.hydraHead.status === "running")
       .map((t) => t.hydraHead!.name);
@@ -5016,7 +5075,178 @@ export class Engine {
         this.emit({ type: "thread-updated", thread });
       }
     }
+    // P1-38: the lead's verdicts on the newest review fold back into its
+    // card (frozen HydraReviewVerdicts parse on the review reply).
+    const awaited = this.hydraReviewAwaiting.get(thread.id);
+    if (awaited !== undefined && !thread.hydraHead) {
+      this.hydraReviewAwaiting.delete(thread.id);
+      const latest = thread.hydraReviews?.find((r) => r.id === awaited);
+      const reply = thread.messages.find((m) => m.id === turn.assistantMessageId);
+      const verdicts = parseReviewVerdicts(reply?.content ?? "");
+      if (latest && status === "done" && verdicts.length) {
+        latest.accepted = verdicts.filter((v) => v.accepted).length;
+        latest.rejected = verdicts.filter((v) => !v.accepted).length;
+        this.store.update(() => {});
+        this.emit({ type: "thread-updated", thread });
+      }
+    }
     this.flushHydraReports(thread.id);
+    if (!thread.hydraHead) this.maybeReviewHydra(thread);
+  }
+
+  /** P1-38 frozen hydraReviewEngine, bounded to this build's one
+   *  adapter: the first pick whose provider this build runs and whose
+   *  adapter has a detached review call, else the second (fallback). */
+  private hydraReviewEngine():
+    | { choice: HydraReviewChoice; reviewer: string }
+    | undefined {
+    if (!this.provider.generateHydraReview) return undefined;
+    const s = this.store.state.settings;
+    const mode = this.provider.descriptor.mode;
+    for (const choice of [s.hydraReviewFirst ?? { provider: "codex" }, s.hydraReviewSecond]) {
+      if (!choice?.provider?.trim()) continue;
+      // The synthetic adapter stands in for Codex in mock runs.
+      if (choice.provider !== mode && !(mode === "mock" && choice.provider === "codex"))
+        continue;
+      const reviewer = hydraReviewerLabel(choice, () => this.provider.descriptor.label);
+      return { choice, reviewer };
+    }
+    return undefined;
+  }
+
+  /** Frozen reviewHydraJob gate: one review per settled job, only once
+   *  the lead is idle with no heads out and no reports waiting. */
+  private maybeReviewHydra(lead: ChatThread): void {
+    const pending = this.hydraReviewPending.get(lead.id);
+    if (!pending || this.hydraReviewRunning.has(lead.id)) return;
+    if (lead.turn && (lead.turn.status === "running" || lead.turn.status === "waiting-approval"))
+      return;
+    if (this.pendingSends.has(lead.id) || this.hydraLeadBusy(lead.id)) return;
+    if (this.hydraWaiting.get(lead.id)?.length) return;
+    this.hydraReviewPending.delete(lead.id);
+    if (this.store.state.settings.hydraReviewEnabled === false) {
+      this.clearHydraTouched(lead.id, pending.batchIds);
+      return;
+    }
+    this.hydraReviewRunning.add(lead.id);
+    void this.runHydraReview(lead.id, pending)
+      .catch(() => {})
+      .finally(() => {
+        this.hydraReviewRunning.delete(lead.id);
+        this.clearHydraTouched(lead.id, pending.batchIds);
+      });
+  }
+
+  private clearHydraTouched(leadId: string, batchIds: string[]): void {
+    this.hydraTouched.delete(leadId);
+    for (const t of this.store.state.threads)
+      if (t.hydraHead?.leadId === leadId && batchIds.includes(t.hydraHead.batchId))
+        this.hydraTouched.delete(t.id);
+  }
+
+  /** The review pass itself (frozen reviewHydraJob, bounded): collect
+   *  each checkout's landed + touched paths, diff them from the job's
+   *  base, ask the reviewer, persist the card and — on findings — send
+   *  the lead the frozen review message as a non-authored turn. Every
+   *  skip (no Git, no changes, no reviewer, a failed reply) is silent
+   *  and leaves no card, like the frozen `reviewSkipped` outcome. */
+  private async runHydraReview(
+    leadId: string,
+    job: { batchIds: string[]; request: string },
+  ): Promise<void> {
+    const lead = this.store.state.threads.find((t) => t.id === leadId);
+    const git = this.worktrees;
+    const review = this.provider.generateHydraReview?.bind(this.provider);
+    if (!lead || !git || !review || !lead.projectId) return;
+    const project = this.store.state.projects.find((p) => p.id === lead.projectId);
+    const leadCheckout = lead.worktreeDir ?? project?.directory;
+    if (!leadCheckout) return;
+    const selected = this.hydraReviewEngine();
+    if (!selected) return;
+    const heads = this.store.state.threads.filter(
+      (t) => t.hydraHead?.leadId === leadId && job.batchIds.includes(t.hydraHead.batchId),
+    );
+    const roots = new Map<string, { projectId: string; base: string; paths: Set<string> }>();
+    const rootFor = (root: string, projectId: string, base?: string) => {
+      const r = roots.get(root) ?? { projectId, base: base ?? "HEAD", paths: new Set<string>() };
+      if (base && r.base === "HEAD") r.base = base;
+      roots.set(root, r);
+    };
+    const collect = (p: string, root: string) => {
+      const rel = (isAbsolute(p) ? relative(root, p) : p).replace(/\\/g, "/");
+      if (!rel || rel === ".." || rel.startsWith("../") || isAbsolute(rel)) return;
+      roots.get(root)!.paths.add(rel);
+    };
+    for (const head of heads) {
+      const info = head.hydraHead!;
+      const root = info.landingCheckout ?? leadCheckout;
+      rootFor(root, head.projectId ?? lead.projectId, info.baseTree);
+      for (const f of info.landing?.files ?? []) collect(f.path, root);
+      if (info.baseTree === undefined)
+        for (const p of this.hydraTouched.get(head.id) ?? []) collect(p, root);
+    }
+    rootFor(leadCheckout, lead.projectId);
+    for (const p of this.hydraTouched.get(leadId) ?? []) collect(p, leadCheckout);
+    const started = Date.now();
+    let patch = "";
+    for (const root of [...roots.keys()].sort()) {
+      const r = roots.get(root)!;
+      if (!r.paths.size) continue;
+      const d = await git.hydraReviewDiff(r.projectId, root, r.base, [...r.paths]);
+      if (d.kind === "ok" && d.diff.trim()) patch += `# checkout: ${root}\n${d.diff}\n`;
+    }
+    if (!patch.trim()) return;
+    const diffBytes = Buffer.byteLength(patch, "utf8");
+    if (patch.length > 80_000) {
+      const notice = "\n\n[Patch truncated to 80,000 characters.]";
+      patch = patch.slice(0, 80_000 - notice.length) + notice;
+    }
+    let findings: string | null;
+    try {
+      findings = await review(hydraReviewPrompt(job.request, "", patch), {
+        cwd: leadCheckout,
+        readableDirs: [...roots.keys()].filter((k) => roots.get(k)!.paths.size).sort(),
+        model: selected.choice.model?.trim() || undefined,
+        effort: selected.choice.effort?.trim() || undefined,
+      });
+    } catch {
+      findings = null;
+    }
+    const current = this.store.state.threads.find((t) => t.id === leadId);
+    if (!current || findings === null || this.workGate !== "open") return;
+    findings = findings.trim().slice(0, 40_000);
+    const findingCount = countReviewFindings(findings);
+    const card: HydraReview = {
+      id: randomUUID(),
+      batchId: (job.batchIds.join(",") || leadId).slice(0, 200),
+      reviewer: selected.reviewer.slice(0, 400),
+      ...(selected.choice.provider ? { provider: selected.choice.provider } : {}),
+      findings,
+      findingCount,
+      diffBytes,
+      durationMs: Date.now() - started,
+      createdAt: Date.now(),
+    };
+    this.store.update(() => {
+      current.hydraReviews = [...(current.hydraReviews ?? []), card].slice(-200);
+    });
+    this.emit({ type: "thread-updated", thread: current });
+    if (findingCount === 0) return;
+    const text = hydraReviewMessage(selected.reviewer, findings);
+    try {
+      if (this.threadBusy(current) || this.pendingSends.has(leadId)) throw new Error("busy");
+      this.hydraReviewAwaiting.set(leadId, card.id);
+      this.sendTurn(leadId, text, { authored: false });
+    } catch {
+      // Frozen pendingReview: the user reached the lead first — the
+      // findings wait in the follow-up queue rather than being dropped.
+      this.hydraReviewAwaiting.delete(leadId);
+      try {
+        this.enqueueFollowUp(leadId, text, { unauthored: true });
+      } catch {
+        /* a full queue keeps the card; the findings stay readable there */
+      }
+    }
   }
 
   // ---- F20 usage-limit auto-continue (frozen AutoContinue port) --------
