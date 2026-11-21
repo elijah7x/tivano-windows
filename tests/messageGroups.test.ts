@@ -88,6 +88,21 @@ describe("F03 messageGroups", () => {
     expect(open.map((m) => m.id)).toEqual([u.id, a.id]);
   });
 
+  it("a finished reply can never fold under the step rows", () => {
+    // P1-40 (frozen .36): a completed turn folds its plan/tool/notice
+    // work under "Worked for …" but the user's ask and the assistant's
+    // final answer always stay open — the reply is never hidden.
+    const u = msg({ role: "user", turnId: "t1" });
+    const tool = msg({ turnId: "t1", kind: "tool" });
+    const plan = msg({ turnId: "t1", kind: "plan" });
+    const reply = msg({ turnId: "t1", content: "the finished answer" });
+    const g = { kind: "turn", turnId: "t1", messages: [u, tool, plan, reply] } as TurnGroup;
+    const { steps, open } = partitionGroup(g);
+    expect(steps.map((m) => m.id)).toEqual([tool.id, plan.id]);
+    expect(open.map((m) => m.id)).toEqual([u.id, reply.id]);
+    expect(open.at(-1)!.content).toBe("the finished answer");
+  });
+
   it("formatDuration matches the frozen narrow 2-unit style", () => {
     expect(formatDuration(0, 5000)).toBe("5s");
     expect(formatDuration(0, 80_000)).toBe("1m 20s");

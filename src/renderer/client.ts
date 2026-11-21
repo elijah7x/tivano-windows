@@ -611,6 +611,28 @@ export class ClientStore {
         this.lastError = `worktree: ${event.reason}`;
         break;
       }
+      case "turn-unsent": {
+        // Frozen retainUnsentMessage: a send rolled back before reaching
+        // a provider returns to the composer; when the composer already
+        // holds a draft the text waits at the FRONT of the follow-up
+        // queue instead, so nothing typed meanwhile is clobbered.
+        const d = this.drafts.get(event.threadId);
+        const composerBusy =
+          !!d &&
+          (!!(d.text ?? "").trim() ||
+            (d.attachments?.length ?? 0) > 0 ||
+            (d.quotes?.length ?? 0) > 0);
+        if (!composerBusy) {
+          this.setDraft(event.threadId, event.text);
+        } else {
+          void callApi("followUps:enqueue", {
+            threadId: event.threadId,
+            text: event.text,
+            front: true,
+          }).catch(() => {});
+        }
+        break;
+      }
     }
     this.snapshot = { ...s, rev: this.snapshotRev };
     this.notify();
