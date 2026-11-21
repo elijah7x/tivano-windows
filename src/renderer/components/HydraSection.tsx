@@ -27,6 +27,13 @@ import {
   type HydraHeadProfile,
   type HydraPair,
 } from "../../shared/hydra";
+import {
+  CHIMERA_BUILTINS,
+  chimeraBuiltin,
+  chimeraBriefName,
+  chimeraPresets,
+  type ChimeraPreset,
+} from "../../shared/chimera";
 import { useT } from "../locale";
 import { api, tryCall } from "../client";
 
@@ -163,6 +170,153 @@ function ChoiceRow(props: {
           {t(label)}
         </button>
       ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// P1-37 Sub-agent identities — the adaptive mode's roster (frozen Chimera
+// presets, bounded): enable/disable per row, custom rows for anything beyond
+// the six built-ins, an inline name/prompt/model editor, and the
+// auto-dispatch switch. The whole list persists through settings:set.
+
+function IdentitySection(props: {
+  settings: Settings;
+  onSave: (presets: ChimeraPreset[]) => void;
+  onToggle: (next: boolean) => void;
+}): React.JSX.Element {
+  const t = useT();
+  const { settings } = props;
+  const presets = chimeraPresets(settings.chimeraPresets);
+  const [editing, setEditing] = useState<ChimeraPreset | null>(null);
+  const autoDispatch = settings.chimeraAutoDispatch === true;
+
+  const persist = (next: ChimeraPreset[]) => props.onSave(next);
+  const saveEdit = (d: ChimeraPreset) => {
+    persist(presets.map((p) => (p.id === d.id ? { ...d } : p)));
+    setEditing(null);
+  };
+
+  return (
+    <div className="hydra-identities" data-testid="identity-section">
+      <h4>{t("Sub-agent identities")}</h4>
+      <p className="codex-note">
+        {t(
+          "Adaptive sub-agents pick from these identities; a head runs on the identity's model or follows the lead.",
+        )}
+      </p>
+      <ToggleRow
+        title="Auto-dispatch"
+        detail="Adaptive heads go out at once; off, each role's model is confirmed first."
+        on={autoDispatch}
+        onFlip={props.onToggle}
+      />
+      <div className="hydra-identity-list">
+        {presets.map((p) => {
+          const builtin = chimeraBuiltin(p.builtin ?? "");
+          const on = p.enabled !== false;
+          return (
+            <div className="hydra-pair" key={p.id} data-identity={p.id}>
+              <button
+                className="hydra-pair-label"
+                title={t("Edit this identity")}
+                onClick={() =>
+                  setEditing(editing?.id === p.id ? null : { ...p, pick: p.pick ? { ...p.pick } : undefined })
+                }
+              >
+                <span className="hydra-pair-title">
+                  {builtin ? t(builtin.title) : chimeraBriefName(p) || t("New identity")}
+                </span>
+                <span className="hydra-pair-summary">
+                  {on
+                    ? (p.pick?.model ?? t("Follow the lead"))
+                    : t("Off")}
+                </span>
+              </button>
+              <button
+                role="switch"
+                aria-checked={on}
+                aria-label={t("Enabled")}
+                className={`choice${on ? " active" : ""}`}
+                onClick={() =>
+                  persist(
+                    presets.map((q) => (q.id === p.id ? { ...q, enabled: !on } : q)),
+                  )
+                }
+              >
+                {on ? t("On") : t("Off")}
+              </button>
+              {editing?.id === p.id && (
+                <div className="hydra-editor" data-testid="identity-editor">
+                  <label className="kv">
+                    <span>{t("Name")}</span>
+                    <input
+                      value={editing.name ?? ""}
+                      placeholder={builtin ? t(builtin.title) : t("Identity name")}
+                      onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                    />
+                  </label>
+                  <label className="kv">
+                    <span>{t("Prompt")}</span>
+                    <input
+                      value={editing.specialty ?? ""}
+                      placeholder={
+                        builtin ? builtin.defaultPrompt : t("What this identity does")
+                      }
+                      onChange={(e) => setEditing({ ...editing, specialty: e.target.value })}
+                    />
+                  </label>
+                  <label className="kv">
+                    <span>{t("Model")}</span>
+                    <input
+                      value={editing.pick?.model ?? ""}
+                      placeholder={t("Follow the lead")}
+                      onChange={(e) =>
+                        setEditing({
+                          ...editing,
+                          pick: e.target.value.trim()
+                            ? { ...editing.pick, model: e.target.value.trim() }
+                            : undefined,
+                        })
+                      }
+                    />
+                  </label>
+                  <div className="choice-row">
+                    <button className="choice" onClick={() => saveEdit(editing)}>
+                      {t("Save")}
+                    </button>
+                    <button className="choice" onClick={() => setEditing(null)}>
+                      {t("Cancel")}
+                    </button>
+                    {!p.builtin && (
+                      <button
+                        className="choice danger"
+                        onClick={() => {
+                          persist(presets.filter((q) => q.id !== p.id));
+                          setEditing(null);
+                        }}
+                      >
+                        {t("Remove")}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <button
+        className="choice"
+        onClick={() =>
+          persist([
+            ...presets,
+            { id: `custom-${Date.now().toString(36)}`, name: "", specialty: "", enabled: true },
+          ])
+        }
+      >
+        {t("New identity")}
+      </button>
     </div>
   );
 }
@@ -822,6 +976,12 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
           "New chats start on this mode; each chat switches it in the model picker. With no saved pair, Preset falls back to Same-model.",
         )}
       </p>
+
+      <IdentitySection
+        settings={settings}
+        onSave={(next) => tryCall("settings:set", { chimeraPresets: next })}
+        onToggle={(next) => tryCall("settings:set", { chimeraAutoDispatch: next })}
+      />
 
       <div className="hydra-pairs-head">
         <h4>{t("Pairs")}</h4>

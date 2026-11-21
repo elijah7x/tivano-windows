@@ -40,7 +40,6 @@ import {
   QUIET_STALL_NOTE,
   STALLED_NOTE,
   delegatedHeadPrompt,
-  hydraAdaptiveNote,
   hydraDelegationRequest,
   hydraIsTransientFailure,
   hydraLeadPolicy,
@@ -57,6 +56,11 @@ import {
   type HydraDelegation,
   type HydraReport,
 } from "../shared/hydraDelegation";
+import {
+  chimeraAdaptivePolicy,
+  chimeraEffectivePrompt,
+  chimeraPresetAt,
+} from "../shared/chimera";
 import type {
   ProviderAdapter,
   ProviderTurnHandle,
@@ -2079,6 +2083,8 @@ export class Engine {
     hydraPairs?: import("../shared/hydra").HydraPair[] | undefined;
     lastHydraPairId?: string | null | undefined;
     subagentModeDefault?: SubagentMode | undefined;
+    chimeraPresets?: import("../shared/chimera").ChimeraPreset[] | undefined;
+    chimeraAutoDispatch?: boolean | undefined;
     modelList?: import("../shared/modelList").ModelPin[] | undefined;
     modelSections?: import("../shared/modelList").ModelSection[] | undefined;
     collapsedModelSections?: string[] | undefined;
@@ -2214,6 +2220,12 @@ export class Engine {
       }
       if (patch.subagentModeDefault !== undefined)
         d.settings.subagentModeDefault = patch.subagentModeDefault;
+      if (patch.chimeraPresets !== undefined) {
+        if (patch.chimeraPresets.length === 0) delete d.settings.chimeraPresets;
+        else d.settings.chimeraPresets = patch.chimeraPresets;
+      }
+      if (patch.chimeraAutoDispatch !== undefined)
+        d.settings.chimeraAutoDispatch = patch.chimeraAutoDispatch;
       // F17 model-list — whole-array writes; the shared layout ops already
       // produced valid ordering, so each slice persists verbatim (empty
       // arrays delete, mirroring frozen "absent = empty" semantics).
@@ -3994,6 +4006,7 @@ export class Engine {
    *  and Hydra-off chats get nothing; slash commands carry no guidance. */
   private hydraWirePrefix(lead: ChatThread, isReport: boolean): string {
     if (lead.hydraHead) return "";
+    const s = this.store.state.settings;
     const launch = this.hydraLaunchFor(lead);
     if (!launch) return "";
     const project = this.store.state.projects.find((p) => p.id === lead.projectId);
@@ -4027,12 +4040,16 @@ export class Engine {
         (this.hydraRounds.get(lead.id) ?? 0) < MAX_DELEGATION_ROUNDS;
       return queuedNote + policy + "\n\n" + hydraReportNote(team, canDelegate);
     }
-    // P1-36: the adaptive mode's bounded Chimera slice — role titles +
-    // profile routing ride the delegation request.
+    // P1-36/P1-37: the adaptive mode's Chimera policy — role titles,
+    // the numbered identity list and the auto-dispatch note ride the
+    // delegation request (frozen ChimeraPrompts.policy, bounded).
     const adaptive =
       this.subagentModeFor(lead) === "adaptive"
         ? "\n\n" +
-          hydraAdaptiveNote(launch.headProfiles.map((p) => p.name))
+          chimeraAdaptivePolicy(
+            s.chimeraPresets,
+            s.chimeraAutoDispatch === true,
+          )
         : "";
     return (
       queuedNote +
@@ -4173,6 +4190,22 @@ export class Engine {
             (p.provider === undefined || p.provider === mode),
         )
       : undefined;
+    // P1-37: adaptive mode resolves the entry's 1-based `identity`
+    // against the usable presets the policy numbered (frozen
+    // delegation.preset); its prompt rides the head's brief and its
+    // pick supplies model/effort — absent means Follow the lead.
+    const identityPreset =
+      this.subagentModeFor(lead) === "adaptive"
+        ? chimeraPresetAt(s.chimeraPresets, d.identity)
+        : undefined;
+    const identityPrompt = identityPreset
+      ? chimeraEffectivePrompt(identityPreset)
+      : undefined;
+    const identityPick =
+      identityPreset?.pick?.provider === undefined ||
+      identityPreset?.pick?.provider === mode
+        ? identityPreset?.pick
+        : undefined;
 
     const team = this.store.state.threads.filter(
       (t) => t.hydraHead?.leadId === lead.id,
@@ -4214,8 +4247,10 @@ export class Engine {
     // The head's model/effort (frozen): routed profile's, else the pair's
     // worker fields when it keeps them, else the chat's own. Codex-only
     // fields — adapters without per-thread models ignore them.
-    const headModel = routed?.model ?? launch?.workerModel ?? lead.codexModel;
-    const headEffort = routed?.effort ?? launch?.workerEffort ?? lead.codexEffort;
+    const headModel =
+      identityPick?.model ?? routed?.model ?? launch?.workerModel ?? lead.codexModel;
+    const headEffort =
+      identityPick?.effort ?? routed?.effort ?? launch?.workerEffort ?? lead.codexEffort;
     if (headModel) head.codexModel = headModel;
     if (headEffort) head.codexEffort = headEffort;
     // Frozen routeHydraHead: a delegation naming a project that is not
@@ -4240,7 +4275,7 @@ export class Engine {
     // one — the head's record shows which it was.
     const copySource = this.hydraCopySource(lead, head);
     if (launch?.isolatesHeads && copySource && this.worktrees) {
-      void this.prepareIsolatedHead(head.id, lead, d, persona, copySource, batchId);
+      void this.prepareIsolatedHead(head.id, lead, d, persona, copySource, batchId, identityPrompt);
       return;
     }
     const dir = this.threadDirectory(head.id);
@@ -4254,7 +4289,7 @@ export class Engine {
       );
     }
     try {
-      this.sendTurn(head.id, delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)"), {
+      this.sendTurn(head.id, delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)", identityPrompt), {
         authored: false,
         hydraBrief: true,
       });
@@ -4409,6 +4444,7 @@ export class Engine {
     persona: HydraPersona,
     source: string,
     batchId: string,
+    identityPrompt?: string | undefined,
   ): Promise<void> {
     await this.bindIsolatedCopy(headId, source, `${lead.id}:${batchId}:${source}`);
     const cur = this.store.state.threads.find((t) => t.id === headId);
@@ -4424,7 +4460,7 @@ export class Engine {
         { note: true },
       );
     }
-    const brief = delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)");
+    const brief = delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)", identityPrompt);
     try {
       this.sendTurn(cur.id, brief, {
         authored: false,

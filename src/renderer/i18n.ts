@@ -1046,6 +1046,27 @@ const zhHans: Record<string, string> = {
     "主代理把工作拆成不同角色，并为每个角色匹配合适服务商的模型。",
   "New chats start on this mode; each chat switches it in the model picker. With no saved pair, Preset falls back to Same-model.":
     "新对话使用该模式；每个对话可在模型选择器中切换。没有保存的组合时，“模型搭配”回退为“同模型”。",
+  // P1-37: adaptive identities — titles/Auto-dispatch use the upstream
+  // canonical zh-Hans verbatim.
+  "Sub-agent identities": "子代理身份",
+  "Adaptive sub-agents pick from these identities; a head runs on the identity's model or follows the lead.":
+    "自适应子代理从这些身份中挑选；子智能体使用身份的模型，或跟随主代理。",
+  "Auto-dispatch": "自动派发",
+  "Adaptive heads go out at once; off, each role's model is confirmed first.":
+    "开启后自适应子智能体立即派发；关闭则先确认每个角色的模型。",
+  "Follow the lead": "跟随主代理",
+  "Edit this identity": "编辑此身份",
+  "New identity": "新建身份",
+  "Identity name": "身份名称",
+  "What this identity does": "这个身份的职责",
+  "Prompt": "提示词",
+  "Enabled": "已启用",
+  "Scout": "侦察",
+  "Builder": "实现",
+  "Reviewer": "评审",
+  "Designer": "设计",
+  "Researcher": "调研",
+  "Writer": "文案",
   "Only newly dispatched heads": "仅限新派发的子智能体",
   "Only newly dispatched Codex heads managed by Tivano can be archived after successful completion. Lead chats, older sessions, heads with user follow-ups or descendant sessions, and heads not confirmed idle stay visible.":
     "仅新派发且由 Tivano 管理的 Codex 子智能体会在成功完成后归档。主会话、较早会话，以及收到用户后续消息、有后代会话或尚未确认空闲的子智能体会话，均保持可见。",
