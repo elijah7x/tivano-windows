@@ -169,10 +169,14 @@ describe.skipIf(!haveDirectGit)("thread worktrees (F11)", () => {
     if (res.kind !== "created") throw new Error("setup");
     rmSync(res.directory, { recursive: true, force: true });
     expect(r.engine.threadDirectory(r.threadId)).toBeNull();
-    // …and a turn refuses honestly rather than running in the project dir.
+    // …and a turn refuses honestly rather than running in the project dir
+    // — frozen retainUnsentMessage rolls the send back into the composer
+    // and leaves the note as a notice row, never a fallback write.
     const turn = r.engine.sendTurn(r.threadId, "hello");
-    expect(turn.status).toBe("error");
-    expect(turn.error).toContain("WORKSPACE_NOT_CONFIGURED");
+    expect(turn.status).toBe("cancelled");
+    const t = r.engine.snapshot().threads.find((x) => x.id === r.threadId)!;
+    expect(t.turn).toBeNull();
+    expect(t.messages.at(-1)!.content).toContain("WORKSPACE_NOT_CONFIGURED");
   });
 
   it("executes a turn inside the bound worktree via verifyExec", async () => {

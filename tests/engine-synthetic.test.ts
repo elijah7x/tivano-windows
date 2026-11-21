@@ -97,27 +97,39 @@ describe("engine × synthetic-stdio", () => {
     reopened.close();
   });
 
-  it("a project without a workspace grant yields WORKSPACE_NOT_CONFIGURED", async () => {
+  it("a project without a workspace grant retains the send (WORKSPACE_NOT_CONFIGURED)", async () => {
     const adapter = providerFor();
     const paths = new ProjectRuntimePaths(); // nothing registered
     const { engine } = makeEngine(adapter, paths);
+    const unsent: string[] = [];
+    engine.onEvent((e) => {
+      if (e.type === "turn-unsent") unsent.push(e.text);
+    });
     const project = engine.createProject("no-ws");
     const thread = engine.createThread(project.id);
     const turn = engine.sendTurn(thread.id, "hi");
-    expect(turn.status).toBe("error");
-    expect(turn.error).toContain("WORKSPACE_NOT_CONFIGURED");
+    // Frozen retainUnsentMessage: pre-provider failures roll the send
+    // back into the composer — the detached turn reads cancelled, the
+    // thread keeps a notice row instead of an errored turn.
+    expect(turn.status).toBe("cancelled");
+    expect(unsent).toEqual(["hi"]);
     expect(adapter.connectionCount()).toBe(0); // no child was spawned
     const t = engine.snapshot().threads.find((x) => x.id === thread.id)!;
-    expect(t.turn!.status).toBe("error");
+    expect(t.turn).toBeNull();
+    const notice = t.messages.at(-1)!;
+    expect(notice.kind).toBe("notice");
+    expect(notice.content).toContain("WORKSPACE_NOT_CONFIGURED");
   });
 
-  it("a thread with no project cannot spawn a synthetic child", () => {
+  it("a thread with no project retains the send (WORKSPACE_NOT_CONFIGURED)", () => {
     const adapter = providerFor();
     const { engine } = makeEngine(adapter, new ProjectRuntimePaths());
     const thread = engine.createThread(null);
     const turn = engine.sendTurn(thread.id, "hi");
-    expect(turn.status).toBe("error");
-    expect(turn.error).toContain("WORKSPACE_NOT_CONFIGURED");
+    expect(turn.status).toBe("cancelled");
+    const t = engine.snapshot().threads.find((x) => x.id === thread.id)!;
+    expect(t.turn).toBeNull();
+    expect(t.messages.at(-1)!.content).toContain("WORKSPACE_NOT_CONFIGURED");
   });
 
   it("deleting a project revokes its workspace and cancels the turn", async () => {

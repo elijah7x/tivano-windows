@@ -478,8 +478,17 @@ try {
   await page.locator(".composer textarea").fill("will not run");
   await page.keyboard.press("Enter");
   await waitSnapshot(page, (s) => {
-    const t = s.threads.find((x) => x.id === s4thread)?.turn;
-    return t?.status === "error" && t.error?.includes("WORKSPACE_NOT_CONFIGURED");
+    const t = s.threads.find((x) => x.id === s4thread);
+    // Frozen retainUnsentMessage (P1-40): a pre-provider failure leaves
+    // no errored turn — the note lands as a notice row and the text
+    // rolls back into the composer.
+    const last = t?.messages?.at(-1);
+    return (
+      t != null &&
+      t.turn == null &&
+      last?.kind === "notice" &&
+      last.content?.includes("WORKSPACE_NOT_CONFIGURED")
+    );
   });
   check("missing workspace surfaces WORKSPACE_NOT_CONFIGURED", true);
   await page.screenshot({ path: join(outDir, "12-workspace-not-configured.png") });

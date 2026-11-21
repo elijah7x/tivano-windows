@@ -734,7 +734,11 @@ export const requestValidators = {
   }),
   // F08 follow-up queue. Item ids are re-validated against the thread's
   // own queue in main; item text bounds match the queue's, not a turn's.
-  "followUps:enqueue": vObject({ threadId: vId, text: vNonEmptyString(8000) }),
+  "followUps:enqueue": vObject({
+    threadId: vId,
+    text: vNonEmptyString(8000),
+    front: vOptional(vBoolean),
+  }),
   "followUps:remove": vObject({ threadId: vId, id: vId }),
   "followUps:update": vObject({ threadId: vId, id: vId, text: vNonEmptyString(8000) }),
   "followUps:move": vObject({ threadId: vId, id: vId, targetId: vId, after: vBoolean }),
@@ -783,6 +787,14 @@ type AppEventPayload =
       turnId: string;
       status: import("./types").TurnStatus;
       error?: string;
+    }
+  | {
+      // Frozen retainUnsentMessage: a send rolled back before reaching a
+      // provider returns its text to the composer (or the queue front).
+      type: "turn-unsent";
+      threadId: string;
+      text: string;
+      attachments?: import("./types").AttachmentRef[];
     }
   | {
       type: "approval-requested";

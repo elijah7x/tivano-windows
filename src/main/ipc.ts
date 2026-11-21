@@ -555,7 +555,11 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("threads:set-model", (p) =>
     engine.setThreadModel(p.threadId, p.model, p.effort, p.fastTier),
   );
-  handle("followUps:enqueue", (p) => engine.enqueueFollowUp(p.threadId, p.text));
+  handle("followUps:enqueue", (p) =>
+    engine.enqueueFollowUp(p.threadId, p.text, {
+      front: p.front === true,
+    }),
+  );
   handle("followUps:remove", (p) => engine.removeFollowUp(p.threadId, p.id));
   handle("followUps:update", (p) => engine.updateFollowUp(p.threadId, p.id, p.text));
   handle("followUps:move", (p) => engine.moveFollowUp(p.threadId, p.id, p.targetId, p.after));

@@ -112,6 +112,10 @@ export class ClientStore {
    *  threads:resend while it is set. Ephemeral like drafts. */
   private editTargets = new Map<string, { turnId: string; messageId: string }>();
   private pendingSends = new Set<string>();
+  /** The draft version each in-flight send submitted — lets turn-unsent
+   *  tell "the composer still holds exactly this send" (the rollback is
+   *  already sitting in the box) from "the user typed meanwhile". */
+  private sentVersions = new Map<string, number>();
   /** F20: threads waiting for a usage-limit reset (ephemeral mirror). */
   limitResumes: Record<string, number> = {};
   private readonly invoke: InvokeFn;
@@ -392,6 +396,7 @@ export class ClientStore {
     if ((!text && !(d?.attachments?.length)) || this.pendingSends.has(threadId)) return;
     const version = d!.version;
     this.pendingSends.add(threadId);
+    this.sentVersions.set(threadId, version);
     this.notify();
     // F09/F06 local commands — frozen handleLocalCommand: "/plan" toggles
     // the interaction mode on every provider; "/compact" runs only where
@@ -430,6 +435,7 @@ export class ClientStore {
       this.reportError(e instanceof Error ? e.message : String(e));
     } finally {
       this.pendingSends.delete(threadId);
+      this.sentVersions.delete(threadId);
       this.notify();
     }
   }
@@ -609,6 +615,62 @@ export class ClientStore {
         // F01: the default-workspace worktree failed — surface the
         // reason in the same banner an IPC rejection would use.
         this.lastError = `worktree: ${event.reason}`;
+        break;
+      }
+      case "turn-unsent": {
+        // Frozen retainUnsentMessage: a send rolled back before reaching
+        // a provider returns to the composer; when the composer already
+        // holds a draft the text waits at the FRONT of the follow-up
+        // queue instead, so nothing typed meanwhile is clobbered.
+        const d = this.drafts.get(event.threadId);
+        // The event lands BEFORE the turns:send reply — for the send
+        // that just rolled back, the composer still holds exactly that
+        // draft (same submitted version). That draft IS the restore:
+        // bump its version so sendDraft's success-clear skips it, and
+        // enqueue/re-set nothing — text, quotes and chips stay as they
+        // were, no duplicates.
+        const selfRollback =
+          this.pendingSends.has(event.threadId) &&
+          d !== undefined &&
+          d.version === (this.sentVersions.get(event.threadId) ?? -1);
+        if (selfRollback) {
+          this.drafts.set(event.threadId, { ...d, version: d.version + 1 });
+          break;
+        }
+        const composerBusy =
+          !!d &&
+          (!!(d.text ?? "").trim() ||
+            (d.attachments?.length ?? 0) > 0 ||
+            (d.quotes?.length ?? 0) > 0);
+        if (!composerBusy) {
+          this.setDraft(event.threadId, event.text);
+        } else {
+          this.invoke("followUps:enqueue", {
+            threadId: event.threadId,
+            text: event.text,
+            front: true,
+          }).catch((e) =>
+            this.reportError(e instanceof Error ? e.message : String(e)),
+          );
+        }
+        // Sent attachments come back to the draft strip — merge by id so
+        // nothing the user picked is silently lost (they ride the queue
+        // item only as text otherwise).
+        if (event.attachments?.length) {
+          const cur = this.drafts.get(event.threadId);
+          const have = new Set((cur?.attachments ?? []).map((a) => a.id));
+          const merged = [
+            ...(cur?.attachments ?? []),
+            ...event.attachments.filter((a) => !have.has(a.id)),
+          ];
+          this.drafts.set(event.threadId, {
+            text: cur?.text ?? event.text,
+            version: (cur?.version ?? 0) + 1,
+            ...(cur?.command ? { command: cur.command } : {}),
+            attachments: merged,
+            ...(cur?.quotes ? { quotes: cur.quotes } : {}),
+          });
+        }
         break;
       }
     }
