@@ -719,10 +719,11 @@ function Get-DevinLogActivity {
       $parsed = [DateTime]::MinValue
       if (-not [DateTime]::TryParse($Matches[1], [Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) { continue }
       if ($parsed -lt $SinceUtc) { continue }
-      # Devin Desktop writes housekeeping lines every minute even with no agent turn running
-      # (session database jobs, session/list, skills discovery); they are not work.
-      $housekeeping = ($line -match 'chisel_agent::session_db|method="session/list"|chisel_agent::skills_loading')
-      if (-not $housekeeping -and ($null -eq $newestWriteUtc -or $parsed -gt $newestWriteUtc)) { $newestWriteUtc = $parsed }
+      # Devin Desktop logs housekeeping every minute with no agent turn running (session database
+      # jobs, session/list, remote config, seat status, analytics), so only model calls, tool runs and
+      # trajectory/message writes count as agent work.
+      $agentWork = ($line -match 'GetChatMessage|RecordTrajectorySegmentEvents|^\S+Z\s+\w+\s+toolbox|message_forest|store_message_node')
+      if ($agentWork -and ($null -eq $newestWriteUtc -or $parsed -gt $newestWriteUtc)) { $newestWriteUtc = $parsed }
       if ($line -match 'Permission decision for tool \S+: prompting user') {
         $filePendingUtc = $parsed
       } elseif ($null -ne $filePendingUtc -and $line -match 'User approved tool permission|User denied tool permission|auto-decided') {
