@@ -4965,6 +4965,17 @@ export class Engine {
       }
       if (!this.routeHydraHead(head, lead, expanded, persona.name)) return;
     }
+    // Frozen probes the checkout for every head, not only path-routed
+    // ones: a sidebar project bound to a plain folder gets the same
+    // in-place treatment (no copy, shared-folder rule in the brief).
+    if (head.hydraHead!.isNonGitCheckout === undefined) {
+      const headDir = this.store.state.projects.find(
+        (p) => p.id === head.projectId,
+      )?.directory;
+      if (headDir !== undefined && this.hydraGitProbe(headDir) === "none") {
+        head.hydraHead!.isNonGitCheckout = true;
+      }
+    }
     // F22 isolation (frozen makeHydraCopy): with copies on and a copyable
     // checkout the head gets its own detached worktree first and runs
     // there; a checkout that cannot be copied honestly keeps the shared
@@ -5108,6 +5119,23 @@ export class Engine {
         .replace(/[\\/]+$/, "")
         .toLowerCase();
     };
+    // Frozen hydraProtectedRoots: the sibling edition state roots
+    // (Release/Dev/Preview share the parent folder) and the ~/.tivano*
+    // dotdirs — all canonicalized like the routed candidate.
+    const canonOr = (p: string) => {
+      try {
+        return realpathSync(p);
+      } catch {
+        return p;
+      }
+    };
+    const parent = dirname(this.dataRoot);
+    const siblings = ["Tivano", "Tivano Dev", "Tivano Preview"].map((n) =>
+      canonOr(join(parent, n)),
+    );
+    const dotdirs = [".tivano", ".tivano-dev", ".tivano-preview"].map((n) =>
+      canonOr(join(homedir(), n)),
+    );
     return [
       env("SystemRoot", "C:\\Windows"),
       env("windir", "C:\\Windows"),
@@ -5115,6 +5143,8 @@ export class Engine {
       env("ProgramFiles(x86)", "C:\\Program Files (x86)"),
       env("ProgramData", "C:\\ProgramData"),
       this.hydraDataRootCanonical(),
+      ...siblings,
+      ...dotdirs,
     ];
   }
 
@@ -5173,8 +5203,12 @@ export class Engine {
         }
         if (eff?.isDirectory()) {
           try {
-            lstatSync(join(gitDir, "HEAD"));
-            return "git";
+            // Frozen runs `git rev-parse` — it needs a well-formed
+            // HEAD, not object integrity. Anything less is broken.
+            const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
+            return /^ref:\s*\S/.test(head) || /^[0-9a-f]{40,64}$/i.test(head)
+              ? "git"
+              : "broken";
           } catch {
             return "broken";
           }

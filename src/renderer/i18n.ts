@@ -1386,7 +1386,12 @@ export function translateNotice(
   noticeTemplates ??= zhHansKeys()
     // Only substantial templates qualify: a stub like "%@ failed" could
     // mis-recover an unrelated notice that happens to end the same way.
+    // Longest literal wins so a specific key beats a generic tail.
     .filter((k) => k.split(/%@|%d/).join("").trim().length >= 12)
+    .sort(
+      (a, b) =>
+        b.split(/%@|%d/).join("").length - a.split(/%@|%d/).join("").length,
+    )
     .map((key) => ({
       key,
       re: new RegExp(

@@ -276,7 +276,11 @@ export class ProjectRuntimePaths {
     try {
       const st = lstatSync(dir);
       if (!st.isDirectory() || st.isSymbolicLink()) return false;
-      return realpathSync(dir) === dir;
+      // realpath can answer in NT-namespace form (long paths); both
+      // sides compare with the \\?\ / \\.\ prefix stripped.
+      const strip = (p: string) =>
+        p.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\[?.]\\/i, "");
+      return strip(realpathSync(dir)) === strip(dir);
     } catch {
       return false;
     }
