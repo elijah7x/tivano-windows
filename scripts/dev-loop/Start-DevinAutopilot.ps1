@@ -1,4 +1,4 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-21.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-22.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 # Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
 # Launches and watches a single Devin Desktop autopilot chat following autopilot.md.
@@ -305,42 +305,163 @@ function Initialize-GuiTypes {
   if ($script:GuiTypesLoaded) { return }
   Add-Type -AssemblyName System.Windows.Forms
   Add-Type -TypeDefinition @'
-using System; using System.Text; using System.Runtime.InteropServices;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
 public static class DevLoopWindows {
+  public sealed class WindowInfo {
+    public IntPtr Handle { get; set; }
+    public string Title { get; set; }
+    public int Rank { get; set; }
+  }
+  public sealed class ForegroundInfo {
+    public IntPtr Handle { get; set; }
+    public string ClassName { get; set; }
+    public string ProcessName { get; set; }
+    public bool HasShellFlyoutOpen { get; set; }
+  }
   delegate bool EnumProc(IntPtr h, IntPtr p);
   [StructLayout(LayoutKind.Sequential)]
   struct LASTINPUTINFO {
     public uint cbSize;
     public uint dwTime;
   }
+  const uint GW_OWNER = 4;
+  const int DWMWA_CLOAKED = 14;
+  public const uint WM_CLOSE = 0x0010;
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr p);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr wParam, IntPtr lParam);
+  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int value, int size);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e);
-  // Devin Desktop titles a window "<folder> - Devin" or "<session title> <folder> - Devin", plus " - <open editor>" when a file is open.
-  public static IntPtr Find(string folder) {
-    IntPtr found = IntPtr.Zero;
-    // Titles seen: "repo - Devin", "<session> repo - Devin - Untitled-1" and
-    // "<session> repo (Workspace) - Devin - Untitled-1".
-    string[] bares = { folder + " - Devin", folder + " (Workspace) - Devin" };
+  static string GetWindowTitle(IntPtr h) {
+    var sb = new StringBuilder(1024);
+    int len = GetWindowText(h, sb, sb.Capacity);
+    return len > 0 ? sb.ToString() : "";
+  }
+  static string GetWindowClass(IntPtr h) {
+    var sb = new StringBuilder(256);
+    int len = GetClassName(h, sb, sb.Capacity);
+    return len > 0 ? sb.ToString() : "";
+  }
+  static string GetProcessName(IntPtr h) {
+    uint pid = 0;
+    GetWindowThreadProcessId(h, out pid);
+    if (pid == 0) return "";
+    try {
+      using (var proc = Process.GetProcessById((int)pid)) {
+        return proc.ProcessName ?? "";
+      }
+    } catch {
+      return "";
+    }
+  }
+  static bool IsWindowCloaked(IntPtr h) {
+    try {
+      int cloaked = 0;
+      return DwmGetWindowAttribute(h, DWMWA_CLOAKED, out cloaked, sizeof(int)) == 0 && cloaked != 0;
+    } catch {
+      return false;
+    }
+  }
+  static bool MatchesBare(string title, string bare) {
+    string tail = " " + bare;
+    return title.Equals(bare, StringComparison.OrdinalIgnoreCase) ||
+      title.EndsWith(tail, StringComparison.OrdinalIgnoreCase) ||
+      title.StartsWith(bare + " - ", StringComparison.OrdinalIgnoreCase) ||
+      title.IndexOf(tail + " - ", StringComparison.OrdinalIgnoreCase) >= 0;
+  }
+  static int GetWindowRank(string title, string folder) {
+    if (string.IsNullOrEmpty(folder) || string.IsNullOrEmpty(title)) return 0;
+    if (MatchesBare(title, folder + " (Workspace) - Devin")) return 2;
+    if (MatchesBare(title, folder + " - Devin")) return 1;
+    return 0;
+  }
+  static bool HasVisibleShellFlyout() {
+    bool found = false;
     EnumWindows((h, p) => {
-      if (!IsWindowVisible(h)) return true;
-      var sb = new StringBuilder(1024); GetWindowText(h, sb, 1024); var t = sb.ToString();
-      foreach (var bare in bares) {
-        string tail = " " + bare;
-        if (t == bare || t.EndsWith(tail, StringComparison.Ordinal) || t.StartsWith(bare + " - ", StringComparison.Ordinal) || t.Contains(tail + " - ")) { found = h; return false; }
+      if (!IsWindowVisible(h) || IsWindowCloaked(h)) return true;
+      RECT r;
+      if (!GetWindowRect(h, out r) || (r.Right - r.Left) <= 0 || (r.Bottom - r.Top) <= 0) return true;
+      string cls = GetWindowClass(h);
+      string proc = GetProcessName(h);
+      if (string.Equals(cls, "ControlCenterWindow", StringComparison.OrdinalIgnoreCase) ||
+          string.Equals(cls, "NotifyIconOverflowWindow", StringComparison.OrdinalIgnoreCase) ||
+          string.Equals(cls, "TopLevelWindowForOverflowXamlIsland", StringComparison.OrdinalIgnoreCase) ||
+          (string.Equals(cls, "Xaml_WindowedPopupClass", StringComparison.OrdinalIgnoreCase) && (r.Right - r.Left) >= 100 && (r.Bottom - r.Top) >= 100) ||
+          string.Equals(proc, "ShellHost", StringComparison.OrdinalIgnoreCase) ||
+          string.Equals(proc, "ShellExperienceHost", StringComparison.OrdinalIgnoreCase) ||
+          string.Equals(proc, "StartMenuExperienceHost", StringComparison.OrdinalIgnoreCase) ||
+          string.Equals(proc, "SearchHost", StringComparison.OrdinalIgnoreCase)) {
+        found = true;
+        return false;
       }
       return true;
     }, IntPtr.Zero);
     return found;
+  }
+  public static ForegroundInfo GetForegroundInfo() {
+    IntPtr h = GetForegroundWindow();
+    var info = new ForegroundInfo { Handle = h, ClassName = "", ProcessName = "", HasShellFlyoutOpen = false };
+    if (h == IntPtr.Zero) return info;
+    info.ClassName = GetWindowClass(h);
+    info.ProcessName = GetProcessName(h);
+    if (string.Equals(info.ClassName, "Shell_TrayWnd", StringComparison.OrdinalIgnoreCase)) {
+      info.HasShellFlyoutOpen = HasVisibleShellFlyout();
+    }
+    return info;
+  }
+  public static bool CloseWindow(IntPtr h) {
+    if (h == IntPtr.Zero) return false;
+    return PostMessage(h, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+  }
+  // Devin Desktop titles a window "<folder> - Devin", "<folder> (Workspace) - Devin", or
+  // "<session title> <folder> ... - Devin", plus " - <open editor>" when a file is open.
+  public static WindowInfo[] FindAll(string folder) {
+    var list = new List<WindowInfo>();
+    var order = new Dictionary<IntPtr, int>();
+    int idx = 0;
+    EnumWindows((h, p) => {
+      if (!IsWindowVisible(h)) return true;
+      if (GetWindow(h, GW_OWNER) != IntPtr.Zero) return true;
+      string title = GetWindowTitle(h);
+      if (string.IsNullOrWhiteSpace(title)) return true;
+      string proc = GetProcessName(h);
+      if (!string.Equals(proc, "Devin", StringComparison.OrdinalIgnoreCase)) return true;
+      var item = new WindowInfo {
+        Handle = h,
+        Title = title,
+        Rank = GetWindowRank(title, folder)
+      };
+      order[h] = idx++;
+      list.Add(item);
+      return true;
+    }, IntPtr.Zero);
+    list.Sort((a, b) => {
+      int cmp = b.Rank.CompareTo(a.Rank);
+      if (cmp != 0) return cmp;
+      return order[a.Handle].CompareTo(order[b.Handle]);
+    });
+    return list.ToArray();
+  }
+  public static IntPtr Find(string folder) {
+    WindowInfo[] all = FindAll(folder);
+    if (all.Length > 0 && all[0].Rank > 0) return all[0].Handle;
+    return IntPtr.Zero;
   }
   public static double GetUserIdleSeconds() {
     var info = new LASTINPUTINFO();
@@ -360,15 +481,71 @@ function Test-DevinForeground {
   return ($Window -ne [IntPtr]::Zero -and [DevLoopWindows]::GetForegroundWindow() -eq $Window)
 }
 
+function Test-ShellFlyoutForeground {
+  param($Foreground)
+  if ($null -eq $Foreground) { return $false }
+  $cls = [string]$Foreground.ClassName
+  $proc = [string]$Foreground.ProcessName
+  if ($cls -ieq 'ControlCenterWindow') { return $true }
+  if (@('ShellHost', 'ShellExperienceHost', 'StartMenuExperienceHost', 'SearchHost') -contains $proc) { return $true }
+  if ($cls -ieq 'Shell_TrayWnd' -and [bool]$Foreground.HasShellFlyoutOpen) { return $true }
+  return $false
+}
+
+function Close-ExtraDevinWindows {
+  param([string]$Folder)
+  $all = @([DevLoopWindows]::FindAll($Folder))
+  if ($all.Count -le 1) { return 0 }
+  $preferred = [IntPtr]::Zero
+  if ($all[0].Rank -gt 0) {
+    $preferred = $all[0].Handle
+  }
+  $closed = 0
+  foreach ($win in $all) {
+    if ($preferred -ne [IntPtr]::Zero -and $win.Handle -eq $preferred) { continue }
+    if ([DevLoopWindows]::CloseWindow($win.Handle)) {
+      $closed++
+    }
+  }
+  if ($closed -gt 0) {
+    if ($preferred -ne [IntPtr]::Zero) {
+      Write-Log ('closed ' + $closed + ' extra Devin Desktop window(s) (kept "' + (ConvertTo-SingleLine $all[0].Title 120) + '")')
+    } else {
+      Write-Log ('closed ' + $closed + ' extra non-matching Devin Desktop window(s) (none matched "' + $Folder + '")')
+    }
+    Start-Sleep -Milliseconds 500
+  }
+  return $closed
+}
+
 function Set-DevinForeground {
   param([IntPtr]$Window)
   if ($Window -eq [IntPtr]::Zero) { return $false }
-  [DevLoopWindows]::ShowWindow($Window, 9) | Out-Null
-  # A tap of Alt lets a background process take the foreground.
-  [DevLoopWindows]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [DevLoopWindows]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
-  [DevLoopWindows]::SetForegroundWindow($Window) | Out-Null
-  Start-Sleep -Milliseconds 800
-  return (Test-DevinForeground $Window)
+  $fg = [DevLoopWindows]::GetForegroundInfo()
+  if (Test-ShellFlyoutForeground $fg) {
+    [DevLoopWindows]::keybd_event(0x1B, 0, 0, [UIntPtr]::Zero)
+    [DevLoopWindows]::keybd_event(0x1B, 0, 2, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 500
+    Write-Log ('dismissed shell flyout (class=' + $fg.ClassName + ', process=' + $fg.ProcessName + ')')
+  }
+  for ($attempt = 0; $attempt -lt 2; $attempt++) {
+    [DevLoopWindows]::ShowWindow($Window, 9) | Out-Null
+    # A tap of Alt lets a background process take the foreground.
+    [DevLoopWindows]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [DevLoopWindows]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+    [DevLoopWindows]::SetForegroundWindow($Window) | Out-Null
+    Start-Sleep -Milliseconds 800
+    if (Test-DevinForeground $Window) { return $true }
+    if ($attempt -eq 0) {
+      $fgRetry = [DevLoopWindows]::GetForegroundInfo()
+      if (Test-ShellFlyoutForeground $fgRetry) {
+        [DevLoopWindows]::keybd_event(0x1B, 0, 0, [UIntPtr]::Zero)
+        [DevLoopWindows]::keybd_event(0x1B, 0, 2, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 500
+        Write-Log ('dismissed shell flyout on focus retry (class=' + $fgRetry.ClassName + ', process=' + $fgRetry.ProcessName + ')')
+      }
+    }
+  }
+  return $false
 }
 
 # Keyboard shortcuts toggle the chat panel or land in an open editor depending on what had focus, so the
@@ -516,6 +693,9 @@ function Read-WatchdogState {
     trackingIssue = 0
     lastSyncedSha = ''
     lastKickoffUtc = ''
+    lastKickoffOutcome = ''
+    lastKickoffAttemptUtc = ''
+    kickoffFailures = 0
     firstSeenUtc = ''
     lastSeenLogWriteUtc = ''
     lastNudgeUtc = ''
@@ -528,11 +708,11 @@ function Read-WatchdogState {
   }
   $data = Read-JsonFile $script:WatchdogPath
   if (-not $data) { return $state }
-  foreach ($key in @('lastSyncedSha', 'lastKickoffUtc', 'firstSeenUtc', 'lastSeenLogWriteUtc', 'lastNudgeUtc', 'lastNudgeReason', 'lastNudgeLogWriteUtc')) {
+  foreach ($key in @('lastSyncedSha', 'lastKickoffUtc', 'lastKickoffOutcome', 'lastKickoffAttemptUtc', 'firstSeenUtc', 'lastSeenLogWriteUtc', 'lastNudgeUtc', 'lastNudgeReason', 'lastNudgeLogWriteUtc')) {
     $val = Get-JsonProp $data $key
     if ($null -ne $val) { $state[$key] = [string]$val }
   }
-  foreach ($key in @('trackingIssue', 'consecutiveNudges', 'totalNudges')) {
+  foreach ($key in @('trackingIssue', 'kickoffFailures', 'consecutiveNudges', 'totalNudges')) {
     $val = Get-JsonProp $data $key
     if ($null -ne $val) { $state[$key] = [int]$val }
   }
@@ -673,6 +853,42 @@ function Resolve-DevinLauncher {
   return $script:DevinPath
 }
 
+function Set-KickoffOutcome {
+  param([string]$Outcome)
+  $nowUtc = [DateTime]::UtcNow
+  $watchdog = Read-WatchdogState
+  $watchdog['lastKickoffAttemptUtc'] = $nowUtc.ToString('o')
+  $watchdog['lastKickoffOutcome'] = $Outcome
+  if ($Outcome -eq 'ok') {
+    $watchdog['lastKickoffUtc'] = $nowUtc.ToString('o')
+    $watchdog['kickoffFailures'] = 0
+    $watchdog['consecutiveNudges'] = 0
+    $watchdog['stuckNotified'] = $false
+  } elseif ($Outcome -eq 'failed') {
+    $watchdog['kickoffFailures'] = [int]$watchdog['kickoffFailures'] + 1
+  }
+  Save-WatchdogState $watchdog
+}
+
+function Stop-DevinDesktop {
+  # Stop only Devin Desktop's own process trees; the Devin CLI (bin\devin.exe) used by the
+  # PR reviewer and the audit arbiter must keep running.
+  $procs = @(Get-CimInstance Win32_Process -Filter "Name='Devin.exe'" -ErrorAction SilentlyContinue | Where-Object {
+    $_.ExecutablePath -and
+    $_.ExecutablePath -notmatch '\\bin\\devin\.exe$' -and
+    [string]$_.CommandLine -notmatch '--type=' -and
+    [string]$_.CommandLine -notmatch '--require='
+  })
+  foreach ($desk in $procs) {
+    $null = & taskkill.exe /T /F /PID ([int]$desk.ProcessId) 2>&1
+  }
+  if ($procs.Count -gt 0) {
+    Write-Log ('stopped ' + $procs.Count + ' Devin Desktop process tree(s)')
+    Start-Sleep -Seconds 3
+  }
+  return $procs.Count
+}
+
 function Invoke-Kickoff {
   param([bool]$WaitForIdle)
   if (-not (Test-Path -LiteralPath $script:PromptPath -PathType Leaf)) { throw 'autopilot.md is missing next to this script.' }
@@ -681,6 +897,9 @@ function Invoke-Kickoff {
   Initialize-GuiTypes
 
   $folder = Split-Path -Leaf $script:WorkspacePath
+  if (-not $WaitForIdle) {
+    $null = Close-ExtraDevinWindows $folder
+  }
   $window = [DevLoopWindows]::Find($folder)
   $openedNow = $false
   if ($window -eq [IntPtr]::Zero -and (Get-Process -Name 'Devin' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })) {
@@ -688,6 +907,7 @@ function Invoke-Kickoff {
     # session in another folder). A second window would steal the running
     # session's lock, so skip launching another this tick.
     Write-Log ('gui: a Devin Desktop window is open but none matches ' + $folder + '; not launching another')
+    Set-KickoffOutcome 'failed'
     return 'failed'
   }
   if ($window -eq [IntPtr]::Zero) {
@@ -700,6 +920,7 @@ function Invoke-Kickoff {
     }
     if ($window -eq [IntPtr]::Zero) {
       Write-Log ('gui: no Devin Desktop window for ' + $folder + ' within 90s')
+      Set-KickoffOutcome 'failed'
       return 'failed'
     }
     $openedNow = $true
@@ -718,9 +939,11 @@ function Invoke-Kickoff {
   }
 
   if ($openedNow) { Start-Sleep -Seconds 8 }
+  if ($WaitForIdle -or $openedNow) { $null = Close-ExtraDevinWindows $folder }
   $window = [DevLoopWindows]::Find($folder)
   if ($window -eq [IntPtr]::Zero) {
     Write-Log ('gui: Devin Desktop window for ' + $folder + ' disappeared before send')
+    Set-KickoffOutcome 'failed'
     return 'failed'
   }
 
@@ -766,14 +989,11 @@ function Invoke-Kickoff {
 
   if (-not $sent) {
     Write-Log 'kickoff failed: Devin Desktop chat did not take /bypass or focus changed'
+    Set-KickoffOutcome 'failed'
     return 'failed'
   }
 
-  $watchdog = Read-WatchdogState
-  $watchdog['lastKickoffUtc'] = [DateTime]::UtcNow.ToString('o')
-  $watchdog['consecutiveNudges'] = 0
-  $watchdog['stuckNotified'] = $false
-  Save-WatchdogState $watchdog
+  Set-KickoffOutcome 'ok'
   Write-Log ('kickoff sent autopilot prompt to Devin Desktop window "' + $folder + '"')
   return 'ok'
 }
@@ -840,12 +1060,6 @@ function Invoke-WatchTick {
   }
 
   $folder = Split-Path -Leaf $script:WorkspacePath
-  $window = [DevLoopWindows]::Find($folder)
-  if ($window -eq [IntPtr]::Zero) {
-    Write-Log 'no Devin Desktop window open; relaunching via kickoff'
-    $null = Invoke-Kickoff -WaitForIdle $false
-    return
-  }
 
   $pState = ''
   $pStep = ''
@@ -855,13 +1069,58 @@ function Invoke-WatchTick {
     $pState = ([string](Get-JsonProp $progress 'state')).Trim().ToLowerInvariant()
     $pStep = ([string](Get-JsonProp $progress 'step')).Trim()
     $pUpdatedAt = ([string](Get-JsonProp $progress 'updatedAt')).Trim()
-    if ($pState -eq 'idle' -and $pStep -match '(?i)daily merge cap') {
-      $parsedUpdated = [DateTimeOffset]::MinValue
-      if ([DateTimeOffset]::TryParse($pUpdatedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeLocal, [ref]$parsedUpdated)) {
-        if ($parsedUpdated.LocalDateTime.ToString('yyyy-MM-dd') -eq [DateTime]::Now.ToString('yyyy-MM-dd')) {
-          Write-Log 'progress is idle on daily merge cap for today; skipping nudge'
+  }
+
+  $lastKickoffOutcome = ([string]$watchdog['lastKickoffOutcome']).Trim().ToLowerInvariant()
+  $lastKickoffUtcText = ([string]$watchdog['lastKickoffUtc']).Trim()
+  $kickoffFailures = [int]$watchdog['kickoffFailures']
+  $needsKickoff = $false
+  $kickoffReason = ''
+  if ($lastKickoffOutcome -eq 'failed') {
+    $needsKickoff = $true
+    $kickoffReason = 'lastKickoffOutcome is failed (failures=' + $kickoffFailures + ')'
+  } elseif ([string]::IsNullOrWhiteSpace($lastKickoffUtcText) -and $pState -ne 'done' -and $pState -ne 'idle') {
+    $needsKickoff = $true
+    $kickoffReason = 'lastKickoffUtc is empty while progress state is "' + $pState + '"'
+  }
+
+  if ($needsKickoff) {
+    if ($kickoffFailures -gt 3) {
+      $lastAttemptUtc = Parse-UtcTimestamp ([string]$watchdog['lastKickoffAttemptUtc'])
+      if ($null -ne $lastAttemptUtc) {
+        $sinceAttemptMin = ($nowUtc - $lastAttemptUtc).TotalMinutes
+        if ($sinceAttemptMin -lt 60) {
+          Write-Log ('kickoff retry backed off (' + $kickoffFailures + ' consecutive failures; last attempt ' + [Math]::Round($sinceAttemptMin, 1) + 'm ago < 60m)')
           return
         }
+      }
+    }
+    if ($kickoffFailures -ge 3) {
+      Write-Log ('kickoff retry (' + $kickoffReason + '): performing full reset of Devin Desktop before relaunch')
+      $null = Stop-DevinDesktop
+      $null = Invoke-Kickoff -WaitForIdle $false
+      return
+    }
+    Write-Log ('kickoff retry (' + $kickoffReason + '): calling Invoke-Kickoff')
+    $null = Invoke-Kickoff -WaitForIdle $false
+    return
+  }
+
+  $null = Close-ExtraDevinWindows $folder
+
+  $window = [DevLoopWindows]::Find($folder)
+  if ($window -eq [IntPtr]::Zero) {
+    Write-Log 'no Devin Desktop window open; relaunching via kickoff'
+    $null = Invoke-Kickoff -WaitForIdle $false
+    return
+  }
+
+  if ($pState -eq 'idle' -and $pStep -match '(?i)daily merge cap') {
+    $parsedUpdated = [DateTimeOffset]::MinValue
+    if ([DateTimeOffset]::TryParse($pUpdatedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeLocal, [ref]$parsedUpdated)) {
+      if ($parsedUpdated.LocalDateTime.ToString('yyyy-MM-dd') -eq [DateTime]::Now.ToString('yyyy-MM-dd')) {
+        Write-Log 'progress is idle on daily merge cap for today; skipping nudge'
+        return
       }
     }
   }
@@ -879,12 +1138,7 @@ function Invoke-WatchTick {
       }
     }
     Write-Log 'autopilot unresponsive after 6 nudges with no new log activity; restarting Devin Desktop'
-    # Stop only Devin Desktop's own process tree; the Devin CLI (bin\devin.exe) used by the
-    # PR reviewer and the audit arbiter must keep running.
-    foreach ($desk in @(Get-CimInstance Win32_Process -Filter "Name='Devin.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -notmatch '\\bin\\devin\.exe$' -and $_.CommandLine -notmatch '--type=' })) {
-      $null = & taskkill.exe /T /F /PID ([int]$desk.ProcessId) 2>&1
-    }
-    Start-Sleep -Seconds 3
+    $null = Stop-DevinDesktop
     $watchdog['consecutiveNudges'] = 0
     $watchdog['stuckNotified'] = $false
     Save-WatchdogState $watchdog
