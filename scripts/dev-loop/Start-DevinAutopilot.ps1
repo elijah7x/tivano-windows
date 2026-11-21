@@ -227,11 +227,16 @@ public static class DevLoopWindows {
   // Devin Desktop titles a window "<folder> - Devin" or "<session title> <folder> - Devin", plus " - <open editor>" when a file is open.
   public static IntPtr Find(string folder) {
     IntPtr found = IntPtr.Zero;
-    string bare = folder + " - Devin", tail = " " + bare;
+    // Titles seen: "repo - Devin", "<session> repo - Devin - Untitled-1" and
+    // "<session> repo (Workspace) - Devin - Untitled-1".
+    string[] bares = { folder + " - Devin", folder + " (Workspace) - Devin" };
     EnumWindows((h, p) => {
       if (!IsWindowVisible(h)) return true;
       var sb = new StringBuilder(1024); GetWindowText(h, sb, 1024); var t = sb.ToString();
-      if (t == bare || t.EndsWith(tail, StringComparison.Ordinal) || t.StartsWith(bare + " - ", StringComparison.Ordinal) || t.Contains(tail + " - ")) { found = h; return false; }
+      foreach (var bare in bares) {
+        string tail = " " + bare;
+        if (t == bare || t.EndsWith(tail, StringComparison.Ordinal) || t.StartsWith(bare + " - ", StringComparison.Ordinal) || t.Contains(tail + " - ")) { found = h; return false; }
+      }
       return true;
     }, IntPtr.Zero);
     return found;
@@ -278,8 +283,10 @@ function Focus-DevinChatInput {
   if (-not [DevLoopWindows]::GetWindowRect($Window, [ref]$rect)) { return $false }
   $width = $rect.Right - $rect.Left
   $height = $rect.Bottom - $rect.Top
-  $x = [int]($rect.Right - $width * 0.1125)
-  $y = [int]($rect.Bottom - $height * 0.124)
+  # Lands in the chat input both in the IDE view's side chat and in the
+  # Agents view with its right-hand panel hidden (maximized window).
+  $x = [int]($rect.Right - $width * 0.17)
+  $y = [int]($rect.Bottom - $height * 0.16)
   [DevLoopWindows]::SetCursorPos($x, $y) | Out-Null
   Start-Sleep -Milliseconds 200
   [DevLoopWindows]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
@@ -581,6 +588,13 @@ function Invoke-Kickoff {
   $folder = Split-Path -Leaf $script:WorkspacePath
   $window = [DevLoopWindows]::Find($folder)
   $openedNow = $false
+  if ($window -eq [IntPtr]::Zero -and (Get-Process -Name 'Devin' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })) {
+    # Another Devin window is open (a renamed title the matcher missed, or a
+    # session in another folder). A second window would steal the running
+    # session's lock, so leave it to a human.
+    Write-Log ('gui: a Devin Desktop window is open but none matches ' + $folder + '; not launching another')
+    return 'failed'
+  }
   if ($window -eq [IntPtr]::Zero) {
     $devinExe = Resolve-DevinLauncher
     Write-Log ('launching Devin Desktop for ' + $folder)
@@ -616,6 +630,12 @@ function Invoke-Kickoff {
   }
 
   $message = 'Read the file ' + $script:PromptPath + ' and carry it out exactly as written. Work through the whole queue without asking questions. Re-read that file after every issue. Use these values wherever the file names its defaults: repository ' + $Repo + ', label ' + $Label + ', root folder ' + $script:WorkRoot + ' (progress.json in its autopilot subfolder, STOP in its state subfolder).'
+  $soloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
+  $soloStatePath = Join-Path $script:AutopilotDir 'solo-v3.json'
+  $soloState = Read-JsonFile $soloStatePath
+  if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and [string](Get-JsonProp $soloState 'phase') -ne 'done') {
+    $message = 'Continue the mission: re-read ' + $soloPlan + ', resume from ' + $soloStatePath + ' and keep working through every phase. Do not end your turn with a checkpoint while work remains.'
+  }
   $sent = $false
   for ($try = 0; $try -lt 3 -and -not $sent; $try++) {
     $window = [DevLoopWindows]::Find($folder)
