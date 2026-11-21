@@ -563,8 +563,8 @@ function Set-DevinForeground {
       if ([DevLoopWindows]::GetWindowRect($Window, [ref]$rect)) {
         $width = $rect.Right - $rect.Left
         $height = $rect.Bottom - $rect.Top
-        $x = [int]($rect.Right - $width * 0.17)
-        $y = [int]($rect.Bottom - $height * 0.16)
+        $x = [int]($rect.Left + $width * 0.60)
+        $y = [int]($rect.Bottom - $height * 0.11)
         if ([DevLoopWindows]::IsPointOnWindow($Window, $x, $y)) {
           [DevLoopWindows]::SetCursorPos($x, $y) | Out-Null
           Start-Sleep -Milliseconds 200
@@ -608,8 +608,10 @@ function Focus-DevinChatInput {
   $height = $rect.Bottom - $rect.Top
   # Lands in the chat input both in the IDE view's side chat and in the
   # Agents view with its right-hand panel hidden (maximized window).
-  $x = [int]($rect.Right - $width * 0.17)
-  $y = [int]($rect.Bottom - $height * 0.16)
+  # The input box is centred in the chat column; a "N files changed" strip above it pushes it down,
+  # so aim low (11% from the bottom) and at 60% of the width, inside the box with or without the strip.
+  $x = [int]($rect.Left + $width * 0.60)
+  $y = [int]($rect.Bottom - $height * 0.11)
   [DevLoopWindows]::SetCursorPos($x, $y) | Out-Null
   Start-Sleep -Milliseconds 200
   [DevLoopWindows]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
