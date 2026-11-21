@@ -212,15 +212,18 @@ describe("F08 follow-up queue", () => {
       closing: () => {},
     } as unknown as CheckpointCoordinator);
     expect(() => engine.interruptAndSend(th.id, "first")).toThrow("cancel-path failure");
-    const pending = (engine as unknown as { pendingSends: Map<string, string> })
-      .pendingSends;
-    expect(pending.get(th.id)).toBe("first");
+    const pending = (
+      engine as unknown as {
+        pendingSends: Map<string, { text: string }>;
+      }
+    ).pendingSends;
+    expect(pending.get(th.id)?.text).toBe("first");
     expect(turnStatus(engine, th.id)).toBe("waiting-approval"); // still busy
     // The second message must NOT overwrite the armed send — it queues
     // at the front of followUps instead.
     engine.interruptAndSend(th.id, "second");
     expect(threadOf(engine, th.id).followUps!.map((i) => i.text)).toEqual(["second"]);
-    expect(pending.get(th.id)).toBe("first"); // unchanged
+    expect(pending.get(th.id)?.text).toBe("first"); // unchanged
     // Nothing is lost: the latched send fires the moment the stop lands,
     // the queued message drains right behind its completed turn.
     engine.cancelTurn(th.id);

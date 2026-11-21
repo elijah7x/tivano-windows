@@ -67,6 +67,13 @@ const vChimeraPreset = vObject({
   enabled: vOptional(vBoolean),
 });
 
+// P1-38: the independent review's reviewer pick (null clears the slot).
+const vHydraReviewChoice = vObject({
+  provider: vOptional(vMaxString(100)),
+  model: vOptional(vMaxString(200)),
+  effort: vOptional(vMaxString(100)),
+});
+
 // F17 model-list slices — same persisted shape as storeDoc; pins only
 // organize the picker, the catalog stays provider-owned.
 const vModelPin = vObject({
@@ -525,6 +532,9 @@ export const requestValidators = {
     ),
     chimeraPresets: vOptional(vArray(vChimeraPreset, 64)),
     chimeraAutoDispatch: vOptional(vBoolean),
+    hydraReviewEnabled: vOptional(vBoolean),
+    hydraReviewFirst: vOptional(vNullable(vHydraReviewChoice)),
+    hydraReviewSecond: vOptional(vNullable(vHydraReviewChoice)),
     lastHydraPairId: vOptional(vNullable(vNonEmptyString(120))),
     // F17: frozen modelList / modelSections / collapsedModelSections /
     // modelPreferences — whole-array writes (layout ops are computed

@@ -1046,6 +1046,25 @@ const zhHans: Record<string, string> = {
     "主代理把工作拆成不同角色，并为每个角色匹配合适服务商的模型。",
   "New chats start on this mode; each chat switches it in the model picker. With no saved pair, Preset falls back to Same-model.":
     "新对话使用该模式；每个对话可在模型选择器中切换。没有保存的组合时，“模型搭配”回退为“同模型”。",
+  // P1-38/P1-09: independent review — title/detail use the upstream
+  // canonical zh-Hans verbatim.
+  "Independent review": "独立审查",
+  "Once the lead and sub-agents finish, the model you choose reviews the team's changes and sends any findings to the lead, before auto-merge when that is on.":
+    "主代理和子代理完成后，由你选择的模型审查团队改动，并把发现发给主代理；开启自动合并时会在合并前进行。",
+  "Review models": "审查模型",
+  "First choice": "首选",
+  "Second choice": "次选",
+  "Default model": "默认模型",
+  "The fallback reviews when the first cannot run. Grok, Pi and Antigravity appear here once this build supports them.":
+    "首选模型无法运行时由备用模型审查。此版本支持 Grok、Pi 和 Antigravity 后，它们会出现在这里。",
+  "Independent review by %@": "由 %@ 独立审查",
+  "No findings": "未发现问题",
+  "1 finding": "1 条发现",
+  "findings": "条发现",
+  "accepted": "已采纳",
+  "rejected": "已驳回",
+  "diff": "差异",
+  "The reviewer found no problems in this job's changes.": "审查模型未在本次任务的改动中发现问题。",
   // P1-37: adaptive identities — titles/Auto-dispatch use the upstream
   // canonical zh-Hans verbatim.
   "Sub-agent identities": "子代理身份",

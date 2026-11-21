@@ -53,6 +53,15 @@ function replyScript(prompt: string): string[] {
     "- deterministic item two\n\n",
     "```ts\nconst synthetic = true; // mock output, not generated code\n```\n",
     "\nDone — nothing was executed.",
+    // P1-38 fixture: the lead answering an independent review gives one
+    // verdict line per finding (accept the first, reject the rest), so
+    // the card's accepted/rejected counts have a real reply to parse.
+    ...(prompt.includes("[Hydra] Review: an independent review by")
+      ? [
+          "\n\nFinding 1: accepted - restored the guard\n",
+          "Finding 2: rejected - the assertion already runs first\n",
+        ]
+      : []),
   ];
 }
 
@@ -208,6 +217,9 @@ export class MockProvider implements ProviderAdapter {
             join(ctx.workspace.directory, rel),
             `mock touch ${rel} — synthetic fixture write, never provider work. dir=${ctx.workspace.directory}\n`,
           );
+          // A real write reports itself like Codex's fileChange item —
+          // the ledger's touched paths then cover what the head did.
+          cb.onFileChanges?.([rel]);
         } catch {
           /* a write that cannot happen stays invisible — the fixture
              is honest about doing nothing rather than faking a file */
@@ -510,6 +522,21 @@ export class MockProvider implements ProviderAdapter {
     const path = first?.replace(/^[A-Z?!.]+\s+/, "").replace(/^"|"$/g, "");
     const base = path?.split(" -> ").pop()?.split("/").pop()?.trim();
     return base ? `Update ${base}` : "Update project files";
+  }
+
+  /**
+   * P1-38: deterministic synthetic review — the review prompt carries
+   * the job's own request, so a `[mock:review-findings]` token in the
+   * USER's message yields two findings and `[mock:review-error]` a
+   * null (unusable) reply; everything else reports NO FINDINGS.
+   */
+  async generateHydraReview(prompt: string): Promise<string | null> {
+    if (prompt.includes("[mock:review-error]")) return null;
+    if (!prompt.includes("[mock:review-findings]")) return "NO FINDINGS";
+    return [
+      "Finding 1: src/app.ts:12, the deleted null check lets a missing config reach the parser — restore the guard.",
+      "Finding 2: tests/app.test.ts:4, the new assertion never runs behind the early return — move it above.",
+    ].join("\n");
   }
 
   /** No children to reap — cancel every live driver and report cleanly. */

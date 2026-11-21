@@ -281,7 +281,13 @@ describe("F20 engine auto-continue", () => {
     // User picks the chat up before the resume fires.
     engine.sendTurn(th.id, "never mind, do it now");
     await waitFor(() => turnStatus(engine, th.id) === "done");
-    await sleep(5_300);
+    // The send leaves the wait entry armed until the resume timer itself
+    // fires and clears it — poll past the frozen floor instead of a fixed
+    // sleep (a late-firing timer on a loaded host outlives 5.3s).
+    await waitFor(
+      () => (engine.snapshot().limitResumesAt ?? {})[th.id] === undefined,
+      12_000,
+    );
     expect(userTexts(engine, th.id)).not.toContain(CONTINUE);
     expect(engine.snapshot().limitResumesAt ?? {}).toEqual({});
     store.close();

@@ -9,6 +9,7 @@
 import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { personaAt } from "../../shared/hydraDelegation";
+import type { HydraReview } from "../../shared/hydraReview";
 import type { ChatThread } from "../../shared/types";
 import { callApi } from "../client";
 import { useT } from "../locale";
@@ -63,6 +64,46 @@ function landingLabel(
   if (info.copyKept === true) return t("copy kept");
   if (info.baseTree !== undefined && info.status === "running") return t("own copy");
   return null;
+}
+
+/** P1-38 frozen folding review card: one row naming the reviewer, the
+ *  accepted/rejected counts, diff size and duration; it expands in place
+ *  to each finding. */
+function HydraReviewCard(props: { review: HydraReview }): React.JSX.Element {
+  const t = useT();
+  const r = props.review;
+  const parts: string[] = [];
+  if (r.findingCount === 0) parts.push(t("No findings"));
+  else parts.push(r.findingCount === 1 ? t("1 finding") : `${r.findingCount} ${t("findings")}`);
+  if (r.accepted !== undefined) parts.push(`${r.accepted} ${t("accepted")}`);
+  if (r.rejected !== undefined) parts.push(`${r.rejected} ${t("rejected")}`);
+  parts.push(
+    r.diffBytes >= 1024 ? `${Math.round(r.diffBytes / 1024)} KB ${t("diff")}` : `${r.diffBytes} B ${t("diff")}`,
+  );
+  parts.push(`${Math.max(1, Math.round(r.durationMs / 1000))} s`);
+  const lines = r.findings
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => /^[\s\-*>#_]*Finding\s*\d/i.test(l));
+  return (
+    <details className="hydra-review">
+      <summary>
+        <span className="hydra-review-title">
+          {t("Independent review by %@", r.reviewer)}
+        </span>
+        <span className="hydra-review-meta">{parts.join(" · ")}</span>
+      </summary>
+      {lines.length ? (
+        <ol className="hydra-review-findings">
+          {lines.map((l, i) => (
+            <li key={i}>{l.replace(/^[\s\-*>#_]*Finding\s*\d+\s*[:：]\s*/i, "")}</li>
+          ))}
+        </ol>
+      ) : (
+        <p className="codex-note">{t("The reviewer found no problems in this job's changes.")}</p>
+      )}
+    </details>
+  );
 }
 
 export function HydraPanel(props: {
@@ -133,7 +174,8 @@ export function HydraPanel(props: {
       </div>
     );
   }
-  if (!heads.length) return null;
+  const reviews = thread.hydraReviews ?? [];
+  if (!heads.length && !reviews.length) return null;
 
   const waitingCount = heads.filter((h) => waitingLabel(h, t) !== null).length;
   return (
@@ -212,6 +254,9 @@ export function HydraPanel(props: {
           );
         })}
       </ul>
+      {reviews.slice(-3).map((r) => (
+        <HydraReviewCard key={r.id} review={r} />
+      ))}
       {sweep && (
         <span
           className="sweep-dots"

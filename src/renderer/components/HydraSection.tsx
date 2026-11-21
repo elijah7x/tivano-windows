@@ -10,6 +10,12 @@ import { InfoHover } from "./InfoHover";
 import { HydraInfo } from "./HydraInfo";
 import type { Settings } from "../../shared/types";
 import {
+  HYDRA_REVIEW_DEFAULT_FIRST,
+  HYDRA_REVIEW_PROVIDERS,
+  hydraReviewEffortTitle,
+  type HydraReviewChoice,
+} from "../../shared/hydraReview";
+import {
   HYDRA_MAX_HEADS_RANGE,
   HYDRA_RECIPES,
   clampedHydraCap,
@@ -50,12 +56,10 @@ interface HydraCatalogView {
   providers: CatalogProvider[];
 }
 
-/** Frozen ModelOption.effortTitle equivalent — "Extra High" for xhigh,
- *  otherwise the id capitalized. */
-function effortTitle(effort: string): string {
-  if (effort === "xhigh" || effort === "extra-high") return "Extra High";
-  return effort.charAt(0).toUpperCase() + effort.slice(1);
-}
+/** Frozen ModelOption.effortTitle equivalent — the shared
+ *  hydraReviewEffortTitle implements it; kept as a short local alias for
+ *  the many select/label sites below. */
+const effortTitle = hydraReviewEffortTitle;
 
 /** Union of efforts the provider's catalog advertises, low→high-ish. */
 function allEfforts(models: { efforts: string[] }[]): string[] {
@@ -319,6 +323,114 @@ function IdentitySection(props: {
       >
         {t("New identity")}
       </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// P1-38/P1-09 reviewer model card — frozen HydraSettingsPage review card:
+// first and second (fallback) pick, each provider + model + effort. Only
+// providers this build runs are offered (HYDRA_REVIEW_PROVIDERS ∩ catalog).
+
+function ReviewerCard(props: {
+  settings: Settings;
+  providers: CatalogProvider[];
+  disabled: boolean;
+}): React.JSX.Element {
+  const t = useT();
+  const slots = [
+    [
+      "hydraReviewFirst",
+      "First choice",
+      props.settings.hydraReviewFirst ?? HYDRA_REVIEW_DEFAULT_FIRST,
+    ],
+    ["hydraReviewSecond", "Second choice", props.settings.hydraReviewSecond],
+  ] as const;
+  const offered = HYDRA_REVIEW_PROVIDERS.map(
+    (id) =>
+      props.providers.find((p) => p.id === id) ?? {
+        id,
+        label: id === "codex" ? "Codex" : id,
+        ready: false,
+        models: [],
+      },
+  );
+  const save = (key: (typeof slots)[number][0], next: HydraReviewChoice | null) =>
+    tryCall("settings:set", { [key]: next });
+  return (
+    <div className="hydra-reviewer-card" aria-disabled={props.disabled}>
+      <span className="hydra-title">{t("Review models")}</span>
+      {slots.map(([key, title, choice]) => {
+        const provider = choice?.provider ?? "";
+        const models = offered.find((p) => p.id === provider)?.models ?? [];
+        const model = models.find((m) => m.id === choice?.model);
+        const efforts = model?.efforts.length ? model.efforts : allEfforts(models);
+        const upd = (patch: Partial<HydraReviewChoice>) => {
+          const next: HydraReviewChoice = { ...(choice ?? {}), ...patch };
+          for (const k of ["model", "effort"] as const) if (!next[k]) delete next[k];
+          void save(key, next.provider ? next : null);
+        };
+        return (
+          <div className="kv" key={key}>
+            <span>{t(title)}</span>
+            <span>
+              <select
+                className="model-select"
+                aria-label={t(title)}
+                disabled={props.disabled}
+                value={provider}
+                onChange={(e) =>
+                  e.target.value ? upd({ provider: e.target.value, model: undefined, effort: undefined }) : void save(key, key === "hydraReviewFirst" ? { provider: "" } : null)
+                }
+              >
+                <option value="">{t("Off")}</option>
+                {offered.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="model-select hydra-model-choice"
+                aria-label={`${t(title)} — ${t("Model")}`}
+                disabled={props.disabled || !provider}
+                value={choice?.model ?? ""}
+                onChange={(e) => upd({ model: e.target.value || undefined })}
+              >
+                <option value="">{t("Default model")}</option>
+                {choice?.model && !model && (
+                  <option value={choice.model}>{`${choice.model} (${t("saved")})`}</option>
+                )}
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="effort-select"
+                aria-label={`${t(title)} — ${t("Effort")}`}
+                disabled={props.disabled || !provider}
+                value={choice?.effort ?? ""}
+                onChange={(e) => upd({ effort: e.target.value || undefined })}
+              >
+                <option value="">{t("Default")}</option>
+                {choice?.effort && !efforts.includes(choice.effort) && (
+                  <option value={choice.effort}>{`${effortTitle(choice.effort)} (${t("saved")})`}</option>
+                )}
+                {efforts.map((e) => (
+                  <option key={e} value={e}>
+                    {t(effortTitle(e))}
+                  </option>
+                ))}
+              </select>
+            </span>
+          </div>
+        );
+      })}
+      <p className="codex-note">
+        {t("The fallback reviews when the first cannot run. Grok, Pi and Antigravity appear here once this build supports them.")}
+      </p>
     </div>
   );
 }
@@ -1183,6 +1295,17 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
 
       <h4>{t("When the team is done")}</h4>
       <div className="hydra-sub">
+        <ToggleRow
+          title="Independent review"
+          detail="Once the lead and sub-agents finish, the model you choose reviews the team's changes and sends any findings to the lead, before auto-merge when that is on."
+          on={on(settings.hydraReviewEnabled, true)}
+          onFlip={(v) => toggle("hydraReviewEnabled", v)}
+        />
+        <ReviewerCard
+          settings={settings}
+          providers={providers}
+          disabled={!on(settings.hydraReviewEnabled, true)}
+        />
         <ToggleRow
           title="Ask the lead to review heads' changes"
           detail="Adds a review step before the lead finishes. This uses additional time and tokens. Not wired in this build yet."
