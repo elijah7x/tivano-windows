@@ -41,6 +41,14 @@ import {
   TYPE_RANGE,
 } from "../../shared/typeScale";
 
+/** P1-39: frozen per-mode Workspace summaries (upstream verbatim). */
+const WORKSPACE_MODE_SUMMARY = {
+  auto: "Edits your project folder directly, and creates a Git worktree when another chat is already active there.",
+  local: "Edits files directly in your project folder.",
+  worktree:
+    "Isolates each chat in its own Git worktree copy. Non-Git folders stay local.",
+} as const;
+
 /** Human-readable launch source: what produced this run's codex runtime. */
 function sourceLabel(
   t: (k: string) => string,
@@ -265,6 +273,7 @@ export function SettingsModal(props: {
         >
           {(
             [
+              ["auto", "Auto"],
               ["local", "Local"],
               ["worktree", "New worktree"],
             ] as const
@@ -272,8 +281,8 @@ export function SettingsModal(props: {
             <button
               key={value}
               role="radio"
-              aria-checked={(settings.defaultWorkspaceMode ?? "local") === value}
-              className={`choice${(settings.defaultWorkspaceMode ?? "local") === value ? " active" : ""}`}
+              aria-checked={(settings.defaultWorkspaceMode ?? "auto") === value}
+              className={`choice${(settings.defaultWorkspaceMode ?? "auto") === value ? " active" : ""}`}
               onClick={() => tryCall("settings:set", { defaultWorkspaceMode: value })}
             >
               {t(label)}
@@ -281,7 +290,7 @@ export function SettingsModal(props: {
           ))}
         </div>
         <p className="codex-note">
-          {t("Where a new thread makes its changes")}
+          {t(WORKSPACE_MODE_SUMMARY[settings.defaultWorkspaceMode ?? "auto"])}
         </p>
 
         {/* F01/F03: frozen "Conversation" card — the two rows this
