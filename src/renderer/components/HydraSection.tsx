@@ -308,12 +308,14 @@ function IdentitySection(props: {
       </div>
       <button
         className="choice"
-        onClick={() =>
+        onClick={() => {
+          let i = presets.length;
+          while (presets.some((q) => q.id === `custom-${i}`)) i += 1;
           persist([
             ...presets,
-            { id: `custom-${Date.now().toString(36)}`, name: "", specialty: "", enabled: true },
-          ])
-        }
+            { id: `custom-${i}`, name: "", specialty: "", enabled: true },
+          ]);
+        }}
       >
         {t("New identity")}
       </button>
