@@ -401,9 +401,12 @@ export class Store {
       // with any prior history already started — without the backfill an
       // upgraded chat's next send would bind a worktree mid-conversation,
       // moving it to a HEAD tree lacking its uncommitted checkout edits.
+      // ABSENT only: this build writes explicit false at createThread, so
+      // a gate-failed first send (turn persisted, provider never ran)
+      // keeps false across restarts and stays armed.
       for (const t of head.threads) {
         if (
-          t.hasStartedTurn !== true &&
+          t.hasStartedTurn === undefined &&
           (t.turn != null || (t.messages?.some((m) => m.role === "user") ?? false))
         )
           t.hasStartedTurn = true;

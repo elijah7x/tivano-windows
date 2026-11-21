@@ -813,6 +813,11 @@ export class Engine {
       messages: [],
       turn: null,
       sessionGrants: [],
+      // P1-39: explicit false — not merely absent — so a first send that
+      // fails at the auto gate persists "attempted but not started":
+      // the store backfill only fills the ABSENT field (pre-P1-39
+      // docs), never this build's gate-failed threads.
+      hasStartedTurn: false,
       // F06: seed the thread's runtime mode from the saved default
       // (frozen makeThread — absent setting = fullAccess).
       runtimeMode: settings.defaultRuntimeMode ?? "fullAccess",
@@ -1463,6 +1468,11 @@ export class Engine {
               const dir = cur.worktreeDir;
               if (dir && this.paths?.dirLive(dir)) {
                 ws = { projectId: cur.projectId ?? "", directory: dir };
+              // Test-only: under a mock provider a bound-but-dead
+              // worktree keeps the checkout workspace — the suites that
+              // stub the bind have no real dir to verify. Every real
+              // provider fails honestly instead of writing into the
+              // shared folder.
               } else if (this.provider.descriptor.mode !== "mock") {
                 this.failTurnSync(
                   cur,
@@ -1507,7 +1517,7 @@ export class Engine {
               turn,
               (err as Error)?.message ?? String(err),
             );
-        })
+        });
       return turn;
     }
 
@@ -2959,6 +2969,7 @@ export class Engine {
       // default runtime mode — a continuation is a new thread too.
       runtimeMode: this.store.state.settings.defaultRuntimeMode ?? "fullAccess",
       continuation,
+      hasStartedTurn: false,
     };
     this.store.update((d) => {
       d.threads.push(thread);
@@ -4627,6 +4638,7 @@ export class Engine {
       // global default (frozen heads share the chat's lane).
       runtimeMode: lead.runtimeMode ?? this.store.state.settings.defaultRuntimeMode ?? "fullAccess",
       sessionGrants: [],
+      hasStartedTurn: false,
       hydraEnabled: false,
       hydraHead: {
         leadId: lead.id,
@@ -5751,6 +5763,7 @@ export class Engine {
       messages: [],
       turn: null,
       sessionGrants: [],
+      hasStartedTurn: false,
       hydraEnabled: this.store.state.settings.hydraDefaultEnabled !== false,
       ...(this.store.state.settings.lastHydraPairId
         ? { hydraPairId: this.store.state.settings.lastHydraPairId }

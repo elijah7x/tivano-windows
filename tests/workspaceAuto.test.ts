@@ -181,6 +181,39 @@ describe("P1-39 workspace auto mode", () => {
             messages: [],
             turn: null,
           },
+          {
+            // This build's gate-failed first send: explicit false, a
+            // persisted errored turn — must NOT be backfilled or the
+            // resend writes into the still-busy checkout.
+            id: "t-failed",
+            projectId: "p1",
+            title: "failed first send",
+            createdAt: ts,
+            updatedAt: ts,
+            sessionGrants: [],
+            hasStartedTurn: false,
+            messages: [
+              { id: "m2", role: "user", content: "try", status: "done", ts },
+              {
+                id: "m3",
+                role: "assistant",
+                content: "",
+                status: "error",
+                ts,
+                turnId: "u1",
+              },
+            ],
+            turn: {
+              id: "u1",
+              threadId: "t-failed",
+              status: "error",
+              seq: 1,
+              startedAt: ts,
+              endedAt: ts,
+              error: "wait for it",
+              assistantMessageId: "m3",
+            },
+          },
         ],
         settings: { theme: "dark", language: "en", alwaysAllow: [] },
         ui: { selectedThreadId: "t-old" },
@@ -194,6 +227,9 @@ describe("P1-39 workspace auto mode", () => {
     // A thread with NO history is not backfilled — it is still on its
     // first turn and the auto gate must stay armed for it.
     expect(store.state.threads.find((x) => x.id === "t-blank")!.hasStartedTurn).not.toBe(true);
+    // The explicit-false gate-failed thread keeps its flag across the
+    // reload — the backfill only touches ABSENT fields.
+    expect(store.state.threads.find((x) => x.id === "t-failed")!.hasStartedTurn).toBe(false);
   });
 
   it("first send into a busy checkout binds a fresh worktree before the turn starts", async () => {
