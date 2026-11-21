@@ -291,6 +291,36 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(head2.projectId).toBe(bound!.id);
   });
 
+  it("a routed subdir of a repo binds the checkout at the repo top", async () => {
+    const { engine } = rig();
+    // Frozen: checkout = rev-parse --show-toplevel — a named folder
+    // inside a repo routes the head's checkout to the repo root, so the
+    // copy and the landing cover the whole checkout, not the subdir.
+    const repo = join(tmp("tivano-top-"), "repo");
+    const sub = join(repo, "sub");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    mkdirSync(sub, { recursive: true });
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]${sub}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe("completed");
+    expect(head.hydraHead!.isNonGitCheckout).toBe(false);
+    expect(head.hydraHead!.targetCheckout).toBe(realpathSync(repo));
+    const norm = (p: string) => p.replace(/[\\/]+$/, "").toLowerCase();
+    const bound = engine
+      .snapshot()
+      .projects.find(
+        (p) =>
+          p.directory !== undefined &&
+          norm(p.directory) === norm(realpathSync(repo)),
+      );
+    expect(bound).toBeDefined();
+    expect(head.projectId).toBe(bound!.id);
+  });
+
   it("a name that is no sidebar project and no path is still refused", async () => {
     const { engine } = rig();
     const lead = engine.createThread(null, "lead");

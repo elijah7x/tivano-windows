@@ -4977,7 +4977,8 @@ export class Engine {
       // repo whose .git cannot be read edit in place (true); a real
       // checkout still records false rather than staying undefined.
       if (headDir !== undefined)
-        head.hydraHead!.isNonGitCheckout = this.hydraGitProbe(headDir) !== "git";
+        head.hydraHead!.isNonGitCheckout =
+          this.hydraGitProbe(headDir).state !== "git";
     }
     // F22 isolation (frozen makeHydraCopy): with copies on and a copyable
     // checkout the head gets its own detached worktree first and runs
@@ -5034,7 +5035,7 @@ export class Engine {
   ): ChatThread | null {
     const projectId = d.project
       ? (this.store.state.projects.find(
-          (p) => p.name.toLowerCase() === d.project!.toLowerCase(),
+          (p) => p.name.toLowerCase() === d.project!.trim().toLowerCase(),
         )?.id ?? lead.projectId)
       : lead.projectId;
     const head: ChatThread = {
@@ -5176,8 +5177,12 @@ export class Engine {
    *  routes as a Git checkout, an unreadable one is refused instead of
    *  being edited in place. `git` = `.git` file (worktree pointer) or
    *  dir with a readable HEAD; `broken` = present but neither; `none`
-   *  = no `.git` anywhere up the chain. */
-  private hydraGitProbe(dir: string): "git" | "broken" | "none" {
+   *  = no `.git` anywhere up the chain. `root` is the level whose `.git`
+   *  validated — frozen's identity.checkout (rev-parse --show-toplevel),
+   *  so a routed subdir's checkout is the repo top, not the subdir. */
+  private hydraGitProbe(
+    dir: string,
+  ): { state: "git"; root: string } | { state: "broken" | "none" } {
     for (let cur = dir; ; ) {
       const gitDir = join(cur, ".git");
       try {
@@ -5200,16 +5205,16 @@ export class Engine {
             const m = /^\s*gitdir\s*:\s*(.+?)\s*$/im.exec(
               readFileSync(gitDir, "utf8"),
             );
-            if (!m) return "broken";
+            if (!m) return { state: "broken" };
             const target = resolve(cur, m[1]!);
             // The pointer must land on a real gitdir — an existing dir
             // without its own HEAD is still a checkout Git cannot open.
             return lstatSync(target).isDirectory() &&
               lstatSync(join(target, "HEAD")).isFile()
-              ? "git"
-              : "broken";
+              ? { state: "git", root: cur }
+              : { state: "broken" };
           } catch {
-            return "broken";
+            return { state: "broken" };
           }
         }
         if (eff?.isDirectory()) {
@@ -5218,20 +5223,21 @@ export class Engine {
             // HEAD, not object integrity. Anything less is broken.
             const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
             return /^ref:\s*\S/.test(head) || /^[0-9a-f]{40,64}$/i.test(head)
-              ? "git"
-              : "broken";
+              ? { state: "git", root: cur }
+              : { state: "broken" };
           } catch {
-            return "broken";
+            return { state: "broken" };
           }
         }
-        if (eff !== undefined && eff !== null) return "broken";
+        if (eff !== undefined && eff !== null) return { state: "broken" };
       } catch (err) {
         // ENOENT = no .git here — keep walking. Anything else (EACCES,
         // EPERM) is a repo Git cannot read, not a plain folder.
-        if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") return "broken";
+        if ((err as NodeJS.ErrnoException)?.code !== "ENOENT")
+          return { state: "broken" };
       }
       const parent = dirname(cur);
-      if (parent === cur) return "none";
+      if (parent === cur) return { state: "none" };
       cur = parent;
     }
   }
@@ -5397,19 +5403,25 @@ export class Engine {
       }
       // The folder was born this instant — its canonical form is itself.
       try {
-        canonical = realpathSync(canonical);
+        canonical = realpathSync(canonical)
+          .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+          .replace(/^\\\\[?.]\\/i, "");
       } catch {
         /* keep the normalized path */
       }
     }
     const probe = this.hydraGitProbe(canonical);
-    if (probe === "broken")
+    if (probe.state === "broken")
       return refuse(
         `Hydra: ${display} is not a Git checkout Tivano can read, so ${personaName} did not start.`,
       );
+    // Frozen applyHydraRoute(checkout: identity.checkout): a routed
+    // subdir's checkout is the enclosing repo's top-level — the head
+    // copies and lands the whole checkout, not a slice of it.
+    if (probe.state === "git") canonical = probe.root;
     const info = head.hydraHead!;
     info.targetCheckout = canonical;
-    info.isNonGitCheckout = probe === "none";
+    info.isNonGitCheckout = probe.state === "none";
     // Frozen applyHydraRoute + the slice's sidebar rule: an exact-dir
     // match reuses its project; an unlisted routed folder joins the
     // sidebar as a bound project so the head's work is visible there.
