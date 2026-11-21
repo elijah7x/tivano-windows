@@ -183,6 +183,10 @@ export class MockProvider implements ProviderAdapter {
     // P1-37 fixture: `[mock:hydra-identity]` = one delegation whose entry
     // carries the adaptive mode's `identity` number plus `role` title.
     const wantsHydraIdentity = prompt.includes("[mock:hydra-identity]");
+    // P1-12 fixture: `[mock:hydra-continue]` = one entry whose
+    // `"continue": "Hank"` sends the rework back into Hank's own session
+    // and copy instead of spawning a head.
+    const wantsHydraContinue = prompt.includes("[mock:hydra-continue]");
     const wantsHydraLoop = prompt.includes("[mock:hydra-loop]");
     const wantsHydraLoopFail = prompt.includes("[mock:hydra-loop-fail]");
     if (wantsHydraLoop) this.hydraLoops.set(ctx.threadId, "ok");
@@ -240,7 +244,7 @@ export class MockProvider implements ProviderAdapter {
       wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraWaitQ ||
       wantsHydraQuiet || wantsHydraFailStart || wantsHydraFailAll ||
       wantsHydraFailTransient || wantsHydraRole || wantsHydraIdentity ||
-      wantsHydraLoop || wantsHydraLoopFail || looped
+      wantsHydraLoop || wantsHydraLoopFail || wantsHydraContinue || looped
     ) {
       const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute || wantsHydraWaitQ
         ? wantsHydraWaitMany
@@ -270,6 +274,8 @@ export class MockProvider implements ProviderAdapter {
           ? '[{"role":"Outline it","prompt":"Normal work."}]'
         : wantsHydraIdentity
           ? '[{"role":"Scout","prompt":"Map the area.","identity":1},{"role":"No pick","prompt":"Plain work."}]'
+        : wantsHydraContinue
+          ? '[{"task":"Rework Hank","prompt":"Rework your part: tighten the intro.","continue":"Hank"}]'
         : wantsHydraLoopFail || (looped && this.hydraLoops.get(ctx.threadId) === "fail")
           ? '[{"task":"Quiet fail","prompt":"Try it. [mock:fail-quiet]"}]'
         : wantsHydraLoop || looped

@@ -564,6 +564,11 @@ const vSettings = vObject({
   // pre-P1-37 store loads verbatim; absent presets = the six built-ins.
   chimeraPresets: vOptional(vArray(vChimeraPreset, 64)),
   chimeraAutoDispatch: vOptional(vBoolean),
+  // P1-12: the delegation level — optional so every pre-P1-12 store
+  // loads verbatim; absent = "active".
+  hydraTilt: vOptional(
+    vEnum(["restrained", "active", "aggressive"] as const),
+  ),
   hydraReviewEnabled: vOptional(vBoolean),
   // P1-38: the independent review's two reviewer picks — optional so
   // every pre-P1-38 store loads verbatim.

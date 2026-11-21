@@ -48,6 +48,7 @@ import {
   hydraTeamStatus,
   hydraTurnNote,
   markingDelegationBlockSent,
+  parseHydraReportNotes,
   personaAt,
   personaIndex,
   personaNamed,
@@ -4550,7 +4551,7 @@ export class Engine {
         : "";
     return (
       queuedNote +
-      hydraDelegationRequest() +
+      hydraDelegationRequest(s.hydraTilt ?? "active") +
       policy +
       adaptive +
       "\n\n" +
@@ -4641,6 +4642,34 @@ export class Engine {
     const team = this.store.state.threads.filter(
       (t) => t.hydraHead?.leadId === lead.id,
     );
+    // P1-12 (frozen "continue" rework send-back): the entry continues
+    // in the named head's own session and copy — the steer path
+    // re-arms it as running and its next report flushes as a fresh
+    // batch. An unknown name falls back to a fresh head wearing it.
+    if (d.continue) {
+      const target = team
+        .filter(
+          (t) =>
+            t.hydraHead!.name === d.continue &&
+            t.hydraHead!.status !== "running",
+        )
+        .at(-1);
+      if (target) {
+        try {
+          this.sendTurn(target.id, d.prompt, {
+            authored: false,
+            hydraBrief: true,
+          });
+        } catch (err) {
+          this.refuseDelegation(
+            lead,
+            `the rework of ${d.continue} could not start: ${(err as Error)?.message ?? String(err)}`,
+          );
+        }
+        return;
+      }
+      d = { ...d, name: d.continue, continue: undefined };
+    }
     const running = team.filter((t) => t.hydraHead?.status === "running").length;
     const launch = this.hydraLaunchFor(lead);
     const cap = launch?.maxHeads ?? HYDRA_UNCAPPED_CONCURRENCY;
@@ -5294,12 +5323,17 @@ export class Engine {
           (m.role === "assistant" && m.content.trim() !== ""),
       );
     const reports = this.hydraPendingReports.get(info.leadId) ?? [];
+    // P1-12 (frozen HydraReportNotes): the three report lines parse
+    // only when all three are present — otherwise the raw reply stands
+    // alone.
+    const notes = parseHydraReportNotes(info.summary ?? "");
     reports.push({
       headIndex: info.headIndex,
       task: info.task,
       status: info.status === "running" ? "stopped" : info.status,
       text: info.summary ?? "",
       batchId: info.batchId,
+      ...(notes !== undefined ? { notes } : {}),
       elapsedMs: info.elapsedMs,
       toolCalls: info.toolCalls,
       provider: this.provider.descriptor.label,

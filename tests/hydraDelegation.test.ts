@@ -451,7 +451,11 @@ describe("lead policy + turn notes (frozen HydraPrompts slice)", () => {
   });
 
   it("delegation request + turn note + report note carry the team", () => {
-    expect(hydraDelegationRequest()).toContain("[Hydra setting: enabled]");
+    // P1-12: the request names the delegation level (frozen
+    // v2DelegationRequest tilt clause); absent setting reads proactive.
+    expect(hydraDelegationRequest()).toContain(
+      "[Hydra setting: enabled, proactive]",
+    );
     expect(hydraTurnNote(undefined)).toBe("");
     expect(hydraTurnNote("Your heads so far: Hank (working).")).toContain(
       "Your heads so far",

@@ -1091,6 +1091,25 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
         )}
       </p>
 
+      <h4>{t("How much sub-agents take on")}</h4>
+      <ChoiceRow
+        options={
+          [
+            ["restrained", "Restrained"],
+            ["active", "Proactive"],
+            ["aggressive", "Aggressive"],
+          ] as const
+        }
+        value={settings.hydraTilt ?? "active"}
+        aria="How much sub-agents take on"
+        onPick={(v) => tryCall("settings:set", { hydraTilt: v })}
+      />
+      <p className="codex-note">
+        {t(
+          "Restrained sends heads only parallel pieces or heavy reading; Proactive also sends bounded mechanical work; Aggressive makes heads the default for nearly every part the lead can brief.",
+        )}
+      </p>
+
       <IdentitySection
         settings={settings}
         onSave={(next) => tryCall("settings:set", { chimeraPresets: next })}

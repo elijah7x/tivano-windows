@@ -25,6 +25,10 @@ export interface HydraDelegation {
   task: string;
   /** The brief the head runs on. */
   prompt: string;
+  /** P1-12 rework send-back (frozen `"continue"`): the name of a head
+   *  of this job to send the prompt back to — it continues in that
+   *  head's own session and copy instead of spawning a new head. */
+  continue?: string | undefined;
   /** Announced roster name ("name"/"head") — authoritative when on roster. */
   name?: string | undefined;
   /** Sidebar project name (or path) the head is sent to. */
@@ -58,6 +62,7 @@ export function delegationFromEntry(entry: unknown): HydraDelegation | null {
   return {
     task,
     prompt,
+    continue: get("continue"),
     name: get("name") ?? get("head"),
     project: get("project") ?? get("repo"),
     profile: get("profile"),
@@ -331,7 +336,103 @@ const HOW_TO_WORK = `- Start on the task right away: read what you need and no m
 - If something blocks you, stop and say so instead of guessing or working around it.`;
 
 const HOW_TO_REPORT =
-  "Report the result, the files you changed and material blockers once, in a few lines the lead can act on: what changed, where, and anything still open or uncertain. Name the caveats and the unfinished work plainly rather than leaving them out. No preamble, no restating the brief, no logs. The lead handles validation.";
+  "Report the result, the files you changed and material blockers once, in a few lines the lead can act on: what changed, where, and anything still open or uncertain. No preamble, no restating the brief, no logs. The lead handles validation. Then exactly the three lines `Deviations: ...`, `Unfinished: ...` and `Uncertain: ...`, each `none` when empty.";
+
+/** P1-12 (frozen HydraTilt): how readily the lead hands work to heads.
+ *  Restrained delegates only for parallel pieces or heavy reading;
+ *  active also sends bounded mechanical work out, even one piece;
+ *  aggressive makes heads the default for nearly all work. */
+export type HydraTilt = "restrained" | "active" | "aggressive";
+
+export const HYDRA_TILTS: readonly HydraTilt[] = [
+  "restrained",
+  "active",
+  "aggressive",
+];
+
+/** Frozen `v2TiltRule` — what each tilt asks of the lead, in its own
+ *  words: field data showed leads delegating about one agentic task in
+ *  ten whatever the tilt, so the rule names the kinds of work that go
+ *  out, not only the principle. */
+export function hydraTiltRule(tilt: HydraTilt): string {
+  switch (tilt) {
+    case "restrained":
+      return "Delegate the parts that would crowd your context or take long: an audit or sweep across many files, research across many sources, or several independent pieces that can run at once. Do the rest yourself.";
+    case "active":
+      return "Default to heads for any part you can brief on its own that would take you more than a few tool calls: research, an audit, a mechanical change, a clearly specified feature or fix, or several variants or modules built in parallel. Do a part yourself when it is short, or when you must judge it while reading.";
+    case "aggressive":
+      return "Heads are your default for nearly all work: brief every part you can describe on its own, investigations included, where heads gather and report while you decide. Do something yourself only when it is a quick answer or a one-step edit, or when it cannot be briefed without doing the reading yourself.";
+  }
+}
+
+/** Frozen `v2DelegationRequest` tilt clause — the named level and its
+ *  short rule for the front of the user's message. */
+function hydraTiltName(tilt: HydraTilt): { name: string; rule: string } {
+  switch (tilt) {
+    case "restrained":
+      return { name: "restrained", rule: "send heads only the parts that would crowd your context: audits, broad research, several parallel pieces" };
+    case "active":
+      return { name: "proactive", rule: "send heads any part you can brief that would take more than a few tool calls; keep short work and work you must judge while reading" };
+    case "aggressive":
+      return { name: "aggressive", rule: "send heads nearly everything you can brief; keep only quick answers, one-step edits and work you cannot brief" };
+  }
+}
+
+/** The three lines every head ends its report with (frozen
+ *  HydraReportNotes): nil fields mean the head wrote "none"; a report
+ *  without the lines parses to undefined and the raw reply stands
+ *  alone. */
+export interface HydraReportNotes {
+  deviations?: string | undefined;
+  unfinished?: string | undefined;
+  uncertain?: string | undefined;
+}
+
+export function hydraReportNotesFlag(n: HydraReportNotes): boolean {
+  return n.deviations !== undefined || n.unfinished !== undefined || n.uncertain !== undefined;
+}
+
+const REPORT_NOTE_LABELS = ["Deviations", "Unfinished", "Uncertain"] as const;
+const REPORT_NOTE_NILS = new Set(["none", "n/a", "无", "没有"]);
+
+/** Frozen `HydraReportNotes.parse`: the `Deviations:`/`Unfinished:`/
+ *  `Uncertain:` lines anywhere in a reply, case-insensitive, markdown
+ *  bullets and bold allowed; a value runs until the next label or the
+ *  end. Undefined unless all three labels are present. */
+export function parseHydraReportNotes(reply: string): HydraReportNotes | undefined {
+  const found = new Map<string, string[]>();
+  let current: string | undefined;
+  for (const raw of reply.split("\n")) {
+    const line = raw
+      .trim()
+      .replace(/^[-*•\s]+/, "")
+      .replace(/\*\*/g, "");
+    const label = REPORT_NOTE_LABELS.find((l) =>
+      line.toLowerCase().startsWith(l.toLowerCase() + ":"),
+    );
+    if (label) {
+      current = label;
+      found.set(label, [line.slice(label.length + 1).trim()]);
+    } else if (current) {
+      if (line === "") current = undefined;
+      else found.get(current)!.push(line);
+    }
+  }
+  if (!REPORT_NOTE_LABELS.every((l) => found.has(l))) return undefined;
+  const value = (label: string): string | undefined => {
+    const text = (found.get(label) ?? []).join("\n").trim();
+    const lowered = text.toLowerCase().replace(/^[.\s]+|[.\s]+$/g, "");
+    return text === "" || REPORT_NOTE_NILS.has(lowered) ? undefined : text;
+  };
+  const notes: HydraReportNotes = {};
+  const d = value("Deviations");
+  if (d !== undefined) notes.deviations = d;
+  const u = value("Unfinished");
+  if (u !== undefined) notes.unfinished = u;
+  const q = value("Uncertain");
+  if (q !== undefined) notes.uncertain = q;
+  return notes;
+}
 
 function sharedWorkplaceRules(path: string): string {
   return `You work in the lead's checkout at ${path}, alongside the lead and the other heads, who are changing other files at the same time. Changes you did not make are expected there: leave every one of them alone, never stash, check out, reset, restore or clean anything, and never move work into a branch or worktree, whatever the project's own guidelines say about agents and worktrees. Do not use git status or git diff to check your work: they show everyone's changes, and the lead does the verifying.`;
@@ -405,6 +506,9 @@ export interface HydraReport {
    *  stopped the head, so the report says Tivano stopped it, not the
    *  user, and tells the lead it can be continued. */
   stopReason?: "stalled" | undefined;
+  /** Frozen HydraJobHeadRecord.notes — the structured Deviations/
+   *  Unfinished/Uncertain lines when the report carried all three. */
+  notes?: HydraReportNotes | undefined;
 }
 
 /** Frozen `isTransientFailure`: a failure likely to clear on its own —
@@ -508,9 +612,16 @@ export function reportMessage(
         firstWithError.set(key, personaAt(r.headIndex).name);
       }
     }
+    // Frozen report flags: the structured notes ride the section so
+    // the lead sees what to look at first.
+    const flags: string[] = [];
+    if (r.notes?.deviations) flags.push(`Deviations: ${r.notes.deviations}`);
+    if (r.notes?.unfinished) flags.push(`Unfinished: ${r.notes.unfinished}`);
+    if (r.notes?.uncertain) flags.push(`Uncertain: ${r.notes.uncertain}`);
     sections.push(
       `## ${personaAt(r.headIndex).name}: ${r.task}${outcome}${took}\n` +
-        `${land ? land + "\n" : ""}${bodyLine}`,
+        `${land ? land + "\n" : ""}${bodyLine}` +
+        (flags.length ? `\n${flags.join("\n")}` : ""),
     );
   }
   const closing: string[] = [];
@@ -787,9 +898,12 @@ export function hydraTurnNote(team: string | undefined): string {
 
 /** Frozen `delegationRequest` — the user's enabled Hydra setting
  *  expressed alongside their request; kept off automatic reports. */
-export function hydraDelegationRequest(): string {
-  return `[Hydra setting: enabled]
-Use Hydra heads for this request when it involves multiple files, an audit, broad research, or independent tasks. Keep a single obvious change in one file with the lead. Delegate through the final hydra block so Tivano runs the selected heads; do not use native agent tools. Follow any explicit request below to work alone or limit delegation.
+export function hydraDelegationRequest(tilt: HydraTilt = "active"): string {
+  // Frozen v2DelegationRequest tilt clause: the level is named and the
+  // decision rule rides every user turn.
+  const t = hydraTiltName(tilt);
+  return `[Hydra setting: enabled, ${t.name}]
+Use Hydra heads for this request when it involves multiple files, an audit, broad research, or independent tasks. Keep a single obvious change in one file with the lead. Before you start, decide which parts go to heads: ${t.rule}. Delegate through the final hydra block so Tivano runs the selected heads; do not use native agent tools. Follow any explicit request below to work alone or limit delegation.
 
 ---
 
@@ -805,7 +919,7 @@ export function hydraReportNote(
   canDelegate: boolean,
 ): string {
   const more = canDelegate
-    ? "If the reports open up the next stage of the work, or a head failed, or a piece of the user's request is still undone, send heads out again for exactly that, with the same ```hydra block at the end of your reply; never for verifying, redoing or finishing what a head already did."
+    ? "If the reports open up the next stage of the work, or a head failed, or a piece of the user's request is still undone, send heads out again for exactly that, with the same ```hydra block at the end of your reply; to rework the own part of a head of this request, prefer an entry with \"continue\": \"<head name>\" and the instruction in \"prompt\", which continues in its own session and copy; never for verifying, redoing or finishing what a head already did."
     : "Send out no more heads for this request; whatever is left, do yourself.";
   return `[Hydra] Your heads reported back below.${team ? " " + team : ""} ${more}\n\n---\n\n`;
 }

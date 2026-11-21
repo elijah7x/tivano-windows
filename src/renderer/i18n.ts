@@ -1058,6 +1058,14 @@ const zhHans: Record<string, string> = {
     "主代理把工作拆成不同角色，并为每个角色匹配合适服务商的模型。",
   "New chats start on this mode; each chat switches it in the model picker. With no saved pair, Preset falls back to Same-model.":
     "新对话使用该模式；每个对话可在模型选择器中切换。没有保存的组合时，“模型搭配”回退为“同模型”。",
+  // P1-12: delegation level picker — titles use the upstream canonical
+  // zh-Hans verbatim.
+  "How much sub-agents take on": "子代理承担多少工作",
+  "Restrained": "克制",
+  "Proactive": "主动",
+  "Aggressive": "激进",
+  "Restrained sends heads only parallel pieces or heavy reading; Proactive also sends bounded mechanical work; Aggressive makes heads the default for nearly every part the lead can brief.":
+    "“克制”只把可并行或阅读量大的部分交给子代理；“主动”还会交给它们边界清晰的机械工作；“激进”让子代理默认承担几乎所有能写清简报的部分。",
   // P1-38/P1-09: independent review — title/detail use the upstream
   // canonical zh-Hans verbatim.
   "Independent review": "独立审查",

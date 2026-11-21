@@ -288,6 +288,9 @@ export interface Settings {
   /** P1-37: auto-dispatch — adaptive heads go out without the per-role
    *  model confirm (frozen settings.chimeraAutoDispatch). */
   chimeraAutoDispatch?: boolean;
+  /** P1-12: "How much sub-agents take on" — the delegation level new
+   *  leads run on (frozen launch.tilt; absent = "active"). */
+  hydraTilt?: import("./hydraDelegation").HydraTilt;
   /** P1-38: once a team finishes, an independent reviewer model reads
    *  its changes and sends findings to the lead (frozen
    *  hydraReviewEnabled, default true). */
