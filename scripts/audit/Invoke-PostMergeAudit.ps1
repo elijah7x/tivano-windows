@@ -320,7 +320,7 @@ function Select-TargetPullRequests {
       }
       $null = $selected.Add($pr)
     }
-    return @($selected)
+    return $selected.ToArray()
   }
 
   $cutoffUtc = [DateTime]::UtcNow.AddHours(-$Hours)
@@ -805,7 +805,7 @@ try {
         linkedIssue = $issueNumber
         verdict = $effectiveVerdict
         rawVerdict = $rawVerdict
-        deterministicFindings = @($detFindings)
+        deterministicFindings = $detFindings.ToArray()
         modelResult = $modelResult
         auditedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
       }

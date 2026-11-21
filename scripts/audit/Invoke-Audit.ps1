@@ -369,7 +369,7 @@ function Get-PrComments {
     foreach ($c in $items) { $null = $all.Add($c) }
     if ($items.Count -lt 100) { break }
   }
-  return @($all)
+  return $all.ToArray()
 }
 
 function Test-CommentAuthoredByApp {
@@ -566,7 +566,7 @@ function Get-IssueMarkdown {
     [int]$IssueNumber
   )
   $issue = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $Config.repo + '/issues/' + $IssueNumber)
-  $comments = Get-PrComments -Config $Config -Number $IssueNumber
+  $comments = @(Get-PrComments -Config $Config -Number $IssueNumber)
   $labelNames = @()
   $rawLabels = Get-JsonProp $issue 'labels'
   if ($null -ne $rawLabels) {
