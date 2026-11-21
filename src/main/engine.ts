@@ -4969,10 +4969,14 @@ export class Engine {
     // Frozen probes the checkout for every head, not only path-routed
     // ones: a sidebar project bound to a plain folder gets the same
     // in-place treatment (no copy, shared-folder rule in the brief).
+    // The probe reads the checkout the head will actually use — the
+    // lead's worktree for a same-project head, the project's own dir
+    // otherwise — exactly the source hydraCopySource picks.
     if (head.hydraHead!.isNonGitCheckout === undefined) {
-      const headDir = this.store.state.projects.find(
-        (p) => p.id === head.projectId,
-      )?.directory;
+      const headDir =
+        this.hydraCopySource(lead, head) ??
+        this.store.state.projects.find((p) => p.id === head.projectId)
+          ?.directory;
       // Frozen records identity==nil either way: a plain folder AND a
       // repo whose .git cannot be read edit in place (true); a real
       // checkout still records false rather than staying undefined.
@@ -5103,8 +5107,10 @@ export class Engine {
    *  undefined = no live directory to copy. */
   private hydraCopySource(lead: ChatThread, head: ChatThread): string | undefined {
     const routed = head.hydraHead?.targetCheckout;
+    // A routed checkout without runtime paths can never prove liveness —
+    // the head keeps its shared-checkout lot rather than copying blind.
     if (routed !== undefined)
-      return this.paths?.dirLive(routed) ? routed : undefined;
+      return this.paths?.dirLive(routed) === true ? routed : undefined;
     if (head.projectId === lead.projectId && lead.worktreeDir)
       return this.paths?.dirLive(lead.worktreeDir) ? lead.worktreeDir : undefined;
     const project = this.store.state.projects.find((p) => p.id === head.projectId);
