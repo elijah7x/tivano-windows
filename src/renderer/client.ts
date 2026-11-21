@@ -625,6 +625,8 @@ export class ClientStore {
         if (!composerBusy) {
           this.setDraft(event.threadId, event.text);
         } else {
+          // callApi already lands a rejection in the global error
+          // banner — the catch only keeps the re-thrown promise quiet.
           void callApi("followUps:enqueue", {
             threadId: event.threadId,
             text: event.text,

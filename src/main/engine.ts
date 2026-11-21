@@ -1192,6 +1192,14 @@ export class Engine {
       // starts a fresh `g<n>` bucket by construction — nothing to clear.
     }
     const thread = this.mustThread(threadId);
+    // Frozen beginThreadTurnAsync save: the library must own writes
+    // before anything is consumed — `store.update` silently no-ops when
+    // it doesn't, which would either queue a follow-up the library
+    // drops or start a provider for a turn it never recorded. The throw
+    // rides the IPC rejection back to the renderer, whose draft
+    // discipline keeps the composer text AND pending attachments.
+    if (!this.store.ownsWrites)
+      throw new EngineError("Could not save the library");
     // Frozen send() guard !initialThread.isArchived: a send landing on
     // an archived chat queues as a follow-up — it never starts a turn
     // on a shelved row. The detached turn satisfies the IPC return
@@ -1271,13 +1279,6 @@ export class Engine {
       turnId: turn.id,
     };
     const needsTitle = thread.title === "New thread";
-    // Frozen beginThreadTurnAsync save: the library must own writes
-    // before the bubble lands — `store.update` silently no-ops when it
-    // doesn't, which would start a provider for a turn the library
-    // never recorded. The throw rides the IPC rejection back to the
-    // renderer, whose draft discipline keeps the composer text.
-    if (!this.store.ownsWrites)
-      throw new EngineError("Could not save the library");
     this.store.update(() => {
       thread.messages.push(userMsg, assistantMsg);
       thread.turn = turn;
@@ -1812,8 +1813,16 @@ export class Engine {
   ): void {
     // Attachments consumed at send return with the text — the library
     // copies stay main-owned (pendingAttachments) and the renderer
-    // restores the display refs from the event.
-    if (attachments?.length) this.pendingAttachments.set(thread.id, attachments);
+    // restores the display refs from the event. Merge by id: anything
+    // the user attached meanwhile survives next to the restored set.
+    if (attachments?.length) {
+      const existing = this.pendingAttachments.get(thread.id) ?? [];
+      const have = new Set(existing.map((a) => a.id));
+      this.pendingAttachments.set(thread.id, [
+        ...existing,
+        ...attachments.filter((a) => !have.has(a.id)),
+      ]);
+    }
     this.store.update(() => {
       thread.messages = thread.messages.filter((m) => m.turnId !== turn.id);
       if (thread.turn?.id === turn.id) thread.turn = null;
@@ -2345,10 +2354,26 @@ export class Engine {
         this.emitQueue(thread);
         return;
       }
-      this.sendTurn(thread.id, text, unauthored ? { authored: false } : undefined);
-      // P1-38: a drained findings turn re-arms its card's verdict watch —
-      // after the send lands, so a failed send never leaves a stale id.
-      if (reviewId) this.hydraReviewAwaiting.set(thread.id, reviewId);
+      try {
+        this.sendTurn(thread.id, text, unauthored ? { authored: false } : undefined);
+        // P1-38: a drained findings turn re-arms its card's verdict watch —
+        // after the send lands, so a failed send never leaves a stale id.
+        if (reviewId) this.hydraReviewAwaiting.set(thread.id, reviewId);
+      } catch {
+        // A drained item that cannot record (closed library) returns to
+        // the front of the queue rather than vanishing — the same retain
+        // the composer path gets, one channel down.
+        this.store.update(() => {
+          this.queueOf(thread).unshift({
+            id: randomUUID(),
+            text,
+            createdAt: Date.now(),
+            ...(unauthored ? { unauthored: true } : {}),
+            ...(reviewId ? { reviewId } : {}),
+          });
+        });
+        this.emitQueue(thread);
+      }
     } finally {
       this.drainingFollowUps.delete(thread.id);
     }
