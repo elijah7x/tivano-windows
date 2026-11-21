@@ -11,7 +11,10 @@ try {
 
 $script:ModuleDir = $PSScriptRoot
 $script:TokenCache = @{}
+$script:CmdExe = Join-Path ([Environment]::GetFolderPath('System')) 'cmd.exe'
 $script:TaskkillExe = Join-Path ([Environment]::GetFolderPath('System')) 'taskkill.exe'
+$script:DefaultDevinCli = 'C:\Users\elijah\AppData\Local\Programs\Devin\resources\app\extensions\windsurf\devin\bin\devin.exe'
+$script:DefaultArbiterModel = 'claude-fable-5-2-medium'
 
 function Write-AuditText {
   param(
@@ -416,6 +419,46 @@ function Get-AuditConfig {
     }
   }
 
+  $devinCli = $script:DefaultDevinCli
+  if (Test-AuditHasProp $raw 'devinCli') {
+    $rawDevinCli = Get-AuditProp $raw 'devinCli'
+    if ($null -ne $rawDevinCli -and -not [string]::IsNullOrWhiteSpace([string]$rawDevinCli)) {
+      $devinCli = ([string]$rawDevinCli).Trim()
+    }
+  }
+
+  $arbiterModel = $script:DefaultArbiterModel
+  if (Test-AuditHasProp $raw 'arbiterModel') {
+    $rawArbiterModel = Get-AuditProp $raw 'arbiterModel'
+    if ($null -ne $rawArbiterModel -and -not [string]::IsNullOrWhiteSpace([string]$rawArbiterModel)) {
+      $arbiterModel = ([string]$rawArbiterModel).Trim()
+    }
+  }
+
+  $arbiterTimeoutMinutes = 30
+  if (Test-AuditHasProp $raw 'arbiterTimeoutMinutes') {
+    $rawArbiterTimeout = Get-AuditProp $raw 'arbiterTimeoutMinutes'
+    if ($null -ne $rawArbiterTimeout -and -not [string]::IsNullOrWhiteSpace([string]$rawArbiterTimeout)) {
+      $parsedArbiterTimeout = 0
+      if (-not [int]::TryParse([string]$rawArbiterTimeout, [ref]$parsedArbiterTimeout) -or $parsedArbiterTimeout -le 0) {
+        throw ('Audit config arbiterTimeoutMinutes must be a positive integer, got: ' + [string]$rawArbiterTimeout)
+      }
+      $arbiterTimeoutMinutes = $parsedArbiterTimeout
+    }
+  }
+
+  $arbiterDailyCap = 6
+  if (Test-AuditHasProp $raw 'arbiterDailyCap') {
+    $rawDailyCap = Get-AuditProp $raw 'arbiterDailyCap'
+    if ($null -ne $rawDailyCap -and -not [string]::IsNullOrWhiteSpace([string]$rawDailyCap)) {
+      $parsedDailyCap = 0
+      if (-not [int]::TryParse([string]$rawDailyCap, [ref]$parsedDailyCap) -or $parsedDailyCap -lt 0) {
+        throw ('Audit config arbiterDailyCap must be a non-negative integer, got: ' + [string]$rawDailyCap)
+      }
+      $arbiterDailyCap = $parsedDailyCap
+    }
+  }
+
   $out = [ordered]@{}
   foreach ($prop in $raw.PSObject.Properties) {
     $out[$prop.Name] = $prop.Value
@@ -426,6 +469,10 @@ function Get-AuditConfig {
   $out['keyPath'] = ([string](Get-AuditProp $raw 'keyPath')).Trim()
   $out['zcode'] = Get-AuditProp $raw 'zcode'
   $out['model'] = ([string](Get-AuditProp $raw 'model')).Trim()
+  $out['devinCli'] = $devinCli
+  $out['arbiterModel'] = $arbiterModel
+  $out['arbiterTimeoutMinutes'] = $arbiterTimeoutMinutes
+  $out['arbiterDailyCap'] = $arbiterDailyCap
   $out['referenceRoot'] = ([string](Get-AuditProp $raw 'referenceRoot')).Trim()
   $out['workRoot'] = ([string](Get-AuditProp $raw 'workRoot')).Trim()
   $out['statusContext'] = $statusContext
@@ -844,9 +891,239 @@ function Invoke-AuditModel {
   }
 }
 
+function Test-ArbiterRulingEntries {
+  param(
+    $Items,
+    [string]$KeyProp,
+    [string]$SectionName
+  )
+  if ($null -eq $Items) { return ($SectionName + ' must be an array, got null.') }
+  foreach ($entry in @($Items)) {
+    if ($null -eq $entry -or $entry -isnot [pscustomobject]) {
+      return ($SectionName + ' contains a non-object entry.')
+    }
+    $keyVal = [string](Get-AuditProp $entry $KeyProp)
+    if ([string]::IsNullOrWhiteSpace($keyVal)) {
+      return ($SectionName + ' entry is missing ' + $KeyProp + '.')
+    }
+    $ruling = ([string](Get-AuditProp $entry 'ruling')).Trim().ToLowerInvariant()
+    if ($ruling -ne 'uphold' -and $ruling -ne 'overturn') {
+      return ($SectionName + ' entry has invalid ruling "' + $ruling + '" (expected uphold or overturn).')
+    }
+  }
+  return ''
+}
+
+function Invoke-ArbiterModel {
+  param(
+    [Parameter(Mandatory = $true)]
+    $Config,
+    [Parameter(Mandatory = $true)]
+    [string]$PromptText,
+    [Parameter(Mandatory = $true)]
+    [string]$WorkDir,
+    [string]$RunDir = ''
+  )
+
+  $rawOutPath = ''
+  try {
+    if ([string]::IsNullOrWhiteSpace($WorkDir) -or -not (Test-Path -LiteralPath $WorkDir -PathType Container)) {
+      return @{
+        status = 'unavailable'
+        result = $null
+        raw = $rawOutPath
+        error = ('WorkDir does not exist: ' + $WorkDir)
+      }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($RunDir)) {
+      $workRoot = [string](Get-AuditProp $Config 'workRoot')
+      if ([string]::IsNullOrWhiteSpace($workRoot)) {
+        throw 'RunDir was omitted and Config.workRoot is empty.'
+      }
+      $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmss')
+      $RunDir = Join-Path (Join-Path $workRoot 'runs') ('arbiter-' + $stamp + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 6))
+    }
+    [IO.Directory]::CreateDirectory($RunDir) | Out-Null
+
+    $promptPath = Get-UniqueRunFilePath -RunDir $RunDir -BaseName 'arbiter-prompt' -Extension '.md'
+    $rawOutPath = Get-UniqueRunFilePath -RunDir $RunDir -BaseName 'arbiter.out' -Extension '.log'
+    $rawErrPath = Get-UniqueRunFilePath -RunDir $RunDir -BaseName 'arbiter.err' -Extension '.log'
+    Write-AuditText -Path $promptPath -Text $PromptText
+
+    $devinExe = $script:DefaultDevinCli
+    $cfgDevin = Get-AuditProp $Config 'devinCli'
+    if ($null -ne $cfgDevin -and -not [string]::IsNullOrWhiteSpace([string]$cfgDevin)) {
+      $devinExe = ([string]$cfgDevin).Trim()
+    }
+    if (-not (Test-Path -LiteralPath $devinExe -PathType Leaf)) {
+      $fallbackCmd = $null
+      if ($devinExe.Equals($script:DefaultDevinCli, [StringComparison]::OrdinalIgnoreCase)) {
+        $fallbackCmd = Get-Command -Name 'devin' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+      }
+      if ($null -ne $fallbackCmd -and -not [string]::IsNullOrWhiteSpace($fallbackCmd.Source)) {
+        $devinExe = $fallbackCmd.Source
+      } else {
+        return @{
+          status = 'unavailable'
+          result = $null
+          raw = $rawOutPath
+          error = ('Devin CLI not found at ' + $devinExe)
+        }
+      }
+    }
+
+    $arbiterModel = $script:DefaultArbiterModel
+    $cfgModel = Get-AuditProp $Config 'arbiterModel'
+    if ($null -ne $cfgModel -and -not [string]::IsNullOrWhiteSpace([string]$cfgModel)) {
+      $arbiterModel = ([string]$cfgModel).Trim()
+    }
+    if ($arbiterModel -notmatch '^[A-Za-z0-9._:/-]+$') {
+      return @{
+        status = 'unavailable'
+        result = $null
+        raw = $rawOutPath
+        error = ('Invalid arbiterModel value: ' + $arbiterModel)
+      }
+    }
+
+    $timeoutMinutes = 30
+    $cfgTimeout = Get-AuditProp $Config 'arbiterTimeoutMinutes'
+    if ($null -ne $cfgTimeout) {
+      $parsedMin = 0
+      if ([int]::TryParse([string]$cfgTimeout, [ref]$parsedMin) -and $parsedMin -gt 0) {
+        $timeoutMinutes = $parsedMin
+      }
+    }
+
+    Assert-AuditCmdSafePath 'devinCli' $devinExe
+    Assert-AuditCmdSafePath 'WorkDir' $WorkDir
+    Assert-AuditCmdSafePath 'promptPath' $promptPath
+    Assert-AuditCmdSafePath 'rawOutPath' $rawOutPath
+    Assert-AuditCmdSafePath 'rawErrPath' $rawErrPath
+
+    # Mirror scripts/pr-review/Invoke-PrReview.ps1: launch via cmd.exe /d /c and kill the process tree on timeout.
+    # Redirect stdout and stderr separately so stderr diagnostics cannot corrupt the final JSON line on stdout.
+    $inner = (Quote-AuditArg $devinExe) +
+      ' --model ' + $arbiterModel +
+      ' --permission-mode auto --respect-workspace-trust false --prompt-file ' + (Quote-AuditArg $promptPath) +
+      ' -p > ' + (Quote-AuditArg $rawOutPath) + ' 2> ' + (Quote-AuditArg $rawErrPath)
+
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $process = $null
+    try {
+      $process = Start-Process -FilePath $script:CmdExe -ArgumentList ('/d /c "' + $inner + '"') `
+        -WorkingDirectory $WorkDir -PassThru -WindowStyle Hidden
+    } finally {
+      $ErrorActionPreference = $previousEap
+    }
+    if (-not $process) {
+      return @{
+        status = 'unavailable'
+        result = $null
+        raw = $rawOutPath
+        error = 'Could not start Devin CLI for arbitration.'
+      }
+    }
+    # Windows PowerShell 5.1 only fills ExitCode for a -PassThru process whose handle was opened before it exited.
+    $null = $process.Handle
+
+    $timeoutMs = [int][Math]::Min(([long]$timeoutMinutes * 60000L), [long][int]::MaxValue)
+    $timedOut = -not $process.WaitForExit($timeoutMs)
+    if ($timedOut) {
+      $killOut = Get-UniqueRunFilePath -RunDir $RunDir -BaseName 'arbiter-kill.out' -Extension '.log'
+      $killErr = Get-UniqueRunFilePath -RunDir $RunDir -BaseName 'arbiter-kill.err' -Extension '.log'
+      $null = Invoke-AuditTool $script:TaskkillExe ('/T /F /PID ' + $process.Id) $killOut $killErr $RunDir
+      $null = $process.WaitForExit(5000)
+      Stop-AuditTreeProcesses $WorkDir
+      return @{
+        status = 'unavailable'
+        result = $null
+        raw = $rawOutPath
+        error = ('Arbiter timed out after ' + $timeoutMinutes + ' minutes.')
+      }
+    }
+    $process.WaitForExit()
+    Stop-AuditTreeProcesses $WorkDir
+
+    if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
+      $errTail = ConvertTo-AuditSingleLine ([string](Get-AuditTail $rawErrPath 10)) 240
+      if ([string]::IsNullOrWhiteSpace($errTail)) {
+        $errTail = ConvertTo-AuditSingleLine ([string](Get-AuditTail $rawOutPath 10)) 240
+      }
+      return @{
+        status = 'unavailable'
+        result = $null
+        raw = $rawOutPath
+        error = ('Arbiter exited with code ' + $process.ExitCode + $(if ($errTail) { ': ' + $errTail } else { '' }))
+      }
+    }
+
+    $stdoutText = Read-AuditText $rawOutPath
+    if ([string]::IsNullOrWhiteSpace($stdoutText)) {
+      return @{
+        status = 'unavailable'
+        result = $null
+        raw = $rawOutPath
+        error = 'Arbiter produced empty stdout.'
+      }
+    }
+
+    $parsed = Parse-AuditLastJsonObject $stdoutText
+    if ($null -eq $parsed) {
+      return @{
+        status = 'unavailable'
+        result = $null
+        raw = $rawOutPath
+        error = 'Unparseable JSON on final line of arbiter output.'
+      }
+    }
+
+    foreach ($reqKey in @('rulings', 'acceptance', 'claims')) {
+      if (-not (Test-AuditHasProp $parsed $reqKey)) {
+        return @{
+          status = 'unavailable'
+          result = $null
+          raw = $rawOutPath
+          error = ('Arbiter JSON output is missing required key: ' + $reqKey)
+        }
+      }
+    }
+
+    $valErr = Test-ArbiterRulingEntries -Items (Get-AuditProp $parsed 'rulings') -KeyProp 'id' -SectionName 'rulings'
+    if (-not [string]::IsNullOrWhiteSpace($valErr)) {
+      return @{ status = 'unavailable'; result = $null; raw = $rawOutPath; error = $valErr }
+    }
+    $valErr = Test-ArbiterRulingEntries -Items (Get-AuditProp $parsed 'acceptance') -KeyProp 'item' -SectionName 'acceptance'
+    if (-not [string]::IsNullOrWhiteSpace($valErr)) {
+      return @{ status = 'unavailable'; result = $null; raw = $rawOutPath; error = $valErr }
+    }
+    $valErr = Test-ArbiterRulingEntries -Items (Get-AuditProp $parsed 'claims') -KeyProp 'claim' -SectionName 'claims'
+    if (-not [string]::IsNullOrWhiteSpace($valErr)) {
+      return @{ status = 'unavailable'; result = $null; raw = $rawOutPath; error = $valErr }
+    }
+
+    return @{
+      status = 'ok'
+      result = $parsed
+      raw = $rawOutPath
+      error = ''
+    }
+  } catch {
+    return @{
+      status = 'unavailable'
+      result = $null
+      raw = $rawOutPath
+      error = (ConvertTo-AuditSingleLine $_.Exception.Message 300)
+    }
+  }
+}
+
 Export-ModuleMember -Function @(
   'Get-AuditConfig',
   'Get-AuditToken',
   'Invoke-AuditApi',
-  'Invoke-AuditModel'
+  'Invoke-AuditModel',
+  'Invoke-ArbiterModel'
 )

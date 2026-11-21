@@ -1,25 +1,43 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-14.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-21.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 
-Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, PowerShell) working through open `nyx-auto` issues in `elijah7x/tivano-windows` unattended until none is left.
+Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, PowerShell) working through open `nyx-auto` issues in `elijah7x/tivano-windows` completely unattended, packaging a verified hands-on build once the queue clears, and polling continuously for new owner feedback.
 
-## 1. Role and stop rule
+## 1. Role and autonomous policy
 
-- You are an unattended coding agent on a Windows test machine working through the `nyx-auto` backlog one issue at a time.
-- Nobody is watching; never ask questions or wait for confirmation.
-- Check for `C:\tivano\dev-loop\state\STOP` before starting each issue and before each major step (implement, verify, push, gate, merge).
-  - If it exists, finish the current command, update `progress.json` (`"state":"idle","step":"stopped by STOP file"`), and stop.
-- After finishing each issue (merged or `needs-human`), re-read this entire file (`C:\tivano\pr-bot\tool\scripts\dev-loop\autopilot.md`) before starting the next issue, because your conversation may have been compacted.
+- You are a fully unattended coding agent on a Windows test machine working through the `nyx-auto` backlog continuously.
+- Nobody is watching until a packaged build is ready for hands-on testing. Never stop, ask questions, wait for confirmation, consult a person, or hand off to a person. Never use the `needs-human` label or protocol.
+- The **only** reason to stop the loop is the explicit stop file `C:\tivano\dev-loop\state\STOP`. Check for it before starting each issue, before each major step (implement, verify, push, gate, merge, milestone), and during every sleep/poll interval.
+  - If `STOP` exists, finish the current command, update `progress.json` (`"state":"idle","step":"stopped by STOP file"`), and stop.
+- After every issue outcome (merged, parked, or permanently parked) and whenever waking from a 30-minute poll to work new issues, re-read this entire file (`C:\tivano\pr-bot\tool\scripts\dev-loop\autopilot.md`), because your conversation may have been compacted and the watchdog self-syncs updated scripts from `main`.
 
-## 2. Progress file
+## 2. State files
 
-- Maintain `C:\tivano\dev-loop\autopilot\progress.json` (create `C:\tivano\dev-loop\autopilot` if missing) as UTF-8 JSON without BOM:
+Maintain these UTF-8 JSON files (without BOM) under `C:\tivano\dev-loop\autopilot\` (create the directory if missing), writing atomically via a `.tmp` file and `[IO.File]::Replace` / `[IO.File]::Move`:
+
+- `C:\tivano\dev-loop\autopilot\progress.json`:
   ```json
-  {"state":"working|idle|done","issue":<n or 0>,"step":"short text","updatedAt":"ISO time","merged":[{"issue":n,"pr":n,"date":"yyyy-MM-dd"}],"needsHuman":[numbers]}
+  {"state":"working|idle|polling","issue":<n or 0>,"step":"short text","updatedAt":"ISO time","merged":[{"issue":n,"pr":n,"date":"yyyy-MM-dd"}],"awaitingAudit":[{"issue":n,"pr":n,"headSha":"..."}],"parked":[numbers]}
   ```
-- Update `progress.json` at every step change (e.g., `queue`, `worktree`, `implement`, `verify`, `pr-create`, `gate`, `fix-1`, `consult`, `audit-wait`, `merge`, `needs-human`, `daily merge cap`, `done`).
-- Write it via `[IO.File]::WriteAllText('C:\tivano\dev-loop\autopilot\progress.json', ($json + "`n"), [Text.UTF8Encoding]::new($false))`.
-- If `progress.json` exists when you start, read it and resume from it, preserving `merged` and `needsHuman` and continuing any unfinished issue first.
+  - Update `progress.json` at every step change (e.g., `queue`, `worktree`, `implement`, `verify`, `pr-create`, `gate`, `fix-1`, `consult`, `audit-check`, `merge`, `parked`, `revisit-1`, `revisit-2`, `daily merge cap`, `milestone`, `polling`).
+  - If `progress.json` exists when you start, read it and resume from it, preserving `merged`, `awaitingAudit`, and `parked`, and continuing any unfinished work first.
+- `C:\tivano\dev-loop\autopilot\parked.json`:
+  ```json
+  [{"issue":12,"pr":45,"reason":"one-line public-text-safe reason","attempt":0}]
+  ```
+  - Tracks issues parked during the current cycle (`attempt`: `0` on initial park, `1` after first failed revisit, `2` after second failed revisit -> permanently parked with the `parked` label).
+- `C:\tivano\dev-loop\autopilot\hands-on.json`:
+  ```json
+  {"lastHandsOnSha":"","lastHandsOnTag":"","lastBuildNumber":0,"handsOnIssue":0,"updatedAt":""}
+  ```
+  - Tracks the last `main` commit SHA, prerelease tag/build number, and open `hands-on` issue number so the milestone only rebuilds when new work has merged and never opens a duplicate `hands-on` issue.
+
+Write helper pattern:
+```powershell
+$tmp = $dst + '.tmp'
+[IO.File]::WriteAllText($tmp, ($json + "`n"), [Text.UTF8Encoding]::new($false))
+if (Test-Path -LiteralPath $dst) { [IO.File]::Replace($tmp, $dst, $null) } else { [IO.File]::Move($tmp, $dst) }
+```
 
 ## 3. Non-interactive discipline
 
@@ -27,11 +45,11 @@ Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, 
   ```powershell
   $env:GIT_TERMINAL_PROMPT='0'; $env:GH_PROMPT_DISABLED='1'; $env:GIT_EDITOR='true'; $env:CI='1'; $env:npm_config_yes='true'
   ```
-- Always pass `-m` / `-F` / `--body-file` / `--title` to `git` and `gh` so no editor opens.
+- Always pass `-m` / `-F` / `--body-file` / `--title` / `--notes-file` to `git` and `gh` so no editor opens.
 - Never run `start`, `Invoke-Item`, `explorer`, any browser, `gh ... --web`, `Read-Host`, `pause`, or any command that waits for keyboard input.
 - Never run `git rebase -i` or `git add -i`. Never install software or change system settings.
 - Always give long commands an explicit timeout, and run e2e tests only through `npm` scripts (`npm run verify`).
-- After every `npm run verify` (pass or fail), stop any leftover process whose executable path or command line is inside the worktree so no Electron window stays open or locks files:
+- After every `npm run verify`, `npm run package:windows`, or `npm run smoke:packaged` (pass or fail), stop any leftover process whose executable path or command line is inside the worktree or build directory so no Electron window stays open or locks files:
   ```powershell
   $wt = 'C:\tivano\dev-loop\work\<n>-<slug>'
   # Spare this shell and its ancestors (their command lines can contain the path too).
@@ -52,13 +70,22 @@ Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, 
 
 ## 5. Queue
 
-- List candidate open issues:
+- Before picking the next issue, poll all PRs currently listed in `progress.json` `awaitingAudit` (§8) so any PR whose `nyx/audit` finished is merged, fixed, or parked right away.
+- List candidate open `nyx-auto` issues via the GitHub REST API (so `state_reason` is available for reopened detection; exclude items that have a `pull_request` property):
   ```powershell
-  gh issue list -R elijah7x/tivano-windows --label nyx-auto --state open --json number,title,labels --limit 100
+  gh api 'repos/elijah7x/tivano-windows/issues?labels=nyx-auto&state=open&per_page=100' --paginate
   ```
-- Skip any issue with the `needs-human` label. Take open `nyx-auto` issues that also have the `audit-followup` label before new parity issues (lowest `number` first within each group).
-- Never touch issues or pull requests without `nyx-auto`.
+- Skip any issue with the `parked` label (permanently parked), any issue currently in `awaitingAudit`, and (while any unparked issue remains) any issue currently recorded in `parked.json`.
+- Order eligible unparked `nyx-auto` issues strictly in this priority order (lowest `number` first within each group):
+  1. **`audit-followup` issues first** (issues carrying the `audit-followup` label; also treat `build-break` issues opened by the milestone at this highest priority).
+  2. **Reopened issues second** (issues with `state_reason == "reopened"`, or a `reopened` event in `repos/elijah7x/tivano-windows/issues/<n>/events`).
+  3. **Remaining parity issues third** (all other eligible open `nyx-auto` issues).
+- Never touch issues or pull requests without `nyx-auto` (except the tracking issue `#34` and the `hands-on` milestone issue you manage).
 - Never approve, request changes on, comment on, or close pull requests you did not open (e.g., outside contributors' PRs).
+- **When no unparked open `nyx-auto` issues remain:**
+  1. If `awaitingAudit` is non-empty, keep polling `awaitingAudit` (sleeping 5 minutes via `Start-Sleep -Seconds 300`, checking `STOP` before each poll) until every in-flight PR either merges, is fixed, or moves to `parked.json`.
+  2. Next, check `parked.json` for entries whose issue is still open, does not have the `parked` label, and has `attempt < 2`. Revisit them (lowest `attempt`, then lowest `issue` number) per §11.
+  3. Once no open `nyx-auto` issue remains outside the permanently `parked` ones (and `awaitingAudit` is empty and no revisit-eligible `parked.json` entry remains), run the **Hands-on testing milestone** (§12) and then enter the **30-minute polling loop** (§13).
 
 ## 6. Per issue
 
@@ -66,8 +93,8 @@ Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, 
   ```powershell
   git -C C:\tivano\dev-loop\repo fetch origin --prune
   ```
-- Derive `<slug>` from the issue title: lowercase ASCII `[a-z0-9]+` joined with `-`, trimmed, max 40 chars (fallback `work`). Branch name is `nyx/<n>-<slug>`; worktree path is `C:\tivano\dev-loop\work\<n>-<slug>`.
-- Reuse an existing worktree, existing `nyx/<n>-*` local/remote branch, or open PR for issue `#<n>` if present; otherwise create:
+- Derive `<slug>` from the issue title: lowercase ASCII `[a-z0-9]+` joined with `-`, trimmed, max 40 chars (fallback `work`). On the initial pass, branch name is `nyx/<n>-<slug>` and worktree path is `C:\tivano\dev-loop\work\<n>-<slug>`. (On a parked revisit attempt `k` = `1` or `2`, use a fresh branch `nyx/<n>-<slug>-r<k>` and worktree `C:\tivano\dev-loop\work\<n>-<slug>-r<k>` from current `origin/main` per §11.)
+- On an initial pass, reuse an existing worktree, existing `nyx/<n>-*` local/remote branch, or open PR for issue `#<n>` if present; otherwise create:
   ```powershell
   git -C C:\tivano\dev-loop\repo worktree add -b nyx/<n>-<slug> C:\tivano\dev-loop\work\<n>-<slug> origin/main
   ```
@@ -105,26 +132,32 @@ Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, 
 - On `fail` (exit `1`): inspect `failures`, `gatePath`, `glm`, and `notes`. Fix every listed failure, whether from the Devin reviewer or prefixed with `GLM-5.3:`, in the same branch with a new commit (never force-push, never amend or rewrite pushed history; if `main` conflicts, run `git merge origin/main`, never rebase).
   - If the two reviewers contradict each other, follow the issue text and `AGENTS.md`, implement the safer option, and state in the commit message and a short PR comment (one sentence, public-text safe) which demand was not followed and why.
   - Treat a `GLM-5.3:` demand that is outside the issue's scope or is style-only as advisory (this rule applies **only** to the GLM-5.3 reviewer inside your own gate, never to independent `nyx/audit` findings), and note it the same way in the commit message and a one-sentence public-text-safe PR comment.
-- Do not weaken tests or checks. Run `npm run verify`, stop worktree processes, push, and run the gate again. At most 2 fix rounds before consulting (`Second opinion when stuck`).
-- On `unavailable` (exit `2`): wait 5 minutes (`Start-Sleep -Seconds 300`) and retry, at most 3 times.
+- Do not weaken tests or checks. Run `npm run verify`, stop worktree processes, push, and run the gate again. At most 2 fix rounds before running the automated GLM consult (§10).
+- On `unavailable` (exit `2`): wait 5 minutes (`Start-Sleep -Seconds 300`, checking `STOP`) and retry, at most 3 times. If still `unavailable`, park the issue per §11 and move on.
 
-## 8. Independent audit
+## 8. Independent audit (non-blocking)
 
 - After `Invoke-AutopilotGate.ps1` passes, do **not** merge until the independent commit status `nyx/audit` on the exact `headSha` is `success`.
-- Update `progress.json` `step` to `audit-wait` and check status at most once every 5 minutes (`Start-Sleep -Seconds 300`, checking `STOP` before each poll):
+- Check commit status and PR labels/comments:
   ```powershell
   gh api repos/elijah7x/tivano-windows/commits/<headSha>/status
+  gh pr view <pr> -R elijah7x/tivano-windows --json state,labels,comments
   ```
   Expect `gh pr merge` to be rejected by the `main` ruleset until `nyx/audit` is `success` on that exact head SHA.
-- On `nyx/audit` `failure` (or `error`), read the auditor's PR comment and do one of:
-  1. Fix every blocking finding in a new commit on the same branch (`npm run verify`, stop worktree processes, push, and re-run `Invoke-AutopilotGate.ps1`; the independent auditor automatically re-runs on the new head SHA).
-  2. Post **one** PR comment starting with `Audit rebuttal:` providing concrete `file:line` or test-output evidence for each disputed finding `id`, then continue polling (at most every 5 minutes) for the auditor's updated status.
+- Act on the current audit state:
+  1. **`nyx/audit` is `success` on exact `headSha`**: merge immediately (§9).
+  2. **PR has label `audit-parked` OR a `## Nyx audit - <sha7> - PARKED` comment for this head**: park the issue per §11 (leaving the PR open) and move on to the next issue.
+  3. **`nyx/audit` is `pending`, absent, or its description says `arbitration pending`**: do **not** idle! Add `{"issue":<n>,"pr":<pr>,"headSha":"<headSha>"}` to `awaitingAudit` in `progress.json` and immediately move on to work another eligible issue in the queue. Disputes with `arbitration pending` are retried automatically by the auditor.
+  4. **`nyx/audit` is `failure` or `error` (and not `audit-parked`)**: read the auditor's PR comment and do one of:
+     - Fix every blocking finding in a new commit on the same branch (`npm run verify`, stop worktree processes, push, and re-run `Invoke-AutopilotGate.ps1`; the independent auditor automatically re-runs on the new head SHA).
+     - Post **one** PR comment starting with `Audit rebuttal:` providing concrete `file:line` or test-output evidence for each disputed finding `id`, record/keep the PR in `awaitingAudit`, and work another issue while the auditor evaluates or arbitrates the rebuttal.
 - Never ignore, downgrade, or relabel `nyx/audit` findings as advisory. The advisory rule in §7 applies **only** to the `GLM-5.3:` reviewer inside your own gate.
-- If the PR receives the `needs-human` label, park the issue using the existing `needs-human` protocol (§11) and move on to the next issue.
+- Poll all entries in `awaitingAudit` before starting each new issue (and after each issue step finishes). Sleep 5 minutes (`Start-Sleep -Seconds 300`, checking `STOP` before each poll) **only** when no other eligible issue can be worked right now.
 
 ## 9. Merge on pass
 
-- Before merging, confirm both a passing gate and commit status `nyx/audit` = `success` on the exact `headSha`, and check the cap of 20 merges per calendar day (count `progress.json` `merged` entries whose `date` is today). If reached, set `progress.json` `state` to `"idle"` with `step` `"daily merge cap"`, and stop replying until told to continue.
+- Before merging, confirm both a passing gate and commit status `nyx/audit` = `success` on the exact `headSha`, and check the cap of 20 merges per local calendar day (count `progress.json` `merged` entries whose `date` is today).
+  - If the daily cap of 20 is reached, set `progress.json` `state` to `"idle"` with `step` `"daily merge cap"`, and sleep in 5-minute intervals while checking `STOP` until `(Get-Date).ToString('yyyy-MM-dd')` advances to the next local day, then resume automatically. Never stop permanently waiting for a person.
 - Merge using the exact `headSha` returned by the passing gate and verified by `nyx/audit`:
   ```powershell
   gh pr merge <pr> -R elijah7x/tivano-windows --squash --match-head-commit <headSha> --delete-branch
@@ -132,43 +165,131 @@ Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, 
 - Confirm state `MERGED` via `gh pr view <pr> -R elijah7x/tivano-windows --json state`, even if `--delete-branch` reported a warning.
 - Remove the worktree and prune:
   ```powershell
-  git -C C:\tivano\dev-loop\repo worktree remove --force C:\tivano\dev-loop\work\<n>-<slug>
+  git -C C:\tivano\dev-loop\repo worktree remove --force C:\tivano\dev-loop\work\<worktree-dir>
   git -C C:\tivano\dev-loop\repo worktree prune
   ```
-- Append `{"issue":<n>,"pr":<pr>,"date":"<local yyyy-MM-dd>"}` to `merged` in `progress.json`.
+- Remove the issue from `awaitingAudit` (and from `parked.json` if this was a revisit), append `{"issue":<n>,"pr":<pr>,"date":"<local yyyy-MM-dd>"}` to `merged` in `progress.json`, and post the one-line update to `#34` (§13).
 
-## 10. Second opinion when stuck
+## 10. Automated second opinion when stuck (GLM-5.3 consult)
 
-- When an issue is about to be given up because the gate still fails after the 2 fix rounds, OR the same `npm run verify` test fails 3 times in a row, OR you are about to declare it blocked as ambiguous:
+- When an issue fails the gate after the 2 fix rounds, OR the same `npm run verify` test fails 3 times in a row:
   1. Write the current failures (the gate `failures` list or the failing test output, trimmed to the relevant part) to `C:\tivano\dev-loop\autopilot\runs\<n>\failures-<k>.md`.
-  2. Update `progress.json` `step` to `consult` and run the consult command (use a timeout >= 25 minutes; it takes up to ~20 minutes):
+  2. Update `progress.json` `step` to `consult` and run the automated consult command (use a timeout >= 25 minutes; it takes up to ~20 minutes):
      ```powershell
      powershell -NoProfile -ExecutionPolicy Bypass -File C:\tivano\pr-bot\tool\scripts\dev-loop\Invoke-GlmReview.ps1 -Mode consult -PrNumber <pr> -FailuresFile C:\tivano\dev-loop\autopilot\runs\<n>\failures-<k>.md
      ```
   3. Its last stdout line is JSON `{"mode":"consult","pr":n,"status":"ok|unavailable","consultPath":"...","diagnosis":"...","plan":[...],"message":""}`; exit code `0` = ok, `2` = unavailable.
-  4. If `unavailable` (exit `2`), go straight to `needs-human` as below.
+  4. If `unavailable` (exit `2`), park the issue per §11.
   5. Otherwise, read `consultPath` and do exactly one more fix round guided by it: fix the code yourself, run `npm run verify`, stop worktree processes, commit, push, and run the gate again.
-  6. Only if that fix round or gate also fails, apply the `needs-human` rule below.
-- Never run more than one consult per issue per resume.
-- Never let GLM edit files: it only advises.
+  6. If that fix round or gate also fails, park the issue per §11.
+- Never run more than one GLM consult per issue per attempt.
+- Never let GLM edit files: it only advises. Never consult a person.
 
-## 11. Give up on an issue
+## 11. Parking and revisiting stuck issues
 
-- When blocked by the issue's nature, needing a guarded path or dependency change, needing a product decision, gate staying `unavailable` after 3 retries, consult returning `unavailable` after hitting a stuck trigger, PR receiving the `needs-human` label from the independent auditor, or still failing after the consult fix round:
-  1. Add label `needs-human`: `gh issue edit <n> -R elijah7x/tivano-windows --add-label needs-human`.
-  2. Write `C:\tivano\dev-loop\autopilot\runs\<n>\needs-human.md` starting with this exact line, a blank line, and two plain sentences on what is missing (if a consult ran, add one sentence summarizing GLM's diagnosis, public-text safe):
-     `> Automated by the dev-loop runner (coding agent on a Windows test machine). Agent self-tested; not a maintainer decision.`
-  3. Post the comment: `gh issue comment <n> -R elijah7x/tivano-windows --body-file C:\tivano\dev-loop\autopilot\runs\<n>\needs-human.md`.
-  4. Leave any open PR open, append `<n>` to `needsHuman` in `progress.json`, and move on to the next issue.
+- **When to park an issue:**
+  - Its PR receives the `audit-parked` label or a `## Nyx audit - <sha7> - PARKED` comment on the current head SHA.
+  - The issue fails its own gate after the allowed fix rounds (2 fix rounds + 1 GLM consult guided fix round, or consult unavailable).
+  - The gate stays `unavailable` after 3 retries, or the same `npm run verify` test still fails after the consult fix round.
+- **How to park (initial failure or revisit failure):**
+  1. **Leave the PR open.** Remove the issue from `awaitingAudit` if present.
+  2. Read `C:\tivano\dev-loop\autopilot\parked.json` (default `[]`).
+     - If this was the initial pass (no existing entry), add `{"issue":<n>,"pr":<pr or 0>,"reason":"<one-line public-text-safe reason>","attempt":0}`.
+     - If this was revisit attempt `k` (`1` or `2`), update its entry with the new `pr`, updated one-line public-text-safe `reason`, and `"attempt": k`.
+  3. Save `parked.json` atomically.
+  4. If `attempt < 2`, post `<ISO time> #<n> <title>: parked (attempt <attempt>): <reason>` to `#34` and immediately move on to the next issue.
+- **Revisiting parked issues (at most twice):**
+  - Only start revisiting parked issues once no unparked open `nyx-auto` issues remain (and `awaitingAudit` is empty).
+  - Pick the next entry in `parked.json` whose issue is still open, lacks the `parked` label, and has `attempt < 2` (lowest `attempt`, then lowest `issue` number). Let `k = attempt + 1` (`1` or `2`).
+  - Set `progress.json` `step` to `revisit-<k>`.
+  - Close the old PR (if still open) with a one-line public-text-safe comment:
+    ```powershell
+    gh pr close <oldPr> -R elijah7x/tivano-windows --comment "Closing to retry #<n> from current main with a different approach informed by audit feedback."
+    ```
+  - Remove the old worktree (`git -C C:\tivano\dev-loop\repo worktree remove --force <oldWorktree>`) and fetch `origin --prune`.
+  - Start a fresh branch from current `origin/main`:
+    ```powershell
+    git -C C:\tivano\dev-loop\repo worktree add -b nyx/<n>-<slug>-r<k> C:\tivano\dev-loop\work\<n>-<slug>-r<k> origin/main
+    ```
+  - Read all audit and gate comments on the closed PR and design a **genuinely different approach** that directly addresses the root cause of those findings.
+  - Implement, run `npm run verify`, stop worktree processes, push, open a new PR (`Closes #<n>`), and run the normal gate (§7) and independent audit (§8).
+  - If the new PR merges, remove the issue from `parked.json`. If it fails again, leave it open and record `attempt = k` as above.
+- **Permanent park (skip for good):**
+  - Triggered when the second revisit attempt fails (`attempt == 2`), OR immediately if the issue genuinely cannot be implemented without modifying a guarded path or `package.json` dependencies.
+  - Ensure the `parked` label exists (`gh label create parked -R elijah7x/tivano-windows --color D93F0B --description "Skipped after failed revisit attempts"`; ignore error if it already exists) and label the issue:
+    ```powershell
+    gh issue edit <n> -R elijah7x/tivano-windows --add-label parked
+    ```
+  - Leave the open PR open, keep its entry in `parked.json` with `"attempt": 2` and a one-line public-text-safe `reason`, append `<n>` to `parked` in `progress.json`, post `<ISO time> #<n> <title>: permanently parked: <reason>` to `#34`, and skip the issue for good.
 
-## 12. Tracking
+## 12. Hands-on testing milestone
 
-- After each issue outcome, find the open tracking issue (`gh issue list -R elijah7x/tivano-windows --state open --search "Automated dev loop: progress log in:title" --json number,title`; it is `#34` today) and post one line via `--body-file`:
+Run this milestone whenever no open `nyx-auto` issue remains outside permanently `parked` ones (and `awaitingAudit` is empty and no revisit-eligible `parked.json` entry remains), **and** either no hands-on build has been published yet or `origin/main` has moved past `hands-on.json` `lastHandsOnSha`:
+
+1. Set `progress.json` `state` to `"working"`, `issue: 0`, `step: "milestone"`.
+2. Fetch `origin --prune`, record `<mainSha>` = `git -C C:\tivano\dev-loop\repo rev-parse origin/main` (short `<sha7>`), and create a clean detached worktree:
+   ```powershell
+   git -C C:\tivano\dev-loop\repo worktree add --detach C:\tivano\dev-loop\work\milestone-<sha7> origin/main
+   ```
+3. In that worktree, run `npm ci` if `node_modules` is missing, then verify `main` is green on:
+   - `npm run build`
+   - `npm run typecheck`
+   - `npm test` (the documented baseline failures are allowed; fail only on any regression beyond documented baseline failures)
+4. Read `<version>` from `package.json` (`version`). Determine the next release build number `<n>`: list existing prereleases via `gh release list -R elijah7x/tivano-windows --limit 50` and pick `max(existing v<version>-nyx.<k>, hands-on.json lastBuildNumber) + 1` (starting at `1`). Let `<tag> = v<version>-nyx.<n>` and `<buildDir> = C:\tivano\dev-loop\autopilot\builds\<tag>`.
+5. Run the Windows packaging build and packaged smoke check using fresh external directories under `<buildDir>` (never inside the worktree):
+   ```powershell
+   npm run package:windows -- --output C:\tivano\dev-loop\autopilot\builds\<tag>\pkg
+   npm run smoke:packaged -- --exe "C:\tivano\dev-loop\autopilot\builds\<tag>\pkg\win-unpacked\Tivano Windows Dev.exe" --evidence C:\tivano\dev-loop\autopilot\builds\<tag>\smoke
+   ```
+   Stop any leftover processes inside the milestone worktree or `<buildDir>` afterwards (§3). Confirm `BUILD-OK` exists in `<buildDir>\pkg` and `smoke:packaged` exited `0`.
+6. **If any check in step 3 or step 5 fails:**
+   - Remove the milestone worktree (`git -C C:\tivano\dev-loop\repo worktree remove --force C:\tivano\dev-loop\work\milestone-<sha7>`).
+   - Fix the breakage through the **normal issue and PR path**: ensure label `build-break` exists, write a public-text-safe issue body under `C:\tivano\dev-loop\autopilot\runs\milestone\build-break.md` describing the failing command and trimmed error output, and open an issue:
+     ```powershell
+     gh issue create -R elijah7x/tivano-windows --title "Build break: <short failing step summary>" --label nyx-auto --label build-break --body-file C:\tivano\dev-loop\autopilot\runs\milestone\build-break.md
+     ```
+   - Immediately return to §5 to work that issue through the normal branch, verify, PR, gate, `nyx/audit`, and merge path, then re-run this milestone once `main` is fixed.
+7. **Once `smoke:packaged` passes:**
+   - Locate the NSIS installer in `<buildDir>\pkg\Tivano-Windows-Dev-<version>-x64-setup.exe`.
+   - Write public-text-safe release notes to `C:\tivano\dev-loop\autopilot\runs\milestone\release-notes.md` and upload the installer as a GitHub Release asset:
+     ```powershell
+     gh release create v<version>-nyx.<n> "C:\tivano\dev-loop\autopilot\builds\<tag>\pkg\Tivano-Windows-Dev-<version>-x64-setup.exe" -R elijah7x/tivano-windows --prerelease --title "Tivano Windows <version> (nyx.<n>)" --notes-file C:\tivano\dev-loop\autopilot\runs\milestone\release-notes.md
+     ```
+   - Collect the contents for the hands-on testing issue body (write to `C:\tivano\dev-loop\autopilot\runs\milestone\hands-on.md`, public-text safe, clearly labeled `agent self-tested`):
+     - **Install steps**: link to release `v<version>-nyx.<n>`, download `Tivano-Windows-Dev-<version>-x64-setup.exe`, run the unsigned per-user NSIS installer (click `More info` -> `Run anyway` if Windows SmartScreen prompts; installs per-user without elevation and does not auto-launch), then open `Tivano Windows Dev` from the Start Menu or Desktop shortcut.
+     - **What changed since the last hands-on build**: titles of merged PRs since `lastHandsOnSha` (or all merged autopilot PRs if this is the first build), listed as `- #<pr> <title>`.
+     - **Permanently parked items**: every open issue labelled `parked` (with its PR link if open) and its one-line reason from `parked.json` (or `None`).
+     - **Known untested areas**: state explicitly that all automated checks are `agent self-tested` and that **real provider**, **install/update** (real NSIS install/uninstall/upgrade), and **desktop interaction** (interactive human workflows beyond automated e2e and offline packaged smoke) remain `NOT RUN` and need hands-on testing.
+   - Check for an already-open `hands-on` issue:
+     ```powershell
+     gh issue list -R elijah7x/tivano-windows --label hands-on --state open --json number,title --limit 20
+     ```
+   - **Never open a second `hands-on` issue while one is still open.**
+     - If **no** open `hands-on` issue exists: ensure label `hands-on` exists, then open one:
+       ```powershell
+       gh issue create -R elijah7x/tivano-windows --title "Ready for hands-on testing: <version>" --assignee elijah7x --label hands-on --body-file C:\tivano\dev-loop\autopilot\runs\milestone\hands-on.md
+       ```
+     - If an open `hands-on` issue **already** exists (`<handsOnNo>`): update its title and body with the new build and post a concise comment announcing `v<version>-nyx.<n>` and the newly merged PRs:
+       ```powershell
+       gh issue edit <handsOnNo> -R elijah7x/tivano-windows --title "Ready for hands-on testing: <version>" --body-file C:\tivano\dev-loop\autopilot\runs\milestone\hands-on.md
+       gh issue comment <handsOnNo> -R elijah7x/tivano-windows --body-file C:\tivano\dev-loop\autopilot\runs\milestone\hands-on-update.md
+       ```
+   - Save `hands-on.json` (`lastHandsOnSha`, `lastHandsOnTag`, `lastBuildNumber`, `handsOnIssue`, `updatedAt`), remove the milestone worktree and prune, and post one summary line to `#34`.
+
+## 13. Continuous polling and tracking
+
+- After each issue outcome or milestone build, find the open tracking issue (`gh issue list -R elijah7x/tivano-windows --state open --search "Automated dev loop: progress log in:title" --json number,title`; it is `#34` today) and post one line via `--body-file`:
   - `<ISO time> #<n> <title>: merged in #<pr>`
-  - `<ISO time> #<n> <title>: needs-human: <reason>`
-- When the `nyx-auto` queue is empty, post `No open nyx-auto issues left; idle until new ones are labelled.` once to that tracking issue, set `progress.json` `state` to `"done"` (`issue: 0`), reply with one summary line, and stop.
-- Do not open new issues yourself.
+  - `<ISO time> #<n> <title>: parked (attempt <attempt>): <reason>`
+  - `<ISO time> #<n> <title>: permanently parked: <reason>`
+  - `<ISO time> Milestone <tag>: published installer and updated hands-on issue #<handsOnNo>`
+- Only open new issues for: (1) `build-break` failures discovered during the milestone (§12), (2) the single `hands-on` milestone issue when none is open (§12), and (3) parity planning issues when running `solo-v3.md` Phase 2.
+- **30-minute polling loop:** once the milestone is up to date for current `origin/main` and no unparked open `nyx-auto` issue remains:
+  - Set `progress.json` `state` to `"polling"`, `issue: 0`, `step: "polling for new nyx-auto issues"`.
+  - Loop continuously: sleep 30 minutes in six 5-minute intervals (`Start-Sleep -Seconds 300`), checking `C:\tivano\dev-loop\state\STOP` before each sleep.
+  - After each 30-minute wait, query open `nyx-auto` issues (§5). Owner feedback will arrive as new (or reopened) `nyx-auto` issues.
+  - As soon as any eligible unparked `nyx-auto` issue appears, re-read `C:\tivano\pr-bot\tool\scripts\dev-loop\autopilot.md` and return to §5 to work it. When the queue empties again and new work has merged, §12 will build, smoke-test, release `v<version>-nyx.<n+1>`, and update the open `hands-on` issue.
 
-## 13. Public text hygiene
+## 14. Public text hygiene
 
-- Issue, PR, commit, and comment text must contain no machine names, user names, local paths, tokens, or secrets; refer to this host only as `a Windows test machine`.
+- Issue, PR, commit, release, and comment text must contain no machine names, user names, local paths, tokens, or secrets; refer to this host only as `a Windows test machine`.

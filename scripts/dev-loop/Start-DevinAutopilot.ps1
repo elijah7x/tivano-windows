@@ -1,6 +1,6 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-16.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-21.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>]
+# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
 # Launches and watches a single Devin Desktop autopilot chat following autopilot.md.
 
 param(
@@ -15,7 +15,9 @@ param(
   [ValidateRange(5, 240)][int]$IdleMinutes = 25,
   [ValidateRange(1, 240)][int]$ApprovalMinutes = 3,
   [ValidateRange(0, 3600)][int]$UserIdleSeconds = 120,
-  [ValidateRange(1, 1440)][int]$IntervalMinutes = 15
+  [ValidateRange(1, 1440)][int]$IntervalMinutes = 15,
+  [string]$SyncSource = 'C:\tivano\audit\tool',
+  [string]$SyncTarget = 'C:\tivano\pr-bot\tool\scripts'
 )
 
 Set-StrictMode -Version Latest
@@ -37,6 +39,8 @@ $script:StopPath = $null
 $script:ProgressPath = $null
 $script:WatchdogPath = $null
 $script:GhPath = $null
+$script:GitPath = $null
+$script:RobocopyPath = $null
 $script:DevinPath = $null
 $script:Redactions = @()
 $script:GuiTypesLoaded = $false
@@ -200,6 +204,103 @@ function Invoke-Gh {
   }
 }
 
+function Invoke-Git {
+  param([string]$Arguments)
+  $out = Join-Path $script:AutopilotDir '.git.out.tmp'
+  $err = Join-Path $script:AutopilotDir '.git.err.tmp'
+  for ($try = 1; ; $try++) {
+    $code = Invoke-Tool $script:GitPath $Arguments $out $err $script:WorkRoot
+    $result = [pscustomobject]@{ exitCode = $code; text = (Read-Text $out); error = (Read-Text $err) }
+    $combined = [string]$result.error + "`n" + [string]$result.text
+    if ($code -eq 0 -or $try -ge 4 -or -not (Test-NetworkFailure $combined)) { return $result }
+    Write-Log ('git network failure, retry ' + $try + '/3: ' + (ConvertTo-SingleLine $combined 160))
+    Start-Sleep -Seconds (20 * $try)
+  }
+}
+
+function Invoke-SelfSync {
+  param($State)
+  if ([string]::IsNullOrWhiteSpace($SyncSource) -or [string]::IsNullOrWhiteSpace($SyncTarget)) { return }
+  if (-not (Test-Path -LiteralPath $SyncSource -PathType Container)) {
+    Write-Log ('self-sync skipped: source clone missing at ' + $SyncSource)
+    return
+  }
+  if (-not $script:GitPath) {
+    $git = Get-Command -Name 'git' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $git) {
+      Write-Log 'self-sync skipped: git was not found on PATH'
+      return
+    }
+    $script:GitPath = $git.Source
+  }
+  if (-not $script:RobocopyPath) {
+    $rc = Join-Path ([Environment]::GetFolderPath('System')) 'robocopy.exe'
+    if (-not (Test-Path -LiteralPath $rc -PathType Leaf)) {
+      $rcCmd = Get-Command -Name 'robocopy' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($rcCmd) { $rc = $rcCmd.Source } else { $rc = $null }
+    }
+    if (-not $rc) {
+      Write-Log 'self-sync skipped: robocopy was not found'
+      return
+    }
+    $script:RobocopyPath = $rc
+  }
+
+  $pull = Invoke-Git ('-C ' + (Quote-Argument $SyncSource) + ' pull --ff-only origin main')
+  if ($pull.exitCode -ne 0) {
+    Write-Log ('self-sync: git pull failed (exit ' + $pull.exitCode + '): ' + (ConvertTo-SingleLine (Get-ErrorSummary $pull) 200))
+    return
+  }
+
+  $rev = Invoke-Git ('-C ' + (Quote-Argument $SyncSource) + ' rev-parse HEAD')
+  if ($rev.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$rev.text)) {
+    Write-Log ('self-sync: git rev-parse HEAD failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $rev) 200))
+    return
+  }
+  $sha = ([string]$rev.text).Trim()
+  $folders = @('dev-loop', 'pr-review')
+  $allTargetsExist = $true
+  foreach ($folder in $folders) {
+    $dstCheck = Join-Path $SyncTarget $folder
+    if (-not (Test-Path -LiteralPath $dstCheck -PathType Container)) {
+      $allTargetsExist = $false
+      break
+    }
+  }
+  if ($sha -eq [string]$State['lastSyncedSha'] -and $allTargetsExist) {
+    Write-Log ('self-sync: SHA ' + $sha + ' unchanged; skipping mirror')
+    return
+  }
+
+  $rcOut = Join-Path $script:AutopilotDir '.robocopy.out.tmp'
+  $rcErr = Join-Path $script:AutopilotDir '.robocopy.err.tmp'
+  $mirrorOk = $true
+  foreach ($folder in $folders) {
+    $srcDir = Join-Path (Join-Path $SyncSource 'scripts') $folder
+    $dstDir = Join-Path $SyncTarget $folder
+    if (-not (Test-Path -LiteralPath $srcDir -PathType Container)) {
+      Write-Log ('self-sync: source folder missing: ' + $srcDir)
+      $mirrorOk = $false
+      break
+    }
+    [IO.Directory]::CreateDirectory($dstDir) | Out-Null
+    $rcArgs = (Quote-Argument $srcDir) + ' ' + (Quote-Argument $dstDir) + ' /MIR /R:2 /W:3 /NFL /NDL /NJH /NJS /NP'
+    $rcCode = Invoke-Tool $script:RobocopyPath $rcArgs $rcOut $rcErr $script:WorkRoot
+    if ($rcCode -lt 0 -or $rcCode -ge 8) {
+      $rcMsg = ConvertTo-SingleLine ([string](Read-Text $rcErr) + ' ' + [string](Read-Text $rcOut)) 200
+      Write-Log ('self-sync: robocopy failed for scripts\' + $folder + ' (exit ' + $rcCode + '): ' + $rcMsg)
+      $mirrorOk = $false
+      break
+    }
+  }
+
+  if ($mirrorOk) {
+    $State['lastSyncedSha'] = $sha
+    Save-WatchdogState $State
+    Write-Log ('self-sync: synced SHA ' + $sha + ' (mirrored scripts\dev-loop and scripts\pr-review)')
+  }
+}
+
 function Initialize-GuiTypes {
   if ($script:GuiTypesLoaded) { return }
   Add-Type -AssemblyName System.Windows.Forms
@@ -333,7 +434,7 @@ function Read-LogLinesShared {
     if ($reader) { $reader.Dispose() }
     elseif ($stream) { $stream.Dispose() }
   }
-  return @($lines)
+  return $lines.ToArray()
 }
 
 # Windows does not refresh LastWriteTime while Devin holds a log open for appending, so logs are picked
@@ -413,6 +514,7 @@ function Get-DevinLogActivity {
 function Read-WatchdogState {
   $state = [ordered]@{
     trackingIssue = 0
+    lastSyncedSha = ''
     lastKickoffUtc = ''
     firstSeenUtc = ''
     lastSeenLogWriteUtc = ''
@@ -426,7 +528,7 @@ function Read-WatchdogState {
   }
   $data = Read-JsonFile $script:WatchdogPath
   if (-not $data) { return $state }
-  foreach ($key in @('lastKickoffUtc', 'firstSeenUtc', 'lastSeenLogWriteUtc', 'lastNudgeUtc', 'lastNudgeReason', 'lastNudgeLogWriteUtc')) {
+  foreach ($key in @('lastSyncedSha', 'lastKickoffUtc', 'firstSeenUtc', 'lastSeenLogWriteUtc', 'lastNudgeUtc', 'lastNudgeReason', 'lastNudgeLogWriteUtc')) {
     $val = Get-JsonProp $data $key
     if ($null -ne $val) { $state[$key] = [string]$val }
   }
@@ -478,7 +580,7 @@ function Test-WorkRemains {
   }
   foreach ($issue in $issues) {
     $names = @(Get-LabelNames (Get-JsonProp $issue 'labels'))
-    if ($names -notcontains 'needs-human') { return $true }
+    if ($names -notcontains 'parked') { return $true }
   }
   return $false
 }
@@ -527,7 +629,7 @@ function Send-StuckTrackingComment {
     return $false
   }
   $stamp = [DateTime]::Now.ToString('yyyy-MM-ddTHH:mm:ssK')
-  $message = 'Autopilot chat looks stuck after 6 consecutive nudges with no new agent log activity and needs a person.'
+  $message = 'Autopilot chat looks unresponsive after 6 consecutive nudges with no new agent log activity; restarting Devin Desktop automatically.'
   $clean = ConvertTo-SingleLine (Protect-PublicText $message) 500
   $bodyPath = Join-Path $script:AutopilotDir ('tracking-stuck-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.md')
   try {
@@ -537,7 +639,7 @@ function Send-StuckTrackingComment {
       Write-Log ('could not comment on tracking issue #' + $issueNo + ': ' + (Get-ErrorSummary $result))
       return $false
     }
-    Write-Log ('posted stuck notification to tracking issue #' + $issueNo)
+    Write-Log ('posted restart notification to tracking issue #' + $issueNo)
     return $true
   } finally {
     Remove-Item -LiteralPath $bodyPath -Force -ErrorAction SilentlyContinue
@@ -556,18 +658,11 @@ function Register-WatchdogNudge {
   foreach ($item in @($State['nudges'])) { $null = $history.Add($item) }
   $null = $history.Add([ordered]@{ atUtc = $NowUtc.ToString('o'); reason = $Reason; logWriteUtc = $logWriteText })
   if ($history.Count -gt 50) {
-    $State['nudges'] = @($history.GetRange($history.Count - 50, 50))
+    $State['nudges'] = $history.GetRange($history.Count - 50, 50).ToArray()
   } else {
-    $State['nudges'] = @($history)
+    $State['nudges'] = $history.ToArray()
   }
   Save-WatchdogState $State
-
-  if ([int]$State['consecutiveNudges'] -ge 6 -and -not [bool]$State['stuckNotified']) {
-    if (Send-StuckTrackingComment $State) {
-      $State['stuckNotified'] = $true
-      Save-WatchdogState $State
-    }
-  }
 }
 
 function Resolve-DevinLauncher {
@@ -591,7 +686,7 @@ function Invoke-Kickoff {
   if ($window -eq [IntPtr]::Zero -and (Get-Process -Name 'Devin' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })) {
     # Another Devin window is open (a renamed title the matcher missed, or a
     # session in another folder). A second window would steal the running
-    # session's lock, so leave it to a human.
+    # session's lock, so skip launching another this tick.
     Write-Log ('gui: a Devin Desktop window is open but none matches ' + $folder + '; not launching another')
     return 'failed'
   }
@@ -629,12 +724,12 @@ function Invoke-Kickoff {
     return 'failed'
   }
 
-  $message = 'Read the file ' + $script:PromptPath + ' and carry it out exactly as written. Work through the whole queue without asking questions. Re-read that file after every issue. Use these values wherever the file names its defaults: repository ' + $Repo + ', label ' + $Label + ', root folder ' + $script:WorkRoot + ' (progress.json in its autopilot subfolder, STOP in its state subfolder).'
+  $message = 'Read the file ' + $script:PromptPath + ' and carry it out exactly as written. Work through the whole queue, parked revisits, hands-on milestone, and 30-minute polling loop without asking questions or waiting for a person. Re-read that file after every issue. Use these values wherever the file names its defaults: repository ' + $Repo + ', label ' + $Label + ', root folder ' + $script:WorkRoot + ' (progress.json and parked.json in its autopilot subfolder, STOP in its state subfolder).'
   $soloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
   $soloStatePath = Join-Path $script:AutopilotDir 'solo-v3.json'
   $soloState = Read-JsonFile $soloStatePath
   if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and [string](Get-JsonProp $soloState 'phase') -ne 'done') {
-    $message = 'Continue the mission: re-read ' + $soloPlan + ', resume from ' + $soloStatePath + ' and keep working through every phase. Do not end your turn with a checkpoint while work remains.'
+    $message = 'Continue the mission: re-read ' + $soloPlan + ', resume from ' + $soloStatePath + ' and keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains.'
   }
   $sent = $false
   for ($try = 0; $try -lt 3 -and -not $sent; $try++) {
@@ -683,55 +778,35 @@ function Invoke-Kickoff {
   return 'ok'
 }
 
+function Get-BusyAutopilotProcesses {
+  $workDir = Join-Path $script:WorkRoot 'work'
+  return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.CommandLine -and (
+      $_.CommandLine -like ('*' + $workDir + '*') -or
+      $_.CommandLine -match 'Invoke-AutopilotGate|Invoke-PrReview|Invoke-GlmReview|package-windows|packaged-smoke'
+    )
+  })
+}
+
 function Invoke-WatchTick {
   if (Test-Stop) { return }
-  if (-not (Test-Path -LiteralPath $script:PromptPath -PathType Leaf)) { throw 'autopilot.md is missing next to this script.' }
-  if (-not (Test-Path -LiteralPath $script:WorkspacePath -PathType Container)) { throw '-Workspace does not exist.' }
 
   $env:GH_PROMPT_DISABLED = '1'
   $env:GH_NO_UPDATE_NOTIFIER = '1'
   $env:GIT_TERMINAL_PROMPT = '0'
   $env:GCM_INTERACTIVE = 'never'
 
+  $watchdog = Read-WatchdogState
+  Invoke-SelfSync $watchdog
+
+  if (-not (Test-Path -LiteralPath $script:PromptPath -PathType Leaf)) { throw 'autopilot.md is missing next to this script.' }
+  if (-not (Test-Path -LiteralPath $script:WorkspacePath -PathType Container)) { throw '-Workspace does not exist.' }
+
   $gh = Get-Command -Name 'gh' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $gh) { throw 'GitHub CLI (gh) was not found on PATH.' }
   $script:GhPath = $gh.Source
 
-  $workChecked = $false
-  $workRemains = $true
-  $progress = Read-JsonFile $script:ProgressPath
-  if ($progress) {
-    $pState = ([string](Get-JsonProp $progress 'state')).Trim().ToLowerInvariant()
-    $pStep = ([string](Get-JsonProp $progress 'step')).Trim()
-    $pUpdatedAt = ([string](Get-JsonProp $progress 'updatedAt')).Trim()
-    if ($pState -eq 'done') {
-      $workRemains = Test-WorkRemains
-      $workChecked = $true
-      if ($null -eq $workRemains) { return }
-      if (-not $workRemains) {
-        Write-Log ('progress state is done and no open ' + $Label + ' issues without needs-human remain; exiting')
-        return
-      }
-    } elseif ($pState -eq 'idle' -and $pStep -match '(?i)daily merge cap') {
-      $parsedUpdated = [DateTimeOffset]::MinValue
-      if ([DateTimeOffset]::TryParse($pUpdatedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeLocal, [ref]$parsedUpdated)) {
-        if ($parsedUpdated.LocalDateTime.ToString('yyyy-MM-dd') -eq [DateTime]::Now.ToString('yyyy-MM-dd')) {
-          Write-Log 'progress is idle on daily merge cap for today; exiting'
-          return
-        }
-      }
-      $workRemains = Test-WorkRemains
-      $workChecked = $true
-      if ($null -eq $workRemains) { return }
-      if (-not $workRemains) {
-        Write-Log ('daily merge cap date changed but no open ' + $Label + ' issues without needs-human remain; exiting')
-        return
-      }
-    }
-  }
-
   $nowUtc = [DateTime]::UtcNow
-  $watchdog = Read-WatchdogState
   $sinceUtc = Parse-UtcTimestamp ([string]$watchdog['lastKickoffUtc'])
   if ($null -eq $sinceUtc) { $sinceUtc = $nowUtc.AddHours(-24) }
 
@@ -767,33 +842,49 @@ function Invoke-WatchTick {
   $folder = Split-Path -Leaf $script:WorkspacePath
   $window = [DevLoopWindows]::Find($folder)
   if ($window -eq [IntPtr]::Zero) {
-    if ([bool]$watchdog['stuckNotified']) {
-      Write-Log 'no Devin window, but stuckNotified is true; waiting for human or log activity'
-      return
-    }
-    if (-not $workChecked) {
-      $workRemains = Test-WorkRemains
-      $workChecked = $true
-      if ($null -eq $workRemains) { return }
-      if (-not $workRemains) {
-        Write-Log ('no Devin window and no open ' + $Label + ' issues without needs-human; exiting')
-        return
-      }
-    }
-    Write-Log 'no Devin Desktop window open; running kickoff'
+    Write-Log 'no Devin Desktop window open; relaunching via kickoff'
     $null = Invoke-Kickoff -WaitForIdle $false
     return
   }
 
-  if ([bool]$watchdog['stuckNotified']) {
-    Write-Log 'autopilot stuck (already notified); waiting for log activity to resume'
-    return
-  }
-  if ([int]$watchdog['consecutiveNudges'] -ge 6) {
-    if (Send-StuckTrackingComment $watchdog) {
-      $watchdog['stuckNotified'] = $true
-      Save-WatchdogState $watchdog
+  $pState = ''
+  $pStep = ''
+  $pUpdatedAt = ''
+  $progress = Read-JsonFile $script:ProgressPath
+  if ($progress) {
+    $pState = ([string](Get-JsonProp $progress 'state')).Trim().ToLowerInvariant()
+    $pStep = ([string](Get-JsonProp $progress 'step')).Trim()
+    $pUpdatedAt = ([string](Get-JsonProp $progress 'updatedAt')).Trim()
+    if ($pState -eq 'idle' -and $pStep -match '(?i)daily merge cap') {
+      $parsedUpdated = [DateTimeOffset]::MinValue
+      if ([DateTimeOffset]::TryParse($pUpdatedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeLocal, [ref]$parsedUpdated)) {
+        if ($parsedUpdated.LocalDateTime.ToString('yyyy-MM-dd') -eq [DateTime]::Now.ToString('yyyy-MM-dd')) {
+          Write-Log 'progress is idle on daily merge cap for today; skipping nudge'
+          return
+        }
+      }
     }
+  }
+
+  if ([int]$watchdog['consecutiveNudges'] -ge 6) {
+    $busyOnRestart = @(Get-BusyAutopilotProcesses)
+    if ($busyOnRestart.Count -gt 0) {
+      Write-Log ('6 nudges reached, but ' + $busyOnRestart.Count + ' task process(es) are running; not restarting')
+      return
+    }
+    if (-not [bool]$watchdog['stuckNotified']) {
+      if (Send-StuckTrackingComment $watchdog) {
+        $watchdog['stuckNotified'] = $true
+        Save-WatchdogState $watchdog
+      }
+    }
+    Write-Log 'autopilot unresponsive after 6 nudges with no new log activity; restarting Devin Desktop'
+    Get-Process -Name 'Devin' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
+    $watchdog['consecutiveNudges'] = 0
+    $watchdog['stuckNotified'] = $false
+    Save-WatchdogState $watchdog
+    $null = Invoke-Kickoff -WaitForIdle $false
     return
   }
 
@@ -834,19 +925,25 @@ function Invoke-WatchTick {
 
   $idleMin = ($nowUtc - $baselineUtc).TotalMinutes
   if ($idleMin -ge $IdleMinutes) {
-    if (-not $workChecked) {
+    $soloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
+    $soloStatePath = Join-Path $script:AutopilotDir 'solo-v3.json'
+    $soloState = Read-JsonFile $soloStatePath
+    $soloPhase = ''
+    if ($soloState) { $soloPhase = ([string](Get-JsonProp $soloState 'phase')).Trim().ToLowerInvariant() }
+    $inPolling = ($pState -eq 'polling' -or $pState -eq 'done')
+    if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and $soloPhase -ne 'polling' -and $soloPhase -ne 'done') {
+      $inPolling = $false
+    }
+    if ($inPolling) {
       $workRemains = Test-WorkRemains
-      $workChecked = $true
       if ($null -eq $workRemains) { return }
+      if (-not $workRemains) {
+        Write-Log ('no log write for ' + [Math]::Round($idleMin, 1) + 'm while polling, and no open unparked ' + $Label + ' issues remain; idle')
+        return
+      }
     }
-    if (-not $workRemains) {
-      Write-Log ('no log write for ' + [Math]::Round($idleMin, 1) + 'm, but no open ' + $Label + ' issues without needs-human remain; idle')
-      return
-    }
-    # A long npm run verify or gate run writes nothing to Devin's log; the agent is busy, not stuck.
-    $busy = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-      $_.CommandLine -and ($_.CommandLine -like ('*' + (Join-Path $Root 'work') + '*') -or $_.CommandLine -match 'Invoke-AutopilotGate|Invoke-PrReview')
-    })
+    # A long npm run verify, gate, packaging, or smoke run writes nothing to Devin's log; the agent is busy, not stuck.
+    $busy = @(Get-BusyAutopilotProcesses)
     if ($busy.Count -gt 0) {
       Write-Log ('no log write for ' + [Math]::Round($idleMin, 1) + 'm, but ' + $busy.Count + ' task process(es) are running; not nudging')
       return
@@ -860,12 +957,10 @@ function Invoke-WatchTick {
       Write-Log 'idle nudge aborted: focus changed before clear'
       return
     }
-    $nudgeMessage = 'Continue the autopilot task: re-read ' + $script:PromptPath + ', resume from ' + $script:ProgressPath + ' and keep going until the queue is empty.'
+    $nudgeMessage = 'Continue the autopilot task: re-read ' + $script:PromptPath + ', resume from ' + $script:ProgressPath + ' and keep going (queue, parked revisits, hands-on milestone, and 30-minute polling).'
     # The v3 solo mission supersedes the per-issue loop while its state file says it is not finished.
-    $soloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
-    $soloState = Read-JsonFile (Join-Path $script:AutopilotDir 'solo-v3.json')
-    if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and [string](Get-JsonProp $soloState 'phase') -ne 'done') {
-      $nudgeMessage = 'Continue the mission: re-read ' + $soloPlan + ', resume from ' + (Join-Path $script:AutopilotDir 'solo-v3.json') + ' and keep working through every phase. Do not end your turn with a checkpoint while work remains.'
+    if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and $soloPhase -ne 'done') {
+      $nudgeMessage = 'Continue the mission: re-read ' + $soloPlan + ', resume from ' + $soloStatePath + ' and keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains.'
     }
     if (-not (Send-DevinTextSafe $window $nudgeMessage)) {
       Write-Log 'idle nudge aborted: focus changed before paste'
@@ -908,7 +1003,9 @@ function Invoke-RegisterTask {
     '-IdleMinutes', [string]$IdleMinutes,
     '-ApprovalMinutes', [string]$ApprovalMinutes,
     '-UserIdleSeconds', [string]$UserIdleSeconds,
-    '-IntervalMinutes', [string]$IntervalMinutes
+    '-IntervalMinutes', [string]$IntervalMinutes,
+    '-SyncSource', (Quote-Argument $SyncSource),
+    '-SyncTarget', (Quote-Argument $SyncTarget)
   )
 
   Initialize-TaskFolder
@@ -983,7 +1080,7 @@ try {
 
   $script:WorkspacePath = Get-AcceptancePath $Workspace
 
-  $redact = @($script:WorkRoot, $script:WorkspacePath, $env:USERPROFILE, $script:AcceptanceRepo)
+  $redact = @($script:WorkRoot, $script:WorkspacePath, $env:USERPROFILE, $script:AcceptanceRepo, $SyncSource, $SyncTarget)
   $redactAll = @()
   foreach ($item in $redact) {
     if ([string]::IsNullOrWhiteSpace($item) -or $item.Length -lt 4) { continue }

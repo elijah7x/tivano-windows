@@ -261,6 +261,7 @@ function Read-PrState {
     prNumber = $Number
     headSha = ''
     attempts = 0
+    lastAttemptAt = ''
     round = 0
     lastCommentId = [long]0
     lastCommentCreatedAt = ''
@@ -269,6 +270,9 @@ function Read-PrState {
     verdict = ''
     baseSha = ''
     priorFindings = @()
+    arbiterState = ''
+    arbiterDone = $false
+    arbiterPending = $null
     updatedAt = ''
   }
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return [pscustomobject]$default }
@@ -284,6 +288,8 @@ function Read-PrState {
   $default['headSha'] = [string](Get-JsonProp $data 'headSha')
   $att = Get-JsonProp $data 'attempts'
   if ($null -ne $att) { $default['attempts'] = [int]$att }
+  $lat = Get-JsonProp $data 'lastAttemptAt'
+  if ($null -ne $lat) { $default['lastAttemptAt'] = [string]$lat }
   $rnd = Get-JsonProp $data 'round'
   if ($null -ne $rnd) { $default['round'] = [int]$rnd }
   $cid = Get-JsonProp $data 'lastCommentId'
@@ -300,6 +306,33 @@ function Read-PrState {
   if ($null -ne $v) { $default['verdict'] = [string]$v }
   $pf = Get-JsonProp $data 'priorFindings'
   if ($null -ne $pf) { $default['priorFindings'] = @($pf | ForEach-Object { $_ }) }
+  $as = Get-JsonProp $data 'arbiterState'
+  if ($null -ne $as) { $default['arbiterState'] = [string]$as }
+  $ad = Get-JsonProp $data 'arbiterDone'
+  if ($null -ne $ad) { $default['arbiterDone'] = [bool]$ad }
+  $ap = Get-JsonProp $data 'arbiterPending'
+  if ($null -ne $ap -and $ap -is [pscustomobject]) {
+    $apIssue = Get-JsonProp $ap 'issueNumber'
+    $apIssueNum = 0
+    if ($null -ne $apIssue) { $apIssueNum = [int]$apIssue }
+    $apFindings = @()
+    $apFindingsRaw = Get-JsonProp $ap 'blockingFindings'
+    if ($null -ne $apFindingsRaw) { $apFindings = @($apFindingsRaw | Where-Object { $null -ne $_ }) }
+    $apAcc = @()
+    $apAccRaw = Get-JsonProp $ap 'failedAcceptance'
+    if ($null -ne $apAccRaw) { $apAcc = @($apAccRaw | Where-Object { $null -ne $_ }) }
+    $apClaims = @()
+    $apClaimsRaw = Get-JsonProp $ap 'falseClaims'
+    if ($null -ne $apClaimsRaw) { $apClaims = @($apClaimsRaw | Where-Object { $null -ne $_ }) }
+    $default['arbiterPending'] = [pscustomobject]@{
+      issueNumber = $apIssueNum
+      commentUrl = [string](Get-JsonProp $ap 'commentUrl')
+      rebuttal = [string](Get-JsonProp $ap 'rebuttal')
+      blockingFindings = $apFindings
+      failedAcceptance = $apAcc
+      falseClaims = $apClaims
+    }
+  }
   $upd = Get-JsonProp $data 'updatedAt'
   if ($null -ne $upd) { $default['updatedAt'] = [string]$upd }
 
@@ -318,6 +351,67 @@ function Save-PrState {
     [IO.File]::Replace($tmp, $Path, [NullString]::Value)
   } else {
     [IO.File]::Move($tmp, $Path)
+  }
+}
+
+function Get-ArbiterDailyPath {
+  param([string]$StateDir)
+  return (Join-Path $StateDir ('arbiter-' + [DateTime]::Now.ToString('yyyy-MM-dd') + '.json'))
+}
+
+function Read-ArbiterDailyState {
+  param([string]$Path)
+  $today = [DateTime]::Now.ToString('yyyy-MM-dd')
+  $default = [ordered]@{
+    date = $today
+    count = 0
+    runs = @()
+  }
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return [pscustomobject]$default }
+  $text = Read-Text $Path
+  if ([string]::IsNullOrWhiteSpace($text)) { return [pscustomobject]$default }
+  try {
+    $data = $text.TrimStart([char]0xFEFF) | ConvertFrom-Json
+  } catch {
+    return [pscustomobject]$default
+  }
+  if ($data -isnot [pscustomobject]) { return [pscustomobject]$default }
+  $d = Get-JsonProp $data 'date'
+  if ($null -ne $d -and -not [string]::IsNullOrWhiteSpace([string]$d)) { $default['date'] = [string]$d }
+  $cnt = Get-JsonProp $data 'count'
+  if ($null -ne $cnt) { $default['count'] = [int]$cnt }
+  $runsRaw = Get-JsonProp $data 'runs'
+  if ($null -ne $runsRaw) { $default['runs'] = @($runsRaw | Where-Object { $null -ne $_ }) }
+  return [pscustomobject]$default
+}
+
+function Save-ArbiterDailyState {
+  param(
+    [string]$Path,
+    $DailyState
+  )
+  $tmp = $Path + '.tmp'
+  Write-Text $tmp ((ConvertTo-Json -InputObject $DailyState -Depth 6) + "`n")
+  if (Test-Path -LiteralPath $Path) {
+    [IO.File]::Replace($tmp, $Path, [NullString]::Value)
+  } else {
+    [IO.File]::Move($tmp, $Path)
+  }
+}
+
+function Test-RetryBackoffActive {
+  param(
+    $State,
+    [int]$BackoffMinutes = 60
+  )
+  if ([int]$State.attempts -lt 3) { return $false }
+  $lastAtRaw = [string](Get-JsonProp $State 'lastAttemptAt')
+  if ([string]::IsNullOrWhiteSpace($lastAtRaw)) { return $false }
+  try {
+    $lastAt = [DateTimeOffset]::Parse($lastAtRaw)
+    return (([DateTimeOffset]::UtcNow - $lastAt).TotalMinutes -lt $BackoffMinutes)
+  } catch {
+    return $false
   }
 }
 
@@ -492,7 +586,7 @@ function Set-AuditCommitStatus {
   $null = Invoke-AuditApi -Config $Config -Method 'POST' -Path ('/repos/' + $Config.repo + '/statuses/' + $Sha) -Body $payload
 }
 
-function Add-NeedsHumanLabel {
+function Add-AuditParkedLabel {
   param(
     $Config,
     [int]$Number
@@ -500,7 +594,7 @@ function Add-NeedsHumanLabel {
   $repo = $Config.repo
   $exists = $false
   try {
-    $null = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $repo + '/labels/needs-human')
+    $null = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $repo + '/labels/audit-parked')
     $exists = $true
   } catch {
     $exists = $false
@@ -508,16 +602,16 @@ function Add-NeedsHumanLabel {
   if (-not $exists) {
     try {
       $null = Invoke-AuditApi -Config $Config -Method 'POST' -Path ('/repos/' + $repo + '/labels') -Body @{
-        name = 'needs-human'
-        color = 'd93f0b'
-        description = 'Needs human maintainer review'
+        name = 'audit-parked'
+        color = 'b60205'
+        description = 'PR parked by automatic audit arbiter'
       }
     } catch {
-      Write-Log ('create needs-human label note: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+      Write-Log ('create audit-parked label note: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
     }
   }
   $null = Invoke-AuditApi -Config $Config -Method 'POST' -Path ('/repos/' + $repo + '/issues/' + $Number + '/labels') -Body @{
-    labels = @('needs-human')
+    labels = @('audit-parked')
   }
 }
 
@@ -977,7 +1071,7 @@ function Build-AuditCommentBody {
     $Findings,
     $Claims,
     $Withdrawn,
-    [bool]$NeedsHumanEscalation = $false
+    [bool]$ArbiterFollows = $false
   )
   $sha7 = if ($HeadSha.Length -ge 7) { $HeadSha.Substring(0, 7) } else { $HeadSha }
   $verdictLabel = if ($Verdict -eq 'pass') { 'PASS' } else { 'BLOCK' }
@@ -987,9 +1081,9 @@ function Build-AuditCommentBody {
   $null = $lines.Add('')
   $issueLabel = if ($IssueNumber -gt 0) { '#' + $IssueNumber } else { 'none' }
   $null = $lines.Add('Round: ' + $Round + ' | Linked issue: ' + $issueLabel)
-  if ($NeedsHumanEscalation) {
+  if ($ArbiterFollows) {
     $null = $lines.Add('')
-    $null = $lines.Add('> Still blocking after rebuttal round ' + $Round + '; added the `needs-human` label for maintainer review.')
+    $null = $lines.Add('> Still blocking after rebuttal round ' + $Round + '; invoking automatic arbitration.')
   }
 
   $null = $lines.Add('')
@@ -1056,7 +1150,524 @@ function Build-AuditCommentBody {
 
   $null = $lines.Add('')
   $null = $lines.Add('<!-- nyx-audit sha=' + $HeadSha + ' round=' + $Round + ' -->')
-  return (Protect-PublicText (($lines -join "`n") + "`n"))
+  return (Protect-PublicText (($lines.ToArray() -join "`n") + "`n"))
+}
+
+function Normalize-ArbiterKey {
+  param([AllowEmptyString()][string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+  return ([regex]::Replace($Text.Trim(), '\s+', ' ')).ToLowerInvariant()
+}
+
+function Format-BlockingItemsForArbiter {
+  param(
+    $BlockingFindings,
+    $FailedAcceptance,
+    $FalseClaims
+  )
+  $lines = New-Object Collections.Generic.List[string]
+  $bfList = @($BlockingFindings | Where-Object { $null -ne $_ })
+  $faList = @($FailedAcceptance | Where-Object { $null -ne $_ })
+  $fcList = @($FalseClaims | Where-Object { $null -ne $_ })
+
+  $null = $lines.Add('#### Blocking findings')
+  if ($bfList.Count -eq 0) {
+    $null = $lines.Add('none')
+  } else {
+    foreach ($f in $bfList) {
+      $fid = [string](Get-JsonProp $f 'id')
+      $title = [string](Get-JsonProp $f 'title')
+      $ev = [string](Get-JsonProp $f 'evidence')
+      $why = [string](Get-JsonProp $f 'why')
+      $null = $lines.Add('- [' + $fid + '] ' + $title + ' | evidence: ' + $ev + ' | why: ' + $why)
+    }
+  }
+
+  $null = $lines.Add('')
+  $null = $lines.Add('#### Failed acceptance criteria')
+  if ($faList.Count -eq 0) {
+    $null = $lines.Add('none')
+  } else {
+    foreach ($a in $faList) {
+      $item = [string](Get-JsonProp $a 'item')
+      $st = [string](Get-JsonProp $a 'status')
+      $ev = [string](Get-JsonProp $a 'evidence')
+      $null = $lines.Add('- [' + $st + '] ' + $item + ' | evidence: ' + $ev)
+    }
+  }
+
+  $null = $lines.Add('')
+  $null = $lines.Add('#### False claims')
+  if ($fcList.Count -eq 0) {
+    $null = $lines.Add('none')
+  } else {
+    foreach ($c in $fcList) {
+      $claim = [string](Get-JsonProp $c 'claim')
+      $ev = [string](Get-JsonProp $c 'evidence')
+      $null = $lines.Add('- ' + $claim + ' | evidence: ' + $ev)
+    }
+  }
+
+  return ($lines.ToArray() -join "`n")
+}
+
+function Evaluate-ArbiterRulings {
+  param(
+    $BlockingFindings,
+    $FailedAcceptance,
+    $FalseClaims,
+    $ArbiterResult
+  )
+  $bfList = @($BlockingFindings | Where-Object { $null -ne $_ })
+  $faList = @($FailedAcceptance | Where-Object { $null -ne $_ })
+  $fcList = @($FalseClaims | Where-Object { $null -ne $_ })
+
+  $findingMap = @{}
+  foreach ($r in @(Get-JsonProp $ArbiterResult 'rulings' | Where-Object { $null -ne $_ })) {
+    $key = Normalize-ArbiterKey ([string](Get-JsonProp $r 'id'))
+    if (-not [string]::IsNullOrWhiteSpace($key)) { $findingMap[$key] = $r }
+  }
+
+  $accMap = @{}
+  foreach ($a in @(Get-JsonProp $ArbiterResult 'acceptance' | Where-Object { $null -ne $_ })) {
+    $key = Normalize-ArbiterKey ([string](Get-JsonProp $a 'item'))
+    if (-not [string]::IsNullOrWhiteSpace($key)) { $accMap[$key] = $a }
+  }
+
+  $claimMap = @{}
+  foreach ($c in @(Get-JsonProp $ArbiterResult 'claims' | Where-Object { $null -ne $_ })) {
+    $key = Normalize-ArbiterKey ([string](Get-JsonProp $c 'claim'))
+    if (-not [string]::IsNullOrWhiteSpace($key)) { $claimMap[$key] = $c }
+  }
+
+  $upheldFindings = New-Object Collections.Generic.List[object]
+  $overturnedFindings = New-Object Collections.Generic.List[object]
+  foreach ($bf in $bfList) {
+    $fid = ([string](Get-JsonProp $bf 'id')).Trim()
+    $title = ([string](Get-JsonProp $bf 'title')).Trim()
+    $key = Normalize-ArbiterKey $fid
+    $matched = if ($findingMap.ContainsKey($key)) { $findingMap[$key] } else { $null }
+    $ruling = if ($null -ne $matched) { ([string](Get-JsonProp $matched 'ruling')).Trim().ToLowerInvariant() } else { 'uphold' }
+    $reason = if ($null -ne $matched -and -not [string]::IsNullOrWhiteSpace([string](Get-JsonProp $matched 'reason'))) {
+      ([string](Get-JsonProp $matched 'reason')).Trim()
+    } else {
+      'Not overturned by arbiter.'
+    }
+    $entry = [pscustomobject]@{
+      id = $fid
+      title = $title
+      ruling = $(if ($ruling -eq 'overturn') { 'overturn' } else { 'uphold' })
+      reason = $reason
+    }
+    if ($ruling -eq 'overturn') {
+      $null = $overturnedFindings.Add($entry)
+    } else {
+      $null = $upheldFindings.Add($entry)
+    }
+  }
+
+  $upheldAcceptance = New-Object Collections.Generic.List[object]
+  $overturnedAcceptance = New-Object Collections.Generic.List[object]
+  foreach ($fa in $faList) {
+    $itemText = ([string](Get-JsonProp $fa 'item')).Trim()
+    $statusText = ([string](Get-JsonProp $fa 'status')).Trim()
+    $key = Normalize-ArbiterKey $itemText
+    $matched = if ($accMap.ContainsKey($key)) { $accMap[$key] } else { $null }
+    $ruling = if ($null -ne $matched) { ([string](Get-JsonProp $matched 'ruling')).Trim().ToLowerInvariant() } else { 'uphold' }
+    $reason = if ($null -ne $matched -and -not [string]::IsNullOrWhiteSpace([string](Get-JsonProp $matched 'reason'))) {
+      ([string](Get-JsonProp $matched 'reason')).Trim()
+    } else {
+      'Not overturned by arbiter.'
+    }
+    $entry = [pscustomobject]@{
+      item = $itemText
+      status = $statusText
+      ruling = $(if ($ruling -eq 'overturn') { 'overturn' } else { 'uphold' })
+      reason = $reason
+    }
+    if ($ruling -eq 'overturn') {
+      $null = $overturnedAcceptance.Add($entry)
+    } else {
+      $null = $upheldAcceptance.Add($entry)
+    }
+  }
+
+  $upheldClaims = New-Object Collections.Generic.List[object]
+  $overturnedClaims = New-Object Collections.Generic.List[object]
+  foreach ($fc in $fcList) {
+    $claimText = ([string](Get-JsonProp $fc 'claim')).Trim()
+    $key = Normalize-ArbiterKey $claimText
+    $matched = if ($claimMap.ContainsKey($key)) { $claimMap[$key] } else { $null }
+    $ruling = if ($null -ne $matched) { ([string](Get-JsonProp $matched 'ruling')).Trim().ToLowerInvariant() } else { 'uphold' }
+    $reason = if ($null -ne $matched -and -not [string]::IsNullOrWhiteSpace([string](Get-JsonProp $matched 'reason'))) {
+      ([string](Get-JsonProp $matched 'reason')).Trim()
+    } else {
+      'Not overturned by arbiter.'
+    }
+    $entry = [pscustomobject]@{
+      claim = $claimText
+      ruling = $(if ($ruling -eq 'overturn') { 'overturn' } else { 'uphold' })
+      reason = $reason
+    }
+    if ($ruling -eq 'overturn') {
+      $null = $overturnedClaims.Add($entry)
+    } else {
+      $null = $upheldClaims.Add($entry)
+    }
+  }
+
+  $totalItems = $bfList.Count + $faList.Count + $fcList.Count
+  $allOverturned = (
+    $totalItems -gt 0 -and
+    $upheldFindings.Count -eq 0 -and
+    $upheldAcceptance.Count -eq 0 -and
+    $upheldClaims.Count -eq 0
+  )
+
+  return [pscustomobject]@{
+    allOverturned = $allOverturned
+    upheldFindings = $upheldFindings.ToArray()
+    upheldAcceptance = $upheldAcceptance.ToArray()
+    upheldClaims = $upheldClaims.ToArray()
+    overturnedFindings = $overturnedFindings.ToArray()
+    overturnedAcceptance = $overturnedAcceptance.ToArray()
+    overturnedClaims = $overturnedClaims.ToArray()
+  }
+}
+
+function Build-ArbiterPassCommentBody {
+  param(
+    [string]$HeadSha,
+    [int]$IssueNumber,
+    $Evaluation
+  )
+  $sha7 = if ($HeadSha.Length -ge 7) { $HeadSha.Substring(0, 7) } else { $HeadSha }
+  $issueLabel = if ($IssueNumber -gt 0) { '#' + $IssueNumber } else { 'none' }
+
+  $lines = New-Object Collections.Generic.List[string]
+  $null = $lines.Add('## Nyx audit - ' + $sha7 + ' - PASS (arbiter)')
+  $null = $lines.Add('')
+  $null = $lines.Add('Linked issue: ' + $issueLabel + ' | Automatic arbitration overturned every blocking item.')
+
+  $ovFindings = @($Evaluation.overturnedFindings)
+  if ($ovFindings.Count -gt 0) {
+    $null = $lines.Add('')
+    $null = $lines.Add('### Finding rulings')
+    foreach ($r in $ovFindings) {
+      $titlePart = if (-not [string]::IsNullOrWhiteSpace($r.title)) { ' ' + (Protect-PublicText $r.title) } else { '' }
+      $null = $lines.Add('- **[' + (Protect-PublicText $r.id) + '] overturn**' + $titlePart + ': ' + (Protect-PublicText $r.reason))
+    }
+  }
+
+  $ovAcc = @($Evaluation.overturnedAcceptance)
+  if ($ovAcc.Count -gt 0) {
+    $null = $lines.Add('')
+    $null = $lines.Add('### Acceptance rulings')
+    foreach ($a in $ovAcc) {
+      $null = $lines.Add('- **overturn** `' + (Protect-PublicText $a.item) + '`: ' + (Protect-PublicText $a.reason))
+    }
+  }
+
+  $ovClaims = @($Evaluation.overturnedClaims)
+  if ($ovClaims.Count -gt 0) {
+    $null = $lines.Add('')
+    $null = $lines.Add('### Claim rulings')
+    foreach ($c in $ovClaims) {
+      $null = $lines.Add('- **overturn** `' + (Protect-PublicText $c.claim) + '`: ' + (Protect-PublicText $c.reason))
+    }
+  }
+
+  $null = $lines.Add('')
+  $null = $lines.Add('<!-- nyx-audit sha=' + $HeadSha + ' round=arbiter -->')
+  return (Protect-PublicText (($lines.ToArray() -join "`n") + "`n"))
+}
+
+function Build-ArbiterParkedCommentBody {
+  param(
+    [string]$HeadSha,
+    [int]$IssueNumber,
+    $Evaluation,
+    [string]$Note = ''
+  )
+  $sha7 = if ($HeadSha.Length -ge 7) { $HeadSha.Substring(0, 7) } else { $HeadSha }
+  $issueLabel = if ($IssueNumber -gt 0) { '#' + $IssueNumber } else { 'none' }
+
+  $lines = New-Object Collections.Generic.List[string]
+  $null = $lines.Add('## Nyx audit - ' + $sha7 + ' - PARKED')
+  $null = $lines.Add('')
+  $null = $lines.Add('Linked issue: ' + $issueLabel + ' | Added label `audit-parked`. Push a new commit to re-run audit.')
+  if (-not [string]::IsNullOrWhiteSpace($Note)) {
+    $null = $lines.Add('')
+    $null = $lines.Add('> ' + (Protect-PublicText $Note))
+  }
+
+  $upFindings = @($Evaluation.upheldFindings)
+  if ($upFindings.Count -gt 0) {
+    $null = $lines.Add('')
+    $null = $lines.Add('### Upheld blocking findings')
+    foreach ($r in $upFindings) {
+      $titlePart = if (-not [string]::IsNullOrWhiteSpace($r.title)) { ' ' + (Protect-PublicText $r.title) } else { '' }
+      $null = $lines.Add('- **[' + (Protect-PublicText $r.id) + '] uphold**' + $titlePart + ': ' + (Protect-PublicText $r.reason))
+    }
+  }
+
+  $upAcc = @($Evaluation.upheldAcceptance)
+  if ($upAcc.Count -gt 0) {
+    $null = $lines.Add('')
+    $null = $lines.Add('### Upheld failed acceptance criteria')
+    foreach ($a in $upAcc) {
+      $stPart = if (-not [string]::IsNullOrWhiteSpace($a.status)) { ' (' + (Protect-PublicText $a.status) + ')' } else { '' }
+      $null = $lines.Add('- **uphold**' + $stPart + ' `' + (Protect-PublicText $a.item) + '`: ' + (Protect-PublicText $a.reason))
+    }
+  }
+
+  $upClaims = @($Evaluation.upheldClaims)
+  if ($upClaims.Count -gt 0) {
+    $null = $lines.Add('')
+    $null = $lines.Add('### Upheld false claims')
+    foreach ($c in $upClaims) {
+      $null = $lines.Add('- **uphold** `' + (Protect-PublicText $c.claim) + '`: ' + (Protect-PublicText $c.reason))
+    }
+  }
+
+  $ovFindings = @($Evaluation.overturnedFindings)
+  $ovAcc = @($Evaluation.overturnedAcceptance)
+  $ovClaims = @($Evaluation.overturnedClaims)
+  if ($ovFindings.Count -gt 0 -or $ovAcc.Count -gt 0 -or $ovClaims.Count -gt 0) {
+    $null = $lines.Add('')
+    $null = $lines.Add('### Overturned items')
+    foreach ($r in $ovFindings) {
+      $null = $lines.Add('- **[' + (Protect-PublicText $r.id) + '] overturn**: ' + (Protect-PublicText $r.reason))
+    }
+    foreach ($a in $ovAcc) {
+      $null = $lines.Add('- **overturn** `' + (Protect-PublicText $a.item) + '`: ' + (Protect-PublicText $a.reason))
+    }
+    foreach ($c in $ovClaims) {
+      $null = $lines.Add('- **overturn** `' + (Protect-PublicText $c.claim) + '`: ' + (Protect-PublicText $c.reason))
+    }
+  }
+
+  $null = $lines.Add('')
+  $null = $lines.Add('<!-- nyx-audit sha=' + $HeadSha + ' round=arbiter -->')
+  return (Protect-PublicText (($lines.ToArray() -join "`n") + "`n"))
+}
+
+function Invoke-ArbiterPass {
+  param(
+    $Config,
+    [string]$StateDir,
+    [string]$StatePath,
+    $State,
+    [int]$PrNumber,
+    [string]$HeadSha,
+    [string]$MainSha,
+    [int]$IssueNumber,
+    [string]$IssueBody,
+    [string]$DiffStat,
+    [string]$RebuttalText,
+    $BlockingFindings,
+    $FailedAcceptance,
+    $FalseClaims,
+    [string]$PriorCommentUrl,
+    [string]$WorktreeDir,
+    [string]$RunDir,
+    [string]$ArbiterTemplate,
+    [switch]$IsDryRun
+  )
+  $sha7 = if ($HeadSha.Length -ge 7) { $HeadSha.Substring(0, 7) } else { $HeadSha }
+  $bfArr = @($BlockingFindings | Where-Object { $null -ne $_ })
+  $faArr = @($FailedAcceptance | Where-Object { $null -ne $_ })
+  $fcArr = @($FalseClaims | Where-Object { $null -ne $_ })
+
+  $pendingPayload = [pscustomobject]@{
+    issueNumber = $IssueNumber
+    commentUrl = $PriorCommentUrl
+    rebuttal = $RebuttalText
+    blockingFindings = $bfArr
+    failedAcceptance = $faArr
+    falseClaims = $fcArr
+  }
+
+  $dailyCap = 6
+  $cfgCap = Get-JsonProp $Config 'arbiterDailyCap'
+  if ($null -ne $cfgCap) {
+    $parsedCap = 0
+    if ([int]::TryParse([string]$cfgCap, [ref]$parsedCap) -and $parsedCap -ge 0) {
+      $dailyCap = $parsedCap
+    }
+  }
+
+  $dailyPath = Get-ArbiterDailyPath -StateDir $StateDir
+  $dailyState = Read-ArbiterDailyState -Path $dailyPath
+  if ([int]$dailyState.count -ge $dailyCap) {
+    Write-Log ('PR #' + $PrNumber + ' head ' + $sha7 + ': arbiter daily cap reached (' + $dailyState.count + '/' + $dailyCap + '); leaving status failure (arbitration pending)')
+    if (-not $IsDryRun) {
+      Set-AuditCommitStatus -Config $Config -Sha $HeadSha -State 'failure' -Description 'arbitration pending' -TargetUrl $PriorCommentUrl
+      $State.arbiterState = 'pending'
+      $State.arbiterDone = $false
+      $State.arbiterPending = $pendingPayload
+      Save-PrState -Path $StatePath -State $State
+    }
+    $capRecord = [ordered]@{
+      pr = $PrNumber
+      headSha = $HeadSha
+      status = 'arbitration-pending'
+      verdict = 'block'
+      commitStatus = 'failure'
+      description = 'arbitration pending'
+      reason = ('daily arbiter cap reached (' + $dailyState.count + '/' + $dailyCap + ')')
+      runDir = $RunDir
+    }
+    Write-Text (Join-Path $RunDir 'result.json') ((ConvertTo-Json -InputObject $capRecord -Depth 6) + "`n")
+    return $capRecord
+  }
+
+  if (-not $IsDryRun) {
+    $dailyState.count = [int]$dailyState.count + 1
+    $runsList = New-Object Collections.Generic.List[object]
+    foreach ($r in @($dailyState.runs)) {
+      if ($null -ne $r) { $null = $runsList.Add($r) }
+    }
+    $null = $runsList.Add([pscustomobject]@{
+      pr = $PrNumber
+      headSha = $HeadSha
+      at = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+    })
+    $dailyState.runs = $runsList.ToArray()
+    Save-ArbiterDailyState -Path $dailyPath -DailyState $dailyState
+  }
+
+  $blockingText = Format-BlockingItemsForArbiter -BlockingFindings $bfArr -FailedAcceptance $faArr -FalseClaims $fcArr
+  $arbValues = @{
+    PR_NUMBER = [string]$PrNumber
+    ISSUE_BODY = $IssueBody
+    DIFF_STAT = $DiffStat
+    BLOCKING_ITEMS = $blockingText
+    REBUTTAL = $(if ([string]::IsNullOrWhiteSpace($RebuttalText)) { 'none' } else { $RebuttalText })
+    REFERENCE_ROOT = [string]$Config.referenceRoot
+  }
+  $filledArbiterPrompt = [regex]::Replace(
+    $ArbiterTemplate,
+    '\{\{(PR_NUMBER|ISSUE_BODY|DIFF_STAT|BLOCKING_ITEMS|REBUTTAL|REFERENCE_ROOT)\}\}',
+    [Text.RegularExpressions.MatchEvaluator]{ param($m) [string]$arbValues[$m.Groups[1].Value] }
+  )
+
+  Write-Log ('PR #' + $PrNumber + ' head ' + $sha7 + ': invoking automatic arbiter (daily count ' + $dailyState.count + '/' + $dailyCap + ')')
+  $arbRes = Invoke-ArbiterModel -Config $Config -PromptText $filledArbiterPrompt -WorkDir $WorktreeDir -RunDir $RunDir
+
+  if ($null -eq $arbRes -or ([string]$arbRes.status) -ne 'ok' -or $null -eq $arbRes.result) {
+    $arbErr = if ($null -ne $arbRes -and -not [string]::IsNullOrWhiteSpace([string]$arbRes.error)) { [string]$arbRes.error } else { 'arbiter unavailable' }
+    Write-Log ('PR #' + $PrNumber + ' head ' + $sha7 + ': arbiter unavailable (' + $arbErr + '); leaving status failure (arbitration pending)')
+    if (-not $IsDryRun) {
+      Set-AuditCommitStatus -Config $Config -Sha $HeadSha -State 'failure' -Description 'arbitration pending' -TargetUrl $PriorCommentUrl
+      $State.arbiterState = 'pending'
+      $State.arbiterDone = $false
+      $State.arbiterPending = $pendingPayload
+      Save-PrState -Path $StatePath -State $State
+    }
+    $unavailArbRecord = [ordered]@{
+      pr = $PrNumber
+      headSha = $HeadSha
+      status = 'arbitration-pending'
+      verdict = 'block'
+      commitStatus = 'failure'
+      description = 'arbitration pending'
+      error = $arbErr
+      runDir = $RunDir
+    }
+    Write-Text (Join-Path $RunDir 'result.json') ((ConvertTo-Json -InputObject $unavailArbRecord -Depth 6) + "`n")
+    return $unavailArbRecord
+  }
+
+  $eval = Evaluate-ArbiterRulings -BlockingFindings $bfArr -FailedAcceptance $faArr -FalseClaims $fcArr -ArbiterResult $arbRes.result
+  $arbCommentId = [long]0
+  $arbCommentUrl = ''
+
+  if ($eval.allOverturned) {
+    $arbCommentBody = Build-ArbiterPassCommentBody -HeadSha $HeadSha -IssueNumber $IssueNumber -Evaluation $eval
+    Write-Text (Join-Path $RunDir 'arbiter-comment.md') $arbCommentBody
+    $statusDesc = 'Nyx audit passed (arbiter)'
+    if (-not $IsDryRun) {
+      $posted = Invoke-AuditApi -Config $Config -Method 'POST' -Path ('/repos/' + $Config.repo + '/issues/' + $PrNumber + '/comments') -Body @{ body = $arbCommentBody }
+      $arbCommentId = [long](Get-JsonProp $posted 'id')
+      $arbCommentUrl = [string](Get-JsonProp $posted 'html_url')
+      $arbCommentCreated = [string](Get-JsonProp $posted 'created_at')
+
+      Set-AuditCommitStatus -Config $Config -Sha $HeadSha -State 'success' -Description $statusDesc -TargetUrl $arbCommentUrl
+
+      $State.headSha = $HeadSha
+      $State.verdict = 'pass'
+      $State.baseSha = $MainSha
+      $State.arbiterState = 'passed'
+      $State.arbiterDone = $true
+      $State.arbiterPending = $null
+      $State.lastCommentId = $arbCommentId
+      $State.lastCommentCreatedAt = $arbCommentCreated
+      $State.attempts = 0
+      $State.lastAttemptAt = ''
+      Save-PrState -Path $StatePath -State $State
+    }
+
+    $passRecord = [ordered]@{
+      pr = $PrNumber
+      headSha = $HeadSha
+      status = 'ok'
+      verdict = 'pass'
+      arbiter = 'pass'
+      commitStatus = 'success'
+      description = $statusDesc
+      commentId = $arbCommentId
+      commentUrl = $arbCommentUrl
+      evaluation = $eval
+      runDir = $RunDir
+    }
+    Write-Text (Join-Path $RunDir 'result.json') ((ConvertTo-Json -InputObject $passRecord -Depth 8) + "`n")
+    Write-Log ('PR #' + $PrNumber + ' head ' + $sha7 + ' arbiter=pass status=success')
+    return $passRecord
+  } else {
+    $arbCommentBody = Build-ArbiterParkedCommentBody -HeadSha $HeadSha -IssueNumber $IssueNumber -Evaluation $eval
+    Write-Text (Join-Path $RunDir 'arbiter-comment.md') $arbCommentBody
+    $upCount = @($eval.upheldFindings).Count + @($eval.upheldAcceptance).Count + @($eval.upheldClaims).Count
+    $statusDesc = ConvertTo-SingleLine ('Nyx audit parked (arbiter upheld ' + $upCount + ' item(s))') 140
+    if (-not $IsDryRun) {
+      $posted = Invoke-AuditApi -Config $Config -Method 'POST' -Path ('/repos/' + $Config.repo + '/issues/' + $PrNumber + '/comments') -Body @{ body = $arbCommentBody }
+      $arbCommentId = [long](Get-JsonProp $posted 'id')
+      $arbCommentUrl = [string](Get-JsonProp $posted 'html_url')
+      $arbCommentCreated = [string](Get-JsonProp $posted 'created_at')
+
+      Set-AuditCommitStatus -Config $Config -Sha $HeadSha -State 'failure' -Description $statusDesc -TargetUrl $arbCommentUrl
+      Add-AuditParkedLabel -Config $Config -Number $PrNumber
+
+      $State.headSha = $HeadSha
+      $State.verdict = 'parked'
+      $State.baseSha = $MainSha
+      $State.arbiterState = 'parked'
+      $State.arbiterDone = $true
+      $State.arbiterPending = $null
+      $State.lastCommentId = $arbCommentId
+      $State.lastCommentCreatedAt = $arbCommentCreated
+      $State.attempts = 0
+      $State.lastAttemptAt = ''
+      Save-PrState -Path $StatePath -State $State
+    }
+
+    $parkedRecord = [ordered]@{
+      pr = $PrNumber
+      headSha = $HeadSha
+      status = 'ok'
+      verdict = 'parked'
+      arbiter = 'parked'
+      commitStatus = 'failure'
+      description = $statusDesc
+      commentId = $arbCommentId
+      commentUrl = $arbCommentUrl
+      evaluation = $eval
+      runDir = $RunDir
+    }
+    Write-Text (Join-Path $RunDir 'result.json') ((ConvertTo-Json -InputObject $parkedRecord -Depth 8) + "`n")
+    Write-Log ('PR #' + $PrNumber + ' head ' + $sha7 + ' arbiter=parked upheld=' + $upCount + ' status=failure')
+    return $parkedRecord
+  }
 }
 
 function Remove-ExcessRuns {
@@ -1098,7 +1709,7 @@ try {
   [IO.Directory]::CreateDirectory($logsDir) | Out-Null
 
   $script:LogPath = Join-Path $logsDir ('audit-' + [DateTime]::Now.ToString('yyyyMMdd') + '.log')
-  Initialize-Redactions @($script:WorkRoot, [string]$config.referenceRoot, [string]$config.keyPath)
+  Initialize-Redactions @($script:WorkRoot, [string]$config.referenceRoot, [string]$config.keyPath, [string](Get-JsonProp $config 'devinCli'))
 
   $lockPath = Join-Path $script:WorkRoot 'audit.lock'
   try {
@@ -1121,6 +1732,21 @@ try {
     $promptTemplate = Read-Text $promptTemplatePath
     if ([string]::IsNullOrWhiteSpace($promptTemplate)) {
       throw ('audit-prompt.md not found or empty at ' + $promptTemplatePath)
+    }
+
+    $arbiterTemplatePath = Join-Path $PSScriptRoot 'arbiter-prompt.md'
+    $arbiterTemplate = Read-Text $arbiterTemplatePath
+    if ([string]::IsNullOrWhiteSpace($arbiterTemplate)) {
+      throw ('arbiter-prompt.md not found or empty at ' + $arbiterTemplatePath)
+    }
+
+    $arbiterDailyCap = 6
+    $cfgDailyCap = Get-JsonProp $config 'arbiterDailyCap'
+    if ($null -ne $cfgDailyCap) {
+      $parsedDailyCap = 0
+      if ([int]::TryParse([string]$cfgDailyCap, [ref]$parsedDailyCap) -and $parsedDailyCap -ge 0) {
+        $arbiterDailyCap = $parsedDailyCap
+      }
     }
 
     $pulls = @(Get-OpenNyxPulls -Config $config -OnlyPrNumber $PrNumber)
@@ -1152,56 +1778,89 @@ try {
       if ($isNewHead) {
         $state.headSha = $headSha
         $state.attempts = 0
+        $state.lastAttemptAt = ''
         $state.round = 0
         $state.lastCommentId = [long]0
         $state.lastCommentCreatedAt = ''
         $state.lastRebuttalCommentId = [long]0
         $state.pendingRebuttalCommentId = [long]0
         $state.verdict = ''
+        $state.baseSha = ''
         $state.priorFindings = @()
+        $state.arbiterState = ''
+        $state.arbiterDone = $false
+        $state.arbiterPending = $null
       }
 
       $rebuttalText = 'none'
       $priorFindingsText = 'none'
       $rebuttalCommentId = [long]0
+      $arbiterRetryOnly = $false
 
       if (-not $isNewHead) {
         # A pass holds only for the main it was trial-merged onto; re-audit when main moves.
-        if ($state.verdict -eq 'pass' -and -not [string]::IsNullOrWhiteSpace($mainSha) -and $state.baseSha -eq $mainSha) {
-          $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already passed for head ' + $sha7 })
+        if ($state.verdict -eq 'pass') {
+          if (-not [string]::IsNullOrWhiteSpace($mainSha) -and $state.baseSha -eq $mainSha) {
+            $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already passed for head ' + $sha7 })
+            continue
+          }
+          # main moved since pass: start a fresh audit against new main while preserving arbiterDone for this head SHA.
+          $state.round = 0
+          $state.attempts = 0
+          $state.lastAttemptAt = ''
+          $state.verdict = ''
+          $state.priorFindings = @()
+        } elseif ($state.verdict -eq 'parked') {
+          $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already parked by arbiter for head ' + $sha7 })
           continue
-        }
-        if ($state.verdict -eq 'unavailable-failed' -or ([string]::IsNullOrWhiteSpace($state.verdict) -and [int]$state.attempts -ge 3)) {
-          $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'reached 3 failed audit attempts for head ' + $sha7 })
-          continue
-        }
-        if ($state.verdict -eq 'block') {
+        } elseif ($state.verdict -eq 'block') {
           if ([int]$state.round -ge 2) {
-            $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already completed rebuttal round for head ' + $sha7 })
+            if ($state.arbiterState -eq 'pending' -and -not [bool]$state.arbiterDone -and $null -ne $state.arbiterPending) {
+              $dailyCheck = Read-ArbiterDailyState -Path (Get-ArbiterDailyPath -StateDir $stateDir)
+              if ([int]$dailyCheck.count -ge $arbiterDailyCap) {
+                $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'arbitration pending for head ' + $sha7 + ' (daily cap reached)' })
+                continue
+              }
+              $arbiterRetryOnly = $true
+              Write-Log ('PR #' + $num + ' head ' + $sha7 + ': retrying pending arbitration')
+            } else {
+              $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already completed rebuttal round for head ' + $sha7 })
+              continue
+            }
+          } else {
+            $comments = @(Get-PrComments -Config $config -Number $num)
+            $rebuttal = Find-NewRebuttal -Comments $comments -State $state -Config $config -HeadSha $headSha
+            if ($null -eq $rebuttal) {
+              $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already blocked for head ' + $sha7 + ' with no new rebuttal' })
+              continue
+            }
+            $rebuttalText = $rebuttal.text
+            $rebuttalCommentId = [long]$rebuttal.commentId
+            $priorFindingsText = Format-FindingsForPrompt $state.priorFindings
+            if ($priorFindingsText -eq 'none' -and -not [string]::IsNullOrWhiteSpace($rebuttal.lastAuditBody)) {
+              $priorFindingsText = $rebuttal.lastAuditBody
+            }
+            if ([long]$state.pendingRebuttalCommentId -ne $rebuttalCommentId) {
+              $state.pendingRebuttalCommentId = $rebuttalCommentId
+              $state.attempts = 0
+              $state.lastAttemptAt = ''
+            }
+            if (Test-RetryBackoffActive -State $state -BackoffMinutes 60) {
+              $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'backing off after ' + $state.attempts + ' failed audit attempts for head ' + $sha7 + ' (retry after 60m)' })
+              continue
+            }
+            Write-Log ('PR #' + $num + ' head ' + $sha7 + ': detected new rebuttal comment ' + $rebuttalCommentId + ', starting round ' + ([int]$state.round + 1))
+          }
+        } else {
+          if (Test-RetryBackoffActive -State $state -BackoffMinutes 60) {
+            $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'backing off after ' + $state.attempts + ' failed audit attempts for head ' + $sha7 + ' (retry after 60m)' })
             continue
           }
-          $comments = @(Get-PrComments -Config $config -Number $num)
-          $rebuttal = Find-NewRebuttal -Comments $comments -State $state -Config $config -HeadSha $headSha
-          if ($null -eq $rebuttal) {
-            $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already blocked for head ' + $sha7 + ' with no new rebuttal' })
-            continue
-          }
-          $rebuttalText = $rebuttal.text
-          $rebuttalCommentId = [long]$rebuttal.commentId
-          $priorFindingsText = Format-FindingsForPrompt $state.priorFindings
-          if ($priorFindingsText -eq 'none' -and -not [string]::IsNullOrWhiteSpace($rebuttal.lastAuditBody)) {
-            $priorFindingsText = $rebuttal.lastAuditBody
-          }
-          if ([long]$state.pendingRebuttalCommentId -ne $rebuttalCommentId) {
-            $state.pendingRebuttalCommentId = $rebuttalCommentId
-            $state.attempts = 0
-          }
-          Write-Log ('PR #' + $num + ' head ' + $sha7 + ': detected new rebuttal comment ' + $rebuttalCommentId + ', starting round ' + ([int]$state.round + 1))
         }
       }
 
-      $nextRound = [int]$state.round + 1
-      $runDirName = 'pr-' + $num + '-' + $sha7
+      $nextRound = if ($arbiterRetryOnly) { [int]$state.round } else { [int]$state.round + 1 }
+      $runDirName = if ($arbiterRetryOnly) { 'pr-' + $num + '-' + $sha7 + '-arbiter' } else { 'pr-' + $num + '-' + $sha7 }
       $runDir = Join-Path $runsDir $runDirName
       if (Test-Path -LiteralPath $runDir) {
         $runDir = Join-Path $runsDir ($runDirName + '-r' + $nextRound + '-' + [DateTime]::Now.ToString('yyyyMMddTHHmmss'))
@@ -1213,10 +1872,18 @@ try {
       $pendingSet = $false
 
       try {
-        Write-Log ('auditing PR #' + $num + ' head ' + $sha7 + ' round ' + $nextRound)
-        if (-not $DryRun) {
-          Set-AuditCommitStatus -Config $config -Sha $headSha -State 'pending' -Description ('Nyx audit running (round ' + $nextRound + ')')
-          $pendingSet = $true
+        if ($arbiterRetryOnly) {
+          Write-Log ('arbitrating PR #' + $num + ' head ' + $sha7)
+          if (-not $DryRun) {
+            Set-AuditCommitStatus -Config $config -Sha $headSha -State 'pending' -Description 'Nyx audit arbitration running'
+            $pendingSet = $true
+          }
+        } else {
+          Write-Log ('auditing PR #' + $num + ' head ' + $sha7 + ' round ' + $nextRound)
+          if (-not $DryRun) {
+            Set-AuditCommitStatus -Config $config -Sha $headSha -State 'pending' -Description ('Nyx audit running (round ' + $nextRound + ')')
+            $pendingSet = $true
+          }
         }
 
         $fetchPr = Invoke-Git -Directory $repoDir -Arguments ('fetch --no-tags origin +refs/pull/' + $num + '/head:refs/audit/pr-' + $num) -AuthConfig $config -TempBase $runDir
@@ -1252,6 +1919,10 @@ try {
         }
 
         $issueNumber = Get-LinkedIssueNumber -PrBody $prBody -HeadRef $headRef
+        if ($arbiterRetryOnly -and $issueNumber -le 0 -and $null -ne $state.arbiterPending) {
+          $savedIssue = Get-JsonProp $state.arbiterPending 'issueNumber'
+          if ($null -ne $savedIssue) { $issueNumber = [int]$savedIssue }
+        }
         $issueBody = 'No linked issue found.'
         $issueError = ''
         if ($issueNumber -gt 0) {
@@ -1263,12 +1934,44 @@ try {
           }
         }
 
+        if ($arbiterRetryOnly) {
+          $diffStat = '(merge conflict with origin/main)'
+          if (-not $hasMergeConflict) {
+            $statRes = Invoke-Git -Directory $worktreeDir -Arguments 'diff --cached --stat origin/main' -TempBase $runDir
+            $diffStat = if ($statRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($statRes.text)) { $statRes.text.TrimEnd() } else { '(empty diff against origin/main)' }
+          }
+          $ap = $state.arbiterPending
+          $arbRecord = Invoke-ArbiterPass `
+            -Config $config `
+            -StateDir $stateDir `
+            -StatePath $statePath `
+            -State $state `
+            -PrNumber $num `
+            -HeadSha $headSha `
+            -MainSha $mainSha `
+            -IssueNumber $issueNumber `
+            -IssueBody $issueBody `
+            -DiffStat $diffStat `
+            -RebuttalText ([string](Get-JsonProp $ap 'rebuttal')) `
+            -BlockingFindings @(Get-JsonProp $ap 'blockingFindings' | Where-Object { $null -ne $_ }) `
+            -FailedAcceptance @(Get-JsonProp $ap 'failedAcceptance' | Where-Object { $null -ne $_ }) `
+            -FalseClaims @(Get-JsonProp $ap 'falseClaims' | Where-Object { $null -ne $_ }) `
+            -PriorCommentUrl ([string](Get-JsonProp $ap 'commentUrl')) `
+            -WorktreeDir $worktreeDir `
+            -RunDir $runDir `
+            -ArbiterTemplate $arbiterTemplate `
+            -IsDryRun:$DryRun
+          $null = $resultsOut.Add($arbRecord)
+          continue
+        }
+
         $acceptance = @()
         $claims = @()
         $withdrawn = @()
         $allFindings = New-Object Collections.Generic.List[object]
         $modelVerdict = ''
         $finalVerdict = 'block'
+        $diffStat = '(merge conflict with origin/main)'
 
         if ($hasMergeConflict) {
           $null = $allFindings.Add([pscustomobject]@{
@@ -1352,18 +2055,14 @@ try {
             $errReason = if ($null -ne $modelRes -and -not [string]::IsNullOrWhiteSpace([string]$modelRes.error)) { [string]$modelRes.error } else { 'audit model unavailable' }
             $newAttempts = [int]$state.attempts + 1
             $state.attempts = $newAttempts
-            $reachedMax = ($newAttempts -ge 3)
-            if ($reachedMax) {
-              $state.verdict = 'unavailable-failed'
-            }
+            $state.lastAttemptAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            if ($state.verdict -eq 'unavailable-failed') { $state.verdict = '' }
+            $inBackoff = ($newAttempts -ge 3)
+            $unavailCommitStatus = if ($inBackoff) { 'failure' } else { 'error' }
+            $unavailDesc = if ($inBackoff) { 'audit unavailable (backoff 60m), will retry' } else { 'audit unavailable, will retry' }
             if (-not $DryRun) {
               Save-PrState -Path $statePath -State $state
-              if ($reachedMax) {
-                Set-AuditCommitStatus -Config $config -Sha $headSha -State 'failure' -Description 'audit unavailable after 3 attempts; needs-human'
-                Add-NeedsHumanLabel -Config $config -Number $num
-              } else {
-                Set-AuditCommitStatus -Config $config -Sha $headSha -State 'error' -Description 'audit unavailable, will retry'
-              }
+              Set-AuditCommitStatus -Config $config -Sha $headSha -State $unavailCommitStatus -Description $unavailDesc
             }
             $unavailRecord = [ordered]@{
               pr = $num
@@ -1371,14 +2070,15 @@ try {
               round = $nextRound
               status = 'unavailable'
               attempts = $newAttempts
-              commitStatus = $(if ($reachedMax) { 'failure' } else { 'error' })
-              needsHuman = $reachedMax
+              lastAttemptAt = $state.lastAttemptAt
+              backoffMinutes = $(if ($inBackoff) { 60 } else { 0 })
+              commitStatus = $unavailCommitStatus
               error = $errReason
               runDir = $runDir
             }
             Write-Text (Join-Path $runDir 'result.json') ((ConvertTo-Json -InputObject $unavailRecord -Depth 6) + "`n")
             $null = $resultsOut.Add($unavailRecord)
-            Write-Log ('PR #' + $num + ' head ' + $sha7 + ' failed closed (attempts=' + $newAttempts + '): ' + $errReason)
+            Write-Log ('PR #' + $num + ' head ' + $sha7 + ' failed closed (attempts=' + $newAttempts + ', backoff=' + $inBackoff + '): ' + $errReason)
             continue
           }
 
@@ -1396,7 +2096,7 @@ try {
           }
 
           $hasBlocking = ($modelVerdict -eq 'block')
-          foreach ($f in $allFindings) {
+          foreach ($f in $allFindings.ToArray()) {
             if (([string](Get-JsonProp $f 'severity')).Trim().ToLowerInvariant() -eq 'blocking') { $hasBlocking = $true }
           }
           foreach ($a in $acceptance) {
@@ -1415,8 +2115,18 @@ try {
           }
         }
 
-        $needsHumanEscalation = ($finalVerdict -eq 'block' -and $nextRound -ge 2)
         $findingsArray = @($allFindings.ToArray())
+        $blockingFindings = @($findingsArray | Where-Object { ([string](Get-JsonProp $_ 'severity')).Trim().ToLowerInvariant() -eq 'blocking' })
+        $failedAcceptance = @($acceptance | Where-Object {
+          $ast = ([string](Get-JsonProp $_ 'status')).Trim().ToLowerInvariant()
+          $ast -eq 'missing' -or $ast -eq 'substituted'
+        })
+        $falseClaims = @($claims | Where-Object {
+          $hv = Get-JsonProp $_ 'holds'
+          ($hv -is [bool]) -and (-not $hv)
+        })
+
+        $needsArbitration = ($finalVerdict -eq 'block' -and $nextRound -ge 2)
         $commentBody = Build-AuditCommentBody `
           -HeadSha $headSha `
           -Round $nextRound `
@@ -1426,23 +2136,113 @@ try {
           -Findings $findingsArray `
           -Claims $claims `
           -Withdrawn $withdrawn `
-          -NeedsHumanEscalation $needsHumanEscalation
+          -ArbiterFollows ($needsArbitration -and -not [bool]$state.arbiterDone)
         Write-Text (Join-Path $runDir 'comment.md') $commentBody
 
-        $blockingCount = 0
-        $advisoryCount = 0
-        foreach ($f in $findingsArray) {
-          if (([string](Get-JsonProp $f 'severity')).Trim().ToLowerInvariant() -eq 'blocking') { $blockingCount++ } else { $advisoryCount++ }
+        $blockingCount = $blockingFindings.Count
+        $advisoryCount = $findingsArray.Count - $blockingCount
+        $failingAccCount = $failedAcceptance.Count
+        $failingClaimsCount = $falseClaims.Count
+
+        $commentUrl = ''
+        $commentId = [long]0
+        $commentCreated = ''
+        if (-not $DryRun) {
+          $posted = Invoke-AuditApi -Config $config -Method 'POST' -Path ('/repos/' + $config.repo + '/issues/' + $num + '/comments') -Body @{ body = $commentBody }
+          $commentId = [long](Get-JsonProp $posted 'id')
+          $commentUrl = [string](Get-JsonProp $posted 'html_url')
+          $commentCreated = [string](Get-JsonProp $posted 'created_at')
         }
-        $failingAccCount = 0
-        foreach ($a in $acceptance) {
-          $ast = ([string](Get-JsonProp $a 'status')).Trim().ToLowerInvariant()
-          if ($ast -eq 'missing' -or $ast -eq 'substituted') { $failingAccCount++ }
-        }
-        $failingClaimsCount = 0
-        foreach ($cl in $claims) {
-          $hv = Get-JsonProp $cl 'holds'
-          if ($hv -is [bool] -and -not $hv) { $failingClaimsCount++ }
+
+        if ($needsArbitration) {
+          if (-not $DryRun) {
+            $state.headSha = $headSha
+            $state.round = $nextRound
+            $state.lastCommentId = $commentId
+            $state.lastCommentCreatedAt = $commentCreated
+            if ($rebuttalCommentId -gt 0) { $state.lastRebuttalCommentId = $rebuttalCommentId }
+            $state.pendingRebuttalCommentId = [long]0
+            $state.verdict = 'block'
+            $state.baseSha = $mainSha
+            $state.priorFindings = $findingsArray
+            $state.attempts = 0
+            $state.lastAttemptAt = ''
+            if (-not [bool]$state.arbiterDone) {
+              $state.arbiterState = 'pending'
+              $state.arbiterPending = [pscustomobject]@{
+                issueNumber = $issueNumber
+                commentUrl = $commentUrl
+                rebuttal = $rebuttalText
+                blockingFindings = $blockingFindings
+                failedAcceptance = $failedAcceptance
+                falseClaims = $falseClaims
+              }
+            }
+            Save-PrState -Path $statePath -State $state
+          }
+
+          if ([bool]$state.arbiterDone) {
+            # Enforce at most one arbitration per head SHA: park directly without re-invoking the arbiter.
+            $emptyEval = Evaluate-ArbiterRulings -BlockingFindings $blockingFindings -FailedAcceptance $failedAcceptance -FalseClaims $falseClaims -ArbiterResult ([pscustomobject]@{ rulings = @(); acceptance = @(); claims = @() })
+            $parkBody = Build-ArbiterParkedCommentBody -HeadSha $headSha -IssueNumber $issueNumber -Evaluation $emptyEval -Note 'Arbitration was already used once for this head SHA; parking PR.'
+            Write-Text (Join-Path $runDir 'arbiter-comment.md') $parkBody
+            $parkDesc = 'Nyx audit parked (arbiter already ran for this head)'
+            $parkCommentId = [long]0
+            $parkCommentUrl = ''
+            if (-not $DryRun) {
+              $pPost = Invoke-AuditApi -Config $config -Method 'POST' -Path ('/repos/' + $config.repo + '/issues/' + $num + '/comments') -Body @{ body = $parkBody }
+              $parkCommentId = [long](Get-JsonProp $pPost 'id')
+              $parkCommentUrl = [string](Get-JsonProp $pPost 'html_url')
+              Set-AuditCommitStatus -Config $config -Sha $headSha -State 'failure' -Description $parkDesc -TargetUrl $parkCommentUrl
+              Add-AuditParkedLabel -Config $config -Number $num
+              $state.verdict = 'parked'
+              $state.arbiterState = 'parked'
+              $state.arbiterPending = $null
+              $state.lastCommentId = $parkCommentId
+              $state.lastCommentCreatedAt = [string](Get-JsonProp $pPost 'created_at')
+              Save-PrState -Path $statePath -State $state
+            }
+            $parkRecord = [ordered]@{
+              pr = $num
+              headSha = $headSha
+              round = $nextRound
+              status = 'ok'
+              verdict = 'parked'
+              arbiter = 'skipped-already-ran'
+              commitStatus = 'failure'
+              description = $parkDesc
+              commentId = $parkCommentId
+              commentUrl = $parkCommentUrl
+              runDir = $runDir
+            }
+            Write-Text (Join-Path $runDir 'result.json') ((ConvertTo-Json -InputObject $parkRecord -Depth 6) + "`n")
+            $null = $resultsOut.Add($parkRecord)
+            Write-Log ('PR #' + $num + ' head ' + $sha7 + ' round ' + $nextRound + ' parked (arbiter already ran for this head)')
+            continue
+          }
+
+          $arbRecord = Invoke-ArbiterPass `
+            -Config $config `
+            -StateDir $stateDir `
+            -StatePath $statePath `
+            -State $state `
+            -PrNumber $num `
+            -HeadSha $headSha `
+            -MainSha $mainSha `
+            -IssueNumber $issueNumber `
+            -IssueBody $issueBody `
+            -DiffStat $diffStat `
+            -RebuttalText $rebuttalText `
+            -BlockingFindings $blockingFindings `
+            -FailedAcceptance $failedAcceptance `
+            -FalseClaims $falseClaims `
+            -PriorCommentUrl $commentUrl `
+            -WorktreeDir $worktreeDir `
+            -RunDir $runDir `
+            -ArbiterTemplate $arbiterTemplate `
+            -IsDryRun:$DryRun
+          $null = $resultsOut.Add($arbRecord)
+          continue
         }
 
         $ghStatus = if ($finalVerdict -eq 'pass') { 'success' } else { 'failure' }
@@ -1455,22 +2255,11 @@ try {
           if ($failingClaimsCount -gt 0) { $parts += ($failingClaimsCount.ToString() + ' false claim(s)') }
           $detail = if ($parts.Count -gt 0) { $parts -join ', ' } else { 'blocked' }
           $statusDesc = 'Nyx audit blocked (round ' + $nextRound + '): ' + $detail
-          if ($needsHumanEscalation) { $statusDesc += '; needs-human' }
         }
         $statusDesc = ConvertTo-SingleLine $statusDesc 140
 
-        $commentUrl = ''
-        $commentId = [long]0
         if (-not $DryRun) {
-          $posted = Invoke-AuditApi -Config $config -Method 'POST' -Path ('/repos/' + $config.repo + '/issues/' + $num + '/comments') -Body @{ body = $commentBody }
-          $commentId = [long](Get-JsonProp $posted 'id')
-          $commentUrl = [string](Get-JsonProp $posted 'html_url')
-          $commentCreated = [string](Get-JsonProp $posted 'created_at')
-
           Set-AuditCommitStatus -Config $config -Sha $headSha -State $ghStatus -Description $statusDesc -TargetUrl $commentUrl
-          if ($needsHumanEscalation) {
-            Add-NeedsHumanLabel -Config $config -Number $num
-          }
 
           $state.headSha = $headSha
           $state.round = $nextRound
@@ -1481,6 +2270,10 @@ try {
           $state.verdict = $finalVerdict
           $state.baseSha = $mainSha
           $state.priorFindings = $findingsArray
+          $state.attempts = 0
+          $state.lastAttemptAt = ''
+          $state.arbiterState = ''
+          $state.arbiterPending = $null
           Save-PrState -Path $statePath -State $state
         }
 
@@ -1494,7 +2287,6 @@ try {
           description = $statusDesc
           commentId = $commentId
           commentUrl = $commentUrl
-          needsHuman = $needsHumanEscalation
           issueNumber = $issueNumber
           acceptance = @($acceptance)
           findings = @($findingsArray)
@@ -1509,7 +2301,11 @@ try {
         $errMsg = ConvertTo-SingleLine (Protect-LogText $_.Exception.Message) 300
         Write-Log ('PR #' + $num + ' head ' + $sha7 + ' error: ' + $errMsg)
         if ($pendingSet -and -not $DryRun) {
-          try { Set-AuditCommitStatus -Config $config -Sha $headSha -State 'error' -Description 'audit unavailable, will retry' } catch { }
+          if ($arbiterRetryOnly -or $state.arbiterState -eq 'pending') {
+            try { Set-AuditCommitStatus -Config $config -Sha $headSha -State 'failure' -Description 'arbitration pending' } catch { }
+          } else {
+            try { Set-AuditCommitStatus -Config $config -Sha $headSha -State 'error' -Description 'audit unavailable, will retry' } catch { }
+          }
         }
         $null = $errorsOut.Add([ordered]@{ pr = $num; headSha = $headSha; error = $errMsg; runDir = $runDir })
       } finally {

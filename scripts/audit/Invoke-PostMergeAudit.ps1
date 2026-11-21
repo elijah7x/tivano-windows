@@ -1,7 +1,7 @@
 # Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-21.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 # Usage: .\Invoke-PostMergeAudit.ps1 [-ConfigPath <path>] [-SinceHours 26] [-PrNumbers 94,95,...] [-DryRun]
-# Audits merged nyx/* PRs on main after merge, opens/reopens issues for blocking findings, and checks main ruleset integrity.
+# Audits merged nyx/* PRs on main after merge, opens/reopens issues for blocking findings, and self-heals main ruleset integrity.
 
 param(
   [string]$ConfigPath = 'C:\tivano\audit\config.json',
@@ -14,6 +14,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $script:GitPath = $null
+$script:GhPath = $null
 $script:CmdExe = Join-Path ([Environment]::GetFolderPath('System')) 'cmd.exe'
 $script:LogPath = $null
 $script:WorkRoot = $null
@@ -412,13 +413,146 @@ function Build-IssueBlockComment {
   return (Protect-PublicText (($lines -join "`n") + "`n"))
 }
 
+function Ensure-AuditLogLabel {
+  param($Config, [string]$Repo)
+  $exists = $false
+  try {
+    $null = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $Repo + '/labels/audit-log')
+    $exists = $true
+  } catch {
+    $exists = $false
+  }
+  if (-not $exists) {
+    try {
+      $null = Invoke-AuditApi -Config $Config -Method 'POST' -Path ('/repos/' + $Repo + '/labels') -Body @{
+        name = 'audit-log'
+        color = '0052cc'
+        description = 'Append-only automated audit event log'
+      }
+    } catch {
+      Write-AuditLog ('create audit-log label note: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+    }
+  }
+}
+
+function Add-AuditLogComment {
+  param(
+    $Config,
+    [string]$Repo,
+    [string]$CommentBody,
+    [switch]$IsDryRun
+  )
+  $logTitle = 'Audit log'
+  if ($IsDryRun) {
+    Write-AuditLog ('dry-run: would append comment to "' + $logTitle + '" issue (label audit-log)')
+    return
+  }
+
+  Ensure-AuditLogLabel -Config $Config -Repo $Repo
+
+  $existing = $null
+  try {
+    $labelled = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $Repo + '/issues?state=open&labels=audit-log&per_page=100')
+    foreach ($iss in @($labelled)) {
+      if ($null -eq $iss) { continue }
+      if ($null -ne (Get-Prop $iss 'pull_request')) { continue }
+      if (([string](Get-Prop $iss 'title')).Trim() -eq $logTitle) {
+        $existing = $iss
+        break
+      }
+    }
+  } catch {
+    Write-AuditLog ('warning: failed to list open audit-log issues: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+  }
+
+  if ($null -eq $existing) {
+    try {
+      $query = 'repo:' + $Repo + ' is:issue "' + $logTitle + '" in:title'
+      $searchPath = '/search/issues?q=' + [Uri]::EscapeDataString($query) + '&per_page=50'
+      $searchRes = Invoke-AuditApi -Config $Config -Method 'GET' -Path $searchPath
+      $items = Get-Prop $searchRes 'items'
+      $closedMatch = $null
+      if ($null -ne $items) {
+        foreach ($iss in @($items)) {
+          if ($null -eq $iss) { continue }
+          if ($null -ne (Get-Prop $iss 'pull_request')) { continue }
+          if (([string](Get-Prop $iss 'title')).Trim() -ne $logTitle) { continue }
+          $st = ([string](Get-Prop $iss 'state')).ToLowerInvariant()
+          if ($st -eq 'open') {
+            $existing = $iss
+            break
+          } elseif ($null -eq $closedMatch) {
+            $closedMatch = $iss
+          }
+        }
+      }
+      if ($null -eq $existing -and $null -ne $closedMatch) {
+        $existing = $closedMatch
+      }
+    } catch {
+      Write-AuditLog ('warning: failed to search Audit log issue by title: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+    }
+  }
+
+  $issueNum = 0
+  if ($null -ne $existing) {
+    $issueNum = [int](Get-Prop $existing 'number')
+    $existingState = ([string](Get-Prop $existing 'state')).ToLowerInvariant()
+    if ($existingState -eq 'closed') {
+      try {
+        $null = Invoke-AuditApi -Config $Config -Method 'PATCH' -Path ('/repos/' + $Repo + '/issues/' + $issueNum) -Body @{ state = 'open' }
+        Write-AuditLog ('reopened Audit log issue #' + $issueNum)
+      } catch {
+        Write-AuditLog ('warning: failed to reopen Audit log issue #' + $issueNum + ': ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+      }
+    }
+    try {
+      $null = Invoke-AuditApi -Config $Config -Method 'POST' -Path ('/repos/' + $Repo + '/issues/' + $issueNum + '/labels') -Body @{ labels = @('audit-log') }
+    } catch { }
+  } else {
+    $created = Invoke-AuditApi -Config $Config -Method 'POST' -Path ('/repos/' + $Repo + '/issues') -Body @{
+      title = $logTitle
+      body = "Automated append-only audit log for ``nyx/audit``. Events are appended as comments below.`n"
+      labels = @('audit-log')
+    }
+    $issueNum = [int](Get-Prop $created 'number')
+    Write-AuditLog ('created Audit log issue #' + $issueNum + ' (label audit-log, unassigned)')
+  }
+
+  $null = Invoke-AuditApi -Config $Config -Method 'POST' -Path ('/repos/' + $Repo + '/issues/' + $issueNum + '/comments') -Body @{
+    body = $CommentBody
+  }
+  Write-AuditLog ('appended event comment to Audit log issue #' + $issueNum)
+}
+
+function Invoke-GhApi {
+  param(
+    [string]$Arguments,
+    [string]$TempBase
+  )
+  if ([string]::IsNullOrWhiteSpace($script:GhPath)) {
+    return [pscustomobject]@{
+      exitCode = -1
+      text = ''
+      error = 'gh CLI was not found on PATH.'
+    }
+  }
+  $out = Join-Path $TempBase '.gh.out.tmp'
+  $err = Join-Path $TempBase '.gh.err.tmp'
+  $code = Invoke-ProcessCapture $script:GhPath $Arguments $out $err $script:WorkRoot
+  return [pscustomobject]@{
+    exitCode = $code
+    text = [string](Read-TextUtf8 $out)
+    error = [string](Read-TextUtf8 $err)
+  }
+}
+
 function Test-AuditRulesetIntegrity {
   param($Config, [string]$Repo, [switch]$IsDryRun)
   $statusContext = [string](Get-Prop $Config 'statusContext')
   if ([string]::IsNullOrWhiteSpace($statusContext)) { $statusContext = 'nyx/audit' }
   $expectedAppId = [long](Get-Prop $Config 'appId')
-  $alertTitle = 'Audit ruleset missing or disabled'
-  $alertMarker = '<!-- nyx-postaudit ruleset-integrity -->'
+  $targetRulesetName = 'nyx audit'
 
   $defaultBranch = 'main'
   try {
@@ -431,6 +565,8 @@ function Test-AuditRulesetIntegrity {
 
   $foundValid = $false
   $matchedInfo = ''
+  $nyxRulesetId = $null
+  $appListFailed = $false
   $inspectionNotes = New-Object Collections.Generic.List[string]
 
   try {
@@ -444,6 +580,9 @@ function Test-AuditRulesetIntegrity {
       if ($null -eq $rsId) { continue }
       $detail = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $Repo + '/rulesets/' + $rsId)
       $rsName = [string](Get-Prop $detail 'name')
+      if ($null -eq $nyxRulesetId -and $rsName.Trim().Equals($targetRulesetName, [StringComparison]::OrdinalIgnoreCase)) {
+        $nyxRulesetId = [long]$rsId
+      }
       $enforcement = ([string](Get-Prop $detail 'enforcement')).ToLowerInvariant()
       $target = ([string](Get-Prop $detail 'target')).ToLowerInvariant()
 
@@ -488,6 +627,7 @@ function Test-AuditRulesetIntegrity {
       }
     }
   } catch {
+    $appListFailed = $true
     $errMsg = ConvertTo-SingleLine $_.Exception.Message 200
     $null = $inspectionNotes.Add('Ruleset API check failed: ' + (Protect-PublicText $errMsg))
     Write-AuditLog ('ruleset integrity API error: ' + $errMsg)
@@ -498,64 +638,120 @@ function Test-AuditRulesetIntegrity {
     return $true
   }
 
-  Write-AuditLog ('ruleset integrity FAILED: no active default-branch ruleset requires ' + $statusContext + ' from appId=' + $expectedAppId)
+  Write-AuditLog ('ruleset integrity FAILED: no active default-branch ruleset requires ' + $statusContext + ' from appId=' + $expectedAppId + '; attempting self-heal via gh CLI')
+
+  # If the App-token GET failed, check via gh CLI before deciding PUT vs POST to avoid duplicates.
+  if ($appListFailed -and $null -eq $nyxRulesetId -and -not [string]::IsNullOrWhiteSpace($script:GhPath)) {
+    $ghList = Invoke-GhApi -Arguments ('api repos/' + $Repo + '/rulesets') -TempBase $script:WorkRoot
+    if ($ghList.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($ghList.text)) {
+      try {
+        $ghSummaries = @(($ghList.text | ConvertFrom-Json) | ForEach-Object { $_ } | Where-Object { $null -ne $_ })
+        foreach ($s in $ghSummaries) {
+          $sName = [string](Get-Prop $s 'name')
+          $sId = Get-Prop $s 'id'
+          if ($null -ne $sId -and $sName.Trim().Equals($targetRulesetName, [StringComparison]::OrdinalIgnoreCase)) {
+            $nyxRulesetId = [long]$sId
+            break
+          }
+        }
+      } catch { }
+    }
+  }
+
+  $rulesetPayload = [ordered]@{
+    name = $targetRulesetName
+    target = 'branch'
+    enforcement = 'active'
+    bypass_actors = @()
+    conditions = [ordered]@{
+      ref_name = [ordered]@{
+        include = @('~DEFAULT_BRANCH')
+        exclude = @()
+      }
+    }
+    rules = @(
+      [ordered]@{
+        type = 'required_status_checks'
+        parameters = [ordered]@{
+          strict_required_status_checks_policy = $false
+          required_status_checks = @(
+            [ordered]@{
+              context = $statusContext
+              integration_id = $expectedAppId
+            }
+          )
+        }
+      }
+    )
+  }
+
+  $healMethod = 'POST'
+  $healEndpoint = 'repos/' + $Repo + '/rulesets'
+  if ($null -ne $nyxRulesetId) {
+    $healMethod = 'PUT'
+    $healEndpoint = 'repos/' + $Repo + '/rulesets/' + $nyxRulesetId
+  }
+
+  $healed = $false
+  $healDetail = ''
+  if ($IsDryRun) {
+    $healDetail = 'dry-run: would run gh api -X ' + $healMethod + ' ' + $healEndpoint + ' (enforcement=active, context=' + $statusContext + ', integration_id=' + $expectedAppId + ')'
+    Write-AuditLog $healDetail
+  } else {
+    $payloadPath = Join-Path $script:WorkRoot '.ruleset-heal.json'
+    try {
+      Write-TextUtf8 $payloadPath ((ConvertTo-Json -InputObject $rulesetPayload -Depth 10 -Compress) + "`n")
+      $ghArgs = 'api -X ' + $healMethod + ' ' + $healEndpoint + ' --input ' + (Quote-Arg $payloadPath)
+      $healRes = Invoke-GhApi -Arguments $ghArgs -TempBase $script:WorkRoot
+      if ($healRes.exitCode -eq 0) {
+        $healed = $true
+        $healedId = $nyxRulesetId
+        if (-not [string]::IsNullOrWhiteSpace($healRes.text)) {
+          try {
+            $respObj = $healRes.text | ConvertFrom-Json
+            $respId = Get-Prop $respObj 'id'
+            if ($null -ne $respId) { $healedId = [long]$respId }
+          } catch { }
+        }
+        $healDetail = 'Self-heal succeeded via gh api -X ' + $healMethod + ' ' + $healEndpoint + $(if ($null -ne $healedId) { ' (ruleset #' + $healedId + ')' } else { '' }) + '.'
+        Write-AuditLog ('ruleset self-heal OK: ' + $healDetail)
+      } else {
+        $errSummary = ConvertTo-SingleLine $(if (-not [string]::IsNullOrWhiteSpace($healRes.error)) { $healRes.error } else { $healRes.text }) 220
+        $healDetail = 'Self-heal failed via gh api -X ' + $healMethod + ' ' + $healEndpoint + ' (exit ' + $healRes.exitCode + '): ' + (Protect-PublicText $errSummary)
+        Write-AuditLog ('ruleset self-heal FAILED: ' + $healDetail)
+      }
+    } finally {
+      if (Test-Path -LiteralPath $payloadPath -PathType Leaf) {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+      }
+    }
+  }
 
   $checkedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
   $bodyLines = New-Object Collections.Generic.List[string]
-  $null = $bodyLines.Add('> Automated post-merge audit integrity check (`nyx/audit`). Checked at ' + $checkedAt + '.')
+  $statusHeading = if ($healed) { 'Ruleset self-healed' } else { 'Ruleset self-heal failed' }
+  $null = $bodyLines.Add('### ' + $statusHeading + ' (' + $checkedAt + ')')
   $null = $bodyLines.Add('')
-  $null = $bodyLines.Add('No active branch ruleset on `' + $defaultBranch + '` currently enforces required status check `' + $statusContext + '` from the configured audit GitHub App (`integration_id` = `' + $expectedAppId + '`).')
+  $null = $bodyLines.Add('Post-merge integrity check found no active branch ruleset on `' + $defaultBranch + '` enforcing required status check `' + $statusContext + '` from the audit GitHub App (`integration_id` = `' + $expectedAppId + '`).')
   $null = $bodyLines.Add('')
-  $null = $bodyLines.Add('### Inspected rulesets')
-  foreach ($note in $inspectionNotes) {
-    $null = $bodyLines.Add('- ' + (Protect-PublicText $note))
+  $null = $bodyLines.Add('- Action: `' + $healMethod + ' ' + $healEndpoint + '` via owner `gh` CLI login')
+  $null = $bodyLines.Add('- Result: ' + (Protect-PublicText $healDetail))
+  if ($inspectionNotes.Count -gt 0) {
+    $null = $bodyLines.Add('')
+    $null = $bodyLines.Add('Inspected rulesets prior to heal:')
+    foreach ($note in $inspectionNotes.ToArray()) {
+      $null = $bodyLines.Add('- ' + (Protect-PublicText $note))
+    }
   }
-  $null = $bodyLines.Add('')
-  $null = $bodyLines.Add('### Required action')
-  $null = $bodyLines.Add('Restore or enable an active repository ruleset targeting `~DEFAULT_BRANCH` (`' + $defaultBranch + '`) with `required_status_checks` containing context `' + $statusContext + '` bound to the audit GitHub App (`integration_id` = `' + $expectedAppId + '`).')
-  $null = $bodyLines.Add('')
-  $null = $bodyLines.Add($alertMarker)
-  $alertBody = Protect-PublicText (($bodyLines -join "`n") + "`n")
+  $logBody = Protect-PublicText (($bodyLines.ToArray() -join "`n") + "`n")
 
-  if ($IsDryRun) {
-    Write-AuditLog ('dry-run: would open or update needs-human issue "' + $alertTitle + '"')
-    return $false
-  }
-
-  $existing = $null
   try {
-    $openIssues = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $Repo + '/issues?state=open&labels=needs-human&per_page=100')
-    foreach ($iss in @($openIssues)) {
-      if ($null -eq $iss) { continue }
-      if ($null -ne (Get-Prop $iss 'pull_request')) { continue }
-      $t = [string](Get-Prop $iss 'title')
-      $b = [string](Get-Prop $iss 'body')
-      if ($t -eq $alertTitle -or ($b -and $b.IndexOf($alertMarker, [StringComparison]::Ordinal) -ge 0)) {
-        $existing = $iss
-        break
-      }
-    }
+    Add-AuditLogComment -Config $Config -Repo $Repo -CommentBody $logBody -IsDryRun:$IsDryRun
   } catch {
-    Write-AuditLog ('warning: failed to list existing needs-human issues: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+    Write-AuditLog ('warning: failed to append ruleset event to Audit log issue: ' + (ConvertTo-SingleLine $_.Exception.Message 180))
   }
 
-  if ($null -ne $existing) {
-    $existingNum = [int](Get-Prop $existing 'number')
-    $null = Invoke-AuditApi -Config $Config -Method 'PATCH' -Path ('/repos/' + $Repo + '/issues/' + $existingNum) -Body @{
-      title = $alertTitle
-      body = $alertBody
-    }
-    Write-AuditLog ('updated existing ruleset alert issue #' + $existingNum)
-  } else {
-    $created = Invoke-AuditApi -Config $Config -Method 'POST' -Path ('/repos/' + $Repo + '/issues') -Body @{
-      title = $alertTitle
-      body = $alertBody
-      labels = @('needs-human')
-    }
-    Write-AuditLog ('opened ruleset alert issue #' + [string](Get-Prop $created 'number'))
-  }
-
-  return $false
+  return $healed
 }
 
 $lockStream = $null
@@ -621,10 +817,19 @@ try {
 
   $env:GIT_TERMINAL_PROMPT = '0'
   $env:GCM_INTERACTIVE = 'never'
+  $env:GH_PROMPT_DISABLED = '1'
+  $env:GH_NO_UPDATE_NOTIFIER = '1'
 
   $gitCmd = Get-Command -Name 'git' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $gitCmd) { throw 'git was not found on PATH.' }
   $script:GitPath = $gitCmd.Source
+
+  $ghCmd = Get-Command -Name 'gh' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($ghCmd) {
+    $script:GhPath = $ghCmd.Source
+  } else {
+    Write-AuditLog 'warning: gh CLI was not found on PATH; ruleset self-heal will not be able to repair rulesets'
+  }
 
   # Verify token minting succeeds up front so auth issues fail fast.
   $null = Get-AuditToken -Config $config

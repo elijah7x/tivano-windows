@@ -1,161 +1,56 @@
 # Automated development loop
 
-A Windows 11 machine can work through this repository's labeled issues on its own with the Devin CLI: take an issue, implement it in a git worktree, self-test, open a pull request, get it reviewed by the isolated [automated PR reviewer](../pr-review/README.md), merge it when the gate passes, and continue with the next issue. A person can stop it at any time and can take over any pull request it touches.
+A Windows 11 test machine runs `elijah7x/tivano-windows`'s `nyx-auto` issue backlog unattended in a single long-running Devin Desktop chat (**Autopilot**, following `scripts/dev-loop/autopilot.md` or `scripts/dev-loop/solo-v3.md`), watched and kept up to date by `Start-DevinAutopilot.ps1`.
 
-Everything it produces is **agent self-tested**, not maintainer acceptance. It never approves or requests changes, never touches pull requests that are not on its own `nyx/` branches, and never force-pushes.
+Everything produced by the loop is **agent self-tested**, not maintainer acceptance. It never approves or requests changes, never touches pull requests outside its own `nyx/` branches, and never force-pushes.
 
-## What one run does
+## Autonomous policy (no human waits)
 
-`Invoke-DevLoop.ps1` runs a continuous pass: it keeps taking the next candidate until none is left, `<Root>\STOP` exists, today's `-MaxMergesPerDay` cap is hit, or `-MaxIssuesPerRun` is reached. A scheduled task triggers every 30 minutes with `MultipleInstances IgnoreNew`, so it only starts a new pass after the previous one ends or crashes.
+The owner does **not** participate during development, review, or audit, and enters only when a packaged build is ready for hands-on testing:
 
-1. Exit at once if `<Root>\STOP` exists. Take the single-instance lock. Before each candidate, stop if `<Root>\STOP` exists or today's merge limit is reached (posting a once-a-day note on the tracking issue when the merge cap stops it, or a one-time note when no `-Label` issue is left).
-2. `git fetch origin` in `-Checkout`.
-3. **Resume first.** An open pull request whose head branch starts with `nyx/` and whose author is the signed-in `gh` user is continued before anything new starts (lowest number first; one without a `needs-human` label). Its review, fix and merge steps run as below.
-4. **Otherwise pick an issue**: the lowest-numbered open issue with the `-Label` label (default `nyx-auto`), without `needs-human` or `nyx-blocked`, and with no open pull request from a `nyx/<n>-*` branch. An issue already attempted twice without a pull request gets `needs-human` and a comment instead, and the pass moves on.
-5. **Develop.** A worktree `<Root>\work\issue-<n>` on branch `nyx/<n>-<slug>` is cut from `origin/main` (reused when an earlier attempt left one). With `-DevinFrontEnd gui` (the default) the runner opens the worktree in Devin Desktop on the signed-in desktop, focuses its chat (Ctrl+Shift+E, then Ctrl+L), sends `/bypass`, pastes a one-line instruction pointing at the prompt file and sends it, then waits for the agent to create `agent-done-<step>.txt` in the run directory as its last action (or for `-DevinTimeoutMin`). While waiting in `gui` mode, a conversation stuck on an approval for 2 minutes gets `/bypass` re-sent (up to 3 times); no agent log activity for `-StallMinutes`, or an approval still pending for 10 minutes after 3 recoveries, ends the attempt as `stalled`. With `-DevinFrontEnd cli` Devin CLI runs in a console window instead; a running CLI session cannot be opened in Devin Desktop. Either way Devin works with `dev-prompt.md`, the issue text passed as a file, and the run directory `<Root>\runs\issue-<n>-<timestamp>`. It writes `result.json` (`{"status": "ready" | "blocked", "reason", "title"}`) and `pr-body.md`.
-   - Devin failed, stalled, timed out, or left no usable result, no `pr-body.md`, or an empty diff: the attempt counts, the worktree is kept, and the issue is retried once more in the same pass (or gets `needs-human` after two failed attempts) before the pass moves on.
-   - `blocked`: the reason is commented on the issue, the issue gets `nyx-blocked`, the worktree is removed.
-6. **Guard the diff** before committing (see below). On a trip the runner opens no pull request, labels the issue `needs-human`, comments what tripped, and keeps the branch locally.
-7. **Commit and open the PR.** The commit message is the result title plus `Implemented by an AI coding agent (Devin); agent self-tested.`; then `git push -u origin <branch>` (never forced) and `gh pr create --base main` with `pr-body.md` (`Closes #<n>` is appended when missing).
-8. **Review.** `..\pr-review\Invoke-PrReview.ps1` runs for the PR with `-Force`, posts its review comment, and writes `gate.json`. A head the pr-review poller already reviewed and posted is not reviewed twice: its existing `gate.json` is used.
-9. **Merge gate.** All of these must hold:
-   - the pr `install`, `build` and `typecheck` steps exit 0;
-   - `newFailures` is empty;
-   - the pr unit run exits 0, or fails exactly as base fails with a per-test comparison and no new failure;
-   - the pr `e2e` exit is not worse than base (0 when base is 0; failing on both is accepted unless exactly one side hit the 15-minute timeout);
-   - `verdict.recommendation` is `merge` and `verdict.blocking` is empty;
-   - `reviewOk` and `posted` are true;
-   - the PR is still open, its head SHA is unchanged and it does not conflict with `main`;
-   - today's merges are below `-MaxMergesPerDay`.
+- **No human pauses or escalations:** the loop never stops to ask questions, wait for confirmation, consult a person, or wait on manual audit overrides. Only creating `<Root>\state\STOP` stops it.
+- **Automatic arbitration & non-blocking audit waits:** `nyx/audit` disputes are arbitrated automatically by the independent auditor (which never asks a person to intervene). While a PR's `nyx/audit` status is `pending` or `arbitration pending`, autopilot records it in `progress.json` (`awaitingAudit`) and works on another issue instead of idling.
+- **Daily merge cap auto-resume:** when the cap of 20 merges per local calendar day is reached, autopilot sleeps in 5-minute intervals (checking `STOP`) until the next local calendar day and resumes automatically.
+- **Queue priority:** open eligible `nyx-auto` issues (skipping permanently `parked` ones) are worked in strict order:
+  1. `audit-followup` issues (and `build-break` issues opened by the milestone), lowest number first;
+  2. reopened issues (`state_reason == "reopened"`), lowest number first;
+  3. remaining parity issues.
 
-   If only unit failures are in the way, the review runs once more with `-Force -DryRun` (no second comment) to rule out a flake, and that gate decides; a PR comment records the merge after a flake. On a pass: `gh pr merge --squash --match-head-commit <sha> --delete-branch`, the worktree is removed, and the run continues with the next issue up to `-MaxIssuesPerRun`. Each finished issue (`merged`, `needs-human`, `blocked`, failed attempt, or `skipped`) gets one comment on the tracking issue.
-10. **Fix rounds.** On a failed gate with rounds left, Devin runs in the same worktree with `fix-prompt.md` and the review, gate, check summary and a list of the failed conditions. It updates `result.json` and may update `pr-body.md`. The runner guards the diff again, adds a **new** commit (no amend), pushes it normally, updates the PR body when it changed, and reviews again. After `-MaxFixRounds` rounds the PR and the issue get `needs-human`, a short comment lists the failed conditions, the PR stays open, and the run moves on.
+## Parking and revisits
 
-Problems with the review machinery rather than the change (the reviewer failed, wrote no usable verdict, or its lock was busy) never use a fix round. A busy reviewer is retried next run; two unusable reviews in a row hand the PR over with `needs-human`. A PR closed by a person without merging makes the issue `needs-human` rather than being redone.
+Stuck work never blocks the queue or waits for a person:
 
-### Guarded paths
+1. **Park and move on:** if a PR receives the `audit-parked` label (and `## Nyx audit - <sha7> - PARKED` comment) from the independent auditor, or an issue fails its own gate after the allowed fix rounds (2 fix rounds + 1 automated GLM-5.3 consult round, or consult/gate unavailable), autopilot leaves the PR open, records `{issue, pr, reason, attempt}` in `<Root>\autopilot\parked.json`, and moves on to the next issue.
+2. **Revisit at most twice:** once no unparked open `nyx-auto` issues (or in-flight `awaitingAudit` PRs) remain, autopilot revisits each parked issue up to two times. On each revisit it closes the old PR with a one-line comment, starts a fresh branch (`nyx/<n>-<slug>-r<k>`) from current `origin/main` using a different approach informed by the audit and gate comments, and opens a new PR.
+3. **Permanent park:** if the second revisit attempt also fails (or an issue cannot be implemented without modifying a guarded path or `package.json` dependencies), autopilot labels the issue `parked`, leaves the open PR open, records the one-line reason in `parked.json`, and skips the issue for good.
 
-The runner refuses to open or update a pull request whose whole difference from the merge base:
+## Hands-on testing milestone and continuous polling
 
-- touches `scripts/dev-loop/`, `scripts/pr-review/`, `scripts/windows-acceptance/`, `.github/`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `TRADEMARK.md`, `docs/source-baseline.json` or `package-lock.json`;
-- changes a dependency section of `package.json` (`dependencies`, `devDependencies`, `optionalDependencies`, `peerDependencies`, bundled dependencies, `overrides`);
-- sets a `docs/parity.md` row to `done` that was not `done` before.
+Once no open `nyx-auto` issue remains outside permanently `parked` ones (and `origin/main` has commits newer than the last hands-on build):
 
-These changes need a maintainer. The prompts tell Devin the same rules; the guard is what enforces them.
-
-## Trust model
-
-- **Devin runs with full permissions.** `--permission-mode dangerous` runs commands without approval, as the operating account, with that account's `git` and `gh` credentials and file access. The worktree is its working directory, not a sandbox: nothing stops it from reading or writing elsewhere that the account can. The prompts forbid pushing, using `gh`, committing and touching other paths, and the runner guards the diff afterwards, but those are rules, not walls. Run the loop only on a machine and account you accept that for, keep the account's `gh` token limited to this repository, and keep the scripts in a clone of their own that Devin has no reason to touch (check it with `git status` now and then).
-- **The merge gate relies on the isolated reviewer.** Pull request code runs only under the separate standard account used by `pr-review`; the review agent cannot run commands. The merge decision rests on those check results and on `verdict.json`, which that agent wrote after reading untrusted pull request text. The agent that wrote the change and the one that reviews it use the same model by default (`-DevinModel`), so they can share blind spots. Treat a merged pull request as agent self-tested, and have a maintainer look at what landed.
-- **Text from the agent is published.** Titles, bodies and comments pass a scrub that removes the runner's own paths and the profile path; this is a backstop to the prompt rule, not a guarantee.
-- **Branch protection is yours.** The runner merges as the signed-in `gh` user with `--squash --match-head-commit`. If `main` requires approvals or checks, the merge is refused and the PR stays open after three tries; that is by design, and `--admin` is never used.
-- **Keep `-Root` private** to the operating account: it holds worktrees, prompts, issue text and logs.
-
-## Watching it
-
-- **Progress appears on the tracking issue.** By default (`-TrackingIssue 0`), the runner finds or creates the open issue titled `Automated dev loop: progress log` and caches its number in `<Root>\state.json`. It posts one comment per finished issue (`merged`, `needs-human`, `blocked`, failed attempt, or `skipped`), a one-time note when no `nyx-auto` issue is left, and a once-a-day note when `-MaxMergesPerDay` stops it.
-- **Only `needs-human` and `nyx-blocked` need a maintainer.** Everything else retries or moves on by itself.
-- **Create `<Root>\STOP` to stop** cleanly between steps; delete it to resume.
+1. **Verify `main`:** in a clean detached worktree of `origin/main`, autopilot runs `npm run build`, `npm run typecheck`, and `npm test` (pre-existing documented baseline unit failures are allowed).
+2. **Package and smoke-test:** autopilot runs `npm run package:windows -- --output <fresh external dir>` followed by `npm run smoke:packaged -- --exe <unpacked exe> --evidence <fresh external dir>` (under `<Root>\autopilot\builds\<tag>\`, never inside the worktree) and stops leftover processes afterward.
+3. **Fix breakage via normal PRs:** if build, typecheck, unit tests, packaging, or packaged smoke fails, autopilot opens an issue labelled `nyx-auto` and `build-break`, works it through the normal branch -> verify -> PR -> gate -> `nyx/audit` -> merge flow, and re-runs the milestone.
+4. **Publish prerelease and hands-on issue:** once `smoke:packaged` passes, autopilot uploads the unsigned per-user NSIS installer (`Tivano-Windows-Dev-<version>-x64-setup.exe`) as a GitHub Release asset via `gh release create v<version>-nyx.<n> <installer> --prerelease`, and opens **one** issue titled `Ready for hands-on testing: <version>` assigned to `elijah7x` and labelled `hands-on`. Its body includes:
+   - install steps for the prerelease installer;
+   - what changed since the last hands-on build (merged PR titles);
+   - permanently `parked` items with one-line reasons;
+   - known untested areas (`real provider`, `install/update`, and `desktop interaction`).
+5. **Single open hands-on issue:** autopilot never opens a second `hands-on` issue while one is still open; when new work merges, it builds a new prerelease and updates the existing open `hands-on` issue instead.
+6. **30-minute polling loop:** after publishing, autopilot polls every 30 minutes (checking `STOP` every 5 minutes) for new or reopened `nyx-auto` issues. Owner feedback arrives as `nyx-auto` issues, which the loop picks up automatically, merges, and rolls into the next hands-on build.
 
 ## Labels
 
 | Label | Meaning |
 | --- | --- |
-| `nyx-auto` (`-Label`) | You add it to an issue to let the runner take it. It is never added by the runner. |
-| `needs-human` | The runner stopped and a person decides (guard tripped, fix rounds used up, attempts used up, PR closed, review unusable, merge failing). Remove it to let the runner look again. |
-| `nyx-blocked` | The agent could not do the issue unattended and said why in a comment. Answer there, then remove the label. |
+| `nyx-auto` (`-Label`) | Marks an open issue for the autonomous loop to pick up. |
+| `audit-followup` | Post-merge audit finding; worked ahead of reopened and remaining parity issues. |
+| `build-break` | Opened by the milestone when `main` build, packaging, or packaged smoke fails; worked through the normal PR path. |
+| `audit-parked` | Set by the independent auditor on a PR it cannot pass; triggers parking in `parked.json`. |
+| `parked` | Set on an issue after two failed revisit attempts (or a guarded-path/dependency impossibility); skipped for good and listed in the hands-on issue. |
+| `hands-on` | Single open milestone issue assigned to `elijah7x` pointing to the latest smoke-tested installer prerelease. |
 
-The runner creates `needs-human` and `nyx-blocked` when it first needs them and leaves an existing label's color and description alone. Removing a label does not reset the attempt counters in `state.json`; edit the entry (or delete it) while no run is active.
-
-## STOP
-
-Create an empty file `<Root>\STOP` and every run exits at once, before taking the lock. A run already in progress finishes the step it is in (a Devin or review run is not interrupted) and then stops before the next one. Delete the file to resume. Unregistering the task also stops it.
-
-## Prerequisites
-
-- For the `gui` front end: Devin Desktop signed in, its chat set to **Local** (new windows keep that choice), and workspace trust off (`"security.workspace.trust.enabled": false` in its user settings). The runner sends `/bypass` before the instruction so the conversation never waits for approval, pastes text through the clipboard (an input method would rewrite typed keys) and takes the foreground for a few seconds to do it. `-DevinModel` applies to the CLI front end only; the GUI uses the model chosen in Devin Desktop.
-
-- Everything under [Prerequisites in the PR review README](../pr-review/README.md#prerequisites): Windows PowerShell 5.1, Git, GitHub CLI, Node.js with npm, Devin CLI signed in as the operating account, the standard check account and its credential file, and the console session for e2e. `scripts\dev-loop` must sit next to `scripts\pr-review` and `scripts\windows-acceptance`.
-- `gh` signed in as the operating account with access to this repository that can push branches, open and merge pull requests, and edit issues and labels. Git must push without a prompt (the runner sets `GIT_TERMINAL_PROMPT=0`): run `gh auth setup-git` once so pushes use the `gh` sign-in rather than a credential manager that cannot prompt in the scheduled session.
-- A clone of this repository for the worktrees (`-Checkout`), with `origin` pointing at the repository. The runner creates and removes worktrees and branches `nyx/*` in it; do not check anything out there yourself.
-- A state root (`-Root`) outside any git checkout and outside the directory that contains `scripts\`. Keep it short (`D:\tivano-dev-loop`): worktrees hold `node_modules`.
-- The reviewer's state root (`-ReviewRoot`, the `-Root` of `Invoke-PrReview.ps1`) and, optionally, its clone (`-ReviewCheckout`). Pointing both at the poller's own root and clone makes the loop and the poller share one lock and one state, so they never review at the same time and a PR the poller reviewed first is not reviewed again. Without `-ReviewCheckout`, `-Checkout` serves for both and the runner skips `git fetch --prune`, which would delete the review clone's `pr-<n>` refs.
-- Issues the runner can work are normal issues with the `nyx-auto` label. Parity rows are the natural unit; write the row ID (for example `P1-11`) in the title.
-
-## Manual run
-
-First run: a dry run on one issue. It needs only `-Root` and `-Checkout`:
-
-```
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Invoke-DevLoop.ps1 `
-  -Root D:\tivano-dev-loop -Checkout D:\tivano-dev-loop\clone -DryRun -IssueNumber 12
-```
-
-`-DryRun` develops and commits locally only: no push, no pull request, no review, no merge, and no labels or comments on GitHub either. Resuming open pull requests is skipped. Read `<Root>\last-run.json`, `<Root>\logs\`, the run directory (`dev-prompt.md`, `devin-dev.log`, `result.json`, `pr-body.md`, `commit.txt`) and the worktree `<Root>\work\issue-12` with its one local commit. A later real run on the same issue reuses that worktree and branch. To discard it: `git -C <Checkout> worktree remove --force <Root>\work\issue-12` and `git -C <Checkout> branch -D nyx/12-<slug>`.
-
-Then one real pass on that issue, with the review wiring:
-
-```
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Invoke-DevLoop.ps1 `
-  -Root D:\tivano-dev-loop -Checkout D:\tivano-dev-loop\clone `
-  -ReviewRoot D:\tivano-pr-review -ReviewCheckout D:\tivano-pr-review\clone `
-  -StandardCredentialFile D:\private\standard-account.json -IssueNumber 12
-```
-
-`-IssueNumber` works that one issue regardless of its labels and attempts; an open `nyx/` pull request for it is continued instead. Without it the run resumes open pull requests and picks issues as described above.
-
-| Parameter | Default | Meaning |
-| --- | --- | --- |
-| `-Repo` | `elijah7x/tivano-windows` | `owner/name` |
-| `-Root` | required | State, logs, run directories and worktrees |
-| `-Checkout` | required | Existing clone used for worktrees |
-| `-ReviewRoot` | required unless `-DryRun` | `-Root` of `Invoke-PrReview.ps1` |
-| `-ReviewCheckout` | `-Checkout` | `-Checkout` of `Invoke-PrReview.ps1` |
-| `-StandardCredentialFile` | required unless `-DryRun` | Passed to `Invoke-PrReview.ps1` |
-| `-ReviewTokenFile` | none | Passed as `-TokenFile` to `Invoke-PrReview.ps1` (comment-only token for posting reviews) |
-| `-Reference` | none | Read-only macOS v2.5.7 baseline clone, given to Devin and to the reviewer |
-| `-DevinModel` | `swe-2-high` | For development, fixing and the review |
-| `-Label` | `nyx-auto` | Issue label to pick up |
-| `-MaxIssuesPerRun` | `50` | Pull requests resumed plus issues started in one pass (1–200) |
-| `-MaxMergesPerDay` | `20` | Local calendar day; the pass exits early once it is reached (1–200) |
-| `-MaxFixRounds` | `2` | Fix rounds per pull request, across runs |
-| `-DevinTimeoutMin` | `90` | Per Devin run (development or one fix round) |
-| `-StallMinutes` | `20` | Minutes with no agent log activity before ending a run as `stalled` (5–240; GUI approvals stuck 2 minutes re-send `/bypass` up to 3 times, then stall after 10 minutes) |
-| `-TrackingIssue` | `0` | Progress log issue number (`0` finds or creates `Automated dev loop: progress log`) |
-| `-DevinFrontEnd` | `gui` | `gui` (Devin Desktop) or `cli` (Devin CLI) |
-| `-IssueNumber` | `0` | Work only this issue (or its open PR) |
-| `-DryRun` | off | Develop and commit locally only |
-
-## Scheduled task
-
-```
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Register-DevLoopTask.ps1 `
-  -Root D:\tivano-dev-loop -Checkout D:\tivano-dev-loop\clone `
-  -ReviewRoot D:\tivano-pr-review -ReviewCheckout D:\tivano-pr-review\clone `
-  -StandardCredentialFile D:\private\standard-account.json
-```
-
-This registers `\TivanoDevLoop\run`: every 30 minutes (`-IntervalMinutes`), as the current user, Interactive/Limited, 72-hour limit (`-ExecutionLimitHours`, 1–720), `MultipleInstances IgnoreNew` (so the repetition interval only restarts the runner after a pass ends or crashes). It forwards `-Repo`, `-Root`, `-Checkout`, `-ReviewRoot`, `-ReviewCheckout`, `-StandardCredentialFile`, `-ReviewTokenFile`, `-Reference`, `-DevinModel`, `-Label`, `-MaxIssuesPerRun`, `-MaxMergesPerDay`, `-MaxFixRounds`, `-DevinTimeoutMin`, `-StallMinutes`, `-TrackingIssue` and `-DevinFrontEnd`; `-IssueNumber` and `-DryRun` are for manual runs only. The action runs a generated wrapper `<Root>\dev-loop-task.ps1` that rotates `<Root>\task.log` at 5 MB. Re-run the script to change arguments; `-Unregister` removes the task and leaves everything under `-Root` alone. The task runs only while the operating user is signed in.
-
-## State and results
-
-- `<Root>\state.json`: per issue `attempts`, `status`, `branch`, `pr`, `lastRunDir`, `fixRounds`, `reviewFailures`, `mergeFailures` and the last gate for the PR head; the cached tracking issue number; and merges per local day.
-- `<Root>\last-run.json` and stdout: `{ok, stopped, dryRun, merged, worked, skipped, errors}`. `worked` entries carry the issue, PR, `outcome` (`merged`, `needs-human`, `blocked`, `failed`, `deferred`, `closed`, `dry-run`, `stopped`) and the run directory. Per-issue failures are in `errors`; only a run-level failure is a nonzero exit. A start that finds another pass holding the lock writes `<Root>\last-skipped.json` instead, leaving the running pass's summary alone.
-- `<Root>\logs\dev-loop-<date>.log`: one line per step. `<Root>\runs\issue-<n>-<timestamp>\`: prompts, issue text, Devin and review logs, `result.json`, `pr-body.md`, comment and commit texts. Run directories and logs older than 30 days are deleted. A worktree is removed only when its issue is finished (merged, blocked, closed); a failed attempt, a guard trip and an issue waiting on a person keep theirs.
-- An issue counts an attempt when a run ends without a clean outcome (Devin failed, stalled, timed out or left no usable result, or the run crashed). A failed attempt is retried once more in the same pass; two attempts without a pull request make it `needs-human`.
-
-## Limits
-
-- A merged change is **agent self-tested**. The checks are the reviewer's: unit tests and e2e on a real Windows host under a standard account. Real provider, desktop interaction and install/update stay `NOT RUN` unless a person does them, and a Windows maintainer still decides `done` for a parity row; the guard stops the runner from claiming it.
-- Only one issue is developed at a time; a failed attempt is retried once more in the same pass before `needs-human`, and a deferred step is retried on the next pass.
-- The guard looks at the pull request's diff, not at what Devin did on the machine.
-- A flaky e2e failure that is not worse than base passes the gate; an e2e that fails on both base and pr is not detected as a regression.
-
-## Autopilot (one Devin Desktop chat)
-
-Instead of spawning a fresh Devin session per issue, a single long-running Devin Desktop chat can follow `scripts/dev-loop/autopilot.md` and run the whole issue loop itself: pick an eligible `nyx-auto` issue, implement it in a worktree, self-verify, open the pull request, run the merge gate, fix review findings, merge when the gate passes, and continue to the next issue.
-
-The older per-issue runner task (`\TivanoDevLoop\run` via `Register-DevLoopTask.ps1`) is kept in the repository, but is disabled / unregistered by default when autopilot is used so the two loops do not compete over the same issues.
+## Autopilot components
 
 ### Gate script (`Invoke-AutopilotGate.ps1`)
 
@@ -169,42 +64,61 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Invoke-
 
 - Reads the PR head SHA with `gh`, runs `scripts/pr-review/Invoke-PrReview.ps1` with `-Force` and comment posting enabled, and waits up to `-ReviewTimeoutMin` (default `240` minutes).
 - If another review holds the reviewer lock, waits 60 seconds and retries up to 10 times.
-- Evaluates `gate.json` with the same merge-gate rules as `Invoke-DevLoop.ps1` and writes logs and failure lists under `<Root>\autopilot\gate\pr-<n>-<timestamp>\` (`-Root` defaults to `C:\tivano\dev-loop`).
+- Evaluates `gate.json` (`install`, `build`, `typecheck`, unit diff vs base, e2e vs base, reviewer verdict `merge` with empty `blocking`, `reviewOk` and `posted`, PR open on same head SHA without conflicts) and writes logs and failure lists under `<Root>\autopilot\gate\pr-<n>-<timestamp>\` (`-Root` defaults to `C:\tivano\dev-loop`).
 - Prints one compact JSON line to stdout (`{"pr":n,"headSha":"...","verdict":"pass|fail|unavailable","failures":["..."],"gatePath":"...","glm":{"status":"ok|unavailable|skipped","verdict":"pass|changes","blocking":<count>,"runDir":"..."},"notes":[...]}`) and exits `0` on `pass`, `1` on `fail`, or `2` on `unavailable`.
 - Never merges, labels, or comments itself beyond the review comments from `Invoke-PrReview.ps1` and `Invoke-GlmReview.ps1`.
 
-### GLM-5.3 second reviewer
+### GLM-5.3 second reviewer and automated consult
 
 - **What it checks and what blocks:** `Invoke-AutopilotGate.ps1` also runs `scripts/dev-loop/Invoke-GlmReview.ps1` (GLM-5.3) as an independent second reviewer on the same PR head and posts its own PR comment. Blocking findings appear in `failures` prefixed with `GLM-5.3: ` and fail the gate; non-blocking, out-of-scope, or style-only points are advisory. If the two reviewers contradict each other, autopilot follows the issue text and `AGENTS.md`, takes the safer option, and explains why in the commit message and a short PR comment. If GLM-5.3 is `unavailable`, it never blocks the gate by itself.
 - **Credentials and isolation:** GLM-5.3 runs through the ZCode CLI with an isolated `ZCODE_DATA_BASE_DIR` (`C:\tivano\zcode\home`) whose `provider_config` holds a BigModel Coding Plan API key. That directory sits outside the repository (never committed) and must be readable only by the runner account.
-- **Consult step:** When autopilot is about to give up (gate still fails after 2 fix rounds, the same `npm run verify` test fails 3 times in a row, or an issue appears blocked as ambiguous), it writes trimmed failures to `C:\tivano\dev-loop\autopilot\runs\<n>\failures-<k>.md` and runs `Invoke-GlmReview.ps1 -Mode consult -PrNumber <pr> -FailuresFile <file>` (up to ~20 minutes; exit `0` ok, `2` unavailable) once per issue per resume. It reads `consultPath`, runs one final fix round and re-gates, and falls back to `needs-human` (summarizing GLM's diagnosis) only if that fails or consult is unavailable.
-- **Disabling and read-only boundary:** Pass `-SkipGlm` to `Invoke-AutopilotGate.ps1` to skip the GLM review (`glm.status` becomes `"skipped"`). GLM never edits repository files or commits; it only reviews and advises.
+- **Automated consult step:** when an issue fails the gate after 2 fix rounds or hits 3 identical `npm run verify` failures, autopilot writes trimmed failures to `<Root>\autopilot\runs\<n>\failures-<k>.md` and runs `Invoke-GlmReview.ps1 -Mode consult -PrNumber <pr> -FailuresFile <file>` (up to ~20 minutes; exit `0` ok, `2` unavailable) once per attempt. It applies one guided fix round and re-gates; if that also fails or consult is unavailable, it parks the issue in `parked.json` and moves on.
+- **Disabling and read-only boundary:** pass `-SkipGlm` to `Invoke-AutopilotGate.ps1` to skip the GLM review (`glm.status` becomes `"skipped"`). GLM never edits repository files or commits; it only reviews and advises.
 
 ### Independent audit
 
-Before merging, autopilot PRs also require a `success` commit status on context `nyx/audit` from a separate GitHub App auditor running from its own scheduled tasks on Nyx (not using Devin's `gh` login). The same suite runs a daily post-merge audit and `main` ruleset integrity check; see [scripts/audit/README.md](../audit/README.md) for the independence model, rebuttal protocol, and setup instructions.
+Before merging, autopilot PRs require a `success` commit status on context `nyx/audit` from a separate GitHub App auditor running from its own scheduled tasks on Nyx (not using Devin's `gh` login). Disputes are arbitrated automatically, and PRs the auditor cannot pass receive `audit-parked` rather than halting for a person. The same suite runs a daily post-merge audit and `main` ruleset self-heal; see [scripts/audit/README.md](../audit/README.md).
 
-### Watchdog task and nudge rules (`Start-DevinAutopilot.ps1`)
+### Watchdog, self-sync, and liveness (`Start-DevinAutopilot.ps1`)
 
-`scripts/dev-loop/Start-DevinAutopilot.ps1` launches the chat (`-Kickoff`) and keeps it moving via the scheduled task `\TivanoDevLoop\autopilot` (`-Watch`, run every `-IntervalMinutes`, default `15`, with a 30-minute execution limit, `MultipleInstances IgnoreNew`, and Interactive logon for GUI access):
+`scripts/dev-loop/Start-DevinAutopilot.ps1` launches the chat (`-Kickoff`) and keeps it running via the scheduled task `\TivanoDevLoop\autopilot` (`-Watch`, run every `-IntervalMinutes`, default `15`, with a 30-minute execution limit, `MultipleInstances IgnoreNew`, and Interactive logon for GUI access):
 
-- **Idle check:** before touching the GUI, `-Watch` checks `GetLastInputInfo`; if the user has been active within `-UserIdleSeconds` (default `120`), it logs `user active, deferred` and exits without touching any window.
+- **Self-sync before inspecting Devin:** at the start of every watchdog tick (after checking `STOP`), `-Watch` runs `git -C C:\tivano\audit\tool pull --ff-only origin main` (retrying up to 3 times on transient network failures). On success, it compares `HEAD` against `lastSyncedSha` in `watchdog.json`; when unchanged (and both target directories exist), it logs the SHA and skips mirroring. When changed, it mirrors `scripts\dev-loop` and `scripts\pr-review` into `C:\tivano\pr-bot\tool\scripts` via `robocopy /MIR` per folder (treating exit codes `< 8` as success) and logs the synced SHA. Override paths with `-SyncSource` and `-SyncTarget` if needed.
+- **Idle-user rule:** before touching the GUI, `-Watch` checks `GetLastInputInfo`; if the user has been active within `-UserIdleSeconds` (default `120`), it logs `user active, deferred` and exits without touching any window.
 - **Window safety:** immediately before every paste and every keystroke batch, it verifies the foreground window is still the target `<Workspace>` Devin Desktop window; if focus changed, it aborts that attempt and never types into another window.
-- **No label or PR edits:** the watchdog never edits labels, issues, or pull requests, except posting one public-text-safe comment (with no host names or local paths) on the tracking issue (`Automated dev loop: progress log`) when stuck.
-- **Quiet exits:** exits quietly if `<Root>\state\STOP` exists. If `<Root>\autopilot\progress.json` reports `state: "done"` or `state: "idle"` for today's `daily merge cap`, it checks `gh` (and whether the local calendar date changed) and exits when no eligible work remains.
-- **Watchdog actions when idle and work remains:**
-  1. **No Devin Desktop window:** runs the `-Kickoff` path to launch `devin desktop <Workspace>`, enable `/bypass`, and paste the `autopilot.md` instruction.
-  2. **Approval pending `>= -ApprovalMinutes` (default `3`):** detects an unresolved permission prompt in `%APPDATA%\Devin\cli\logs\devin_*.log`, focuses the window, re-sends `/bypass` and waits for confirmation, then pastes a continuation prompt.
-  3. **No log write for `>= -IdleMinutes` (default `25`, range `5`–`240`):** focuses the window and pastes a continuation prompt pointing back to `autopilot.md` and `progress.json`.
-- **Stuck guard:** every nudge is recorded in `<Root>\autopilot\watchdog.json`. After 6 consecutive nudges with no new agent log write in between, it posts one comment to `Automated dev loop: progress log`, sets `stuckNotified` to `true`, and stops nudging until new log activity resumes.
+- **Devin Desktop liveness:** once idle, if no matching Devin Desktop window is open, `-Watch` automatically relaunches Devin Desktop via `-Kickoff` (`devin desktop <Workspace>`, `/bypass`, and prompt) so the 24/7 loop stays alive across crashes, restarts, milestones, and polling.
+- **Approval and stall recovery:**
+  1. **Approval pending `>= -ApprovalMinutes` (default `3`):** detects an unresolved permission prompt in `%APPDATA%\Devin\cli\logs\devin_*.log`, focuses the window, re-sends `/bypass` and waits for confirmation, then pastes a continuation prompt.
+  2. **No log write for `>= -IdleMinutes` (default `25`, range `5`–`240`):** when eligible work remains (or the chat is not in an empty-queue `polling` state) and no worktree, gate, review, packaging, or smoke process is running, focuses the window and pastes a continuation prompt pointing back to `autopilot.md` / `solo-v3.md` and `progress.json`.
+  3. **Automatic restart after 6 unresponsive nudges:** every nudge is recorded in `<Root>\autopilot\watchdog.json`. If 6 consecutive nudges produce no new agent log activity and no child task process is running, the watchdog posts one informational public-text-safe note to `Automated dev loop: progress log`, stops the unresponsive Devin Desktop process, resets the counter, and relaunches via `-Kickoff` instead of waiting for a person.
+- **Quiet exits:** exits immediately if `<Root>\state\STOP` exists. When Devin Desktop is open and waiting on today's `daily merge cap` or legitimately `polling` with no eligible open `nyx-auto` issues, the watchdog avoids unnecessary nudges.
+
+### Guarded paths and trust model
+
+- **Guarded paths:** issue PRs must never modify `scripts/audit/`, `scripts/dev-loop/`, `scripts/pr-review/`, `scripts/windows-acceptance/`, `.github/`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `TRADEMARK.md`, `docs/source-baseline.json` (exempt only in `solo-v3.md` Phase 1), or `package-lock.json`, must never alter dependencies in `package.json`, and must never set a `docs/parity.md` row to `done`.
+- **Devin runs with full permissions** in bypass mode on the operating account. Keep `-Root` private to that account, keep the `gh` token scoped appropriately, and keep the scripts mirrored from `C:\tivano\audit\tool` into `C:\tivano\pr-bot\tool\scripts` rather than running from the working clone.
+- **Branch protection enforces `nyx/audit`:** `main` requires the independent GitHub App's `nyx/audit` status check; `--admin` is never used.
+- **Public text hygiene:** no machine names, user names, local paths, tokens, or secrets in issues, PRs, releases, commits, or comments; refer to the host only as `a Windows test machine`.
+- **Verification limits:** automated merges and packaged smoke runs are **agent self-tested**. Real provider, real install/update, and interactive desktop workflows stay `NOT RUN` until the owner performs hands-on testing.
 
 ### State and files (relative to `-Root`, default `C:\tivano\dev-loop`)
 
-- `<Root>\autopilot\progress.json`: current autopilot chat progress (`state`, `issue`, `step`, `updatedAt`).
-- `<Root>\autopilot\watchdog.json`: consecutive nudge counter, nudge history, and `stuckNotified` flag.
+- `<Root>\autopilot\progress.json`: current autopilot progress (`state`, `issue`, `step`, `merged`, `awaitingAudit`, `parked`, `updatedAt`).
+- `<Root>\autopilot\parked.json`: parked issues with `issue`, `pr`, `reason`, and `attempt` (`0`, `1`, `2`).
+- `<Root>\autopilot\hands-on.json`: last hands-on build commit SHA, prerelease tag/number, and open `hands-on` issue number.
+- `<Root>\autopilot\solo-v3.json`: phase/queue/worked-row state when running `solo-v3.md`.
+- `<Root>\autopilot\watchdog.json`: `lastSyncedSha`, consecutive nudge counter, nudge history, and `stuckNotified` flag.
+- `<Root>\autopilot\builds\<tag>\`: external packaging outputs (`pkg\`) and smoke evidence (`smoke\`), never inside a worktree.
 - `<Root>\autopilot\gate\pr-<n>-<timestamp>\`: gate run logs and `failures.md`.
-- `<Root>\state\logs\autopilot-yyyyMMdd.log`: kickoff and watchdog logs.
-- `<Root>\state\STOP`: stop file checked by `-Watch` (and `-Kickoff`).
+- `<Root>\autopilot\runs\<n>\`: commit messages, PR bodies, and failure snippets.
+- `<Root>\state\logs\autopilot-yyyyMMdd.log`: kickoff, self-sync, and watchdog logs.
+- `<Root>\state\STOP`: stop file checked by autopilot and `-Watch` / `-Kickoff`.
+
+### Prerequisites
+
+- Devin Desktop signed in, chat set to **Local**, and workspace trust disabled (`"security.workspace.trust.enabled": false`).
+- Everything under [Prerequisites in the PR review README](../pr-review/README.md#prerequisites): Windows PowerShell 5.1, Git, GitHub CLI (`gh` signed in and `gh auth setup-git` configured), Node.js with npm, Devin CLI signed in as the operating account, standard check account credential file, and console session for e2e/GUI.
+- `C:\tivano\audit\tool` cloned on `main` (source for watchdog self-sync into `C:\tivano\pr-bot\tool\scripts`), `C:\tivano\dev-loop\repo` cloned for worktrees, and `-Root` (`C:\tivano\dev-loop`) outside any git checkout.
 
 ### Start, register, and stop
 
@@ -212,12 +126,19 @@ Before merging, autopilot PRs also require a `success` commit status on context 
 # Launch (or focus) Devin Desktop for C:\tivano\dev-loop\repo and send the autopilot prompt once idle:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Start-DevinAutopilot.ps1 -Kickoff
 
-# Register the 15-minute watchdog task \TivanoDevLoop\autopilot:
+# Register the 15-minute watchdog task \TivanoDevLoop\autopilot (disables legacy \TivanoDevLoop\run):
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Start-DevinAutopilot.ps1 -Register
 
-# Stop watchdog ticks cleanly without unregistering:
+# Stop autopilot and watchdog cleanly without unregistering:
 New-Item -ItemType File -Path C:\tivano\dev-loop\state\STOP -Force | Out-Null
+
+# Resume after stopping:
+Remove-Item -Path C:\tivano\dev-loop\state\STOP -Force
 
 # Remove the scheduled task (state and logs are kept):
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Start-DevinAutopilot.ps1 -Unregister
 ```
+
+## Legacy per-issue runner (`Invoke-DevLoop.ps1`)
+
+`Invoke-DevLoop.ps1` and `Register-DevLoopTask.ps1` (`\TivanoDevLoop\run`) remain in the repository for reference, but are disabled automatically when `Start-DevinAutopilot.ps1 -Register` runs so the two loops do not compete over the same `nyx-auto` issues. Use the Autopilot flow above for unattended operation on Nyx.
