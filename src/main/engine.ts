@@ -6520,7 +6520,9 @@ export class Engine {
     // batch open the same way a copy's landing does.
     if (info.backupPath !== undefined && head.worktreeDir === undefined) {
       info.landingPending = true;
-      void this.hydraBackupReportThenLand(head.id);
+      void this.hydraBackupReportThenLand(head.id).catch(() =>
+        this.finishHydraLanding(head.id),
+      );
       this.store.update(() => {});
       this.emit({ type: "thread-updated", thread: head });
       return;

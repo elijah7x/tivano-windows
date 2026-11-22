@@ -213,11 +213,13 @@ export class MockProvider implements ProviderAdapter {
     // is the relative path the head touches in its (possibly narrowed)
     // workspace; default is the first owned file.
     const hydraPathFilesMatch = prompt.match(
-      /\[mock:hydra-path-files\]("[^"]+"|[^\s|]+)\|([^\s|]+)(?:\|([^\s|]+))?/,
+      /\[mock:hydra-path-files\]("[^"|]+"|[^\s|]+)\|([^\s|]+)(?:\|([^\s|]+))?/,
     );
     const wantsHydraPathFiles = hydraPathFilesMatch !== null;
     const hydraPathFilesEntry = wantsHydraPathFiles
       ? (() => {
+          // Quoted like [mock:hydra-path] — a path with a space must not
+          // truncate at its first space.
           const p = hydraPathFilesMatch[1]!.replace(/^"|"$/g, "");
           const files = hydraPathFilesMatch[2]!.split(",").filter(Boolean);
           const touch = hydraPathFilesMatch[3] ?? files[0] ?? "touched.txt";

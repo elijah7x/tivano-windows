@@ -353,7 +353,18 @@ export async function hydraBackupReport(
     await collect(root);
   }
   const paths = [...new Set([...backed, ...current])].sort();
+  let idx = 0;
   for (const path of paths) {
+    idx += 1;
+    // The budget is spent — stop spawning diffs and name what was left
+    // out, like the skipped list does (frozen keeps one unbounded loop
+    // only because its diffs share a single process).
+    if (length >= REPORT_CAP) {
+      append(
+        `Diff budget reached before ${paths.length - idx + 1} more file(s): ${hydraFileListing(paths.slice(idx - 1), LISTING_LIMIT, 4000)}`,
+      );
+      break;
+    }
     if (!hydraOwnedPathIsSafe(path, base)) {
       append(`Cannot diff ${path}: it now resolves outside ${base}.`);
       continue;
