@@ -11,17 +11,24 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../client";
 import { LanguageContext, useT } from "../locale";
+import { pairCustomName } from "../../shared/hydra";
 import type {
   CodexModelCatalog,
   LanguageId,
   Snapshot,
 } from "../../shared/types";
 
+/** P2-42: the chip's options — provider models plus sub-agent presets
+ *  (frozen NewThreadDefaultPicker). A preset starts the chat on its
+ *  pair; a deleted preset falls back to Last selection main-side. */
+type QuickPick = { kind: "model"; id: string } | { kind: "pair"; id: string };
+
 function QuickChatInner() {
   const t = useT();
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const [models, setModels] = useState<string[]>([]);
-  const [model, setModel] = useState<string | null>(null);
+  const [pick, setPick] = useState<QuickPick | null>(null);
+  const [presets, setPresets] = useState<{ id: string; label: string }[]>([]);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -31,17 +38,43 @@ function QuickChatInner() {
         const cat = r as CodexModelCatalog;
         if (cat.state !== "ready") return; // honest: no fabricated list
         setModels(cat.models.map((m) => m.id));
-        setModel(
-          cat.models.find((m) => m.isDefault)?.id ?? cat.models[0]?.id ?? null,
+        setPick((cur) =>
+          cur ?? {
+            kind: "model",
+            id: cat.models.find((m) => m.isDefault)?.id ?? cat.models[0]?.id ?? "",
+          },
         );
       });
+    void api()
+      .invoke("state:get", {})
+      .then((r) => {
+        const s = (r as Snapshot).settings;
+        setPresets(
+          (s.hydraPairs ?? []).map((p) => ({
+            id: p.id,
+            label: pairCustomName(p) ?? t("Preset"),
+          })),
+        );
+        // The saved default opens the chip on its pick when it resolves.
+        if (s.newThreadDefault?.kind === "pair")
+          setPick({ kind: "pair", id: s.newThreadDefault.pairId });
+        else if (s.newThreadDefault?.kind === "model")
+          setPick({ kind: "model", id: s.newThreadDefault.model });
+      })
+      .catch(() => undefined);
     areaRef.current?.focus();
   }, []);
 
+  const options = (): QuickPick[] => [
+    ...models.map((id): QuickPick => ({ kind: "model", id })),
+    ...presets.map((p): QuickPick => ({ kind: "pair", id: p.id })),
+  ];
+
   const cycleModel = () => {
-    if (!models.length) return;
-    const i = model ? models.indexOf(model) : -1;
-    setModel(models[(i + 1) % models.length] ?? null);
+    const opts = options();
+    if (!opts.length) return;
+    const i = pick ? opts.findIndex((o) => o.kind === pick.kind && o.id === pick.id) : -1;
+    setPick(opts[(i + 1) % opts.length] ?? null);
   };
 
   const send = (openApp: boolean) => {
@@ -50,7 +83,12 @@ function QuickChatInner() {
     if (!text || busy) return;
     setBusy(true);
     void api()
-      .invoke("quick:send", { text, openApp, model })
+      .invoke("quick:send", {
+        text,
+        openApp,
+        model: pick?.kind === "model" ? pick.id : null,
+        pairId: pick?.kind === "pair" ? pick.id : null,
+      })
       .then(() => {
         if (area) area.value = "";
       })
@@ -83,14 +121,17 @@ function QuickChatInner() {
   return (
     <div className="quick-root">
       <div className="quick-head">
-        {models.length > 0 && (
+        {options().length > 0 && pick && (
           <button
             type="button"
             className="quick-model"
             title={t("Model for this message")}
             onClick={cycleModel}
           >
-            {model}
+            {pick.kind === "pair"
+              ? (presets.find((p) => p.id === pick.id)?.label ??
+                t("%@ (unavailable)").replace("%@", t("Preset")))
+              : pick.id}
           </button>
         )}
         <span className="quick-spacer" />

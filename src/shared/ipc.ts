@@ -50,6 +50,15 @@ const vHydraPair = vObject({
   headProfiles: vArray(vHydraHeadProfile, 32),
 });
 
+// P2-42: frozen NewThreadDefault — a fixed model or a preset pair; the
+// settings patch also accepts null to reset to Last selection.
+const vNewThreadDefault = vObject({
+  kind: vEnum(["model", "pair"] as const),
+  model: vOptional(vNonEmptyString(200)),
+  effort: vOptional(vNonEmptyString(100)),
+  pairId: vOptional(vNonEmptyString(120)),
+});
+
 // P1-37 Chimera presets — same persisted shape as storeDoc.
 const vChimeraPick = vObject({
   provider: vOptional(vNonEmptyString(100)),
@@ -344,6 +353,8 @@ export const requestValidators = {
     text: vNonEmptyString(4000),
     openApp: vBoolean,
     model: vOptional(vNullable(vNonEmptyString(160))),
+    // P2-42: the chip also offers presets — the pair the new chat starts on.
+    pairId: vOptional(vNullable(vNonEmptyString(120))),
   }),
   "quick:expand": vObject({ text: vString }),
   "projects:delete": vObject({ id: vId }),
@@ -529,6 +540,7 @@ export const requestValidators = {
     subagentModeDefault: vOptional(
       vEnum(["same", "preset", "adaptive"] as const),
     ),
+    newThreadDefault: vOptional(vNullable(vNewThreadDefault)),
     chimeraPresets: vOptional(vArray(vChimeraPreset, 64)),
     chimeraAutoDispatch: vOptional(vBoolean),
     // P1-12: "How much sub-agents take on" — the delegation level.

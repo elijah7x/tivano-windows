@@ -335,6 +335,7 @@ export function SettingsModal(props: {
         <p className="codex-note">
           {t("A card with the turn's progress bar, or a plain line")}
         </p>
+        <DefaultModelRow settings={settings} />
         {/* v2.2.x frozen "Shelve projects" — idle days before a project
             shelves itself; running/unread/open chats keep it put. */}
         <label className="wt-field commit-instructions">
@@ -1024,5 +1025,88 @@ export function SettingsModal(props: {
         </div>
       </div>
     </div>
+  );
+}
+
+/** P2-42 (frozen ConversationSettingsPage "Default model" row): the
+ *  choice new chats and Quick chat start from — Last selection, a fixed
+ *  model, or a sub-agent preset. A saved pick that no longer resolves
+ *  shows "(unavailable)": its seeding falls back to Last selection
+ *  until it returns. */
+function DefaultModelRow({ settings }: { settings: Settings }) {
+  const t = useT();
+  const [models, setModels] = useState<string[] | null>(null);
+  useEffect(() => {
+    void api()
+      .invoke("models:list", {})
+      .then((r) => {
+        const cat = r as import("../../shared/types").CodexModelCatalog;
+        setModels(cat.state === "ready" ? cat.models.map((m) => m.id) : []);
+      })
+      .catch(() => setModels([]));
+  }, []);
+  const pairs = settings.hydraPairs ?? [];
+  const saved = settings.newThreadDefault;
+  const value =
+    saved === undefined
+      ? ""
+      : saved.kind === "pair"
+        ? `pair:${saved.pairId}`
+        : `model:${saved.model}`;
+  const resolved =
+    saved === undefined ||
+    (saved.kind === "pair" && pairs.some((p) => p.id === saved.pairId)) ||
+    (saved.kind === "model" && (models === null || models.includes(saved.model)));
+  const unavailable = !resolved;
+  return (
+    <label className="wt-field commit-instructions">
+      <span>{t("Default model")}</span>
+      <select
+        aria-label={t("Default model")}
+        value={unavailable ? "saved" : value}
+        onChange={(e) => {
+          const v = e.target.value;
+          tryCall("settings:set", {
+            newThreadDefault:
+              v === ""
+                ? null
+                : v.startsWith("pair:")
+                  ? { kind: "pair" as const, pairId: v.slice(5) }
+                  : { kind: "model" as const, model: v.slice(6) },
+          });
+        }}
+      >
+        <option value="">{t("Last selection")}</option>
+        {models?.map((id) => (
+          <option key={`m:${id}`} value={`model:${id}`}>
+            {id}
+          </option>
+        ))}
+        {pairs.map((p) => (
+          <option key={`p:${p.id}`} value={`pair:${p.id}`}>
+            {(p.name ?? "").trim() || t("Preset")}
+          </option>
+        ))}
+        {unavailable && (
+          <option value="saved" disabled>
+            {saved?.kind === "pair"
+              ? t("%@ (unavailable)").replace("%@", t("Preset"))
+              : t("%@ (unavailable)").replace(
+                  "%@",
+                  saved?.kind === "model" ? saved.model : "",
+                )}
+          </option>
+        )}
+      </select>
+      <p className="codex-note">
+        {t(
+          "Project combos take priority. Otherwise, Last selection uses the current or most recent model; a selected model stays fixed.",
+        )}
+        {unavailable &&
+          (saved?.kind === "pair"
+            ? ` ${t("The selected pairing is unavailable. New chats will use Last selection.")}`
+            : ` ${t("The selected model is unavailable. New chats will use Last selection.")}`)}
+      </p>
+    </label>
   );
 }

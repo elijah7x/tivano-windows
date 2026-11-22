@@ -23,6 +23,8 @@ import {
   clampedHydraCap,
   headProfileMatches,
   hydraPairForLead,
+  newThreadDefaultAfterPairChange,
+  newThreadDefaultSeed,
   resolveHydraLaunch,
   HYDRA_BUDGET,
   HYDRA_PERSONAS,
@@ -804,6 +806,10 @@ export class Engine {
        *  resolved choice is handed in explicitly: `enabled` plus the
        *  pair `--hydra on` resolved to. */
       externalHydra?: { enabled: boolean; pairId?: string };
+      /** P2-42: a one-off resolved default for this create (Quick chat's
+       *  preset chip) — applied like the saved newThreadDefault, never
+       *  persisted back to it. */
+      newThreadDefault?: import("../shared/hydra").NewThreadDefault;
     },
   ): ChatThread {
     this.assertMutable();
@@ -848,6 +854,18 @@ export class Engine {
         : settings.subagentModeDefault
           ? { subagentMode: settings.subagentModeDefault }
           : {}),
+      // P2-42: frozen newThreadDefault — an explicit model or preset wins
+      // over the Last-selection seeds above; a deleted preset or an
+      // unavailable pick falls back to them. External creates keep
+      // their own resolved choice.
+      ...(opts?.externalHydra
+        ? {}
+        : (newThreadDefaultSeed(
+            opts?.newThreadDefault ?? settings.newThreadDefault,
+            settings.hydraPairs ?? [],
+            settings.hydraDefaultEnabled !== false,
+            this.provider.descriptor.mode,
+          ) ?? {})),
     };
     this.store.update((d) => {
       d.threads.push(thread);
@@ -2527,6 +2545,10 @@ export class Engine {
     hydraPairs?: import("../shared/hydra").HydraPair[] | undefined;
     lastHydraPairId?: string | null | undefined;
     subagentModeDefault?: SubagentMode | undefined;
+    newThreadDefault?:
+      | import("../shared/hydra").NewThreadDefault
+      | null
+      | undefined;
     chimeraPresets?: import("../shared/chimera").ChimeraPreset[] | undefined;
     chimeraAutoDispatch?: boolean | undefined;
     hydraTilt?: import("../shared/hydraDelegation").HydraTilt | undefined;
@@ -2659,6 +2681,14 @@ export class Engine {
             ...p,
             maxHeads: clampedHydraCap(p.maxHeads),
           }));
+        // P2-42 (frozen): removing the pair the new-chat default names
+        // resets it to Last selection.
+        const kept = newThreadDefaultAfterPairChange(
+          d.settings.newThreadDefault,
+          d.settings.hydraPairs ?? [],
+        );
+        if (kept === undefined) delete d.settings.newThreadDefault;
+        else d.settings.newThreadDefault = kept;
       }
       if (patch.lastHydraPairId !== undefined) {
         if (patch.lastHydraPairId === null) delete d.settings.lastHydraPairId;
@@ -2666,6 +2696,10 @@ export class Engine {
       }
       if (patch.subagentModeDefault !== undefined)
         d.settings.subagentModeDefault = patch.subagentModeDefault;
+      if (patch.newThreadDefault !== undefined) {
+        if (patch.newThreadDefault === null) delete d.settings.newThreadDefault;
+        else d.settings.newThreadDefault = patch.newThreadDefault;
+      }
       if (patch.chimeraPresets !== undefined) {
         if (patch.chimeraPresets.length === 0) delete d.settings.chimeraPresets;
         else d.settings.chimeraPresets = patch.chimeraPresets;

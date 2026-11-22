@@ -391,6 +391,15 @@ const vHydraPair = vObject({
   headProfiles: vArray(vHydraHeadProfile, PERSIST_MAX_HEAD_PROFILES),
 });
 
+// P2-42: frozen NewThreadDefault — optional so every pre-P2-42 store
+// loads verbatim; absent = "Last selection".
+const vNewThreadDefault = vObject({
+  kind: vEnum(["model", "pair"] as const),
+  model: vOptional(vNonEmptyString(200)),
+  effort: vOptional(vNonEmptyString(100)),
+  pairId: vOptional(vNonEmptyString(120)),
+});
+
 // P1-37 Chimera presets — adaptive sub-agent identities.
 const vChimeraPick = vObject({
   provider: vOptional(vNonEmptyString(100)),
@@ -562,6 +571,7 @@ const vSettings = vObject({
   subagentModeDefault: vOptional(
     vEnum(["same", "preset", "adaptive"] as const),
   ),
+  newThreadDefault: vOptional(vNewThreadDefault),
   // P1-37: adaptive identities + auto-dispatch — optional so every
   // pre-P1-37 store loads verbatim; absent presets = the six built-ins.
   chimeraPresets: vOptional(vArray(vChimeraPreset, 64)),

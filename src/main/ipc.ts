@@ -280,7 +280,14 @@ export function registerIpc(opts: IpcOptions): () => void {
     visible: opts.quick?.isVisible() ?? false,
   }));
   handle("quick:send", (p) => {
-    const thread = engine.createThread(null);
+    // P2-42: a picked preset resolves through the same seeding as the
+    // saved default — a pair that no longer exists falls back to Last
+    // selection rather than erroring the send.
+    const thread = engine.createThread(null, undefined, {
+      ...(p.pairId
+        ? { newThreadDefault: { kind: "pair" as const, pairId: p.pairId } }
+        : {}),
+    });
     if (p.model) engine.setThreadModel(thread.id, p.model, null, null);
     engine.sendTurn(thread.id, p.text);
     opts.quick?.hide();
@@ -385,7 +392,26 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("questions:answer", (p) =>
     engine.answerQuestion(p.threadId, p.providerKey, p.answers),
   );
-  handle("settings:set", (p) => engine.setSettings(p));
+  handle("settings:set", (p) =>
+    engine.setSettings({
+      ...p,
+      // P2-42: narrow the loose validated shape into the discriminated
+      // union — a member missing its required id falls back to null
+      // (Last selection) rather than seeding a half-pick.
+      newThreadDefault:
+        p.newThreadDefault == null
+          ? p.newThreadDefault
+          : p.newThreadDefault.kind === "pair" && p.newThreadDefault.pairId
+            ? { kind: "pair", pairId: p.newThreadDefault.pairId }
+            : p.newThreadDefault.kind === "model" && p.newThreadDefault.model
+              ? {
+                  kind: "model",
+                  model: p.newThreadDefault.model,
+                  effort: p.newThreadDefault.effort,
+                }
+              : null,
+    }),
+  );
   // F33: status read + retry for the Settings surface. The response
   // reports the real socket state — never an optimistic flag.
   handle("control:status", () => {

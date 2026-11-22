@@ -279,6 +279,11 @@ export interface Settings {
   /** P1-36: the sub-agent mode new chats seed from (frozen picker
    *  default); absent = derived per chat. */
   subagentModeDefault?: SubagentMode;
+  /** P2-42: the default new chats and Quick chat start from (frozen
+   *  newThreadDefault) — a fixed model or a sub-agent preset; absent =
+   *  "Last selection" (the most recent choice). A deleted preset or
+   *  unavailable pick falls back to Last selection. */
+  newThreadDefault?: import("./hydra").NewThreadDefault;
   /** P1-37: the adaptive mode's sub-agent identities (frozen
    *  settings.chimeraPresets); absent = the six built-ins. */
   chimeraPresets?: import("./chimera").ChimeraPreset[];
