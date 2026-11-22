@@ -10,7 +10,7 @@
 // right-click anywhere on the panel opens the frozen panel menu.
 
 import type React from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { personaAt } from "../../shared/hydraDelegation";
 import type { HydraReview } from "../../shared/hydraReview";
 import type { ChatThread } from "../../shared/types";
@@ -274,6 +274,16 @@ export function HydraPanel(props: {
     };
   }, [menu]);
 
+  // P1-31: while floating, heads or review cards can still grow the
+  // panel — keep the dock spacer at the panel's live height so a
+  // re-dock never shifts the chat.
+  useLayoutEffect(() => {
+    const el = panelRef.current;
+    if (!floatPos || !el) return;
+    const h = el.offsetHeight;
+    if (h !== floatPos.h) setFloatPos((p) => (p ? { ...p, h } : p));
+  });
+
   if (ownHead) {
     const persona = personaAt(ownHead.headIndex);
     const waiting = waitingLabel(thread, t);
@@ -517,7 +527,12 @@ export function HydraPanel(props: {
             left: Math.min(menu.x, Math.max(8, window.innerWidth - 240)),
             top: Math.min(menu.y, Math.max(8, window.innerHeight - 160)),
           }}
-          onContextMenu={(e) => e.preventDefault()}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            // A right-click inside the open menu must not bubble to the
+            // panel's own handler and re-open it retargeted.
+            e.stopPropagation();
+          }}
         >
           {menuRows.map((item) =>
             item === "sep" ? (

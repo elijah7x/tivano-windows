@@ -4201,7 +4201,7 @@ html[data-performance] .wp-backdrop { display: none; }
   min-width: 24px;
   min-height: 18px;
 }
-.hydra-drag-surface { cursor: grab; }
+.hydra-drag-surface { cursor: grab; touch-action: none; }
 .hydra-drag-surface:active { cursor: grabbing; }
 .hydra-panel.floating {
   border: 1px solid var(--line);
