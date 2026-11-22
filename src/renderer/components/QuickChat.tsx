@@ -138,7 +138,7 @@ function QuickChatInner() {
         <button
           type="button"
           className="quick-act"
-          title={t("Carry draft into Tivano")}
+          title={t("Open in Tivano")}
           onClick={expand}
         >
           ⤢

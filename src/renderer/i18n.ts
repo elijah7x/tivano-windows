@@ -895,6 +895,7 @@ const zhHans: Record<string, string> = {
   "Opens or hides the quick chat box.": "呼出或收起快速对话框。",
   "Model for this message": "本条消息使用的模型",
   "Carry draft into Tivano": "将草稿带入 Tivano",
+  "Open in Tivano": "在 Tivano 中展开完整对话",
   "Hide quick chat": "收起快速对话",
   "Message Tivano": "向 Tivano 发送消息",
   "↩ send · ⌘↩ open Tivano · Esc hide": "↩ 发送 · ⌘↩ 打开 Tivano · Esc 收起",

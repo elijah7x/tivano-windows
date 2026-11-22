@@ -110,6 +110,25 @@ describe("P2-42 createThread seeding", () => {
     const t2 = engine.createThread(null);
     expect(t2.hydraPairId).toBeUndefined();
   });
+  it("P2-43: an explicit pick wins over the saved default", () => {
+    const { engine } = makeEngine();
+    const pair = newHydraPair("mock");
+    engine.setSettings({
+      hydraPairs: [pair],
+      newThreadDefault: { kind: "model", model: "m-saved" },
+    });
+    // Quick chat's own preset pick overrides the saved model default.
+    const t = engine.createThread(null, undefined, {
+      newThreadDefault: { kind: "pair", pairId: pair.id },
+    });
+    expect(t.hydraPairId).toBe(pair.id);
+    expect(t.codexModel).toBeUndefined();
+    // And the chip's explicit model overrides whatever the default seeded.
+    const t2 = engine.createThread(null);
+    expect(t2.codexModel).toBe("m-saved");
+    engine.setThreadModel(t2.id, "m-picked", null, null);
+    expect(t2.codexModel).toBe("m-picked");
+  });
   it("model default sets codexModel; null resets to Last selection", () => {
     const { store, engine } = makeEngine();
     engine.setSettings({ newThreadDefault: { kind: "model", model: "m9", effort: "high" } });
