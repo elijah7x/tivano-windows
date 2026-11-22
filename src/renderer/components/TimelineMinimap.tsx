@@ -85,6 +85,9 @@ const CARD_WIDTH = 240;
 export function TimelineMinimap(props: {
   messages: Message[];
   scrollRef: React.RefObject<HTMLDivElement | null>;
+  /** P1-26: fired before every jump so the host can mount a windowed-off
+   *  target first; the host performs the scroll once the row lands. */
+  onJumpToMessage?: (id: string) => void;
 }): React.JSX.Element | null {
   const t = useT();
   const railRef = useRef<HTMLDivElement>(null);
@@ -175,8 +178,11 @@ export function TimelineMinimap(props: {
   // Frozen jump: position.scrollTo(id:, anchor: .top) — the message lands
   // at the top of the scrollport, always above the tracking line, so the
   // tapped tick is the one that lights up (clamp at the bottom lands the
-  // last entry, which is also correct).
+  // last entry, which is also correct). P1-26: history above the window
+  // is unmounted — the host expands the window first, and its own
+  // post-mount layout step performs the scroll when the row lands.
   const jump = (id: string) => {
+    props.onJumpToMessage?.(id);
     props.scrollRef.current
       ?.querySelector(`[data-mid="${id}"]`)
       ?.scrollIntoView({ block: "start" });
