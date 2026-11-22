@@ -3,7 +3,7 @@
 // Chat area: header with the labelled mock badge, message timeline with
 // streaming/approval/error/interruption states, and the composer.
 
-import { createElement, useEffect, useMemo, useRef, useState } from "react";
+import { createElement, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ChatThread, CheckpointRecordView, CodexInfo, Message, Project, Settings, Turn } from "../../shared/types";
 import { INTERRUPTED_MARKER } from "../../shared/types";
 import { AttachChip } from "./AttachChip";
@@ -45,6 +45,13 @@ import {
   type TimelineItem,
   type TurnGroup,
 } from "../messageGroups";
+import {
+  TIMELINE_WINDOW,
+  timelineFollowReset,
+  timelineGrownOpen,
+  timelinePagedBack,
+  timelineSlice,
+} from "../../shared/timelineWindow";
 
 /** F04 content ops: per-message copy of the raw markdown source. */
 /** F20: the row a limit-waiting thread shows — honest countdown target,
@@ -173,6 +180,14 @@ export function ChatView(props: {
   const [msgMenu, setMsgMenu] = useState<MessagePopoverState | null>(null);
   const ckptGen = useRef(0);
   const threadId = thread?.id ?? null;
+  // P1-26 (frozen TimelineWindow): the rendered tail — opens on firstPaint,
+  // grows to initial a beat later, pages back while the reader scrolls up,
+  // and collapses to initial when the live tail outgrows eagerLimit.
+  const [timelineVisible, setTimelineVisible] = useState<number>(
+    TIMELINE_WINDOW.firstPaint,
+  );
+  const timelineHiddenRef = useRef(0);
+  const timelineAnchorRef = useRef<number | null>(null);
   useEffect(() => {
     setCkpts([]);
     setPreviewTurn(null);
@@ -194,8 +209,34 @@ export function ChatView(props: {
   }, [threadId]);
 
   useEffect(() => {
+    setTimelineVisible(TIMELINE_WINDOW.firstPaint);
+    const t = window.setTimeout(
+      () => setTimelineVisible((v) => timelineGrownOpen(v)),
+      40,
+    );
+    return () => window.clearTimeout(t);
+  }, [threadId]);
+
+  useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
+    // Following the live tail past the eager limit collapses the window
+    // (frozen): a reader who paged back keeps what they loaded only while
+    // nothing new pins them to the end.
+    setTimelineVisible((v) => timelineFollowReset(v, true));
   }, [thread?.messages.length, thread?.turn?.seq, thread?.turn?.status]);
+
+  // A page landing prepends rows: hold the reader's spot by measuring the
+  // document growth and shifting scrollTop by the same amount (frozen
+  // HistoryAnchorMath's synchronous shift — pre-paint, so the prepend
+  // never flickers).
+  useLayoutEffect(() => {
+    const el = timelineRef.current;
+    const anchor = timelineAnchorRef.current;
+    if (el && anchor !== null) {
+      timelineAnchorRef.current = null;
+      el.scrollTop = el.scrollHeight - anchor;
+    }
+  }, [timelineVisible]);
 
   // F22: the lead's resolved heads for the mark and the panel (frozen
   // HydraButton.panelHeads). Runtime-only panel visibility — a new head
@@ -402,7 +443,23 @@ export function ChatView(props: {
         </div>
       )}
       <div className="timeline-wrap">
-      <div className="timeline" role="log" aria-live="polite" ref={timelineRef} data-chat-id={thread.id}>
+      <div
+        className="timeline"
+        role="log"
+        aria-live="polite"
+        ref={timelineRef}
+        data-chat-id={thread.id}
+        onScroll={() => {
+          // P1-26: nearing the top with unrendered history pages a chunk
+          // in (frozen page=10); the anchor ref holds the measured spot
+          // so the prepend lands without moving the reader.
+          const el = timelineRef.current;
+          if (!el || el.scrollTop >= 120 || timelineHiddenRef.current === 0)
+            return;
+          timelineAnchorRef.current = el.scrollHeight - el.scrollTop;
+          setTimelineVisible((v) => timelinePagedBack(v));
+        }}
+      >
         {thread.messages.length === 0 && (
           <NewThreadPrompt
             thread={thread}
@@ -695,6 +752,11 @@ export function ChatView(props: {
           // fold into one "Worked for %@" details block. Undo/paging/
           // chronological toggles stay out of this cut.
           const items = groupMessages(thread.messages);
+          // P1-26: only the newest `timelineVisible` items mount; the rest
+          // page in on scroll-back (frozen TimelineWindow).
+          const { shown: windowedItems, hidden: windowedHidden } =
+            timelineSlice(items, timelineVisible);
+          timelineHiddenRef.current = windowedHidden;
           const renderTurnSteps = (g: TurnGroup): React.ReactNode => {
             const { steps, open } = partitionGroup(g);
             if (g.turnId === turn?.id || steps.length === 0)
@@ -754,7 +816,7 @@ export function ChatView(props: {
             }
             return out;
           };
-          return items.map((item: TimelineItem) =>
+          return windowedItems.map((item: TimelineItem) =>
             item.kind === "lone" ? renderMessage(item.message) : renderTurnSteps(item),
           );
         })()}
