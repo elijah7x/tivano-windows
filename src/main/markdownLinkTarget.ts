@@ -35,7 +35,8 @@ export function resolveMarkdownLinkTarget(
     const url = tryUrl(raw);
     if (url !== null) {
       if (url.protocol === "file:") {
-        return resolveLocalPath(fileUrlPath(url), base, stat);
+        const path = fileUrlPath(url);
+        return path === null ? { kind: "missing" } : resolveLocalPath(path, base, stat);
       }
       // Frozen: `url.host == nil` marks the pseudo-scheme case — the
       // authority check keeps `https://h/x` from ever reading as a path.
@@ -66,8 +67,15 @@ function tryUrl(raw: string): URL | null {
 /** `file:///C:/x` -> `C:\x`, `file://server/share` -> `\\server\share`,
  *  `file:///x` -> `\x` (drive-relative to the base, like upstream's `/x`
  *  being root-relative). */
-function fileUrlPath(url: URL): string {
-  const decoded = decodeURIComponent(url.pathname).replace(/\//g, "\\");
+function fileUrlPath(url: URL): string | null {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(url.pathname).replace(/\//g, "\\");
+  } catch {
+    // A malformed percent-escape throws URIError — a bad file URL just
+    // beeps like a missing path (frozen `resolve` returning nil).
+    return null;
+  }
   if (url.host !== "" && url.host.toLowerCase() !== "localhost") {
     return `\\\\${url.host}${decoded}`;
   }

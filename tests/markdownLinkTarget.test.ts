@@ -112,6 +112,10 @@ describe("resolveMarkdownLinkTarget (P2-31, frozen MarkdownLinkTarget)", () => {
         statWith(["\\\\nas\\share\\x.txt"]),
       ),
     ).toEqual({ kind: "file", path: "\\\\nas\\share\\x.txt" });
+    // A malformed percent-escape is a bad file URL — quiet beep, not a throw.
+    expect(resolveMarkdownLinkTarget("file:///C:/work/%E0%A4%A", BASE, statWith([]))).toEqual({
+      kind: "missing",
+    });
   });
 
   it("treats drive-letter and UNC prefixes as paths, not schemes", () => {
