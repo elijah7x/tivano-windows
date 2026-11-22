@@ -15,6 +15,7 @@ import {
   MODEL_LIST_LIMIT,
   addPin,
   addSection,
+  applyDraftRename,
   modelListItems,
   moveModelListItem,
   moveModelSection,
@@ -376,5 +377,32 @@ describe("protectedModelIds (frozen protectedModelIDs)", () => {
     expect(ids).toEqual(
       new Set(["thread-m", "pinned-m", "pin2", "lead-m", "work-m", "prof-m", "home-worker"]),
     );
+  });
+});
+
+describe("applyDraftRename (P2-33 edit-then-remove fold)", () => {
+  it("folds the in-flight rename into the written list", () => {
+    const out = applyDraftRename([S("a", "A", 0), S("b", "B", 1)], "b", "Bee");
+    expect(out.map((s) => s.name)).toEqual(["A", "Bee"]);
+    expect(out.map((s) => s.id)).toEqual(["a", "b"]);
+  });
+
+  it("leaves the list untouched with no edit or a blank draft", () => {
+    const secs = [S("a", "A", 0)];
+    expect(applyDraftRename(secs, null, "x")).toBe(secs);
+    expect(applyDraftRename(secs, "a", "   ")).toBe(secs);
+  });
+
+  it("rename-then-remove lands both changes in one write", () => {
+    const folded = applyDraftRename([S("a", "A", 0), S("b", "B", 1)], "a", "Aye");
+    const removed = removeSection(folded, ["b"], "b");
+    expect(removed.modelSections.map((s) => s.name)).toEqual(["Aye"]);
+    expect(removed.collapsedModelSections).toEqual([]);
+  });
+
+  it("a rename aimed at a gone section is a no-op (no resurrection)", () => {
+    const secs = [S("a", "A", 0)];
+    const out = applyDraftRename(secs, "ghost", "G");
+    expect(out.map((s) => s.name)).toEqual(["A"]);
   });
 });

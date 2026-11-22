@@ -7,12 +7,15 @@
 // like the frozen editor, Save stays disabled while any row lacks a
 // command.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ChatThread, Project, ProjectScript } from "../../shared/types";
 import { callApi } from "../client";
 import { useT } from "../locale";
 
 interface Draft {
+  /** Stable row identity while editing — P2-33: removing or reordering
+   *  a sibling mid-edit must not remount this row (frozen row identity). */
+  key: string;
   id?: string;
   name: string;
   command: string;
@@ -21,6 +24,7 @@ interface Draft {
 }
 
 const toDraft = (s: ProjectScript): Draft => ({
+  key: s.id,
   id: s.id,
   name: s.name,
   command: s.command,
@@ -44,6 +48,7 @@ export function ScriptsDialog(props: {
   const [drafts, setDrafts] = useState<Draft[]>(scripts.map(toDraft));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const keyGen = useRef(0);
 
   const run = (script: ProjectScript) => {
     setBusy(true);
@@ -130,7 +135,7 @@ export function ScriptsDialog(props: {
         ) : (
           <div className="scripts-list">
             {drafts.map((d, i) => (
-              <div key={d.id ?? `new-${i}`} className="script-card">
+              <div key={d.key} className="script-card">
                 <div className="script-card-head">
                   <input
                     className="wt-input"
@@ -175,7 +180,13 @@ export function ScriptsDialog(props: {
               onClick={() =>
                 setDrafts((cur) => [
                   ...cur,
-                  { name: t("New script"), command: "", icon: "play", runOnWorktreeCreate: false },
+                  {
+                    key: `new-${++keyGen.current}`,
+                    name: t("New script"),
+                    command: "",
+                    icon: "play",
+                    runOnWorktreeCreate: false,
+                  },
                 ])
               }
             >

@@ -588,6 +588,20 @@ export function renameSection(sections: ModelSection[], id: string, name: string
   return sections.map((s) => (s.id === id ? { ...s, name } : s));
 }
 
+/** P2-33 (frozen commitRename-on-mutation): fold an in-flight rename
+ *  into the list a mutation is about to write — the edit lands in the
+ *  same write instead of racing two whole-array updates from different
+ *  bases. A missing/blank edit leaves the list untouched. */
+export function applyDraftRename(
+  sections: ModelSection[],
+  editingId: string | null,
+  draft: string,
+): ModelSection[] {
+  const name = draft.trim();
+  if (editingId === null || name === "") return sections;
+  return renameSection(sections, editingId, name);
+}
+
 /** Frozen removeModelSection — the heading goes away; its models join the
  *  heading above, or the top of the list. */
 export function removeSection(sections: ModelSection[], collapsed: string[], id: string) {
