@@ -547,7 +547,15 @@ function Close-ExtraDevinWindows {
   # Close only what is provably ours: duplicate windows for this workspace, and empty
   # folderless chats ("Devin - <untitled or /bypass>") left by failed kickoffs. Sessions in other
   # folders are kept, and nothing is closed while no window matches this workspace.
-  if ($preferred -eq [IntPtr]::Zero) { return 0 }
+  if ($preferred -eq [IntPtr]::Zero) {
+    # Still answer save prompts left on folderless windows; their buffers only hold kickoff text.
+    foreach ($win in $all) {
+      if ([string]$win.Title -match '^Devin( - |$)' -and [DevLoopWindows]::DismissSavePrompt($win.Handle)) {
+        Write-Log 'discarded a save prompt on a folderless Devin window'
+      }
+    }
+    return 0
+  }
   $closed = 0
   foreach ($win in $all) {
     if ($win.Handle -eq $preferred) { continue }
@@ -1183,6 +1191,12 @@ function Get-LatestPrGateSummary {
   $dirs = @(Get-ChildItem -LiteralPath $gateRoot -Directory -ErrorAction SilentlyContinue |
     Where-Object { $_.Name.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
   if ($dirs.Count -eq 0) { return $null }
+  # A newer gate run that has not written summary.json yet is still in progress; never fall back
+  # to an older passing summary while it runs.
+  $newestDir = @($dirs | Sort-Object @{ Expression = { $_.CreationTimeUtc }; Descending = $true }, @{ Expression = { $_.Name }; Descending = $true })[0]
+  if (-not (Test-Path -LiteralPath (Join-Path $newestDir.FullName 'summary.json') -PathType Leaf)) {
+    return [pscustomobject]@{ path = ''; data = [pscustomobject]@{ verdict = 'pending'; headSha = '' } }
+  }
 
   $summaryFiles = New-Object Collections.Generic.List[object]
   foreach ($dir in $dirs) {
@@ -1299,7 +1313,7 @@ function Invoke-AutoMerge {
     $script:GhPath = $ghCmd.Source
   }
 
-  $listRes = Invoke-Gh ('pr list -R ' + $Repo + ' --state open --limit 100 --json number,headRefName,headRefOid,title,body,labels')
+  $listRes = Invoke-Gh ('pr list -R ' + $Repo + ' --state open --limit 100 --json number,headRefName,headRefOid,title,body,labels,author,baseRefName,isCrossRepository')
   if ($listRes.exitCode -ne 0) {
     Write-Log ('auto-merge: skipped (gh pr list failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $listRes) 200) + ')')
     return
@@ -1336,6 +1350,15 @@ function Invoke-AutoMerge {
       $labels = @(Get-LabelNames (Get-JsonProp $pr 'labels'))
       if ($labels -contains 'audit-parked') {
         Write-Log ('auto-merge PR #' + $prNum + ': skipped (labelled audit-parked)')
+        continue
+      }
+      # Only the repository owner's own same-repo PRs into main are in scope.
+      $ownerLogin = ($Repo -split '/')[0]
+      $authorLogin = [string](Get-JsonProp (Get-JsonProp $pr 'author') 'login')
+      $isCross = [bool](Get-JsonProp $pr 'isCrossRepository')
+      $baseRef = [string](Get-JsonProp $pr 'baseRefName')
+      if ($isCross -or $authorLogin -ne $ownerLogin -or $baseRef -ne 'main') {
+        Write-Log ('auto-merge PR #' + $prNum + ': skipped (not an owner same-repo PR into main)')
         continue
       }
 
@@ -1388,6 +1411,37 @@ function Invoke-AutoMerge {
       $closingPattern = '(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(?:' + [regex]::Escape($Repo) + ')?#' + $issueNum + '\b'
       if ([string]::IsNullOrWhiteSpace($prBody) -or ($prBody -notmatch $closingPattern)) {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (PR body missing closing keyword for #' + $issueNum + ')')
+        continue
+      }
+      # The linked issue must be in the autopilot queue (label) and not parked (label or parked.json).
+      $issueRes = Invoke-Gh ('issue view ' + $issueNum + ' -R ' + $Repo + ' --json labels,state')
+      if ($issueRes.exitCode -ne 0) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (gh issue view #' + $issueNum + ' failed)')
+        continue
+      }
+      $issueLabels = @()
+      try { $issueLabels = @(Get-LabelNames (Get-JsonProp ($issueRes.text | ConvertFrom-Json) 'labels')) } catch { $issueLabels = @() }
+      if ($issueLabels -notcontains $Label) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (issue #' + $issueNum + ' is not labelled ' + $Label + ')')
+        continue
+      }
+      if ($issueLabels -contains 'parked') {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (issue #' + $issueNum + ' is labelled parked)')
+        continue
+      }
+      $parkedPath = Join-Path $script:AutopilotDir 'parked.json'
+      $parkedHit = $false
+      if (Test-Path -LiteralPath $parkedPath -PathType Leaf) {
+        $parkedData = Read-JsonFile $parkedPath
+        foreach ($entry in @($parkedData | Where-Object { $null -ne $_ })) {
+          $pi = 0; $pp = 0
+          try { $pi = [int](Get-JsonProp $entry 'issue') } catch { }
+          try { $pp = [int](Get-JsonProp $entry 'pr') } catch { }
+          if (($pi -gt 0 -and $pi -eq $issueNum) -or ($pp -gt 0 -and $pp -eq $prNum)) { $parkedHit = $true }
+        }
+      }
+      if ($parkedHit) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (recorded in parked.json)')
         continue
       }
 

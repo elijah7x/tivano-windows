@@ -1017,7 +1017,6 @@ function Get-DeterministicFindings {
     $seq++
   }
 
-  $rebaseInstruction = 'rebase the branch onto current origin/main (git rebase origin/main) so commits from before the history rewrite drop out, then force-push the branch'
 
   $mainShaSet = @{}
   $mainSubjectToSha = New-Object Collections.Hashtable ([StringComparer]::Ordinal)
@@ -1114,10 +1113,10 @@ function Get-DeterministicFindings {
     }
     $null = $findings.Add([pscustomobject]@{
       id = ('D' + $seq)
-      severity = 'blocking'
+      severity = 'advisory'
       title = 'Devin attribution in branch commit message(s)'
       evidence = ('commits: ' + ($shownCommits -join ', ') + $moreCommits + $aheadSuffix)
-      why = ("Branch commit message(s) not on main contain Devin attribution ('Co-authored-by:', 'devin-ai-integration', or 'Generated with/by [Devin]'). To fix, " + $rebaseInstruction + '.')
+      why = "Branch commit message(s) contain Devin attribution. No branch rewrite is needed (the workflow forbids rebasing and force-pushing): the watchdog squash-merges with its own explicit message, so branch messages never reach main. Keep attribution out of new commits and the PR body."
     })
     $seq++
   }
@@ -1158,10 +1157,10 @@ function Get-DeterministicFindings {
     }
     $null = $findings.Add([pscustomobject]@{
       id = ('D' + $seq)
-      severity = 'blocking'
+      severity = 'advisory'
       title = 'branch contains commit(s) already on main under different SHA(s)'
       evidence = (($shownReplayed -join '; ') + $moreReplayed + $aheadSuffix)
-      why = ('Branch commit list contains commit(s) whose exact subject matches recent commit(s) on main under different SHAs (stale history from before a main rewrite). To fix, ' + $rebaseInstruction + '.')
+      why = 'Branch commit list contains commit(s) whose exact subject matches recent commit(s) on main under different SHAs, likely history from before a main rewrite. A subject match alone does not prove the same change, so this is informational; the squash merge carries only the tree, and its message is written by the watchdog.'
     })
     $seq++
   }
