@@ -1984,6 +1984,7 @@ try {
       $worktreeCreated = $false
       $pendingSet = $false
       $arbiterStateSaved = $false
+      $finalStateSaved = $false
       $preRunState = @{
         headSha = [string]$state.headSha
         attempts = [int]$state.attempts
@@ -2316,6 +2317,7 @@ try {
               $state.arbiterState = 'parked'
               $state.arbiterPending = $null
               Save-PrState -Path $statePath -State $state
+              $finalStateSaved = $true
             }
             $parkRecord = [ordered]@{
               pr = $num
@@ -2417,6 +2419,7 @@ try {
           $state.arbiterState = ''
           $state.arbiterPending = $null
           Save-PrState -Path $statePath -State $state
+          $finalStateSaved = $true
         }
 
         $prRecord = [ordered]@{
@@ -2443,7 +2446,11 @@ try {
         $caughtException = $_.Exception
         $errMsg = ConvertTo-SingleLine (Protect-LogText $caughtException.Message) 300
         Write-Log ('PR #' + $num + ' head ' + $sha7 + ' error: ' + $errMsg)
-        if ($arbiterRetryOnly -or $arbiterStateSaved) {
+        if ($finalStateSaved) {
+          # The verdict, its status and the state are already committed; a later reporting
+          # failure (result.json, logs) must not revert them or rewrite the published status.
+          Write-Log ('PR #' + $num + ' head ' + $sha7 + ' verdict already committed; keeping it despite the reporting error')
+        } elseif ($arbiterRetryOnly -or $arbiterStateSaved) {
           if ($pendingSet -and -not $DryRun) {
             try { Set-AuditCommitStatus -Config $config -Sha $headSha -State 'failure' -Description 'arbitration pending' } catch { }
           }

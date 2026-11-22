@@ -624,6 +624,15 @@ function Test-HasUncollectedPrFileFailure {
     if ($null -ne $rawBaseResults) {
       foreach ($btr in @($rawBaseResults | Where-Object { $null -ne $_ })) {
         if ([string](Get-JsonProp $btr 'status') -ne 'failed') { continue }
+        # Only a base file that also failed to load (no failed assertions) excuses a PR load failure.
+        $bFailedAssertions = 0
+        $bAssertions = Get-JsonProp $btr 'assertionResults'
+        if ($null -ne $bAssertions) {
+          foreach ($bar in @($bAssertions | Where-Object { $null -ne $_ })) {
+            if ([string](Get-JsonProp $bar 'status') -eq 'failed') { $bFailedAssertions++ }
+          }
+        }
+        if ($bFailedAssertions -gt 0) { continue }
         $bKey = Get-VitestResultKey ([string](Get-JsonProp $btr 'name'))
         if ($bKey) { $baseFailedFiles[$bKey] = $true }
       }
@@ -781,9 +790,6 @@ function Test-ReviewerBlockingOnlyFlake {
         $matchesFlake = $true
         break
       }
-    }
-    if (-not $matchesFlake -and $point -match '(?i)\b(unit\s+tests?|unit\s+check|vitest|new\s+failure)\b') {
-      $matchesFlake = $true
     }
     if (-not $matchesFlake) { return $false }
   }
