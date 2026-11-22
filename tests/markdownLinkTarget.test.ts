@@ -106,14 +106,14 @@ describe("resolveMarkdownLinkTarget (P2-31, frozen MarkdownLinkTarget)", () => {
     expect(
       resolveMarkdownLinkTarget("file:///C:/work/proj/a.txt", BASE, statWith([f])),
     ).toEqual({ kind: "file", path: f });
-    // A UNC host maps to a share path.
+    // A UNC host maps to a share path — never statted, opened async.
     expect(
       resolveMarkdownLinkTarget(
         "file://nas/share/x.txt",
         BASE,
         statWith(["\\\\nas\\share\\x.txt"]),
       ),
-    ).toEqual({ kind: "file", path: "\\\\nas\\share\\x.txt" });
+    ).toEqual({ kind: "unc", path: "\\\\nas\\share\\x.txt" });
     // A malformed percent-escape is a bad file URL — quiet beep, not a throw.
     expect(resolveMarkdownLinkTarget("file:///C:/work/%E0%A4%A", BASE, statWith([]))).toEqual({
       kind: "missing",
@@ -128,7 +128,7 @@ describe("resolveMarkdownLinkTarget (P2-31, frozen MarkdownLinkTarget)", () => {
     });
     const u = "\\\\nas\\share\\y.md";
     expect(resolveMarkdownLinkTarget(u, BASE, statWith([u]))).toEqual({
-      kind: "file",
+      kind: "unc",
       path: u,
     });
     // A missing drive path is missing, not web.
@@ -152,6 +152,48 @@ describe("resolveMarkdownLinkTarget (P2-31, frozen MarkdownLinkTarget)", () => {
     expect(
       resolveMarkdownLinkTarget("docs", BASE, statWith([], [d])),
     ).toEqual({ kind: "file", path: d });
+  });
+
+  it("never stats a UNC path — it resolves to an async-open target", () => {
+    // The gate's security finding: statSync on `\\host\…` would block the
+    // main process on SMB and leak NTLM credentials to a link-chosen host.
+    let statCalls = 0;
+    const stat = (p: string): MarkdownLinkStat => {
+      statCalls++;
+      return "none";
+    };
+    for (const href of [
+      "\\\\nas\\share\\y.md",
+      "//nas/share/y.md",
+      "file://nas/share/y.md",
+    ]) {
+      statCalls = 0;
+      expect(resolveMarkdownLinkTarget(href, BASE, stat)).toEqual({
+        kind: "unc",
+        path: "\\\\nas\\share\\y.md",
+      });
+      expect(statCalls, href).toBe(0);
+    }
+  });
+
+  it("skips the :line strip for UNC — the share path opens verbatim", () => {
+    let statCalls = 0;
+    const stat = (): MarkdownLinkStat => {
+      statCalls++;
+      return "none";
+    };
+    expect(
+      resolveMarkdownLinkTarget("\\\\nas\\share\\f.ts:10", BASE, stat),
+    ).toEqual({ kind: "unc", path: "\\\\nas\\share\\f.ts:10" });
+    expect(statCalls).toBe(0);
+  });
+
+  it("still stats the local device namespace (\\\\?\\ and \\\\.\\)", () => {
+    const f = "\\\\?\\C:\\work\\proj\\dev.txt";
+    expect(resolveMarkdownLinkTarget(f, BASE, statWith([f]))).toEqual({
+      kind: "file",
+      path: f,
+    });
   });
 
   it("beeps on empty and whitespace-only input", () => {

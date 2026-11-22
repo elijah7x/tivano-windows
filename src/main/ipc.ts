@@ -442,7 +442,7 @@ export function registerIpc(opts: IpcOptions): () => void {
       shell.beep();
       return;
     }
-    if (target.kind === "file") {
+    if (target.kind === "file" || target.kind === "unc") {
       if (openLogged({ action: "openPath", target: target.path })) return;
       const failed = await shell.openPath(target.path);
       // The quiet failure: an unreadable file beeps like a missing one

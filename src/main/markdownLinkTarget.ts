@@ -12,6 +12,11 @@ import { win32 as pathWin32 } from "node:path";
 export type MarkdownLinkTarget =
   | { kind: "web"; url: string }
   | { kind: "file"; path: string }
+  // A UNC share is never statted — a synchronous stat on `\\host\…`
+  // blocks the main process on SMB and leaks NTLM credentials to a
+  // link-chosen host. It goes straight to the async shell open, and a
+  // failure beeps like a missing path. The `:line` strip is skipped.
+  | { kind: "unc"; path: string }
   | { kind: "missing" };
 
 /** What the caller's filesystem reports for one absolute path. */
@@ -97,10 +102,22 @@ function resolveLocalPath(
   } else {
     path = pathWin32.resolve(path);
   }
+  if (isUncPath(path)) return { kind: "unc", path };
   if (stat(path) !== "none") return { kind: "file", path };
   const stripped = stripLineColumnSuffix(path, stat);
   if (stripped !== undefined) return { kind: "file", path: stripped };
   return { kind: "missing" };
+}
+
+/** `\\host\share` (also `//host/x` after resolve, and `file://host/x`
+ *  via fileUrlPath). `\\?\C:\x` and `\\.\…` are the local device
+ *  namespace, not the network — they keep the regular stat path. */
+function isUncPath(path: string): boolean {
+  return (
+    path.startsWith("\\\\") &&
+    !path.startsWith("\\\\?\\") &&
+    !path.startsWith("\\\\.\\")
+  );
 }
 
 function expandTilde(path: string): string {
