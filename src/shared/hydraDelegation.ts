@@ -86,7 +86,11 @@ export function delegationFromEntry(entry: unknown): HydraDelegation | null {
         : undefined,
     files: filesGiven
       ? filesRaw
+          // Frozen delegation(fromEntry:): string elements trimmed,
+          // empties dropped — `["", "a.txt"]` reads as ["a.txt"].
           .filter((f): f is string => typeof f === "string")
+          .map((f) => f.trim())
+          .filter((f) => f !== "")
           .slice(0, 10_000)
           .map((f) => (f.length > 2000 ? f.slice(0, 2000) : f))
       : undefined,

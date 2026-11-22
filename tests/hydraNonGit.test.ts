@@ -496,6 +496,34 @@ describe("P2-05 owned-files contract (frozen v2)", () => {
     expect(info.backupPath).toBe(backup1);
   }, 20_000);
 
+  it("a continue carrying files admits against the head's base on a checkout-less lead", async () => {
+    const { engine } = rig();
+    const folder = tmp("tivano-cont-files-");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "a.txt"), "one\n");
+    writeFileSync(join(folder, "b.txt"), "two\n");
+    engine.attachWorktrees(fakeWorktreesStub() as never);
+    // No projectId — the lead has NO checkout. The continue's files
+    // must admit against Hank's targetCheckout, not the lead's.
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(
+      lead.id,
+      `do it [mock:hydra-path-files]${folder}|a.txt [mock:hydra-continue-files]b.txt`,
+    );
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    const info = head.hydraHead!;
+    await waitFor(() => info.status !== "running");
+    // The report-turn continue carries files:["b.txt"]. A lead-checkout
+    // admission would refuse every file as unresolvable; the head-base
+    // admission re-arms Hank and backs the new file up.
+    await waitFor(() => info.status === "running", 15_000);
+    await waitFor(() => info.status !== "running", 15_000);
+    expect(info.status).toBe("completed");
+    expect(info.files).toEqual(["b.txt"]);
+    expect(info.backupOwnedPaths).toContain("b.txt");
+  }, 20_000);
+
   it("a home-routed head narrows to the deepest common folder of its files", async () => {
     const { engine } = rig();
     let homeLeaf: string;

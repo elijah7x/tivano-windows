@@ -111,6 +111,7 @@ export class MockProvider implements ProviderAdapter {
    *  entry (one-shot latch); "ghost" names a head that never spawned. */
   private readonly hydraContinueLeads = new Set<string>();
   private readonly hydraContinueGhosts = new Set<string>();
+  private readonly hydraContinueFiles = new Map<string, string[]>();
 
   constructor(private readonly opts: MockProviderOptions = {}) {}
 
@@ -227,14 +228,28 @@ export class MockProvider implements ProviderAdapter {
     // batch report emits one `"continue": "Hank"` entry, sending the
     // rework back into Hank's own session and copy (same job). It
     // latches like the loop fixtures and fires once.
+    // `[mock:hydra-continue-files]<f1,f2>` latches the same continue
+    // but carrying a "files" list — the owned files live under the
+    // head's own base, which is what a checkout-less lead's admission
+    // must resolve them against.
     const wantsHydraContinue = prompt.includes("[mock:hydra-continue]");
     const wantsHydraContinueGhost = prompt.includes("[mock:hydra-continue-ghost]");
+    const hydraContinueFilesMatch = prompt.match(
+      /\[mock:hydra-continue-files\]([^\s]+)/,
+    );
     if (wantsHydraContinue) this.hydraContinueLeads.add(ctx.threadId);
     if (wantsHydraContinueGhost) this.hydraContinueGhosts.add(ctx.threadId);
+    if (hydraContinueFilesMatch) {
+      this.hydraContinueFiles.set(
+        ctx.threadId,
+        hydraContinueFilesMatch[1]!.split(",").filter(Boolean),
+      );
+    }
     const continueReport =
       prompt.includes("Hydra reports:") &&
       (this.hydraContinueLeads.has(ctx.threadId) ||
-        this.hydraContinueGhosts.has(ctx.threadId));
+        this.hydraContinueGhosts.has(ctx.threadId) ||
+        this.hydraContinueFiles.has(ctx.threadId));
     const continueGhost = this.hydraContinueGhosts.has(ctx.threadId) && continueReport;
     if (continueReport) {
       this.hydraContinueLeads.delete(ctx.threadId);
@@ -340,7 +355,13 @@ export class MockProvider implements ProviderAdapter {
         : continueReport
           ? continueGhost
             ? '[{"task":"Rework Nova","prompt":"Try again.","continue":"Nova"}]'
-            : '[{"task":"Rework Hank","prompt":"Rework your part: tighten the intro.","continue":"Hank"}]'
+            : this.hydraContinueFiles.has(ctx.threadId)
+              ? (() => {
+                  const files = this.hydraContinueFiles.get(ctx.threadId);
+                  this.hydraContinueFiles.delete(ctx.threadId);
+                  return `[{"task":"Rework Hank","prompt":"Rework your part: tighten the intro.","continue":"Hank","files":${JSON.stringify(files)}}]`;
+                })()
+              : '[{"task":"Rework Hank","prompt":"Rework your part: tighten the intro.","continue":"Hank"}]'
         : wantsHydraLoopFail || (looped && this.hydraLoops.get(ctx.threadId) === "fail")
           ? '[{"task":"Quiet fail","prompt":"Try it. [mock:fail-quiet]","files":[]}]'
         : wantsHydraLoop || looped

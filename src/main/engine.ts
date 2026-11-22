@@ -4968,7 +4968,19 @@ export class Engine {
             `${d.continue} was not sent back: ${reason}`,
           );
         }
-        if (!this.hydraAdmitOwnership(lead, batchId, d, d.continue)) return;
+        // A continuation's files live under the TARGET head's recorded
+        // base — the same base sendBackHydraHead validates against —
+        // never the lead's checkout (a checkout-less lead would refuse
+        // every file and register claims under phantom paths).
+        const continueBase =
+          info.filesBase ??
+          info.targetCheckout ??
+          this.threadDirectory(target.id) ??
+          undefined;
+        if (
+          !this.hydraAdmitOwnership(lead, batchId, d, d.continue, continueBase)
+        )
+          return;
         const queue = this.hydraWaiting.get(lead.id) ?? [];
         queue.push({
           d,
@@ -4987,7 +4999,7 @@ export class Engine {
     if (d.filesGiven !== true) {
       return this.refuseDelegation(
         lead,
-        `its entry has no "files" array — resend it with "files": the paths that head changes, or [] for a head that only reads and reports`,
+        `its entry has no "files" array — resend it as a \`\`\`hydra fenced JSON array entry with "files": the paths that head changes, or [] for a head that only reads and reports`,
       );
     }
     // Frozen needsTarget/hydraLeadWorktree, bounded: upstream redirects a
@@ -5479,14 +5491,17 @@ export class Engine {
     batchId: string,
     d: HydraDelegation,
     name: string,
+    checkoutOverride?: string,
   ): boolean {
-    const checkout = this.hydraOwnershipCheckout(lead, d);
-    const owners = this.hydraOwners.get(batchId) ?? new Map<string, { path: string; names: string[] }>();
+    const checkout = checkoutOverride ?? this.hydraOwnershipCheckout(lead, d);
+    const owners =
+      this.hydraOwners.get(batchId) ??
+      new Map<string, { path: string; names: string[] }>();
     const invalid: string[] = [];
-    const overlaps: { path: string; names: string[] }[] = [];
+    const pending: { key: string; path: string; held: string[] }[] = [];
     const seen = new Set<string>();
     for (const file of d.files ?? []) {
-      const expanded = this.hydraExpandTilde(file.trim()) ?? "";
+      const expanded = this.hydraExpandTilde(file) ?? "";
       const path = checkout
         ? hydraOwnershipPath(expanded, checkout)
         : undefined;
@@ -5497,26 +5512,31 @@ export class Engine {
       const key = sepFold(path);
       if (seen.has(key)) continue;
       seen.add(key);
-      const claim = owners.get(key) ?? { path, names: [] };
-      claim.names.push(name);
-      owners.set(key, claim);
-      if (claim.names.length > 1) overlaps.push(claim);
+      pending.push({ key, path, held: owners.get(key)?.names ?? [] });
     }
-    this.hydraOwners.set(batchId, owners);
     if (invalid.length) {
       this.refuseDelegation(
         lead,
-        `these ownership paths are empty, outside their target checkout, or have no resolvable checkout:\n${invalid.join("\n")}\nTo work in a folder outside your checkout, set "project" to that folder's absolute path and list "files" relative to it.`,
+        `these ownership paths are empty, outside their target checkout, or have no resolvable checkout:\n${invalid.join("\n")}\nTo work in a folder outside your checkout, set "project" to that folder's absolute path and list "files" relative to it. Resend the block as a \`\`\`hydra fenced JSON array.`,
       );
       return false;
     }
+    const overlaps = pending.filter((p) => p.held.length > 0);
     if (overlaps.length) {
       this.refuseDelegation(
         lead,
-        `more than one task claims the same path.\n${overlaps.map((c) => `- ${c.path}: ${c.names.join(", ")}`).join("\n")}\nResend one whole block with each path owned once.`,
+        `more than one task claims the same path.\n${overlaps.map((c) => `- ${c.path}: ${[...c.held, name].join(", ")}`).join("\n")}\nResend one whole block as a \`\`\`hydra fenced JSON array with each path owned once.`,
       );
       return false;
     }
+    // Claims land only after the verdict — a refused entry's names
+    // must not linger as dead claims a later same-batch entry trips on.
+    for (const p of pending) {
+      const claim = owners.get(p.key) ?? { path: p.path, names: [] };
+      claim.names.push(name);
+      owners.set(p.key, claim);
+    }
+    this.hydraOwners.set(batchId, owners);
     return true;
   }
 
