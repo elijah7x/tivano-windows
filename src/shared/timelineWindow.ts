@@ -57,3 +57,50 @@ export function timelineFollowReset(
     ? TIMELINE_WINDOW.initial
     : visible;
 }
+
+// P2-30 (frozen ThreadTimeline scroll tracking): only the reader's own
+// scrolling decides whether the timeline follows new text. `delta` is the
+// reader's own motion (anchor growth excluded by the caller), positive is
+// downward.
+
+/** Frozen release: while the reader is interacting, any upward motion
+ *  away from the end unpins the follow. A held finger is not a release;
+ *  a starting turn is not either — growth under a top anchor never reads
+ *  as the reader leaving the end because `delta` excludes it. */
+export function scrollFollowRelease(
+  distanceFromBottom: number,
+  delta: number,
+  userScrolling: boolean,
+): boolean {
+  return userScrolling && distanceFromBottom > 0.5 && delta < -0.1;
+}
+
+/** Frozen re-pin: the reader scrolling back down re-follows once the end
+ *  is within 8px — a coast that lands exactly is a follow again. */
+export function scrollFollowRepin(
+  distanceFromBottom: number,
+  previousDistance: number,
+): boolean {
+  return distanceFromBottom < previousDistance && distanceFromBottom <= 8;
+}
+
+/** Frozen load-ahead: page earlier history in when the hidden travel left
+ *  under the reader is less than a screenful (`new.travel < containerHeight`),
+ *  but only while the reader is actually moving up — a growth-driven event
+ *  near the top never chains the whole history in. `lastAt`/`now` keep the
+ *  port's one-page-per-gesture bound (frozen `historyLoadPending`). */
+export function shouldPageHistory(args: {
+  scrollTop: number;
+  viewportHeight: number;
+  hidden: number;
+  movedUp: boolean;
+  lastPageAt: number;
+  now: number;
+}): boolean {
+  return (
+    args.movedUp &&
+    args.scrollTop < args.viewportHeight &&
+    args.hidden > 0 &&
+    args.now - args.lastPageAt >= 250
+  );
+}

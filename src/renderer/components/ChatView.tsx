@@ -46,6 +46,9 @@ import {
 } from "../messageGroups";
 import {
   TIMELINE_WINDOW,
+  scrollFollowRelease,
+  scrollFollowRepin,
+  shouldPageHistory,
   timelineFollowReset,
   timelineGrownOpen,
   timelineJumpWindow,
@@ -197,6 +200,16 @@ export function ChatView(props: {
   const timelineJumpRef = useRef<string | null>(null);
   const timelineLastPageRef = useRef(0);
   const timelineVisibleRef = useRef(timelineVisible);
+  // P2-30 (frozen ThreadTimeline tracking): whether growth pins to the
+  // end, the last observed scroll geometry for direction, and the input
+  // recency that tells the reader's own scrolling apart from layout or
+  // anchor motion.
+  const timelineFollowingRef = useRef(true);
+  const timelineLastScrollRef = useRef<{ top: number; dist: number } | null>(
+    null,
+  );
+  const timelineInteractRef = useRef(false);
+  const timelineWheelUntilRef = useRef(0);
   const timelineItems = useMemo(
     () => (thread ? groupMessages(thread.messages) : []),
     [thread?.messages, thread],
@@ -226,6 +239,9 @@ export function ChatView(props: {
   }, [threadId]);
 
   useEffect(() => {
+    // A thread switch opens pinned to the end with no carried geometry.
+    timelineFollowingRef.current = true;
+    timelineLastScrollRef.current = null;
     const t = window.setTimeout(() => {
       // The open grow prepends too — hold the bottom spot through the
       // same measured shift as a scroll-back page rather than trusting
@@ -241,11 +257,18 @@ export function ChatView(props: {
   }, [threadId]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
+    // P2-30 (frozen pinned-follow): growth keeps the end in view only
+    // while the reader stays pinned — a scroll-up during streaming
+    // released the pin in onScroll, so a starting turn or a flush never
+    // yanks a paged-back reader down.
+    if (timelineFollowingRef.current)
+      endRef.current?.scrollIntoView({ block: "end" });
     // Following the live tail past the eager limit collapses the window
     // (frozen): a reader who paged back keeps what they loaded only while
     // nothing new pins them to the end.
-    setTimelineVisible((v) => timelineFollowReset(v, true));
+    setTimelineVisible((v) =>
+      timelineFollowReset(v, timelineFollowingRef.current),
+    );
   }, [thread?.messages.length, thread?.turn?.seq, thread?.turn?.status]);
 
   // A page landing prepends rows: hold the reader's spot by measuring the
@@ -494,22 +517,67 @@ export function ChatView(props: {
         ref={timelineRef}
         data-chat-id={thread.id}
         onScroll={() => {
-          // P1-26: nearing the top with unrendered history pages a chunk
-          // in (frozen page=10); the anchor ref holds the measured spot
-          // so the prepend lands without moving the reader. One page per
-          // gesture — a wheel burst near the top must not pull several
-          // chunks in one motion.
+          // P2-30 (frozen ThreadTimeline): only the reader's own
+          // scrolling decides whether the tail is followed — growth or
+          // anchor shifts under the reader never read as them leaving
+          // the end, and a starting turn never interrupts them.
           const el = timelineRef.current;
+          if (!el) return;
+          const top = el.scrollTop;
+          const dist = el.scrollHeight - top - el.clientHeight;
+          const prev = timelineLastScrollRef.current;
+          const delta = prev ? top - prev.top : 0;
+          const prevDist = prev ? prev.dist : Number.MAX_VALUE;
+          timelineLastScrollRef.current = { top, dist };
+          const userScrolling =
+            timelineInteractRef.current ||
+            Date.now() < timelineWheelUntilRef.current;
+          if (scrollFollowRelease(dist, delta, userScrolling)) {
+            timelineFollowingRef.current = false;
+          } else if (scrollFollowRepin(dist, prevDist)) {
+            // Frozen re-pin has no interaction gate: any landing inside
+            // the 8px band while approaching the end follows again —
+            // a minimap jump to the end re-pins the same as a drag.
+            timelineFollowingRef.current = true;
+          }
+          // P1-26/P2-30: within a screenful of the top while moving up,
+          // page a chunk of earlier history in (frozen page=10, travel
+          // < containerHeight). One page per gesture — a wheel burst or
+          // a growth-driven event near the top must not chain the whole
+          // history in. The anchor ref holds the measured spot so the
+          // prepend lands without moving the reader.
           if (
-            !el ||
-            el.scrollTop >= 120 ||
-            windowedHidden === 0 ||
-            Date.now() - timelineLastPageRef.current < 250
-          )
-            return;
-          timelineLastPageRef.current = Date.now();
-          timelineAnchorRef.current = el.scrollHeight - el.scrollTop;
-          setTimelineVisible((v) => timelinePagedBack(v));
+            shouldPageHistory({
+              scrollTop: top,
+              viewportHeight: el.clientHeight,
+              hidden: windowedHidden,
+              movedUp: delta < 0,
+              lastPageAt: timelineLastPageRef.current,
+              now: Date.now(),
+            })
+          ) {
+            timelineLastPageRef.current = Date.now();
+            timelineAnchorRef.current = el.scrollHeight - top;
+            setTimelineVisible((v) => timelinePagedBack(v));
+          }
+        }}
+        onWheel={() => {
+          timelineWheelUntilRef.current = Date.now() + 600;
+        }}
+        onTouchMove={() => {
+          timelineWheelUntilRef.current = Date.now() + 600;
+        }}
+        onPointerDown={() => {
+          timelineInteractRef.current = true;
+        }}
+        onPointerUp={() => {
+          timelineInteractRef.current = false;
+        }}
+        onPointerCancel={() => {
+          timelineInteractRef.current = false;
+        }}
+        onLostPointerCapture={() => {
+          timelineInteractRef.current = false;
         }}
       >
         {thread.messages.length === 0 && (
