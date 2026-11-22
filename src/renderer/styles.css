@@ -4892,3 +4892,34 @@ html[data-performance] .sweep-dots { display: none; }
   font-size: 10px; opacity: 0.45; text-align: right;
   -webkit-app-region: drag;
 }
+
+/* P2-45 (frozen previews .60/.32/.87): the text cursor shows over words
+ * only — links keep the hand; empty space, buttons, cards, menus,
+ * popovers, panels, the diff and the top bar keep the arrow. */
+.timeline { cursor: default; }
+.timeline .msg-body :where(
+  p, h1, h2, h3, h4, li, blockquote, pre, code, td, th, .md-task
+) { cursor: text; }
+.timeline a[href] { cursor: pointer; }
+.timeline button,
+.timeline .turn-steps > summary,
+.chat-head,
+.stave-bar,
+.approval,
+.approval.question,
+.git-patch,
+.git-diff,
+.ckpt-diff-wrap,
+.suggest-menu,
+.git-menu,
+.row-menu,
+.ctx-pop,
+.cook-pop,
+.hb-pop,
+.attach-pop,
+.modal,
+.helper-panel,
+.hydra-panel { cursor: default; }
+/* The copy/expand affordances on a card stay clickable-looking on their
+ * glyph; text inside them keeps the card's arrow. */
+.md-copy, .msg-copy, .ckpt-diff-btn { cursor: pointer; }

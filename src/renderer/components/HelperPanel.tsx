@@ -20,6 +20,7 @@ import { tryCall } from "../client";
 import { translateNotice } from "../i18n";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
+import { watchSelectionResidue } from "../selectionRepaint";
 import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
 
 // Frozen SubagentPanelLayout constants.
@@ -80,6 +81,14 @@ export function HelperPanel(props: {
     const el = timelineRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [thread.messages.length, thread.turn?.seq]);
+
+  // P2-45: selection changes inside the helper timeline repaint — no
+  // gray residue after clearing or starting a new selection.
+  useEffect(() => {
+    const el = timelineRef.current;
+    if (el) return watchSelectionResidue(el);
+    return undefined;
+  }, [thread.id]);
 
   const w = Math.min(
     Math.max(sizeDrag?.w ?? props.size?.width ?? WIDTH, MIN_W),
