@@ -578,7 +578,7 @@ html[data-performance] .sky-doll.sway { animation: none; }
   padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .msg {
@@ -625,14 +625,14 @@ html[data-performance] .sky-doll.sway { animation: none; }
 }
 
 .msg p {
-  margin: 0.4em 0;
+  margin: 0.55em 0;
 }
 
 .msg h1,
 .msg h2,
 .msg h3,
 .msg h4 {
-  margin: 0.6em 0 0.3em;
+  margin: 0.85em 0 0.35em;
 }
 
 .msg pre,
@@ -640,15 +640,16 @@ html[data-performance] .sky-doll.sway { animation: none; }
   background: var(--surface-3);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 10px;
+  padding: 0.7em 0.85em;
   overflow-x: auto;
+  line-height: 1.55;
 }
 
 .md-preblock {
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
-  margin: 0.4em 0;
+  margin: 0.55em 0;
 }
 
 .md-preblock .md-pre {
@@ -726,16 +727,21 @@ html[data-performance] .sky-doll.sway { animation: none; }
 }
 
 .msg blockquote {
-  margin: 0.4em 0;
-  padding-left: 10px;
+  margin: 0.55em 0;
+  padding: 0.1em 0 0.1em 0.85em;
   border-left: 3px solid var(--border);
   color: var(--text-2);
 }
 
 .msg ul,
 .msg ol {
-  margin: 0.3em 0;
-  padding-left: 1.4em;
+  margin: 0.45em 0;
+  padding-left: 1.5em;
+}
+
+.msg li ul,
+.msg li ol {
+  margin: 0.15em 0;
 }
 
 .msg li.md-task {
@@ -754,17 +760,25 @@ html[data-performance] .sky-doll.sway { animation: none; }
   margin: 0.7em 0;
 }
 
+/* P2-46: cells wrap to chat width; only a genuinely too-wide table
+   scrolls inside its wrap (frozen "wrap long cells … less horizontal
+   scrolling"). */
+.msg .md-table-wrap {
+  overflow-x: auto;
+  margin: 0.55em 0;
+}
+
 .msg .md-table {
   border-collapse: collapse;
-  margin: 0.4em 0;
   font-size: calc(13px + var(--fs-content-off));
 }
 
 .msg .md-table th,
 .msg .md-table td {
   border: 1px solid var(--border);
-  padding: 4px 8px;
+  padding: 0.4em 0.65em;
   text-align: left;
+  overflow-wrap: anywhere;
 }
 
 .msg .md-table .md-al-center {

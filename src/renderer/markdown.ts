@@ -611,8 +611,11 @@ function renderBlocks(
       const mend = streaming && i === lines.length;
       push(
         createElement(
-          "table",
-          { key, className: "md-table" },
+          "div",
+          { key, className: "md-table-wrap" },
+          createElement(
+            "table",
+            { className: "md-table" },
           createElement(
             "thead",
             {},
@@ -654,6 +657,7 @@ function renderBlocks(
                 ),
               ),
             ),
+          ),
           ),
         ),
       );
