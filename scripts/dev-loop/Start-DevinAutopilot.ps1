@@ -331,6 +331,11 @@ public static class DevLoopWindows {
   const uint GW_OWNER = 4;
   const int DWMWA_CLOAKED = 14;
   public const uint WM_CLOSE = 0x0010;
+  static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+  static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+  const uint SWP_NOSIZE = 0x0001;
+  const uint SWP_NOMOVE = 0x0002;
+  const uint SWP_SHOWWINDOW = 0x0040;
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr p);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
@@ -340,6 +345,8 @@ public static class DevLoopWindows {
   [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr wParam, IntPtr lParam);
@@ -377,6 +384,11 @@ public static class DevLoopWindows {
     IntPtr hit = WindowFromPoint(pt);
     if (hit == IntPtr.Zero) return false;
     return GetAncestor(hit, 2) == h;
+  }
+  // Raises or unpins a window in the topmost Z-order band without taking foreground rights.
+  public static bool SetTopmost(IntPtr h, bool on) {
+    if (h == IntPtr.Zero) return false;
+    return SetWindowPos(h, on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
   }
   static string GetWindowTitle(IntPtr h) {
     var sb = new StringBuilder(1024);
@@ -586,29 +598,40 @@ function Set-DevinForeground {
     if ($attempt -eq 1) {
       # On Nyx every SetForegroundWindow variant (Alt tap, AttachThreadInput, SwitchToThisWindow,
       # a zero foreground-lock timeout) is refused for the scheduled-task process, but a real click
-      # activates the window. Click the chat input point Focus-DevinChatInput uses, and only when
-      # that point is on the Devin window itself.
+      # activates the window. Restore if minimized, maximize, temporarily lift topmost above
+      # covering non-topmost windows, and click the chat input point only when that point is on
+      # the Devin window itself.
+      if ([DevLoopWindows]::IsIconic($Window)) {
+        [DevLoopWindows]::ShowWindow($Window, 9) | Out-Null
+        Start-Sleep -Milliseconds 300
+      }
       [DevLoopWindows]::ShowWindow($Window, 3) | Out-Null
       Start-Sleep -Milliseconds 800
-      $rect = New-Object DevLoopWindows+RECT
-      if ([DevLoopWindows]::GetWindowRect($Window, [ref]$rect)) {
-        $width = $rect.Right - $rect.Left
-        $height = $rect.Bottom - $rect.Top
-        $x = [int]($rect.Left + $width * 0.60)
-        $y = [int]($rect.Bottom - $height * 0.11)
-        if ([DevLoopWindows]::IsPointOnWindow($Window, $x, $y)) {
-          [DevLoopWindows]::SetCursorPos($x, $y) | Out-Null
-          Start-Sleep -Milliseconds 200
-          [DevLoopWindows]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-          [DevLoopWindows]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-          Start-Sleep -Milliseconds 800
-          if (Test-DevinForeground $Window) {
-            Write-Log 'focused Devin window by clicking its chat input (SetForegroundWindow refused)'
-            return $true
+      try {
+        [DevLoopWindows]::SetTopmost($Window, $true) | Out-Null
+        Start-Sleep -Milliseconds 300
+        $rect = New-Object DevLoopWindows+RECT
+        if ([DevLoopWindows]::GetWindowRect($Window, [ref]$rect)) {
+          $width = $rect.Right - $rect.Left
+          $height = $rect.Bottom - $rect.Top
+          $x = [int]($rect.Left + $width * 0.60)
+          $y = [int]($rect.Bottom - $height * 0.11)
+          if ([DevLoopWindows]::IsPointOnWindow($Window, $x, $y)) {
+            [DevLoopWindows]::SetCursorPos($x, $y) | Out-Null
+            Start-Sleep -Milliseconds 200
+            [DevLoopWindows]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+            [DevLoopWindows]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+            Start-Sleep -Milliseconds 800
+            if (Test-DevinForeground $Window) {
+              Write-Log 'focused Devin window by clicking its chat input (SetForegroundWindow refused)'
+              return $true
+            }
+          } else {
+            Write-Log 'focus click skipped: another window covers the Devin chat input'
           }
-        } else {
-          Write-Log 'focus click skipped: another window covers the Devin chat input'
         }
+      } finally {
+        [DevLoopWindows]::SetTopmost($Window, $false) | Out-Null
       }
     }
     if ($attempt -eq 0) {
@@ -630,25 +653,39 @@ function Set-DevinForeground {
 function Focus-DevinChatInput {
   param([IntPtr]$Window)
   if (-not (Set-DevinForeground $Window)) { return $false }
+  if ([DevLoopWindows]::IsIconic($Window)) {
+    [DevLoopWindows]::ShowWindow($Window, 9) | Out-Null
+    Start-Sleep -Milliseconds 300
+  }
   [DevLoopWindows]::ShowWindow($Window, 3) | Out-Null
   Start-Sleep -Milliseconds 800
   if (-not (Test-DevinForeground $Window)) { return $false }
-  $rect = New-Object DevLoopWindows+RECT
-  if (-not [DevLoopWindows]::GetWindowRect($Window, [ref]$rect)) { return $false }
-  $width = $rect.Right - $rect.Left
-  $height = $rect.Bottom - $rect.Top
-  # Lands in the chat input both in the IDE view's side chat and in the
-  # Agents view with its right-hand panel hidden (maximized window).
-  # The input box is centred in the chat column; a "N files changed" strip above it pushes it down,
-  # so aim low (11% from the bottom) and at 60% of the width, inside the box with or without the strip.
-  $x = [int]($rect.Left + $width * 0.60)
-  $y = [int]($rect.Bottom - $height * 0.11)
-  [DevLoopWindows]::SetCursorPos($x, $y) | Out-Null
-  Start-Sleep -Milliseconds 200
-  [DevLoopWindows]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-  [DevLoopWindows]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-  Start-Sleep -Milliseconds 600
-  return (Test-DevinForeground $Window)
+  try {
+    [DevLoopWindows]::SetTopmost($Window, $true) | Out-Null
+    Start-Sleep -Milliseconds 300
+    $rect = New-Object DevLoopWindows+RECT
+    if (-not [DevLoopWindows]::GetWindowRect($Window, [ref]$rect)) { return $false }
+    $width = $rect.Right - $rect.Left
+    $height = $rect.Bottom - $rect.Top
+    # Lands in the chat input both in the IDE view's side chat and in the
+    # Agents view with its right-hand panel hidden (maximized window).
+    # The input box is centred in the chat column; a "N files changed" strip above it pushes it down,
+    # so aim low (11% from the bottom) and at 60% of the width, inside the box with or without the strip.
+    $x = [int]($rect.Left + $width * 0.60)
+    $y = [int]($rect.Bottom - $height * 0.11)
+    if (-not [DevLoopWindows]::IsPointOnWindow($Window, $x, $y)) {
+      Write-Log 'chat input click skipped: another window covers the Devin chat input'
+      return $false
+    }
+    [DevLoopWindows]::SetCursorPos($x, $y) | Out-Null
+    Start-Sleep -Milliseconds 200
+    [DevLoopWindows]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    [DevLoopWindows]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 600
+    return (Test-DevinForeground $Window)
+  } finally {
+    [DevLoopWindows]::SetTopmost($Window, $false) | Out-Null
+  }
 }
 
 function Send-DevinKeysSafe {
