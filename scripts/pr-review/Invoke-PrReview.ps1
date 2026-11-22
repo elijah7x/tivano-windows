@@ -416,11 +416,338 @@ function Get-Verdict {
   return [pscustomobject]@{ recommendation = $recommendation; blocking = $blocking; nonBlocking = $nonBlocking }
 }
 
+function Get-ObjectProperty {
+  param($Object, [string]$Name)
+  if ($null -eq $Object) { return $null }
+  if ($Object -is [Collections.IDictionary]) {
+    if ($Object.Contains($Name)) { return $Object[$Name] }
+    return $null
+  }
+  $prop = $Object.PSObject.Properties[$Name]
+  if ($null -ne $prop) { return $prop.Value }
+  return $null
+}
+
+function Test-NonBlockingFindingLine {
+  param(
+    [string]$Line,
+    [string]$SubSection,
+    [bool]$IsMerge
+  )
+  $trimmed = [regex]::Replace($Line, '^\s*[-*]\s+', '')
+  # Standard format: "file:line - severity - concrete suggestion" (supports -, --, en-dash, em-dash, |).
+  $sevMatch = [regex]::Match(
+    $trimmed,
+    '^.+?(?:\s+(?:-{1,2}|\u2013|\u2014|\|)\s+|\s*\u2014\s*)(.+?)(?:\s+(?:-{1,2}|\u2013|\u2014|\|)\s+|\s*\u2014\s*)'
+  )
+  if ($sevMatch.Success) {
+    $sev = [regex]::Replace($sevMatch.Groups[1].Value, '[\*\x60\[\]\(\)]', '').Trim()
+    if ([regex]::IsMatch($sev, '(?i)\bnon[-\s]?blocking\b')) { return $true }
+    if ([regex]::IsMatch($sev, '(?i)\bblocking\b')) { return $false }
+    if ([regex]::IsMatch($sev, '(?i)^(low|minor|nit|nitpick|optional|info|informational|advisory|suggestion)\b')) { return $true }
+    if ([regex]::IsMatch($sev, '(?i)^(high|critical|major|medium|blocker|error)\b')) { return $false }
+  }
+  # Prefix format: "[non-blocking] ...", "**non-blocking**: ...", "non-blocking - ..."
+  $prefixMatch = [regex]::Match(
+    $trimmed,
+    '^[\s\*\x60\[\(]*(non[-\s]?blocking|blocking|low|minor|nit|nitpick|optional|info|informational|advisory|suggestion|high|critical|major|medium|blocker)[\s\*\x60\]\)]*(?:[:\-\u2013\u2014]|\s+\()'
+  )
+  if ($prefixMatch.Success) {
+    $tag = $prefixMatch.Groups[1].Value.Trim()
+    if ([regex]::IsMatch($tag, '(?i)^non[-\s]?blocking$')) { return $true }
+    if ([regex]::IsMatch($tag, '(?i)^blocking$')) { return $false }
+    if ([regex]::IsMatch($tag, '(?i)^(low|minor|nit|nitpick|optional|info|informational|advisory|suggestion)$')) { return $true }
+    return $false
+  }
+  # Colon-after-location format: "`file:line`: non-blocking - ..."
+  $colonMatch = [regex]::Match(
+    $trimmed,
+    '^\x60?[^\s\x60]+\x60?:\s*[\*\x60\[\(]*(non[-\s]?blocking|blocking|low|minor|nit|nitpick|optional|info|informational|advisory|suggestion|high|critical|major|medium|blocker)[\s\*\x60\]\)]*(?:[:\-\u2013\u2014]|\s)'
+  )
+  if ($colonMatch.Success) {
+    $tag = $colonMatch.Groups[1].Value.Trim()
+    if ([regex]::IsMatch($tag, '(?i)^non[-\s]?blocking$')) { return $true }
+    if ([regex]::IsMatch($tag, '(?i)^blocking$')) { return $false }
+    if ([regex]::IsMatch($tag, '(?i)^(low|minor|nit|nitpick|optional|info|informational|advisory|suggestion)$')) { return $true }
+    return $false
+  }
+  if ($SubSection -eq 'non-blocking') { return $true }
+  if ($SubSection -eq 'blocking') { return $false }
+  if ($IsMerge) { return $true }
+  return $false
+}
+
+function Format-ReviewForPost {
+  param([string]$Review, $Verdict = $null)
+  $mergeNote = 'Merge as is; the notes below are optional.'
+  $detailsOpen = '<details><summary>Non-blocking notes (optional, do not fix before merge)</summary>'
+  $isMerge = $false
+  $verdictNonBlocking = New-Object Collections.Generic.List[string]
+  if ($null -ne $Verdict) {
+    $recValue = Get-ObjectProperty $Verdict 'recommendation'
+    if ($null -ne $recValue -and ([string]$recValue).Trim().ToLowerInvariant() -eq 'merge') {
+      $isMerge = $true
+    }
+    $nbValue = Get-ObjectProperty $Verdict 'nonBlocking'
+    if ($null -ne $nbValue) {
+      foreach ($note in @($nbValue)) {
+        $noteText = ([string]$note).Trim()
+        if ($noteText) { $null = $verdictNonBlocking.Add($noteText) }
+      }
+    }
+  }
+
+  $normalized = ($Review.TrimEnd() -replace "`r`n", "`n") -replace "`r", "`n"
+  $rawLines = @($normalized -split "`n")
+  $preamble = New-Object Collections.Generic.List[string]
+  $sections = New-Object Collections.Generic.List[object]
+  $currentSection = $null
+  $inFence = $false
+
+  foreach ($line in $rawLines) {
+    if ([regex]::IsMatch($line, '^\s*\x60{3}')) {
+      $inFence = -not $inFence
+    }
+    if (-not $inFence -and [regex]::IsMatch($line, '^##\s+\S')) {
+      $title = [regex]::Replace($line, '^##\s+', '').Trim()
+      $bodyLines = New-Object Collections.Generic.List[string]
+      $currentSection = [pscustomobject]@{
+        heading = $line
+        title = $title
+        lines = $bodyLines
+      }
+      $null = $sections.Add($currentSection)
+    } elseif ($null -eq $currentSection) {
+      $null = $preamble.Add($line)
+    } else {
+      $null = $currentSection.lines.Add($line)
+    }
+  }
+
+  $hasVerdictSection = $false
+  $hasFindingsSection = $false
+  $sectionArray = $sections.ToArray()
+  for ($s = 0; $s -lt $sectionArray.Count; $s++) {
+    $sec = $sectionArray[$s]
+    $isLastSection = ($s -eq ($sectionArray.Count - 1))
+    $titleKey = $sec.title.ToLowerInvariant()
+
+    if ($titleKey -eq 'verdict') {
+      $hasVerdictSection = $true
+      if ($isMerge) {
+        $secLines = $sec.lines.ToArray()
+        $alreadyHasNote = $false
+        foreach ($l in $secLines) {
+          if ($l.Trim() -eq $mergeNote) { $alreadyHasNote = $true; break }
+        }
+        if (-not $alreadyHasNote) {
+          $lastNonBlank = -1
+          for ($i = $secLines.Count - 1; $i -ge 0; $i--) {
+            if (-not [string]::IsNullOrWhiteSpace($secLines[$i])) {
+              $lastNonBlank = $i
+              break
+            }
+          }
+          $updatedVerdict = New-Object Collections.Generic.List[string]
+          for ($i = 0; $i -le $lastNonBlank; $i++) {
+            $null = $updatedVerdict.Add($secLines[$i])
+          }
+          $null = $updatedVerdict.Add('')
+          $null = $updatedVerdict.Add($mergeNote)
+          if (-not $isLastSection) {
+            $null = $updatedVerdict.Add('')
+          }
+          $sec.lines = $updatedVerdict
+        }
+      }
+    } elseif ($titleKey -eq 'code findings') {
+      $hasFindingsSection = $true
+      $secLines = $sec.lines.ToArray()
+      $proseLines = New-Object Collections.Generic.List[string]
+      $blockingItems = New-Object Collections.Generic.List[string]
+      $nonBlockingItems = New-Object Collections.Generic.List[string]
+      $pendingBlanks = New-Object Collections.Generic.List[string]
+      $currentItem = $null
+      $currentIsNonBlocking = $false
+      $subSection = ''
+      $sawNone = $false
+      $noneText = 'none'
+      $inFindingsFence = $false
+
+      foreach ($l in $secLines) {
+        if ([regex]::IsMatch($l, '^\s*\x60{3}')) {
+          $inFindingsFence = -not $inFindingsFence
+          if ($null -ne $currentItem) {
+            foreach ($b in $pendingBlanks.ToArray()) { $null = $currentItem.Add($b) }
+            $pendingBlanks.Clear()
+            $null = $currentItem.Add($l)
+          } else {
+            $null = $proseLines.Add($l)
+          }
+          continue
+        }
+        if ($inFindingsFence) {
+          if ($null -ne $currentItem) {
+            $null = $currentItem.Add($l)
+          } else {
+            $null = $proseLines.Add($l)
+          }
+          continue
+        }
+        if ([string]::IsNullOrWhiteSpace($l)) {
+          if ($null -ne $currentItem) {
+            $null = $pendingBlanks.Add($l)
+          } elseif ($proseLines.Count -gt 0) {
+            $null = $proseLines.Add($l)
+          }
+          continue
+        }
+        if ([regex]::IsMatch($l, '^#{3,}\s+')) {
+          if ($null -ne $currentItem) {
+            $entry = ($currentItem.ToArray()) -join "`n"
+            if ($currentIsNonBlocking) { $null = $nonBlockingItems.Add($entry) } else { $null = $blockingItems.Add($entry) }
+            $currentItem = $null
+            $pendingBlanks.Clear()
+          }
+          if ([regex]::IsMatch($l, '(?i)^#{3,}\s+.*non[-\s]?blocking')) {
+            $subSection = 'non-blocking'
+          } elseif ([regex]::IsMatch($l, '(?i)^#{3,}\s+.*blocking')) {
+            $subSection = 'blocking'
+          } else {
+            $subSection = ''
+            $null = $proseLines.Add($l)
+          }
+          continue
+        }
+        if ([regex]::IsMatch($l, '^[-*]\s+')) {
+          if ($null -ne $currentItem) {
+            $entry = ($currentItem.ToArray()) -join "`n"
+            if ($currentIsNonBlocking) { $null = $nonBlockingItems.Add($entry) } else { $null = $blockingItems.Add($entry) }
+            $currentItem = $null
+            $pendingBlanks.Clear()
+          }
+          if ([regex]::IsMatch($l, '(?i)^[-*]\s+none\.?\s*$')) {
+            $sawNone = $true
+            continue
+          }
+          $currentItem = New-Object Collections.Generic.List[string]
+          $null = $currentItem.Add($l)
+          $currentIsNonBlocking = Test-NonBlockingFindingLine $l $subSection $isMerge
+          continue
+        }
+        if ($null -ne $currentItem -and [regex]::IsMatch($l, '^\s+\S')) {
+          foreach ($b in $pendingBlanks.ToArray()) { $null = $currentItem.Add($b) }
+          $pendingBlanks.Clear()
+          $null = $currentItem.Add($l)
+          continue
+        }
+        if ($null -eq $currentItem -and [regex]::IsMatch($l, '^\s+[-*]\s+')) {
+          if ([regex]::IsMatch($l, '(?i)^\s+[-*]\s+none\.?\s*$')) {
+            $sawNone = $true
+            continue
+          }
+          $currentItem = New-Object Collections.Generic.List[string]
+          $null = $currentItem.Add($l.TrimStart())
+          $currentIsNonBlocking = Test-NonBlockingFindingLine $l $subSection $isMerge
+          continue
+        }
+        if ($null -ne $currentItem) {
+          $entry = ($currentItem.ToArray()) -join "`n"
+          if ($currentIsNonBlocking) { $null = $nonBlockingItems.Add($entry) } else { $null = $blockingItems.Add($entry) }
+          $currentItem = $null
+          $pendingBlanks.Clear()
+        }
+        if ([regex]::IsMatch($l, '(?i)^\s*(?:none|no\s+(?:code\s+)?findings)\.?\s*$')) {
+          $sawNone = $true
+          $noneText = $l.Trim()
+          continue
+        }
+        $null = $proseLines.Add($l)
+      }
+      if ($null -ne $currentItem) {
+        $entry = ($currentItem.ToArray()) -join "`n"
+        if ($currentIsNonBlocking) { $null = $nonBlockingItems.Add($entry) } else { $null = $blockingItems.Add($entry) }
+        $currentItem = $null
+        $pendingBlanks.Clear()
+      }
+
+      if ($nonBlockingItems.Count -eq 0 -and $verdictNonBlocking.Count -gt 0) {
+        foreach ($note in $verdictNonBlocking.ToArray()) {
+          $null = $nonBlockingItems.Add('- ' + $note)
+        }
+      }
+
+      while ($proseLines.Count -gt 0 -and [string]::IsNullOrWhiteSpace($proseLines[$proseLines.Count - 1])) {
+        $proseLines.RemoveAt($proseLines.Count - 1)
+      }
+
+      $updatedFindings = New-Object Collections.Generic.List[string]
+      $null = $updatedFindings.Add('')
+      if ($proseLines.Count -gt 0) {
+        foreach ($pl in $proseLines.ToArray()) { $null = $updatedFindings.Add($pl) }
+      }
+      if ($blockingItems.Count -gt 0) {
+        if ($proseLines.Count -gt 0) { $null = $updatedFindings.Add('') }
+        foreach ($item in $blockingItems.ToArray()) {
+          foreach ($il in @($item -split "`n")) { $null = $updatedFindings.Add($il) }
+        }
+      }
+      if ($nonBlockingItems.Count -gt 0) {
+        if ($proseLines.Count -gt 0 -or $blockingItems.Count -gt 0) { $null = $updatedFindings.Add('') }
+        $null = $updatedFindings.Add($detailsOpen)
+        $null = $updatedFindings.Add('')
+        foreach ($item in $nonBlockingItems.ToArray()) {
+          foreach ($il in @($item -split "`n")) { $null = $updatedFindings.Add($il) }
+        }
+        $null = $updatedFindings.Add('')
+        $null = $updatedFindings.Add('</details>')
+      }
+      if ($proseLines.Count -eq 0 -and $blockingItems.Count -eq 0 -and $nonBlockingItems.Count -eq 0) {
+        if ($sawNone) {
+          $null = $updatedFindings.Add($noneText)
+        } else {
+          $null = $updatedFindings.Add('none')
+        }
+      }
+      if (-not $isLastSection) {
+        $null = $updatedFindings.Add('')
+      }
+      $sec.lines = $updatedFindings
+    }
+  }
+
+  $outLines = New-Object Collections.Generic.List[string]
+  if ($isMerge -and -not $hasVerdictSection) {
+    $null = $outLines.Add($mergeNote)
+    $null = $outLines.Add('')
+  }
+  foreach ($pl in $preamble.ToArray()) { $null = $outLines.Add($pl) }
+  foreach ($sec in $sectionArray) {
+    $null = $outLines.Add($sec.heading)
+    foreach ($sl in $sec.lines.ToArray()) { $null = $outLines.Add($sl) }
+  }
+  if (-not $hasFindingsSection -and $verdictNonBlocking.Count -gt 0) {
+    if ($outLines.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($outLines[$outLines.Count - 1])) {
+      $null = $outLines.Add('')
+    }
+    $null = $outLines.Add($detailsOpen)
+    $null = $outLines.Add('')
+    foreach ($note in $verdictNonBlocking.ToArray()) {
+      $null = $outLines.Add('- ' + $note)
+    }
+    $null = $outLines.Add('')
+    $null = $outLines.Add('</details>')
+  }
+
+  return (($outLines.ToArray()) -join "`n").TrimEnd()
+}
+
 function Build-PostBody {
-  param([string]$Path, [string]$Sha7, [string]$Review, [string]$ChecksSummary)
+  param([string]$Path, [string]$Sha7, [string]$Review, [string]$ChecksSummary, $Verdict = $null)
   $header = '> Automated review by a coding agent (Devin CLI) on a Windows test machine, for head ' + $Sha7 +
     '. Agent self-tested; not a maintainer approval; the maintainers and the product owner decide on merging.'
-  $body = $header + "`n`n" + $Review.TrimEnd() + "`n`n" +
+  $formattedReview = Format-ReviewForPost $Review $Verdict
+  $body = $header + "`n`n" + $formattedReview + "`n`n" +
     '<details><summary>Check results (standard-account run)</summary>' + "`n`n" +
     $ChecksSummary.TrimEnd() + "`n`n</details>`n"
   Write-Text $Path $body
@@ -705,7 +1032,7 @@ try {
         $postProblem = $null
         if ($reviewOk) {
           $bodyPath = Join-Path $runDir 'post-body.md'
-          Build-PostBody $bodyPath $sha7 $reviewText (Read-Text $checksSummaryPath)
+          Build-PostBody $bodyPath $sha7 $reviewText (Read-Text $checksSummaryPath) $verdict
           if (-not $DryRun) {
             $postCode = Invoke-Gh ('pr review ' + $number + ' -R ' + $Repo + ' --comment --body-file ' + (Quote-Argument $bodyPath)) `
               (Join-Path $runDir 'post.out.log') (Join-Path $runDir 'post.err.log')

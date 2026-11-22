@@ -801,7 +801,8 @@ function Get-DeterministicFindings {
     [string[]]$ChangedFiles,
     [int]$IssueNumber,
     [string]$IssueError = '',
-    [string]$TempBase = ''
+    [string]$TempBase = '',
+    [string]$PrBody = ''
   )
   $findings = New-Object Collections.Generic.List[object]
   $seq = 1
@@ -825,6 +826,31 @@ function Get-DeterministicFindings {
       why = $IssueError
     })
     $seq++
+  }
+
+  $branchIssueNumber = 0
+  if (-not [string]::IsNullOrWhiteSpace($HeadRef)) {
+    $branchMatch = [regex]::Match($HeadRef, '(?i)^nyx/([0-9]+)-')
+    if ($branchMatch.Success) {
+      $parsedBranchIssue = 0
+      if ([int]::TryParse($branchMatch.Groups[1].Value, [ref]$parsedBranchIssue) -and $parsedBranchIssue -gt 0) {
+        $branchIssueNumber = $parsedBranchIssue
+      }
+    }
+  }
+  if (-not $isRebaselinePr -and $IssueNumber -gt 0 -and $branchIssueNumber -gt 0) {
+    $closingPattern = '(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#' + $branchIssueNumber + '\b'
+    $hasClosingKeyword = (-not [string]::IsNullOrWhiteSpace($PrBody)) -and [regex]::IsMatch($PrBody, $closingPattern)
+    if (-not $hasClosingKeyword) {
+      $null = $findings.Add([pscustomobject]@{
+        id = ('D' + $seq)
+        severity = 'blocking'
+        title = ('missing closing keyword for #' + $branchIssueNumber)
+        evidence = ('PR body (branch ' + $HeadRef + ')')
+        why = ('PR body has no Closes, Fixes, or Resolves #' + $branchIssueNumber + " keyword. Add 'Closes #" + $branchIssueNumber + "' to the PR body; no code change is needed.")
+      })
+      $seq++
+    }
   }
 
   $guarded = @()
@@ -2111,7 +2137,7 @@ try {
           $diffErrPath = Join-Path $runDir 'diff.err.log'
           $null = Invoke-Tool $script:GitPath ('-C ' + (Quote-Arg $worktreeDir) + ' diff --cached origin/main') $diffOutPath $diffErrPath $script:WorkRoot
 
-          $detFindings = @(Get-DeterministicFindings -Worktree $worktreeDir -HeadRef $headRef -ChangedFiles $changedFiles -IssueNumber $issueNumber -IssueError $issueError -TempBase $runDir)
+          $detFindings = @(Get-DeterministicFindings -Worktree $worktreeDir -HeadRef $headRef -ChangedFiles $changedFiles -IssueNumber $issueNumber -IssueError $issueError -TempBase $runDir -PrBody $prBody)
           foreach ($df in $detFindings) { $null = $allFindings.Add($df) }
 
           $values = @{
