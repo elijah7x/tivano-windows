@@ -280,13 +280,28 @@ export function HydraPanel(props: {
   // P1-31: while floating, heads or review cards can still grow the
   // panel — keep the dock spacer at the panel's live height so a
   // re-dock never shifts the chat.
-  const reviews = thread.hydraReviews ?? [];
+  const reviews = useMemo(() => thread.hydraReviews ?? [], [thread.hydraReviews]);
   useLayoutEffect(() => {
     const el = panelRef.current;
     if (!floatPos || !el) return;
     const h = el.offsetHeight;
     if (h !== floatPos.h) setFloatPos((p) => (p ? { ...p, h } : p));
   }, [floatPos, heads, reviews]);
+
+  // After the menu mounts, pull it back inside the viewport if its real
+  // size (long localized labels) overflows an edge, and focus the first
+  // row so arrow keys work immediately like a native context menu.
+  const menuRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!menu || !el) return;
+    const r = el.getBoundingClientRect();
+    const overX = r.right - window.innerWidth;
+    if (overX > 0) el.style.left = `${Math.max(8, menu.x - overX - 8)}px`;
+    const overY = r.bottom - window.innerHeight;
+    if (overY > 0) el.style.top = `${Math.max(8, menu.y - overY - 8)}px`;
+    el.querySelector<HTMLElement>(".suggest-row")?.focus();
+  }, [menu]);
 
   // A floated position and open menu belong to the thread they were
   // created on; a thread switch starts docked with no menu.
@@ -345,7 +360,15 @@ export function HydraPanel(props: {
       </div>
     );
   }
-  if (!heads.length && !reviews.length) return null;
+  if (!heads.length && !reviews.length) {
+    // A heads-empty gap unmounts the strip; a head spawning later must
+    // reopen docked, not floating at a stale position with an old menu.
+    if (floatPos !== null || menu !== null) {
+      setFloatPos(null);
+      setMenu(null);
+    }
+    return null;
+  }
 
   const waitingCount = heads.filter((h) => waitingLabel(h, t) !== null).length;
 
@@ -376,6 +399,7 @@ export function HydraPanel(props: {
     const dx = e.clientX - d.px;
     const dy = e.clientY - d.py;
     if (!d.moved && !hydraPanelDragBegun(dx, dy)) return;
+    if (!d.moved) setMenu(null); // a drag starts: drop any open menu
     d.moved = true;
     const h = panelRef.current?.offsetHeight ?? 40;
     const c = hydraPanelClamp(
@@ -465,12 +489,13 @@ export function HydraPanel(props: {
       aria-label={t("Heads")}
       onContextMenu={(e) => {
         e.preventDefault();
-        const li = (e.target as HTMLElement).closest<HTMLElement>(
-          "li[data-head]",
-        );
+        const el = e.target as HTMLElement;
+        const li = el.closest<HTMLElement>("li[data-head]");
         const head = li?.dataset.head
           ? (heads.find((h) => h.id === li.dataset.head) ?? null)
-          : (heads[0] ?? null);
+          : // Right-click off a head row targets the panel itself — the
+            // menu shows only panel actions, never a misattributed head.
+            null;
         setMenu({ x: e.clientX, y: e.clientY, head });
       }}
     >
@@ -561,12 +586,29 @@ export function HydraPanel(props: {
       )}
       {menu && menuRows.length > 0 && (
         <div
+          ref={menuRef}
           className="link-pop hydra-menu"
           role="menu"
           aria-label={t("Heads")}
           style={{
             left: Math.min(menu.x, Math.max(8, window.innerWidth - 240)),
             top: Math.min(menu.y, Math.max(8, window.innerHeight - 160)),
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+            e.preventDefault();
+            const rows = Array.from(
+              menuRef.current?.querySelectorAll<HTMLElement>(".suggest-row") ??
+                [],
+            );
+            if (!rows.length) return;
+            const idx = rows.indexOf(document.activeElement as HTMLElement);
+            const next =
+              rows[
+                (idx + (e.key === "ArrowDown" ? 1 : rows.length - 1)) %
+                  rows.length
+              ];
+            next?.focus();
           }}
           onContextMenu={(e) => {
             e.preventDefault();
