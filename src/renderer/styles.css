@@ -4191,8 +4191,25 @@ html[data-performance] .wp-backdrop { display: none; }
   list-style: none;
   margin: 0;
   padding: 0;
-  flex: 1;
+  flex: 0 1 auto;
 }
+/* P1-31: the middle room drags the panel free (frozen PanelDragHandle).
+   It fills whatever the rows leave over and never eats their room. */
+.hydra-drag {
+  flex: 1;
+  align-self: stretch;
+  min-width: 24px;
+  min-height: 18px;
+}
+.hydra-drag-surface { cursor: grab; }
+.hydra-drag-surface:active { cursor: grabbing; }
+.hydra-panel.floating {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.35);
+}
+/* P1-31 panel context menu (frozen panelMenu) — reuses .link-pop. */
+.hydra-menu-sep { height: 1px; background: var(--line); margin: 3px 6px; }
 .hydra-row { display: flex; align-items: center; gap: 6px; }
 .hydra-title { color: var(--muted); flex: none; padding-top: 2px; }
 .hydra-open {

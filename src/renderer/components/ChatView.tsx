@@ -456,6 +456,7 @@ export function ChatView(props: {
           thread={thread}
           threads={props.threads}
           readOnly={props.readOnly === true}
+          onDismiss={() => setHydraPanelHidden(true)}
         />
       )}
       {props.readOnly && (
