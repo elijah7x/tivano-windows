@@ -876,6 +876,14 @@ const zhHans: Record<string, string> = {
   "Install the command in a user-owned bin directory on your request only. Installation never enables local control. Add that directory to PATH yourself if needed; Tivano does not edit shell configuration.":
     "仅在你要求时把命令安装到用户拥有的 bin 目录。安装不会启用本地控制。如需使用请自行把该目录加入 PATH；Tivano 不会修改 shell 配置。",
   "Not installed": "未安装",
+  "Providers": "服务商",
+  "All providers": "全部服务商",
+  "Search providers": "搜索服务商",
+  "No matching providers": "没有匹配的服务商",
+  "Ready": "已就绪",
+  "Needs attention": "需要关注",
+  "Check for updates": "检查更新",
+  "Custom executable path": "自定义可执行文件路径",
   "Installed": "已安装",
   "Installed, but it points to an older copy of Tivano. Repair it to use this one.":
     "已安装，但指向旧的 Tivano 副本。修复后将改用当前应用。",

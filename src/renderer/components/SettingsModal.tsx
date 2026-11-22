@@ -29,6 +29,7 @@ import { ForgeSection } from "./ForgeSection";
 import { WallpaperSection } from "./WallpaperSection";
 import { ModelListSettings } from "./ModelListSettings";
 import { ArchiveSection } from "./ArchiveSection";
+import { ProvidersSection } from "./ProvidersSection";
 import {
   RUNTIME_MODES,
   RUNTIME_MODE_TITLE,
@@ -823,9 +824,13 @@ export function SettingsModal(props: {
           <p className="codex-note" data-testid="cli-error">{cliErr}</p>
         )}
 
-        <h3>{t("Codex CLI")}</h3>
-        <div className="about codex-setup" aria-busy={busy !== null}>
-          <div className="kv">
+        <ProvidersSection
+          codex={codex}
+          cliState={cli?.state}
+          codexRoute={t("Codex CLI")}
+          renderCodexCard={({ executablePath }) => (
+            <div className="about codex-setup" aria-busy={busy !== null}>
+              <div className="kv">
             <span>{t("This launch")}</span>
             <span>
               {t(info.providerLabel)}
@@ -892,46 +897,54 @@ export function SettingsModal(props: {
               </>
             )}
           </div>
-          <p>
-            {t(
-              "Choosing only selects a candidate. Saving or clearing changes the saved setting, not this launch, and never starts the program. On restart, explicit provider and environment settings take priority. A saved path is not installed or verified.",
-            )}
-          </p>
+          {executablePath && (
+            <p>
+              {t(
+                "Choosing only selects a candidate. Saving or clearing changes the saved setting, not this launch, and never starts the program. On restart, explicit provider and environment settings take priority. A saved path is not installed or verified.",
+              )}
+            </p>
+          )}
           {codexErr && (
             <p className="codex-setup-error" role="alert">
               {t(codexErr)}
             </p>
           )}
           {loadErr && <p className="codex-setup-error" role="alert">{loadErr}</p>}
+          {executablePath && (
+            <div className="choice-row">
+              <button
+                className="choice"
+                disabled={!canWrite}
+                onClick={() => void run("choose", () => api().invoke("codex:choose", {}))}
+              >
+                {busy === "choose" || codex?.chooserBusy ? t("Choosing…") : t("Choose program…")}
+              </button>
+              <button
+                className="choice"
+                disabled={!canWrite || !codex?.pendingExecutable}
+                onClick={() => void run("save", () => api().invoke("codex:save", {}))}
+              >
+                {busy === "save" ? t("Saving…") : t("Save")}
+              </button>
+              <button
+                className="choice"
+                disabled={
+                  !canWrite || (!codex?.savedExecutable && !codex?.pendingExecutable)
+                }
+                onClick={() => void run("clear", () => api().invoke("codex:clear", {}))}
+              >
+                {busy === "clear" ? t("Clearing…") : t("Clear")}
+              </button>
+            </div>
+          )}
           <div className="choice-row">
-            <button
-              className="choice"
-              disabled={!canWrite}
-              onClick={() => void run("choose", () => api().invoke("codex:choose", {}))}
-            >
-              {busy === "choose" || codex?.chooserBusy ? t("Choosing…") : t("Choose program…")}
-            </button>
-            <button
-              className="choice"
-              disabled={!canWrite || !codex?.pendingExecutable}
-              onClick={() => void run("save", () => api().invoke("codex:save", {}))}
-            >
-              {busy === "save" ? t("Saving…") : t("Save")}
-            </button>
-            <button
-              className="choice"
-              disabled={
-                !canWrite || (!codex?.savedExecutable && !codex?.pendingExecutable)
-              }
-              onClick={() => void run("clear", () => api().invoke("codex:clear", {}))}
-            >
-              {busy === "clear" ? t("Clearing…") : t("Clear")}
-            </button>
             <button className="choice" disabled={busy !== null} onClick={() => void run("load")}>
               {busy === "load" ? t("Loading") : t(loadErr ? "Retry" : "Refresh status")}
             </button>
           </div>
-        </div>
+            </div>
+          )}
+        />
 
         <ShortcutsSection
           shortcuts={settings.shortcuts}
