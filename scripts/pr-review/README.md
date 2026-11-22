@@ -36,7 +36,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\pr-review\Invoke
   -StandardCredentialFile D:\private\standard-account.json -DryRun
 ```
 
-`-DryRun` does everything except posting the comment and except recording the head as reviewed, so the same PR is picked up again next time. It still writes `verdict.json` and `gate.json`, with `posted` false. Add `-Reference <path>` to a read-only checkout of the macOS v3.0.0 baseline for the parity comparison, `-TokenFile` for the token above, `-PrNumber <n>` to review one PR even if its head was already reviewed, `-Force` (needs `-PrNumber`) to say so explicitly, `-DevinModel` (default `swe-2-high`) and `-MaxPerRun` (default 1).
+`-DryRun` does everything except posting the comment and except recording the head as reviewed, so the same PR is picked up again next time. It still writes `verdict.json` and `gate.json`, with `posted` false. Add `-Reference <path>` to a read-only checkout of the macOS v2.5.7 baseline for the parity comparison, `-TokenFile` for the token above, `-PrNumber <n>` to review one PR even if its head was already reviewed, `-Force` (needs `-PrNumber`) to say so explicitly, `-DevinModel` (default `swe-2-high`) and `-MaxPerRun` (default 1).
 
 `-Force` re-reviews a head that is already recorded as reviewed; a posted review then adds a second comment, and `-Force -DryRun` re-checks without commenting. It does not reset the attempts count: the same head is still attempted at most three times, counting every run, forced or not. `scripts/dev-loop` passes `-Force` and reads `gate.json`.
 
