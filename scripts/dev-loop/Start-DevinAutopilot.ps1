@@ -352,6 +352,26 @@ public static class DevLoopWindows {
   [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT p);
   [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
   // True when the top-level window under screen point (x, y) is h, so a click there lands on h.
+  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr p);
+  [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr wParam, IntPtr lParam);
+  // Answers "Don't Save" on the native save prompt (#32770) owned by window h; true when a button was clicked.
+  public static bool DismissSavePrompt(IntPtr h) {
+    IntPtr dialog = IntPtr.Zero;
+    EnumWindows((w, p) => {
+      if (IsWindowVisible(w) && GetWindow(w, GW_OWNER) == h && GetWindowClass(w) == "#32770") { dialog = w; return false; }
+      return true;
+    }, IntPtr.Zero);
+    if (dialog == IntPtr.Zero) return false;
+    IntPtr button = IntPtr.Zero;
+    EnumChildWindows(dialog, (c, p) => {
+      string t = GetWindowTitle(c).Replace("&", "");
+      if (GetWindowClass(c) == "Button" && (t == "Don't Save" || t == "Don\u2019t Save" || t == "\u4e0d\u4fdd\u5b58")) { button = c; return false; }
+      return true;
+    }, IntPtr.Zero);
+    if (button == IntPtr.Zero) return false;
+    SendMessage(button, 0x00F5, IntPtr.Zero, IntPtr.Zero);
+    return true;
+  }
   public static bool IsPointOnWindow(IntPtr h, int x, int y) {
     var pt = new POINT { X = x, Y = y };
     IntPtr hit = WindowFromPoint(pt);
@@ -518,9 +538,20 @@ function Close-ExtraDevinWindows {
   foreach ($win in $all) {
     if ($win.Handle -eq $preferred) { continue }
     if (-not ($win.Rank -gt 0 -or [string]$win.Title -match '^Devin( - |$)')) { continue }
-    # A dirty editor (title carries the U+25CF marker) answers WM_CLOSE with a save prompt and stays open.
-    if (([string]$win.Title).IndexOf([char]0x25CF) -ge 0) { continue }
+    # A dirty editor (title carries the U+25CF marker) answers WM_CLOSE with a save prompt. In a
+    # folderless window the buffer only ever holds text a failed kickoff pasted (such as "/bypass"),
+    # so the prompt is answered "Don't Save"; a dirty duplicate of the workspace window is left alone.
+    $isDirty = (([string]$win.Title).IndexOf([char]0x25CF) -ge 0)
+    $isFolderless = ([string]$win.Title -match '^Devin( - |$)')
+    if ($isDirty -and -not $isFolderless) { continue }
+    $null = [DevLoopWindows]::DismissSavePrompt($win.Handle)
     if ([DevLoopWindows]::CloseWindow($win.Handle)) {
+      if ($isDirty) {
+        Start-Sleep -Milliseconds 1500
+        if ([DevLoopWindows]::DismissSavePrompt($win.Handle)) {
+          Write-Log 'discarded an unsaved folderless Devin buffer left by an earlier kickoff'
+        }
+      }
       $closed++
     }
   }
