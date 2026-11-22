@@ -26,18 +26,21 @@ const headInfo = (over: Partial<NonNullable<ChatThread["hydraHead"]>> = {}) =>
   }) as NonNullable<ChatThread["hydraHead"]>;
 
 describe("hydraPanelDragBegun (frozen PanelDragHandle slop)", () => {
-  it("ignores a press that never moved 2px", () => {
+  it("ignores a press that never moved 2px on either axis", () => {
     expect(HYDRA_PANEL_DRAG_SLOP).toBe(2);
     expect(hydraPanelDragBegun(0, 0)).toBe(false);
     expect(hydraPanelDragBegun(1, 1)).toBe(false);
     expect(hydraPanelDragBegun(1.9, 0)).toBe(false);
+    // Frozen DragHandleView checks per axis, so a sub-2px diagonal is
+    // still a click even though its distance exceeds 2px.
+    expect(hydraPanelDragBegun(1.5, 1.5)).toBe(false);
   });
 
-  it("treats a 2px travel as a drag", () => {
+  it("treats a 2px travel on either axis as a drag", () => {
     expect(hydraPanelDragBegun(2, 0)).toBe(true);
     expect(hydraPanelDragBegun(0, -2)).toBe(true);
-    // Diagonal travel counts by distance, not per-axis.
-    expect(hydraPanelDragBegun(1.5, 1.5)).toBe(true);
+    expect(hydraPanelDragBegun(-2, 1)).toBe(true);
+    expect(hydraPanelDragBegun(1, 3)).toBe(true);
   });
 });
 

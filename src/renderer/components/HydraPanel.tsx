@@ -25,16 +25,18 @@ const hex = (n: number): string => `#${n.toString(16).padStart(6, "0")}`;
 // panel grabbable on screen, the Continue gate shared by the row button
 // and the context menu, and the frozen menu's row list.
 
-/** Frozen PanelDragHandle slop: a press must travel 2px to be a drag. */
+/** Frozen PanelDragHandle slop: a press must travel 2px on EITHER axis
+ *  to be a drag (`abs(w) >= slop || abs(h) >= slop`). */
 export const HYDRA_PANEL_DRAG_SLOP = 2;
 
 export function hydraPanelDragBegun(dx: number, dy: number): boolean {
   const s = HYDRA_PANEL_DRAG_SLOP;
-  return dx * dx + dy * dy >= s * s;
+  return Math.abs(dx) >= s || Math.abs(dy) >= s;
 }
 
-/** Keep a floated panel reachable: 80px of it must stay inside the
- *  viewport on each axis. */
+/** Keep a floated panel reachable: the top edge never leaves the
+ *  viewport; on the remaining edges min(80, panel side) must stay
+ *  inside so there is always a piece to grab. */
 export function hydraPanelClamp(
   x: number,
   y: number,
@@ -278,12 +280,47 @@ export function HydraPanel(props: {
   // P1-31: while floating, heads or review cards can still grow the
   // panel — keep the dock spacer at the panel's live height so a
   // re-dock never shifts the chat.
+  const reviews = thread.hydraReviews ?? [];
   useLayoutEffect(() => {
     const el = panelRef.current;
     if (!floatPos || !el) return;
     const h = el.offsetHeight;
     if (h !== floatPos.h) setFloatPos((p) => (p ? { ...p, h } : p));
-  });
+  }, [floatPos, heads, reviews]);
+
+  // A floated position and open menu belong to the thread they were
+  // created on; a thread switch starts docked with no menu.
+  const lastThreadRef = useRef(thread.id);
+  if (lastThreadRef.current !== thread.id) {
+    lastThreadRef.current = thread.id;
+    setFloatPos(null);
+    setMenu(null);
+  }
+
+  // Re-clamp on window resize so a floated panel cannot be stranded
+  // off-screen by the viewport shrinking under it.
+  const floating = floatPos !== null;
+  useEffect(() => {
+    if (!floating) return;
+    const onResize = () =>
+      setFloatPos((p) =>
+        p
+          ? {
+              ...p,
+              ...hydraPanelClamp(
+                p.x,
+                p.y,
+                p.w,
+                p.h,
+                window.innerWidth,
+                window.innerHeight,
+              ),
+            }
+          : p,
+      );
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [floating]);
 
   if (ownHead) {
     const persona = personaAt(ownHead.headIndex);
@@ -308,7 +345,6 @@ export function HydraPanel(props: {
       </div>
     );
   }
-  const reviews = thread.hydraReviews ?? [];
   if (!heads.length && !reviews.length) return null;
 
   const waitingCount = heads.filter((h) => waitingLabel(h, t) !== null).length;
