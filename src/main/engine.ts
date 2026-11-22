@@ -149,6 +149,16 @@ function sepFold(s: string): string {
   return s.replace(/\//g, "\\").toLowerCase();
 }
 
+/** The storeDoc bounds for every persisted hydra path list: at most
+ *  10,000 entries, each at most 2,000 chars. A runaway directory
+ *  recursion must never write a record the next launch reads as
+ *  corrupt. */
+function capHydraPaths(paths: string[]): string[] {
+  return paths
+    .slice(0, 10_000)
+    .map((p) => (p.length > 2000 ? p.slice(0, 2000) : p));
+}
+
 export class EngineError extends Error {
   constructor(message: string) {
     super(message);
@@ -1730,7 +1740,11 @@ export class Engine {
     // fallbackPreamble — this build's providers keep no session
     // instructions, so the policy arrives per message). Report turns take
     // the report note instead of the delegation request.
-    const hydraPrefix = this.hydraWirePrefix(thread, opts?.hydraReport !== undefined);
+    const hydraPrefix = this.hydraWirePrefix(
+      thread,
+      opts?.hydraReport !== undefined,
+      opts?.authored !== false,
+    );
     if (hydraPrefix) wireText = hydraPrefix + wireText;
     if (antiSlopPending)
       wireText =
@@ -4540,19 +4554,15 @@ export class Engine {
   /** What rides the front of a lead's turn (frozen fallbackPreamble /
    *  fallbackReportPreamble + delegationRequest for user turns). Heads
    *  and Hydra-off chats get nothing; slash commands carry no guidance. */
-  private hydraWirePrefix(lead: ChatThread, isReport: boolean): string {
+  private hydraWirePrefix(
+    lead: ChatThread,
+    isReport: boolean,
+    authored: boolean,
+  ): string {
     if (lead.hydraHead) return "";
     const s = this.store.state.settings;
     const launch = this.hydraLaunchFor(lead);
     if (!launch) return "";
-    // Frozen hydraTargetNotice: a dispatch-time notice is consumed on
-    // the next send — it opens the prompt before everything else.
-    const targetNotice = this.hydraTargetNotices.get(lead.id);
-    if (targetNotice !== undefined) {
-      this.hydraTargetNotices.delete(lead.id);
-    }
-    const noticePrefix =
-      targetNotice !== undefined ? `${targetNotice}\n\n` : "";
     const project = this.store.state.projects.find((p) => p.id === lead.projectId);
     const policy = hydraLeadPolicy({
       tilt: s.hydraTilt ?? "active",
@@ -4583,8 +4593,17 @@ export class Engine {
     if (isReport) {
       const canDelegate =
         (this.hydraRounds.get(lead.id) ?? 0) < MAX_DELEGATION_ROUNDS;
-      return noticePrefix + queuedNote + policy + "\n\n" + hydraReportNote(team, canDelegate);
+      return queuedNote + policy + "\n\n" + hydraReportNote(team, canDelegate);
     }
+    // An unauthored turn — a refusal, a queued steer, a system note — is
+    // not a fresh ask: the standing policy and the delegation request
+    // ride authored user messages (upstream holds the policy in session
+    // instructions), so a follow-up gets the notice, the queue state and
+    // the team line only. Without this a provider that echoes its prompt
+    // re-emits the policy's fenced example as a real delegation on every
+    // refusal turn — refuse → re-send → refuse, forever.
+    if (!authored)
+      return queuedNote + (hydraTurnNote(team) || "");
     // P1-36/P1-37: the adaptive mode's Chimera policy — role titles,
     // the numbered identity list and the auto-dispatch note ride the
     // delegation request (frozen ChimeraPrompts.policy, bounded).
@@ -4597,7 +4616,6 @@ export class Engine {
           )
         : "";
     return (
-      noticePrefix +
       queuedNote +
       hydraDelegationRequest(s.hydraTilt ?? "active") +
       policy +
@@ -4645,10 +4663,6 @@ export class Engine {
     string,
     Map<string, { path: string; names: string[] }>
   >();
-  /** P2-05 (frozen `hydraTargetNotice`): a notice set at dispatch rides
-   *  the front of the lead's next wire prompt, then clears. */
-  private readonly hydraTargetNotices = new Map<string, string>();
-
   /** Frozen spawnWaitingHeads: send out queued delegations as far as the
    *  launch's cap has room — after every spawn and every head finish. */
   private spawnWaitingHeads(leadId: string): void {
@@ -5551,10 +5565,13 @@ export class Engine {
     if (result === null) return;
     const ci = cur.hydraHead;
     ci.backupPath = folder;
-    ci.backupOwnedPaths = [...(ci.backupOwnedPaths ?? []), ...added];
-    ci.backedUpFiles = [...(ci.backedUpFiles ?? []), ...result.copied];
-    ci.newFiles = [...(ci.newFiles ?? []), ...result.added];
-    ci.notBackedUpFiles = [...(ci.notBackedUpFiles ?? []), ...result.skipped];
+    // Every persisted list keeps the storeDoc caps (10,000 entries of at
+    // most 2,000 chars): a runaway directory recursion must never write
+    // a record the next launch reads as corrupt.
+    ci.backupOwnedPaths = capHydraPaths([...(ci.backupOwnedPaths ?? []), ...added]);
+    ci.backedUpFiles = capHydraPaths([...(ci.backedUpFiles ?? []), ...result.copied]);
+    ci.newFiles = capHydraPaths([...(ci.newFiles ?? []), ...result.added]);
+    ci.notBackedUpFiles = capHydraPaths([...(ci.notBackedUpFiles ?? []), ...result.skipped]);
     this.store.update(() => {});
   }
 
@@ -5608,9 +5625,12 @@ export class Engine {
     const cur = this.store.state.threads.find((t) => t.id === headId);
     if (cur?.hydraHead && diff !== undefined) {
       // Frozen: `[spoken, diff].joined(separator: "\n\n")` — the head's
-      // own text first, the backup diff after it.
-      cur.hydraHead.summary =
-        `${cur.hydraHead.summary ?? ""}\n\n${diff}`.trim();
+      // own text first, the backup diff after it. The summary field is
+      // schema-capped at 64KB, so the join is clamped rather than left
+      // to quarantine the store on the next save.
+      cur.hydraHead.summary = `${cur.hydraHead.summary ?? ""}\n\n${diff}`
+        .trim()
+        .slice(0, 64 * 1024);
     }
     this.finishHydraLanding(headId);
   }

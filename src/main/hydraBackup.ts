@@ -136,11 +136,25 @@ export function hydraOwnershipPath(
 }
 
 /** Frozen `hydraFileListing`: the first 50 paths of a report list,
- *  plus how many were left out. */
-export function hydraFileListing(files: string[], limit = LISTING_LIMIT): string {
-  let text = files.slice(0, limit).join(", ");
-  const rest = files.length - Math.min(files.length, limit);
-  if (rest > 0) text += `\nand ${rest} more`;
+ *  plus how many were left out. `charCap` additionally bounds the
+ *  shown characters so a few long paths cannot run the report past
+ *  the summary field's 64KB schema cap. */
+export function hydraFileListing(
+  files: string[],
+  limit = LISTING_LIMIT,
+  charCap = Number.POSITIVE_INFINITY,
+): string {
+  const shown: string[] = [];
+  let used = 0;
+  for (const f of files) {
+    const cost = shown.length === 0 ? f.length : f.length + 2;
+    if (shown.length >= limit || used + cost > charCap) break;
+    shown.push(f);
+    used += cost;
+  }
+  let text = shown.join(", ");
+  const rest = files.length - shown.length;
+  if (rest > 0) text += `${shown.length ? "\nand " : ""}${rest} more`;
   return text;
 }
 
@@ -370,15 +384,20 @@ export async function hydraBackupReport(
   if (truncated) parts.push("[Diff truncated at 20,000 characters.]");
   if (!parts.length)
     parts.push("No changes to the backed-up or newly listed files.");
-  // Outside the diff budget, so a long diff never hides what has no backup.
+  // Outside the diff budget, so a long diff never hides what has no
+  // backup — but each still bounded so the report stays well under the
+  // summary field's 64KB schema cap (listing 4K, each footer path the
+  // persisted-path bound of 2K).
   if (skipped.length) {
     parts.push(
-      `Not backed up (size, unsupported path or copy failure): ${hydraFileListing(skipped)}`,
+      `Not backed up (size, unsupported path or copy failure): ${hydraFileListing(skipped, LISTING_LIMIT, 4000)}`,
     );
   }
   parts.push(`Added: ${added}; removed: ${removed}.`);
+  const shown = (p: string) => (p.length > 2000 ? p.slice(0, 2000) : p);
   parts.push(
-    `${info.personaName} worked in place in ${checkout}. The diff of its listed files against the copies taken before it started is above; the originals are at ${backup}. Restore any file from there if the change is wrong.`,
+    `${info.personaName} worked in place in ${shown(checkout)}. The diff of its listed files against the copies taken before it started is above; the originals are at ${shown(backup)}. Restore any file from there if the change is wrong.`,
   );
-  return parts.join("\n\n");
+  const text = parts.join("\n\n");
+  return text.length > 64 * 1024 ? text.slice(0, 64 * 1024) : text;
 }

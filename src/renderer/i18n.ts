@@ -992,6 +992,8 @@ const zhHans: Record<string, string> = {
     "Hydra：无法读取 %@ 的检出目录，因此未启动。",
   "Hydra: %@ is a system folder, so %@ did not start.":
     "Hydra：%@ 是系统文件夹，因此 %@ 未启动。",
+  "Hydra: %@ lists files outside %@, so %@ did not start.":
+    "Hydra：%@ 列出的文件在 %@ 之外，因此 %@ 未启动。",
   "Hydra: %@ is not a folder on this PC, so %@ did not start.":
     "Hydra：%@ 不是这台电脑上的文件夹，因此 %@ 未启动。",
   "Hydra: %@ is not a Git checkout Tivano can read, so %@ did not start.":

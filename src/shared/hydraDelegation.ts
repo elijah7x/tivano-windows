@@ -85,7 +85,10 @@ export function delegationFromEntry(entry: unknown): HydraDelegation | null {
         ? idn
         : undefined,
     files: filesGiven
-      ? filesRaw.filter((f): f is string => typeof f === "string")
+      ? filesRaw
+          .filter((f): f is string => typeof f === "string")
+          .slice(0, 10_000)
+          .map((f) => (f.length > 2000 ? f.slice(0, 2000) : f))
       : undefined,
     filesGiven,
   };
