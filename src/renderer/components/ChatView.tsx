@@ -197,6 +197,7 @@ export function ChatView(props: {
   const timelineAnchorRef = useRef<number | null>(null);
   const timelineJumpRef = useRef<string | null>(null);
   const timelineLastPageRef = useRef(0);
+  const timelineVisibleRef = useRef(timelineVisible);
   const timelineItems = useMemo(
     () => (thread ? groupMessages(thread.messages) : []),
     [thread?.messages, thread],
@@ -229,9 +230,12 @@ export function ChatView(props: {
     const t = window.setTimeout(() => {
       // The open grow prepends too — hold the bottom spot through the
       // same measured shift as a scroll-back page rather than trusting
-      // Chromium's scroll anchoring.
+      // Chromium's scroll anchoring. A no-op grow (the reader already
+      // paged past initial) must not leave a stale anchor that the next
+      // window change would apply.
       const el = timelineRef.current;
-      if (el) timelineAnchorRef.current = el.scrollHeight - el.scrollTop;
+      if (el && timelineVisibleRef.current < TIMELINE_WINDOW.initial)
+        timelineAnchorRef.current = el.scrollHeight - el.scrollTop;
       setTimelineVisible((v) => timelineGrownOpen(v));
     }, 40);
     return () => window.clearTimeout(t);
@@ -251,6 +255,7 @@ export function ChatView(props: {
   // never flickers). A minimap jump waiting on a mount scrolls the same
   // step — the target exists by then.
   useLayoutEffect(() => {
+    timelineVisibleRef.current = timelineVisible;
     const el = timelineRef.current;
     const anchor = timelineAnchorRef.current;
     if (el && anchor !== null) {
