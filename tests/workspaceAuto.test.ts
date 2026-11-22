@@ -51,13 +51,22 @@ const UNAVAILABLE_NOTE =
   "Another chat is active in this repository, and a separate Git worktree isn't available right now. Wait for it to finish, then send again.";
 
 /** A NON-mock adapter: records the TurnContext each turn starts with and
- *  finishes instantly, so tests can assert WHERE the turn ran. */
-function execProvider(seen: TurnContext[], opts?: { hold?: boolean }): ProviderAdapter {
+ *  finishes instantly, so tests can assert WHERE the turn ran.
+ *  `errorOnce` fails the FIRST start with that message — the engine's
+ *  own error path parses a limit signal out of it like any provider's. */
+function execProvider(
+  seen: TurnContext[],
+  opts?: { hold?: boolean; errorOnce?: string },
+): ProviderAdapter {
+  let failed = false;
   return {
     descriptor: { id: "exec-stub", label: "Exec Stub", mode: "codex", synthetic: true },
     start(ctx, cb) {
       seen.push(ctx);
-      if (!opts?.hold) setTimeout(() => cb.onDone(), 1);
+      if (opts?.errorOnce !== undefined && !failed) {
+        failed = true;
+        setTimeout(() => cb.onError(opts.errorOnce!), 1);
+      } else if (!opts?.hold) setTimeout(() => cb.onDone(), 1);
       return { cancel() {}, resume() {} };
     },
     dispose: () => Promise.resolve({ children: [], orphanedPending: 0 }),
@@ -115,7 +124,7 @@ function fakeWorktrees(
 function rig(
   eligibility: "eligible" | "nonGit" | "unavailable",
   seen: TurnContext[],
-  providerOpts?: { hold?: boolean },
+  providerOpts?: { hold?: boolean; errorOnce?: string },
 ) {
   const repoDir = tmp("wtauto-repo-");
   // A plain folder suffices — the eligibility answer is stubbed; git is
@@ -249,6 +258,47 @@ describe("P1-39 workspace auto mode", () => {
     expect(bound.startsWith(join(r.dataRoot, "worktrees"))).toBe(true);
     // The second turn executes in the worktree, never the shared checkout.
     expect(seen[1]!.workspace?.directory).toBe(bound);
+    expect(seen[0]!.workspace?.directory).toBe(r.repoDir);
+  });
+
+  // #103 (audit follow-up on #98): the busy check also counts the
+  // parked states the frozen isUsingWorkspace lists — a limit wait that
+  // auto-continues and a queued follow-up both still own the folder.
+  it("a limit-waiting chat still holds the checkout", async () => {
+    const seen: TurnContext[] = [];
+    const r = rig("eligible", seen, {
+      errorOnce: `usage limit reached|${Math.floor(Date.now() / 1000) + 600}`,
+    });
+    r.engine.setSettings({ autoContinueAfterLimit: true });
+    const a = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(a.id, "hit the usage limit");
+    await waitFor(() => turnStatus(r.engine, a.id) === "error");
+    // A parks in limitWaits — no running turn, yet the checkout is not free.
+    const b = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(b.id, "second chat, same repo");
+    await waitFor(() => thread(r.engine, b.id).worktreeDir !== undefined);
+    await waitFor(() => seen.length === 2);
+    expect(seen[1]!.workspace?.directory).toBe(thread(r.engine, b.id).worktreeDir);
+    expect(seen[0]!.workspace?.directory).toBe(r.repoDir);
+  });
+
+  it("a queued follow-up still holds the checkout", async () => {
+    const seen: TurnContext[] = [];
+    const r = rig("eligible", seen, { hold: true });
+    const a = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(a.id, "running work");
+    await waitFor(() => turnStatus(r.engine, a.id) === "running");
+    r.engine.enqueueFollowUp(a.id, "queued behind");
+    r.engine.cancelTurn(a.id);
+    await waitFor(() => turnStatus(r.engine, a.id) === "cancelled");
+    // A stopped turn never drains the queue — the parked send still
+    // belongs to this folder.
+    expect(thread(r.engine, a.id).followUps?.length ?? 0).toBeGreaterThan(0);
+    const b = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(b.id, "second chat, same repo");
+    await waitFor(() => thread(r.engine, b.id).worktreeDir !== undefined);
+    await waitFor(() => seen.length === 2);
+    expect(seen[1]!.workspace?.directory).toBe(thread(r.engine, b.id).worktreeDir);
     expect(seen[0]!.workspace?.directory).toBe(r.repoDir);
   });
 

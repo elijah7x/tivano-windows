@@ -2861,14 +2861,18 @@ export class Engine {
    * directory itself is always main-chosen.
    */
   /** P1-39 (frozen isLocalCheckoutBusy, bounded): another chat already
-   *  works in this project's checkout — a live turn or a latched
-   *  send-now on a non-archived, non-worktree thread bound to the same
-   *  project. A deferred auto-bind's turn reads "running" the whole
-   *  probe, so no separate reservation is needed; worktree-bound and
-   *  head-with-copy threads isolate elsewhere and never claim it.
+   *  works in this project's checkout — a live turn, a latched
+   *  send-now, a parked limit-wait, a queued follow-up, or a lead's
+   *  pending head reports/review on a non-archived, non-worktree thread
+   *  bound to the same project (frozen isUsingWorkspace also counts
+   *  isWaitingForLimit and followUps). A deferred auto-bind's turn
+   *  reads "running" the whole probe, so no separate reservation is
+   *  needed; worktree-bound and head-with-copy threads isolate
+   *  elsewhere and never claim it.
    *  Bounded: the match is same-project only — upstream's
    *  `workspacePathsOverlap` also catches a DIFFERENT project nested
-   *  inside this folder, which this port does not track. */
+   *  inside this folder, which this port does not track. Upstream's
+   *  backgroundTasks/externalSubmission have no port surface yet. */
   private isLocalCheckoutBusy(projectId: string, excludingThreadId: string): boolean {
     for (const t of this.store.state.threads) {
       if (t.id === excludingThreadId || t.isArchived) continue;
@@ -2876,7 +2880,11 @@ export class Engine {
       if (
         t.turn?.status === "running" ||
         t.turn?.status === "waiting-approval" ||
-        this.pendingSends.has(t.id)
+        this.pendingSends.has(t.id) ||
+        this.limitWaits.has(t.id) ||
+        (t.followUps?.length ?? 0) > 0 ||
+        (this.hydraPendingReports.get(t.id)?.length ?? 0) > 0 ||
+        this.hydraReviewPending.has(t.id)
       )
         return true;
     }
