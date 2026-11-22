@@ -6562,11 +6562,20 @@ export class Engine {
       status === "completed"
         ? parseHydraReportNotes(info.summary ?? "")
         : undefined;
+    // Frozen names where a routed head worked in its report — the
+    // in-place footer's "worked in place in <dir>" already carries it;
+    // any other routed head gets the line appended.
+    const summary = info.summary ?? "";
+    const text =
+      info.targetCheckout !== undefined &&
+      !summary.includes("worked in place in")
+        ? `${summary}\n\nWorked in ${info.targetCheckout}`.trim()
+        : summary;
     reports.push({
       headIndex: info.headIndex,
       task: info.task,
       status,
-      text: info.summary ?? "",
+      text,
       batchId: info.batchId,
       ...(notes !== undefined ? { notes } : {}),
       // Frozen expectsNotes = info.jobID != nil: every Tivano-job head
@@ -6984,7 +6993,10 @@ export class Engine {
     };
     for (const head of heads) {
       const info = head.hydraHead!;
-      const root = info.landingCheckout ?? leadCheckout;
+      // A routed in-place head's touched paths live under its routed
+      // checkout, not the lead's — scope the review root there.
+      const root =
+        info.landingCheckout ?? info.targetCheckout ?? leadCheckout;
       rootFor(root, head.projectId ?? lead.projectId, info.baseTree);
       for (const f of info.landing?.files ?? []) collect(f.path, root);
       if (info.baseTree === undefined)

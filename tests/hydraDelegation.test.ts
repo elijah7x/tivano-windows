@@ -433,6 +433,8 @@ describe("lead policy + turn notes (frozen HydraPrompts slice)", () => {
     expect(p).toContain("Hank, Walter, Ada, Otto");
     expect(p).toContain("a team of helper agents");
     expect(p).toContain("The heads work in your checkout");
+    // Audit follow-up #125: the rule discloses repo-top routing.
+    expect(p).toContain("top-level folder the head's checkout");
     expect(p).not.toContain("merge request");
     expect(p).not.toContain("copy of its project");
   });

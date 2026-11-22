@@ -327,6 +327,19 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
       );
     expect(bound).toBeDefined();
     expect(head.projectId).toBe(bound!.id);
+    // Audit follow-up #127: the routed head's report names where it
+    // worked — the repo top it was routed to.
+    await waitFor(() =>
+      engine
+        .snapshot()
+        .threads.find((t) => t.id === lead.id)!
+        .messages.some((m) => m.content.includes("Hydra reports:")),
+    );
+    const report = engine
+      .snapshot()
+      .threads.find((t) => t.id === lead.id)!
+      .messages.find((m) => m.content.includes("Hydra reports:"))!;
+    expect(report.content).toContain(`Worked in ${realpathSync(repo)}`);
   });
 
   it("a routed folder whose repo top is protected is still refused", async () => {
