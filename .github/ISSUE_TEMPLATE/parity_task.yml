@@ -18,7 +18,7 @@ body:
     id: mac-behavior
     attributes:
       label: Mac behavior
-      description: What the macOS app does, with its location in the v2.5.7 source or the CHANGELOG entry that describes it.
+      description: What the macOS app does, with its location in the v3.0.0 source or the CHANGELOG entry that describes it.
     validations:
       required: true
   - type: textarea
