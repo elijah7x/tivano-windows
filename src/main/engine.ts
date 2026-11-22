@@ -6166,6 +6166,11 @@ export class Engine {
     }
     const checkout = this.threadDirectory(head.id) ?? undefined;
     if (checkout !== undefined) {
+      // Frozen records targetCheckout for every head before its backup —
+      // an unrouted in-place head (the chat's own non-Git project) needs
+      // it for the report's diff and backup-path footer like a routed
+      // one. A routed head already carries its assigned checkout.
+      head.hydraHead.targetCheckout ??= checkout;
       await this.prepareHydraBackup(head.id, checkout);
     }
     const cur = this.store.state.threads.find((t) => t.id === headId);

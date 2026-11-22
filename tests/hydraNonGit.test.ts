@@ -471,6 +471,35 @@ describe("P2-05 owned-files contract (frozen v2)", () => {
     expect(existsSync(join(folder, "sub", "b.txt"))).toBe(true);
   }, 20_000);
 
+  it("an unrouted in-place head's report also carries the diff and backup path", async () => {
+    // The mainline case the audit flagged: heads spawned into the
+    // lead's own project (a plain folder) — backed up, but without
+    // targetCheckout their report carried no diff or location.
+    const { engine, projectId } = rig();
+    const leadDir = engine
+      .snapshot()
+      .projects.find((p) => p.id === projectId)!.directory!;
+    writeFileSync(join(leadDir, "hydra-alpha.txt"), "before\n");
+    writeFileSync(join(leadDir, "hydra-beta.txt"), "before\n");
+    const stub = fakeWorktreesStub();
+    engine.attachWorktrees(stub as never);
+    const lead = engine.createThread(projectId, "lead");
+    engine.sendTurn(lead.id, "do it [mock:hydra-touch]");
+    await waitFor(() => heads(engine, lead.id).length === 2);
+    const info = heads(engine, lead.id)[0]!.hydraHead!;
+    await waitFor(() => info.status !== "running");
+    expect(info.isNonGitCheckout).toBe(true);
+    expect(info.backupPath).toBeDefined();
+    // Frozen records targetCheckout for every head before the backup —
+    // the report's diff, counts and footer land for unrouted heads too.
+    await waitFor(() =>
+      (info.summary ?? "").includes("worked in place in"),
+    );
+    expect(info.summary).toContain("the originals are at");
+    expect(info.summary).toMatch(/Added: \d+; removed: \d+/);
+    expect(stub.diffs.length).toBeGreaterThan(0);
+  }, 20_000);
+
   it("a continuation keeps the same backup folder and re-arms the same head", async () => {
     const { engine } = rig();
     const folder = tmp("tivano-owned-cont-");
