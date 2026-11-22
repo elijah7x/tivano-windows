@@ -3359,13 +3359,16 @@ export class Engine {
     this.assertMutable();
     const thread = this.mustThread(threadId);
     if (thread.hydraHead) throw new EngineError("heads have no sub-agent mode");
-    // Frozen canSwitchChimera: the adaptive switch is locked in both
+    // Frozen canSwitchChimeraMode: the adaptive switch is locked in both
     // directions while the chat's sub-agents are at work, delegations
     // still wait to report (hydraLeadBusy covers running heads and
     // pending reports), or entries park in the cap-held waiting queue
     // (frozen hydraWaitingCount == 0). The frozen chimeraCasting flag
     // has no port equivalent — preset/identity resolution is
-    // synchronous at dispatch.
+    // synchronous at dispatch. Bounded: frozen's lead-idle term
+    // (runtime == nil || phase == .idle) is not ported — a lead mid-turn
+    // with no heads yet can still flip modes, and heads dispatched later
+    // in that turn take the new mode.
     const leavingAdaptive = this.subagentModeFor(thread) === "adaptive" && mode !== "adaptive";
     if (
       (mode === "adaptive" || leavingAdaptive) &&

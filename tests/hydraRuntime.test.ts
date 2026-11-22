@@ -381,12 +381,40 @@ describe("A58 pair binding (frozen hydraLaunch slice)", () => {
         heads(engine, lead.id).length === 1 &&
         heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
     );
-    // Two delegations sit in hydraWaiting — entering adaptive refuses.
+    // Two delegations sit in hydraWaiting AND the held head keeps the
+    // lead busy — the combined guard refuses either way.
     expect(() => engine.setSubagentMode(lead.id, "adaptive")).toThrow(
       /switch modes/,
     );
     // Non-adaptive switches stay free (frozen: only the adaptive edge
     // is locked).
+    expect(() => engine.setSubagentMode(lead.id, "same")).not.toThrow();
+    store.close();
+  });
+
+  // The queued-cap scenario above always has the held head busy too, so
+  // it cannot prove the queue term alone refuses. Isolate it: a stranded
+  // hydraWaiting entry with no running heads and no pending reports —
+  // hydraLeadBusy is false, so only the waiting-queue clause can throw.
+  // (Queued entries share their head's batch, which keeps that head's
+  // report pending — no public flow reaches queue>0 && !busy, so the
+  // queue is seeded directly; reverting the clause fails this test.)
+  it("the waiting queue alone locks the adaptive switch", async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    const waiting = (
+      engine as unknown as {
+        hydraWaiting: Map<string, { d: { task: string }; batchId: string; queuedAt: number }[]>;
+      }
+    ).hydraWaiting;
+    waiting.set(lead.id, [
+      { d: { task: "stranded" }, batchId: "stranded-batch", queuedAt: 1 },
+    ]);
+    // Control: nothing is at work — no heads, no reports.
+    expect(heads(engine, lead.id)).toHaveLength(0);
+    expect(() => engine.setSubagentMode(lead.id, "adaptive")).toThrow(
+      /switch modes/,
+    );
     expect(() => engine.setSubagentMode(lead.id, "same")).not.toThrow();
     store.close();
   });
