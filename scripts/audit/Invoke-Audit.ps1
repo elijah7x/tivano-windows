@@ -523,6 +523,21 @@ function Get-PrComments {
   return $all.ToArray()
 }
 
+function Get-PrCommits {
+  param(
+    $Config,
+    [int]$Number
+  )
+  $all = New-Object Collections.Generic.List[object]
+  for ($page = 1; $page -le 20; $page++) {
+    $resp = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $Config.repo + '/pulls/' + $Number + '/commits?per_page=100&page=' + $page)
+    $items = @($resp | Where-Object { $null -ne $_ })
+    foreach ($c in $items) { $null = $all.Add($c) }
+    if ($items.Count -lt 100) { break }
+  }
+  return $all.ToArray()
+}
+
 function Test-CommentAuthoredByApp {
   param(
     $Comment,
@@ -794,6 +809,17 @@ function Get-ParityStatus {
   return $map
 }
 
+function Test-DevinAttribution {
+  param(
+    [AllowEmptyString()][string]$Text
+  )
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+  if ([regex]::IsMatch($Text, '(?im)^\s*(?:[>*+-]\s*)?co-authored-by\s*:[^\r\n]*devin')) { return $true }
+  if ([regex]::IsMatch($Text, '(?i)devin-ai-integration')) { return $true }
+  if ([regex]::IsMatch($Text, '(?i)\bgenerated\s+(?:with|by)\s+\[devin\]')) { return $true }
+  return $false
+}
+
 function Get-DeterministicFindings {
   param(
     [string]$Worktree,
@@ -802,7 +828,8 @@ function Get-DeterministicFindings {
     [int]$IssueNumber,
     [string]$IssueError = '',
     [string]$TempBase = '',
-    [string]$PrBody = ''
+    [string]$PrBody = '',
+    $PrCommits = @()
   )
   $findings = New-Object Collections.Generic.List[object]
   $seq = 1
@@ -851,6 +878,61 @@ function Get-DeterministicFindings {
       })
       $seq++
     }
+  }
+
+  if (Test-DevinAttribution -Text $PrBody) {
+    $null = $findings.Add([pscustomobject]@{
+      id = ('D' + $seq)
+      severity = 'blocking'
+      title = 'Devin attribution in PR body'
+      evidence = ('PR body (branch ' + $HeadRef + ')')
+      why = "PR body contains Devin attribution ('Co-authored-by:', 'devin-ai-integration', or 'Generated with/by [Devin]'). Remove those lines from the PR body (via gh pr edit; no code change is needed) and reword any affected branch commits or rely on gh pr merge --squash with an explicit --subject and --body without attribution."
+    })
+    $seq++
+  }
+
+  $attributedCommits = New-Object Collections.Generic.List[string]
+  foreach ($commitItem in @($PrCommits)) {
+    if ($null -eq $commitItem) { continue }
+    $commitMsg = ''
+    $commitSha = ''
+    if ($commitItem -is [string]) {
+      $commitMsg = $commitItem
+    } else {
+      $commitSha = [string](Get-JsonProp $commitItem 'sha')
+      $commitObj = Get-JsonProp $commitItem 'commit'
+      if ($null -ne $commitObj) {
+        $commitMsg = [string](Get-JsonProp $commitObj 'message')
+      } else {
+        $commitMsg = [string](Get-JsonProp $commitItem 'message')
+      }
+    }
+    if (Test-DevinAttribution -Text $commitMsg) {
+      $label = 'commit'
+      if (-not [string]::IsNullOrWhiteSpace($commitSha)) {
+        if ($commitSha.Length -ge 7) {
+          $label = $commitSha.Substring(0, 7)
+        } else {
+          $label = $commitSha
+        }
+      }
+      $null = $attributedCommits.Add($label)
+    }
+  }
+  if ($attributedCommits.Count -gt 0) {
+    $shownCommits = @($attributedCommits.ToArray() | Select-Object -First 8)
+    $moreCommits = ''
+    if ($attributedCommits.Count -gt $shownCommits.Count) {
+      $moreCommits = ' and ' + ($attributedCommits.Count - $shownCommits.Count) + ' more'
+    }
+    $null = $findings.Add([pscustomobject]@{
+      id = ('D' + $seq)
+      severity = 'advisory'
+      title = 'Devin attribution in branch commit message(s)'
+      evidence = ('commits: ' + ($shownCommits -join ', ') + $moreCommits)
+      why = "Branch commit message(s) contain Devin attribution ('Co-authored-by:', 'devin-ai-integration', or 'Generated with/by [Devin]'). Reword the affected commits or rely on gh pr merge --squash with an explicit --subject and --body without attribution so these lines do not reach main, and remove any matching lines from the PR body."
+    })
+    $seq++
   }
 
   $guarded = @()
@@ -2138,7 +2220,8 @@ try {
           $diffErrPath = Join-Path $runDir 'diff.err.log'
           $null = Invoke-Tool $script:GitPath ('-C ' + (Quote-Arg $worktreeDir) + ' diff --cached origin/main') $diffOutPath $diffErrPath $script:WorkRoot
 
-          $detFindings = @(Get-DeterministicFindings -Worktree $worktreeDir -HeadRef $headRef -ChangedFiles $changedFiles -IssueNumber $issueNumber -IssueError $issueError -TempBase $runDir -PrBody $prBody)
+          $prCommits = @(Get-PrCommits -Config $config -Number $num)
+          $detFindings = @(Get-DeterministicFindings -Worktree $worktreeDir -HeadRef $headRef -ChangedFiles $changedFiles -IssueNumber $issueNumber -IssueError $issueError -TempBase $runDir -PrBody $prBody -PrCommits $prCommits)
           foreach ($df in $detFindings) { $null = $allFindings.Add($df) }
 
           $values = @{
