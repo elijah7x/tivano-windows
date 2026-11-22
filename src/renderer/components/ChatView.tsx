@@ -997,6 +997,16 @@ export function ChatView(props: {
               : it.messages.some((m) => m.id === id),
           );
           if (idx < 0) return;
+          // Frozen jump(to:) sets isPinnedToBottom = (target == last
+          // block): jumping away from the latest unpins so streaming
+          // never yanks the reader back down; a jump to the very end
+          // re-pins. While a turn lives below the items (working row,
+          // approval) the end IS that tail, so every minimap jump
+          // unpins.
+          const lastMsg = thread.messages[thread.messages.length - 1];
+          const liveTail =
+            turn?.status === "running" || turn?.status === "waiting-approval";
+          timelineFollowingRef.current = id === lastMsg?.id && !liveTail;
           // Only when the target sits above the window does the row need
           // mounting first — stash the pending jump so the layout effect
           // scrolls once it lands. An already-mounted target scrolls in
