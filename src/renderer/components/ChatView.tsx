@@ -49,6 +49,7 @@ import {
   TIMELINE_WINDOW,
   timelineFollowReset,
   timelineGrownOpen,
+  timelineJumpWindow,
   timelinePagedBack,
   timelineSlice,
 } from "../../shared/timelineWindow";
@@ -186,8 +187,24 @@ export function ChatView(props: {
   const [timelineVisible, setTimelineVisible] = useState<number>(
     TIMELINE_WINDOW.firstPaint,
   );
-  const timelineHiddenRef = useRef(0);
+  // A thread switch resets the window during render so the old thread's
+  // tail never over-mounts on the new one.
+  const [windowThreadId, setWindowThreadId] = useState(threadId);
+  if (windowThreadId !== threadId) {
+    setWindowThreadId(threadId);
+    setTimelineVisible(TIMELINE_WINDOW.firstPaint);
+  }
   const timelineAnchorRef = useRef<number | null>(null);
+  const timelineJumpRef = useRef<string | null>(null);
+  const timelineLastPageRef = useRef(0);
+  const timelineItems = useMemo(
+    () => (thread ? groupMessages(thread.messages) : []),
+    [thread?.messages, thread],
+  );
+  const { shown: windowedItems, hidden: windowedHidden } = useMemo(
+    () => timelineSlice(timelineItems, timelineVisible),
+    [timelineItems, timelineVisible],
+  );
   useEffect(() => {
     setCkpts([]);
     setPreviewTurn(null);
@@ -209,11 +226,14 @@ export function ChatView(props: {
   }, [threadId]);
 
   useEffect(() => {
-    setTimelineVisible(TIMELINE_WINDOW.firstPaint);
-    const t = window.setTimeout(
-      () => setTimelineVisible((v) => timelineGrownOpen(v)),
-      40,
-    );
+    const t = window.setTimeout(() => {
+      // The open grow prepends too — hold the bottom spot through the
+      // same measured shift as a scroll-back page rather than trusting
+      // Chromium's scroll anchoring.
+      const el = timelineRef.current;
+      if (el) timelineAnchorRef.current = el.scrollHeight - el.scrollTop;
+      setTimelineVisible((v) => timelineGrownOpen(v));
+    }, 40);
     return () => window.clearTimeout(t);
   }, [threadId]);
 
@@ -228,13 +248,21 @@ export function ChatView(props: {
   // A page landing prepends rows: hold the reader's spot by measuring the
   // document growth and shifting scrollTop by the same amount (frozen
   // HistoryAnchorMath's synchronous shift — pre-paint, so the prepend
-  // never flickers).
+  // never flickers). A minimap jump waiting on a mount scrolls the same
+  // step — the target exists by then.
   useLayoutEffect(() => {
     const el = timelineRef.current;
     const anchor = timelineAnchorRef.current;
     if (el && anchor !== null) {
       timelineAnchorRef.current = null;
       el.scrollTop = el.scrollHeight - anchor;
+    }
+    const jumpId = timelineJumpRef.current;
+    if (el && jumpId !== null) {
+      timelineJumpRef.current = null;
+      el
+        .querySelector<HTMLElement>(`[data-mid="${jumpId}"]`)
+        ?.scrollIntoView({ block: "start" });
     }
   }, [timelineVisible]);
 
@@ -452,10 +480,18 @@ export function ChatView(props: {
         onScroll={() => {
           // P1-26: nearing the top with unrendered history pages a chunk
           // in (frozen page=10); the anchor ref holds the measured spot
-          // so the prepend lands without moving the reader.
+          // so the prepend lands without moving the reader. One page per
+          // gesture — a wheel burst near the top must not pull several
+          // chunks in one motion.
           const el = timelineRef.current;
-          if (!el || el.scrollTop >= 120 || timelineHiddenRef.current === 0)
+          if (
+            !el ||
+            el.scrollTop >= 120 ||
+            windowedHidden === 0 ||
+            Date.now() - timelineLastPageRef.current < 250
+          )
             return;
+          timelineLastPageRef.current = Date.now();
           timelineAnchorRef.current = el.scrollHeight - el.scrollTop;
           setTimelineVisible((v) => timelinePagedBack(v));
         }}
@@ -751,12 +787,9 @@ export function ChatView(props: {
           // keep user/assistant/system rows open while their work steps
           // fold into one "Worked for %@" details block. Undo/paging/
           // chronological toggles stay out of this cut.
-          const items = groupMessages(thread.messages);
           // P1-26: only the newest `timelineVisible` items mount; the rest
-          // page in on scroll-back (frozen TimelineWindow).
-          const { shown: windowedItems, hidden: windowedHidden } =
-            timelineSlice(items, timelineVisible);
-          timelineHiddenRef.current = windowedHidden;
+          // page in on scroll-back (frozen TimelineWindow). The windowed
+          // slice comes from the memoized items above.
           const renderTurnSteps = (g: TurnGroup): React.ReactNode => {
             const { steps, open } = partitionGroup(g);
             if (g.turnId === turn?.id || steps.length === 0)
@@ -858,7 +891,29 @@ export function ChatView(props: {
       </div>
       {/* F03: frozen TimelineMinimap — one tick per user message on the
           timeline's leading edge, shown only when at least two exist. */}
-      <TimelineMinimap messages={thread.messages} scrollRef={timelineRef} />
+      <TimelineMinimap
+        messages={thread.messages}
+        scrollRef={timelineRef}
+        onJumpToMessage={(id) => {
+          const idx = timelineItems.findIndex((it) =>
+            it.kind === "lone"
+              ? it.message.id === id
+              : it.messages.some((m) => m.id === id),
+          );
+          if (idx < 0) return;
+          // Only when the target sits above the window does the row need
+          // mounting first — stash the pending jump so the layout effect
+          // scrolls once it lands. An already-mounted target scrolls in
+          // the minimap's own querySelector right after this returns;
+          // marking it pending here would leave a stale jump that fires
+          // on the next unrelated window change.
+          const need = timelineJumpWindow(timelineItems.length, idx);
+          if (need > timelineVisible) {
+            timelineJumpRef.current = id;
+            setTimelineVisible(need);
+          }
+        }}
+      />
       </div>
       <ThreadChangesTab threadId={thread.id} />
       <Composer

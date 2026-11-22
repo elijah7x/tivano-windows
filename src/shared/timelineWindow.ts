@@ -33,10 +33,17 @@ export function timelineGrownOpen(visible: number): number {
   return Math.max(visible, TIMELINE_WINDOW.initial);
 }
 
-/** The window size after a scroll-back page — `page` more, never past the
- *  total. */
+/** The window size after a scroll-back page — `page` more; `timelineSlice`
+ *  clamps a count past the total to the head. */
 export function timelinePagedBack(visible: number): number {
   return visible + TIMELINE_WINDOW.page;
+}
+
+/** The window size that mounts item `idx`: the tail reaching back to it,
+ *  so a minimap jump can find its row (minimap ticks list every block,
+ *  mounted or not). */
+export function timelineJumpWindow(total: number, idx: number): number {
+  return Math.max(0, total - idx);
 }
 
 /** Frozen eagerLimit: while the reader follows the end (live tail), a

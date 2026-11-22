@@ -8,6 +8,7 @@ import {
   TIMELINE_WINDOW,
   timelineFollowReset,
   timelineGrownOpen,
+  timelineJumpWindow,
   timelinePagedBack,
   timelineSlice,
 } from "../src/shared/timelineWindow";
@@ -45,6 +46,17 @@ describe("timelineWindow", () => {
   it("pages back one page at a time", () => {
     expect(timelinePagedBack(12)).toBe(22);
     expect(timelinePagedBack(22)).toBe(32);
+  });
+
+  it("grows the window to mount a jump target's row", () => {
+    // Minimap ticks list every block; a jump to the oldest item of a
+    // 40-item thread needs the whole tail mounted.
+    expect(timelineJumpWindow(40, 0)).toBe(40);
+    // The newest item is already inside any nonzero window.
+    expect(timelineJumpWindow(40, 39)).toBe(1);
+    // Middle of history mounts the tail reaching back to it.
+    expect(timelineJumpWindow(40, 10)).toBe(30);
+    expect(timelineJumpWindow(0, 0)).toBe(0);
   });
 
   it("collapses a window past eagerLimit only while following the end", () => {
