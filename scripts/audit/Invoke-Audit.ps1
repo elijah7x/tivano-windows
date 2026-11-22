@@ -538,6 +538,93 @@ function Get-PrCommits {
   return $all.ToArray()
 }
 
+function Get-MainCompare {
+  param(
+    $Config,
+    [string]$HeadSha
+  )
+  $all = New-Object Collections.Generic.List[object]
+  $seenShas = @{}
+  $status = ''
+  $aheadBy = 0
+  $behindBy = 0
+  $totalCommits = 0
+
+  if ([string]::IsNullOrWhiteSpace($HeadSha)) {
+    return [pscustomobject]@{
+      status = $status
+      ahead_by = $aheadBy
+      behind_by = $behindBy
+      total_commits = $totalCommits
+      commits = $all.ToArray()
+    }
+  }
+
+  $headRefEscaped = [Uri]::EscapeDataString($HeadSha.Trim())
+  for ($page = 1; $page -le 10; $page++) {
+    $path = '/repos/' + $Config.repo + '/compare/main...' + $headRefEscaped + '?per_page=100&page=' + $page
+    $resp = Invoke-AuditApi -Config $Config -Method 'GET' -Path $path
+    if ($null -eq $resp) { break }
+
+    if ($page -eq 1) {
+      $status = [string](Get-JsonProp $resp 'status')
+      $rawAhead = Get-JsonProp $resp 'ahead_by'
+      if ($null -ne $rawAhead) { $aheadBy = [int]$rawAhead }
+      $rawBehind = Get-JsonProp $resp 'behind_by'
+      if ($null -ne $rawBehind) { $behindBy = [int]$rawBehind }
+      $rawTotal = Get-JsonProp $resp 'total_commits'
+      if ($null -ne $rawTotal) { $totalCommits = [int]$rawTotal }
+    }
+
+    $rawCommits = Get-JsonProp $resp 'commits'
+    $items = @()
+    if ($null -ne $rawCommits) {
+      $items = @($rawCommits | Where-Object { $null -ne $_ })
+    }
+    $addedThisPage = 0
+    foreach ($c in $items) {
+      $sha = ([string](Get-JsonProp $c 'sha')).Trim().ToLowerInvariant()
+      if (-not [string]::IsNullOrWhiteSpace($sha)) {
+        if ($seenShas.ContainsKey($sha)) { continue }
+        $seenShas[$sha] = $true
+      }
+      $null = $all.Add($c)
+      $addedThisPage++
+    }
+    if ($items.Count -lt 100 -or $addedThisPage -eq 0) { break }
+    if ($totalCommits -gt 0 -and $all.Count -ge $totalCommits) { break }
+  }
+
+  return [pscustomobject]@{
+    status = $status
+    ahead_by = $aheadBy
+    behind_by = $behindBy
+    total_commits = $totalCommits
+    commits = $all.ToArray()
+  }
+}
+
+function Get-MainRecentCommits {
+  param(
+    $Config,
+    [int]$Limit = 50
+  )
+  if ($Limit -le 0) { return @() }
+  $perPage = $Limit
+  if ($perPage -gt 100) { $perPage = 100 }
+  $all = New-Object Collections.Generic.List[object]
+  $resp = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $Config.repo + '/commits?sha=main&per_page=' + $perPage)
+  $items = @()
+  if ($null -ne $resp) {
+    $items = @($resp | Where-Object { $null -ne $_ })
+  }
+  foreach ($c in $items) {
+    $null = $all.Add($c)
+    if ($all.Count -ge $Limit) { break }
+  }
+  return $all.ToArray()
+}
+
 function Test-CommentAuthoredByApp {
   param(
     $Comment,
@@ -820,6 +907,43 @@ function Test-DevinAttribution {
   return $false
 }
 
+function Get-CommitMessageText {
+  param($CommitItem)
+  if ($null -eq $CommitItem) { return '' }
+  if ($CommitItem -is [string]) { return $CommitItem }
+  $commitObj = Get-JsonProp $CommitItem 'commit'
+  if ($null -ne $commitObj) {
+    return [string](Get-JsonProp $commitObj 'message')
+  }
+  return [string](Get-JsonProp $CommitItem 'message')
+}
+
+function Get-CommitSubject {
+  param([AllowEmptyString()][string]$Message)
+  if ([string]::IsNullOrWhiteSpace($Message)) { return '' }
+  $lines = @($Message -split "`r?`n")
+  if ($lines.Count -eq 0) { return '' }
+  return $lines[0].Trim()
+}
+
+function Test-IsMergeCommit {
+  param(
+    $CommitItem,
+    [AllowEmptyString()][string]$Subject = ''
+  )
+  if ($null -ne $CommitItem -and $CommitItem -isnot [string]) {
+    $parentsRaw = Get-JsonProp $CommitItem 'parents'
+    if ($null -ne $parentsRaw) {
+      $parentsArr = @($parentsRaw | Where-Object { $null -ne $_ })
+      if ($parentsArr.Count -gt 1) { return $true }
+    }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($Subject)) {
+    if ($Subject -cmatch '^Merge (?:branch |pull request |remote-tracking branch |tag )') { return $true }
+  }
+  return $false
+}
+
 function Get-DeterministicFindings {
   param(
     [string]$Worktree,
@@ -829,7 +953,9 @@ function Get-DeterministicFindings {
     [string]$IssueError = '',
     [string]$TempBase = '',
     [string]$PrBody = '',
-    $PrCommits = @()
+    $PrCommits = @(),
+    $MainCompare = $null,
+    $MainCommits = @()
   )
   $findings = New-Object Collections.Generic.List[object]
   $seq = 1
@@ -891,22 +1017,79 @@ function Get-DeterministicFindings {
     $seq++
   }
 
-  $attributedCommits = New-Object Collections.Generic.List[string]
-  foreach ($commitItem in @($PrCommits)) {
-    if ($null -eq $commitItem) { continue }
-    $commitMsg = ''
-    $commitSha = ''
-    if ($commitItem -is [string]) {
-      $commitMsg = $commitItem
-    } else {
-      $commitSha = [string](Get-JsonProp $commitItem 'sha')
-      $commitObj = Get-JsonProp $commitItem 'commit'
-      if ($null -ne $commitObj) {
-        $commitMsg = [string](Get-JsonProp $commitObj 'message')
-      } else {
-        $commitMsg = [string](Get-JsonProp $commitItem 'message')
+  $rebaseInstruction = 'rebase the branch onto current origin/main (git rebase origin/main) so commits from before the history rewrite drop out, then force-push the branch'
+
+  $mainShaSet = @{}
+  $mainSubjectToSha = New-Object Collections.Hashtable ([StringComparer]::Ordinal)
+  foreach ($mainItem in @($MainCommits)) {
+    if ($null -eq $mainItem -or $mainItem -is [string]) { continue }
+    $mSha = ([string](Get-JsonProp $mainItem 'sha')).Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($mSha)) { continue }
+    $mainShaSet[$mSha] = $true
+    $mMsg = Get-CommitMessageText -CommitItem $mainItem
+    $mSubj = Get-CommitSubject -Message $mMsg
+    if ([string]::IsNullOrWhiteSpace($mSubj)) { continue }
+    if (Test-IsMergeCommit -CommitItem $mainItem -Subject $mSubj) { continue }
+    if (-not $mainSubjectToSha.ContainsKey($mSubj)) {
+      $mainSubjectToSha[$mSubj] = $mSha
+    }
+  }
+
+  $compareAheadBy = -1
+  $compareCommits = @()
+  if ($null -ne $MainCompare) {
+    $rawAhead = Get-JsonProp $MainCompare 'ahead_by'
+    if ($null -eq $rawAhead) { $rawAhead = Get-JsonProp $MainCompare 'aheadBy' }
+    if ($null -ne $rawAhead) {
+      $parsedAhead = 0
+      if ([int]::TryParse([string]$rawAhead, [ref]$parsedAhead)) {
+        $compareAheadBy = $parsedAhead
       }
     }
+    $rawCompareCommits = Get-JsonProp $MainCompare 'commits'
+    if ($null -ne $rawCompareCommits) {
+      $compareCommits = @($rawCompareCommits | Where-Object { $null -ne $_ })
+    }
+  }
+
+  $branchCommits = New-Object Collections.Generic.List[object]
+  $seenBranchShas = @{}
+  foreach ($cItem in $compareCommits) {
+    if ($null -eq $cItem) { continue }
+    $cSha = ''
+    if ($cItem -isnot [string]) {
+      $cSha = ([string](Get-JsonProp $cItem 'sha')).Trim().ToLowerInvariant()
+    }
+    if (-not [string]::IsNullOrWhiteSpace($cSha)) {
+      if ($seenBranchShas.ContainsKey($cSha)) { continue }
+      $seenBranchShas[$cSha] = $true
+    }
+    $null = $branchCommits.Add($cItem)
+  }
+  if ($null -eq $MainCompare -or $compareAheadBy -ne 0) {
+    foreach ($pItem in @($PrCommits)) {
+      if ($null -eq $pItem) { continue }
+      $pSha = ''
+      if ($pItem -isnot [string]) {
+        $pSha = ([string](Get-JsonProp $pItem 'sha')).Trim().ToLowerInvariant()
+      }
+      if (-not [string]::IsNullOrWhiteSpace($pSha)) {
+        if ($seenBranchShas.ContainsKey($pSha)) { continue }
+        if ($mainShaSet.ContainsKey($pSha)) { continue }
+        $seenBranchShas[$pSha] = $true
+      }
+      $null = $branchCommits.Add($pItem)
+    }
+  }
+
+  $attributedCommits = New-Object Collections.Generic.List[string]
+  foreach ($commitItem in $branchCommits.ToArray()) {
+    if ($null -eq $commitItem) { continue }
+    $commitSha = ''
+    if ($commitItem -isnot [string]) {
+      $commitSha = ([string](Get-JsonProp $commitItem 'sha')).Trim()
+    }
+    $commitMsg = Get-CommitMessageText -CommitItem $commitItem
     if (Test-DevinAttribution -Text $commitMsg) {
       $label = 'commit'
       if (-not [string]::IsNullOrWhiteSpace($commitSha)) {
@@ -925,12 +1108,60 @@ function Get-DeterministicFindings {
     if ($attributedCommits.Count -gt $shownCommits.Count) {
       $moreCommits = ' and ' + ($attributedCommits.Count - $shownCommits.Count) + ' more'
     }
+    $aheadSuffix = ''
+    if ($compareAheadBy -ge 0) {
+      $aheadSuffix = ' (ahead_by=' + $compareAheadBy + ')'
+    }
     $null = $findings.Add([pscustomobject]@{
       id = ('D' + $seq)
-      severity = 'advisory'
+      severity = 'blocking'
       title = 'Devin attribution in branch commit message(s)'
-      evidence = ('commits: ' + ($shownCommits -join ', ') + $moreCommits)
-      why = "Branch commit message(s) contain Devin attribution ('Co-authored-by:', 'devin-ai-integration', or 'Generated with/by [Devin]'). Reword the affected commits or rely on gh pr merge --squash with an explicit --subject and --body without attribution so these lines do not reach main, and remove any matching lines from the PR body."
+      evidence = ('commits: ' + ($shownCommits -join ', ') + $moreCommits + $aheadSuffix)
+      why = ("Branch commit message(s) not on main contain Devin attribution ('Co-authored-by:', 'devin-ai-integration', or 'Generated with/by [Devin]'). To fix, " + $rebaseInstruction + '.')
+    })
+    $seq++
+  }
+
+  $replayedCommits = New-Object Collections.Generic.List[string]
+  if ($mainSubjectToSha.Count -gt 0) {
+    foreach ($commitItem in $branchCommits.ToArray()) {
+      if ($null -eq $commitItem -or $commitItem -is [string]) { continue }
+      $commitSha = ([string](Get-JsonProp $commitItem 'sha')).Trim()
+      if ([string]::IsNullOrWhiteSpace($commitSha)) { continue }
+      $commitShaLower = $commitSha.ToLowerInvariant()
+      if ($mainShaSet.ContainsKey($commitShaLower)) { continue }
+      $commitMsg = Get-CommitMessageText -CommitItem $commitItem
+      $commitSubj = Get-CommitSubject -Message $commitMsg
+      if ([string]::IsNullOrWhiteSpace($commitSubj)) { continue }
+      if (Test-IsMergeCommit -CommitItem $commitItem -Subject $commitSubj) { continue }
+      if ($mainSubjectToSha.ContainsKey($commitSubj)) {
+        $mainMatchSha = [string]$mainSubjectToSha[$commitSubj]
+        if ($mainMatchSha -eq $commitShaLower) { continue }
+        $prShort = $commitSha
+        if ($prShort.Length -ge 7) { $prShort = $prShort.Substring(0, 7) }
+        $mainShort = $mainMatchSha
+        if ($mainShort.Length -ge 7) { $mainShort = $mainShort.Substring(0, 7) }
+        $subjPreview = (ConvertTo-SingleLine $commitSubj 80).Replace('`', "'")
+        $null = $replayedCommits.Add(($prShort + ' matches main ' + $mainShort + ' (' + $subjPreview + ')'))
+      }
+    }
+  }
+  if ($replayedCommits.Count -gt 0) {
+    $shownReplayed = @($replayedCommits.ToArray() | Select-Object -First 8)
+    $moreReplayed = ''
+    if ($replayedCommits.Count -gt $shownReplayed.Count) {
+      $moreReplayed = ' and ' + ($replayedCommits.Count - $shownReplayed.Count) + ' more'
+    }
+    $aheadSuffix = ''
+    if ($compareAheadBy -ge 0) {
+      $aheadSuffix = ' (ahead_by=' + $compareAheadBy + ')'
+    }
+    $null = $findings.Add([pscustomobject]@{
+      id = ('D' + $seq)
+      severity = 'blocking'
+      title = 'branch contains commit(s) already on main under different SHA(s)'
+      evidence = (($shownReplayed -join '; ') + $moreReplayed + $aheadSuffix)
+      why = ('Branch commit list contains commit(s) whose exact subject matches recent commit(s) on main under different SHAs (stale history from before a main rewrite). To fix, ' + $rebaseInstruction + '.')
     })
     $seq++
   }
@@ -1934,6 +2165,8 @@ try {
     Write-Log ('audit pass started: repo=' + $config.repo + ' openNyxPrs=' + $pulls.Count + ' dryRun=' + [bool]$DryRun)
 
     $mainSha = ''
+    $mainRecentCommits = @()
+    $mainRecentCommitsLoaded = $false
     if ($pulls.Count -gt 0) {
       Ensure-AuditRepo -Config $config -RepoDir $repoDir
       $mainShaRes = Invoke-Git -Directory $repoDir -Arguments 'rev-parse origin/main'
@@ -2222,7 +2455,12 @@ try {
           $null = Invoke-Tool $script:GitPath ('-C ' + (Quote-Arg $worktreeDir) + ' diff --cached origin/main') $diffOutPath $diffErrPath $script:WorkRoot
 
           $prCommits = @(Get-PrCommits -Config $config -Number $num)
-          $detFindings = @(Get-DeterministicFindings -Worktree $worktreeDir -HeadRef $headRef -ChangedFiles $changedFiles -IssueNumber $issueNumber -IssueError $issueError -TempBase $runDir -PrBody $prBody -PrCommits $prCommits)
+          $mainCompare = Get-MainCompare -Config $config -HeadSha $headSha
+          if (-not $mainRecentCommitsLoaded) {
+            $mainRecentCommits = @(Get-MainRecentCommits -Config $config -Limit 50)
+            $mainRecentCommitsLoaded = $true
+          }
+          $detFindings = @(Get-DeterministicFindings -Worktree $worktreeDir -HeadRef $headRef -ChangedFiles $changedFiles -IssueNumber $issueNumber -IssueError $issueError -TempBase $runDir -PrBody $prBody -PrCommits $prCommits -MainCompare $mainCompare -MainCommits $mainRecentCommits)
           foreach ($df in $detFindings) { $null = $allFindings.Add($df) }
 
           $values = @{

@@ -44,6 +44,8 @@ $script:RobocopyPath = $null
 $script:DevinPath = $null
 $script:Redactions = @()
 $script:GuiTypesLoaded = $false
+$script:AutoMergeDailyCap = 20
+$script:AttributionLinePattern = '(?i)co-authored-by|generated (with|by) \[?devin|devin\.ai'
 
 function Write-Text {
   param([string]$Path, [AllowEmptyString()][string]$Text)
@@ -1093,12 +1095,12 @@ function Invoke-Kickoff {
     return 'failed'
   }
 
-  $message = 'Read the file ' + $script:PromptPath + ' and carry it out exactly as written. Work through the whole queue, parked revisits, hands-on milestone, and 30-minute polling loop without asking questions or waiting for a person. Re-read that file after every issue. Use these values wherever the file names its defaults: repository ' + $Repo + ', label ' + $Label + ', root folder ' + $script:WorkRoot + ' (progress.json and parked.json in its autopilot subfolder, STOP in its state subfolder).'
+  $message = 'First re-read ' + $script:PromptPath + ' and carry it out exactly as written. Then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any open nyx/ PR whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Work through the whole queue, parked revisits, hands-on milestone, and 30-minute polling loop without asking questions or waiting for a person. Re-read ' + $script:PromptPath + ' after every issue. Use these values wherever the file names its defaults: repository ' + $Repo + ', label ' + $Label + ', root folder ' + $script:WorkRoot + ' (progress.json and parked.json in its autopilot subfolder, STOP in its state subfolder).'
   $soloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
   $soloStatePath = Join-Path $script:AutopilotDir 'solo-v3.json'
   $soloState = Read-JsonFile $soloStatePath
   if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and [string](Get-JsonProp $soloState 'phase') -ne 'done') {
-    $message = 'Continue the mission: re-read ' + $soloPlan + ', resume from ' + $soloStatePath + ' and keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains.'
+    $message = 'Continue the mission: first re-read ' + $soloPlan + ' and ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub, ' + $script:ProgressPath + ', and ' + $soloStatePath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any open nyx/ PR whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains.'
   }
   $sent = $false
   for ($try = 0; $try -lt 3 -and -not $sent; $try++) {
@@ -1154,6 +1156,423 @@ function Get-BusyAutopilotProcesses {
   })
 }
 
+function Quote-Win32Argument {
+  param([AllowEmptyString()][string]$Value)
+  if ($null -eq $Value) { return '""' }
+  $escaped = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+  $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+  return '"' + $escaped + '"'
+}
+
+function Remove-AttributionLines {
+  param([AllowEmptyString()][string]$Text)
+  if ([string]::IsNullOrEmpty($Text)) { return '' }
+  $kept = New-Object Collections.Generic.List[string]
+  foreach ($line in ($Text -split "`r?`n")) {
+    if ($line -match $script:AttributionLinePattern) { continue }
+    $null = $kept.Add($line)
+  }
+  return (($kept.ToArray() -join "`n").TrimEnd())
+}
+
+function Get-LatestPrGateSummary {
+  param([int]$PrNumber)
+  $gateRoot = Join-Path $script:AutopilotDir 'gate'
+  if (-not (Test-Path -LiteralPath $gateRoot -PathType Container)) { return $null }
+  $prefix = 'pr-' + $PrNumber + '-'
+  $dirs = @(Get-ChildItem -LiteralPath $gateRoot -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
+  if ($dirs.Count -eq 0) { return $null }
+
+  $summaryFiles = New-Object Collections.Generic.List[object]
+  foreach ($dir in $dirs) {
+    $candidate = Join-Path $dir.FullName 'summary.json'
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      $item = Get-Item -LiteralPath $candidate -ErrorAction SilentlyContinue
+      if ($null -ne $item) { $null = $summaryFiles.Add($item) }
+    }
+  }
+  $arr = @($summaryFiles.ToArray())
+  if ($arr.Count -eq 0) { return $null }
+
+  $ordered = @($arr | Sort-Object `
+    @{ Expression = { $_.LastWriteTimeUtc }; Descending = $true }, `
+    @{ Expression = { $_.Directory.Name }; Descending = $true })
+  $newest = $ordered[0]
+  $data = Read-JsonFile $newest.FullName
+  return [pscustomobject]@{
+    path = $newest.FullName
+    data = $data
+  }
+}
+
+function Get-TodayMergedNyxPrCount {
+  $today = [DateTime]::Now.ToString('yyyy-MM-dd')
+  $sinceDate = [DateTime]::UtcNow.AddDays(-2).ToString('yyyy-MM-dd')
+  $res = Invoke-Gh ('pr list -R ' + $Repo + ' --state merged --search ' + (Quote-Argument ('merged:>=' + $sinceDate)) + ' --limit 100 --json number,headRefName,mergedAt')
+  if ($res.exitCode -ne 0) {
+    Write-Log ('auto-merge: gh pr list --state merged failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $res) 200))
+    return $null
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$res.text)) { return 0 }
+  $items = @()
+  try {
+    $parsed = $res.text | ConvertFrom-Json
+    if ($null -ne $parsed) {
+      $items = @($parsed | Where-Object { $null -ne $_ })
+    }
+  } catch {
+    Write-Log ('auto-merge: could not parse merged PR list JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
+    return $null
+  }
+  $count = 0
+  foreach ($item in $items) {
+    $headRef = [string](Get-JsonProp $item 'headRefName')
+    if (-not $headRef.StartsWith('nyx/', [StringComparison]::Ordinal)) { continue }
+    $mergedAt = [string](Get-JsonProp $item 'mergedAt')
+    if ([string]::IsNullOrWhiteSpace($mergedAt)) { continue }
+    $parsedDto = [DateTimeOffset]::MinValue
+    if ([DateTimeOffset]::TryParse($mergedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$parsedDto)) {
+      if ($parsedDto.LocalDateTime.ToString('yyyy-MM-dd') -eq $today) {
+        $count++
+      }
+    }
+  }
+  return $count
+}
+
+function Add-AuditLogComment {
+  param([string]$Message)
+  $logTitle = 'Audit log'
+  $issueNo = 0
+  $search = Invoke-Gh ('issue list -R ' + $Repo + ' --state open --label audit-log --limit 20 --json number,title')
+  if ($search.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$search.text)) {
+    try {
+      $items = @($search.text | ConvertFrom-Json | Where-Object { $null -ne $_ })
+      $exact = @($items | Where-Object { ([string](Get-JsonProp $_ 'title')).Trim() -ceq $logTitle } | Sort-Object { [int](Get-JsonProp $_ 'number') })
+      if ($exact.Count -gt 0) { $issueNo = [int](Get-JsonProp $exact[0] 'number') }
+    } catch { }
+  }
+  if ($issueNo -le 0) {
+    $fallback = Invoke-Gh ('issue list -R ' + $Repo + ' --state open --search ' + (Quote-Argument ($logTitle + ' in:title')) + ' --limit 20 --json number,title')
+    if ($fallback.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$fallback.text)) {
+      try {
+        $items = @($fallback.text | ConvertFrom-Json | Where-Object { $null -ne $_ })
+        $exact = @($items | Where-Object { ([string](Get-JsonProp $_ 'title')).Trim() -ceq $logTitle } | Sort-Object { [int](Get-JsonProp $_ 'number') })
+        if ($exact.Count -gt 0) { $issueNo = [int](Get-JsonProp $exact[0] 'number') }
+      } catch { }
+    }
+  }
+  if ($issueNo -le 0) {
+    Write-Log 'auto-merge: could not locate open Audit log issue to record alert'
+    return $false
+  }
+  $stamp = [DateTime]::Now.ToString('yyyy-MM-ddTHH:mm:ssK')
+  $clean = ConvertTo-SingleLine (Protect-PublicText $Message) 500
+  $bodyPath = Join-Path $script:AutopilotDir ('audit-log-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.md')
+  try {
+    Write-Text $bodyPath ($stamp + ' ' + $clean + "`n")
+    $commentRes = Invoke-Gh ('issue comment ' + $issueNo + ' -R ' + $Repo + ' --body-file ' + (Quote-Argument $bodyPath))
+    if ($commentRes.exitCode -ne 0) {
+      Write-Log ('auto-merge: failed to comment on Audit log issue #' + $issueNo + ': ' + (ConvertTo-SingleLine (Get-ErrorSummary $commentRes) 200))
+      return $false
+    }
+    Write-Log ('auto-merge: appended alert to Audit log issue #' + $issueNo)
+    return $true
+  } finally {
+    Remove-Item -LiteralPath $bodyPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Invoke-AutoMerge {
+  param([switch]$DryRun)
+  $whatIfVar = Get-Variable -Name 'WhatIfPreference' -ErrorAction SilentlyContinue
+  $isDryRun = [bool]$DryRun
+  if ($null -ne $whatIfVar -and [bool]$whatIfVar.Value) { $isDryRun = $true }
+
+  if (-not $script:GhPath) {
+    $ghCmd = Get-Command -Name 'gh' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $ghCmd) {
+      Write-Log 'auto-merge: skipped (gh was not found on PATH)'
+      return
+    }
+    $script:GhPath = $ghCmd.Source
+  }
+
+  $listRes = Invoke-Gh ('pr list -R ' + $Repo + ' --state open --limit 100 --json number,headRefName,headRefOid,title,body,labels')
+  if ($listRes.exitCode -ne 0) {
+    Write-Log ('auto-merge: skipped (gh pr list failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $listRes) 200) + ')')
+    return
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$listRes.text)) { return }
+
+  $openPrs = @()
+  try {
+    $parsedPrs = $listRes.text | ConvertFrom-Json
+    if ($null -ne $parsedPrs) {
+      $openPrs = @($parsedPrs | Where-Object { $null -ne $_ } | Sort-Object { [int](Get-JsonProp $_ 'number') })
+    }
+  } catch {
+    Write-Log ('auto-merge: skipped (could not parse gh pr list JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 200) + ')')
+    return
+  }
+
+  $mergedTodayLoaded = $false
+  $mergedToday = $null
+
+  foreach ($pr in $openPrs) {
+    if (Test-Stop) {
+      Write-Log 'auto-merge: STOP file present; stopping'
+      break
+    }
+
+    $prNum = 0
+    $rawNum = Get-JsonProp $pr 'number'
+    if ($null -ne $rawNum) { $prNum = [int]$rawNum }
+    $headRef = [string](Get-JsonProp $pr 'headRefName')
+    if ($prNum -le 0 -or -not $headRef.StartsWith('nyx/', [StringComparison]::Ordinal)) { continue }
+
+    try {
+      $labels = @(Get-LabelNames (Get-JsonProp $pr 'labels'))
+      if ($labels -contains 'audit-parked') {
+        Write-Log ('auto-merge PR #' + $prNum + ': skipped (labelled audit-parked)')
+        continue
+      }
+
+      $headSha = ([string](Get-JsonProp $pr 'headRefOid')).Trim()
+      if ([string]::IsNullOrWhiteSpace($headSha)) {
+        Write-Log ('auto-merge PR #' + $prNum + ': skipped (missing headRefOid)')
+        continue
+      }
+      $sha7 = $headSha
+      if ($sha7.Length -gt 7) { $sha7 = $sha7.Substring(0, 7) }
+
+      # (a) Newest gate summary.json has verdict 'pass' and headSha equal to live headRefOid.
+      $gateSummary = Get-LatestPrGateSummary -PrNumber $prNum
+      if ($null -eq $gateSummary) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (no gate summary.json found)')
+        continue
+      }
+      if ($null -eq $gateSummary.data) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (newest gate summary.json unreadable)')
+        continue
+      }
+      $gateVerdict = ([string](Get-JsonProp $gateSummary.data 'verdict')).Trim().ToLowerInvariant()
+      $gateSha = ([string](Get-JsonProp $gateSummary.data 'headSha')).Trim()
+      if ($gateVerdict -ne 'pass') {
+        $shownVerdict = $gateVerdict
+        if (-not $shownVerdict) { $shownVerdict = 'empty' }
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (gate verdict is ' + $shownVerdict + ', need pass)')
+        continue
+      }
+      if (-not $gateSha.Equals($headSha, [StringComparison]::OrdinalIgnoreCase)) {
+        $gateSha7 = $gateSha
+        if ($gateSha7.Length -gt 7) { $gateSha7 = $gateSha7.Substring(0, 7) }
+        if (-not $gateSha7) { $gateSha7 = 'empty' }
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (gate headSha ' + $gateSha7 + ' does not match live head ' + $sha7 + ')')
+        continue
+      }
+
+      # (c) PR body contains a closing keyword for the issue number parsed from nyx/<n>-...
+      $branchMatch = [regex]::Match($headRef, '^nyx/([0-9]+)-')
+      if (-not $branchMatch.Success) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (branch ' + $headRef + ' does not match nyx/<issue>-...)')
+        continue
+      }
+      $issueNum = [int]$branchMatch.Groups[1].Value
+      if ($issueNum -le 0) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (invalid issue number in branch ' + $headRef + ')')
+        continue
+      }
+      $prBody = [string](Get-JsonProp $pr 'body')
+      $closingPattern = '(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(?:' + [regex]::Escape($Repo) + ')?#' + $issueNum + '\b'
+      if ([string]::IsNullOrWhiteSpace($prBody) -or ($prBody -notmatch $closingPattern)) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (PR body missing closing keyword for #' + $issueNum + ')')
+        continue
+      }
+
+      # (b) Combined commit status context 'nyx/audit' on that SHA is 'success'.
+      $statusRes = Invoke-Gh ('api repos/' + $Repo + '/commits/' + $headSha + '/status')
+      if ($statusRes.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$statusRes.text)) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (gh api commit status failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $statusRes) 180) + ')')
+        continue
+      }
+      $statusObj = $null
+      try {
+        $statusObj = $statusRes.text | ConvertFrom-Json
+      } catch {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (could not parse commit status JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 160) + ')')
+        continue
+      }
+      $statusesRaw = Get-JsonProp $statusObj 'statuses'
+      $statuses = @()
+      if ($null -ne $statusesRaw) {
+        $statuses = @($statusesRaw | Where-Object { $null -ne $_ })
+      }
+      $auditState = ''
+      foreach ($st in $statuses) {
+        if ([string](Get-JsonProp $st 'context') -ceq 'nyx/audit') {
+          $auditState = ([string](Get-JsonProp $st 'state')).Trim().ToLowerInvariant()
+          break
+        }
+      }
+      if ($auditState -ne 'success') {
+        $shownAudit = $auditState
+        if (-not $shownAudit) { $shownAudit = 'missing' }
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (nyx/audit status is ' + $shownAudit + ', need success)')
+        continue
+      }
+
+      # (d) mergeable is MERGEABLE and mergeStateStatus is not DIRTY.
+      $viewRes = Invoke-Gh ('pr view ' + $prNum + ' -R ' + $Repo + ' --json mergeable,mergeStateStatus')
+      if ($viewRes.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$viewRes.text)) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (gh pr view failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $viewRes) 180) + ')')
+        continue
+      }
+      $viewObj = $null
+      try {
+        $viewObj = $viewRes.text | ConvertFrom-Json
+      } catch {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (could not parse gh pr view JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 160) + ')')
+        continue
+      }
+      $mergeable = ([string](Get-JsonProp $viewObj 'mergeable')).Trim().ToUpperInvariant()
+      $mergeState = ([string](Get-JsonProp $viewObj 'mergeStateStatus')).Trim().ToUpperInvariant()
+      if ($mergeable -ne 'MERGEABLE') {
+        $shownMergeable = $mergeable
+        if (-not $shownMergeable) { $shownMergeable = 'empty' }
+        $shownState = $mergeState
+        if (-not $shownState) { $shownState = 'empty' }
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (mergeable is ' + $shownMergeable + ', mergeStateStatus is ' + $shownState + ')')
+        continue
+      }
+      if ($mergeState -eq 'DIRTY') {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (mergeStateStatus is DIRTY)')
+        continue
+      }
+
+      # (e) Today's merges are under the daily cap (20).
+      if (-not $mergedTodayLoaded) {
+        $mergedToday = Get-TodayMergedNyxPrCount
+        $mergedTodayLoaded = $true
+      }
+      if ($null -eq $mergedToday) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (could not count today merged nyx/ PRs)')
+        continue
+      }
+      if ($mergedToday -ge $script:AutoMergeDailyCap) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (daily merge cap reached: ' + $mergedToday + '/' + $script:AutoMergeDailyCap + ')')
+        continue
+      }
+
+      $prTitle = [regex]::Replace(([string](Get-JsonProp $pr 'title')), '[\r\n]+', ' ').Trim()
+      if ([string]::IsNullOrWhiteSpace($prTitle)) { $prTitle = 'PR' }
+      $subject = $prTitle + ' (#' + $prNum + ')'
+      $cleanBody = Remove-AttributionLines $prBody
+      if ([string]::IsNullOrWhiteSpace($cleanBody)) {
+        $cleanBody = 'Closes #' + $issueNum
+      } elseif ($cleanBody -notmatch $closingPattern) {
+        $cleanBody = $cleanBody + "`n`nCloses #" + $issueNum
+      }
+
+      if ($isDryRun) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (dry-run; would merge issue #' + $issueNum + ')')
+        continue
+      }
+
+      $bodyPath = Join-Path $script:AutopilotDir ('automerge-body-' + $prNum + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.md')
+      $mergeRes = $null
+      try {
+        Write-Text $bodyPath ($cleanBody + "`n")
+        $mergeArgs = 'pr merge ' + $prNum + ' -R ' + $Repo + ' --squash --match-head-commit ' + $headSha +
+          ' --subject ' + (Quote-Win32Argument $subject) + ' --body-file ' + (Quote-Argument $bodyPath)
+        $mergeRes = Invoke-Gh $mergeArgs
+      } finally {
+        Remove-Item -LiteralPath $bodyPath -Force -ErrorAction SilentlyContinue
+      }
+
+      if ($null -eq $mergeRes -or $mergeRes.exitCode -ne 0) {
+        $errMsg = 'unknown error'
+        if ($null -ne $mergeRes) { $errMsg = ConvertTo-SingleLine (Get-ErrorSummary $mergeRes) 200 }
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (gh pr merge failed: ' + $errMsg + ')')
+        continue
+      }
+
+      $mergedToday++
+
+      # Verify the merge commit message on main contains no agent attribution line.
+      $mergeSha = ''
+      for ($poll = 0; $poll -lt 2; $poll++) {
+        $pullRes = Invoke-Gh ('api repos/' + $Repo + '/pulls/' + $prNum)
+        if ($pullRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$pullRes.text)) {
+          try {
+            $pullObj = $pullRes.text | ConvertFrom-Json
+            $mergeSha = ([string](Get-JsonProp $pullObj 'merge_commit_sha')).Trim()
+          } catch { }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($mergeSha)) { break }
+        if ($poll -eq 0) { Start-Sleep -Seconds 2 }
+      }
+      $mergeSha7 = 'unknown'
+      if (-not [string]::IsNullOrWhiteSpace($mergeSha)) {
+        $mergeSha7 = $mergeSha
+        if ($mergeSha7.Length -gt 7) { $mergeSha7 = $mergeSha7.Substring(0, 7) }
+        $commitRes = Invoke-Gh ('api repos/' + $Repo + '/commits/' + $mergeSha)
+        if ($commitRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$commitRes.text)) {
+          try {
+            $commitObj = $commitRes.text | ConvertFrom-Json
+            $commitInner = Get-JsonProp $commitObj 'commit'
+            $commitMsg = [string](Get-JsonProp $commitInner 'message')
+            $badLine = ''
+            foreach ($msgLine in ($commitMsg -split "`r?`n")) {
+              if ($msgLine -match $script:AttributionLinePattern) {
+                $badLine = $msgLine.Trim()
+                break
+              }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($badLine)) {
+              $alert = 'ALERT: auto-merge of PR #' + $prNum + ' produced merge commit ' + $mergeSha7 + ' on main with agent attribution line: ' + (ConvertTo-SingleLine $badLine 160)
+              Write-Log $alert
+              $null = Add-AuditLogComment $alert
+            }
+          } catch {
+            Write-Log ('auto-merge PR #' + $prNum + ': warning: could not parse merge commit JSON for ' + $mergeSha7 + ': ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+          }
+        } else {
+          Write-Log ('auto-merge PR #' + $prNum + ': warning: could not fetch merge commit ' + $mergeSha7 + ' to verify message: ' + (ConvertTo-SingleLine (Get-ErrorSummary $commitRes) 160))
+        }
+      } else {
+        Write-Log ('auto-merge PR #' + $prNum + ': warning: merge_commit_sha unavailable after merge; could not verify commit message on main')
+      }
+
+      Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): merged (issue #' + $issueNum + ', mergeCommit ' + $mergeSha7 + ', today ' + $mergedToday + '/' + $script:AutoMergeDailyCap + ')')
+
+      # Close the linked issue with a comment if it is still open.
+      $issueViewRes = Invoke-Gh ('issue view ' + $issueNum + ' -R ' + $Repo + ' --json state')
+      if ($issueViewRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$issueViewRes.text)) {
+        try {
+          $issueObj = $issueViewRes.text | ConvertFrom-Json
+          $issueState = ([string](Get-JsonProp $issueObj 'state')).Trim().ToUpperInvariant()
+          if ($issueState -eq 'OPEN') {
+            $closeRes = Invoke-Gh ('issue close ' + $issueNum + ' -R ' + $Repo + ' --comment ' + (Quote-Argument ('Closed by #' + $prNum + '.')))
+            if ($closeRes.exitCode -ne 0) {
+              Write-Log ('auto-merge PR #' + $prNum + ': warning: failed to close linked issue #' + $issueNum + ': ' + (ConvertTo-SingleLine (Get-ErrorSummary $closeRes) 180))
+            } else {
+              Write-Log ('auto-merge PR #' + $prNum + ': closed linked issue #' + $issueNum)
+            }
+          }
+        } catch {
+          Write-Log ('auto-merge PR #' + $prNum + ': warning: could not parse issue #' + $issueNum + ' state: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+        }
+      } else {
+        Write-Log ('auto-merge PR #' + $prNum + ': warning: could not check linked issue #' + $issueNum + ' state: ' + (ConvertTo-SingleLine (Get-ErrorSummary $issueViewRes) 180))
+      }
+    } catch {
+      Write-Log ('auto-merge PR #' + $prNum + ': skipped (unexpected error: ' + (ConvertTo-SingleLine $_.Exception.Message 180) + ')')
+    }
+  }
+}
+
 function Invoke-WatchTick {
   if (Test-Stop) { return }
 
@@ -1165,12 +1584,21 @@ function Invoke-WatchTick {
   $watchdog = Read-WatchdogState
   Invoke-SelfSync $watchdog
 
+  $gh = Get-Command -Name 'gh' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($gh) {
+    $script:GhPath = $gh.Source
+    try {
+      Invoke-AutoMerge
+    } catch {
+      Write-Log ('auto-merge error: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
+    }
+  } else {
+    Write-Log 'auto-merge: skipped (gh was not found on PATH)'
+  }
+
   if (-not (Test-Path -LiteralPath $script:PromptPath -PathType Leaf)) { throw 'autopilot.md is missing next to this script.' }
   if (-not (Test-Path -LiteralPath $script:WorkspacePath -PathType Container)) { throw '-Workspace does not exist.' }
-
-  $gh = Get-Command -Name 'gh' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-  if (-not $gh) { throw 'GitHub CLI (gh) was not found on PATH.' }
-  $script:GhPath = $gh.Source
+  if (-not $script:GhPath) { throw 'GitHub CLI (gh) was not found on PATH.' }
 
   $nowUtc = [DateTime]::UtcNow
   $sinceUtc = Parse-UtcTimestamp ([string]$watchdog['lastKickoffUtc'])
@@ -1366,10 +1794,10 @@ function Invoke-WatchTick {
       Write-Log 'idle nudge aborted: focus changed before clear'
       return
     }
-    $nudgeMessage = 'Continue the autopilot task: re-read ' + $script:PromptPath + ', resume from ' + $script:ProgressPath + ' and keep going (queue, parked revisits, hands-on milestone, and 30-minute polling).'
+    $nudgeMessage = 'Continue the autopilot task: first re-read ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any open nyx/ PR whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep going (queue, parked revisits, hands-on milestone, and 30-minute polling).'
     # The v3 solo mission supersedes the per-issue loop while its state file says it is not finished.
     if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and $soloPhase -ne 'done') {
-      $nudgeMessage = 'Continue the mission: re-read ' + $soloPlan + ', resume from ' + $soloStatePath + ' and keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains.'
+      $nudgeMessage = 'Continue the mission: first re-read ' + $soloPlan + ' and ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub, ' + $script:ProgressPath + ', and ' + $soloStatePath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any open nyx/ PR whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains.'
     }
     if (-not (Send-DevinTextSafe $window $nudgeMessage)) {
       Write-Log 'idle nudge aborted: focus changed before paste'
