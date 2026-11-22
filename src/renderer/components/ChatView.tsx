@@ -316,10 +316,13 @@ export function ChatView(props: {
     mdCoordRef.current.forEach((c) => c.dispose());
     mdCoordRef.current.clear();
   }, [threadId]);
+  // P2-40: panels open on their own only under the Single/Independent
+  // layouts (frozen hydraAutoOpensPanels); Off shows the working pill.
   useEffect(() => {
-    if (heads.length > headCount.current) setHydraPanelHidden(false);
+    if (heads.length > headCount.current && props.settings?.hydraAutoOpensPanels !== false)
+      setHydraPanelHidden(false);
     headCount.current = heads.length;
-  }, [heads.length]);
+  }, [heads.length, props.settings?.hydraAutoOpensPanels]);
 
   if (!thread) {
     return (
@@ -900,6 +903,25 @@ export function ChatView(props: {
             </button>
           </div>
         )}
+        {/* P2-40: with panels Off, running heads surface as a working
+            pill at the end of the chat that opens the panel. */}
+        {props.settings?.hydraAutoOpensPanels === false &&
+          hydraPanelHidden &&
+          heads.some((h) => h.hydraHead?.status === "running") &&
+          (() => {
+            const running = heads.filter((h) => h.hydraHead?.status === "running");
+            return (
+              <button
+                type="button"
+                className="hydra-working-pill"
+                onClick={() => setHydraPanelHidden(false)}
+              >
+                {running.length === 1
+                  ? t("%@ is working", running[0]?.hydraHead?.name ?? t("A sub-agent"))
+                  : t("%d sub-agents are working", String(running.length))}
+              </button>
+            );
+          })()}
         <div ref={endRef} />
       </div>
       {/* F03: frozen TimelineMinimap — one tick per user message on the

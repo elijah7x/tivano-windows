@@ -258,6 +258,18 @@ const zhHans: Record<string, string> = {
   "Task": "任务",
   "Sleep": "睡眠",
   "Off": "关闭",
+  "Floating panel layout": "悬浮面板排布",
+  "Single panel": "单个面板",
+  "One per sub-agent": "独立面板",
+  "%@ is working": "%@ 正在工作",
+  "%d sub-agents are working": "%d 个子代理工作中",
+  "A sub-agent": "子代理",
+  "Does not open floating panels automatically. The chat still shows which sub-agents are running, and you can open a panel yourself.":
+    "不会自动打开悬浮面板。聊天仍会显示哪些子代理正在运行，你可以自己打开面板。",
+  "When multiple sub-agents run, each sub-agent after the first automatically opens its own floating panel: on both sides of the chat when wide enough, or stacked on one side when narrow.":
+    "多个子代理运行时，第一个之后的每个子代理会自动打开自己的悬浮面板：空间足够时分布在聊天两侧，空间不足时堆叠在一侧。",
+  "Keeps all running sub-agents in one floating panel; switch between them from its top-left menu, or pop individual sub-agents out manually.":
+    "将所有运行中的子代理保留在一个悬浮面板中；可从面板左上角菜单切换，或手动将单个子代理弹出。",
   "Text generation": "文本生成",
   "Name once": "首次命名",
   "Keep updated": "持续更新",

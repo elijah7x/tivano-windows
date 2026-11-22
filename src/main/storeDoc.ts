@@ -552,6 +552,7 @@ const vSettings = vObject({
   hydraReviewHeads: vOptional(vBoolean),
   hydraArchivesCodexHeads: vOptional(vBoolean),
   hydraShowsHeadDetails: vOptional(vBoolean),
+  hydraAutoOpensPanels: vOptional(vBoolean),
   hydraAutoPopsHeads: vOptional(vBoolean),
   hydraTempersHeadEffort: vOptional(vBoolean),
   hasSeenHydraIntro: vOptional(vBoolean),

@@ -2521,6 +2521,7 @@ export class Engine {
     hydraAutoMerge?: boolean | undefined;
     hydraArchivesCodexHeads?: boolean | undefined;
     hydraShowsHeadDetails?: boolean | undefined;
+    hydraAutoOpensPanels?: boolean | undefined;
     hydraAutoPopsHeads?: boolean | undefined;
     hydraTempersHeadEffort?: boolean | undefined;
     hasSeenHydraIntro?: boolean | undefined;
@@ -2646,6 +2647,8 @@ export class Engine {
         d.settings.hydraArchivesCodexHeads = patch.hydraArchivesCodexHeads;
       if (patch.hydraShowsHeadDetails !== undefined)
         d.settings.hydraShowsHeadDetails = patch.hydraShowsHeadDetails;
+      if (patch.hydraAutoOpensPanels !== undefined)
+        d.settings.hydraAutoOpensPanels = patch.hydraAutoOpensPanels;
       if (patch.hydraAutoPopsHeads !== undefined)
         d.settings.hydraAutoPopsHeads = patch.hydraAutoPopsHeads;
       if (patch.hydraTempersHeadEffort !== undefined)

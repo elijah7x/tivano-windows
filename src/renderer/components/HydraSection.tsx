@@ -23,6 +23,9 @@ import {
   isPairAdded,
   newHeadProfile,
   newHydraPair,
+  hydraPanelLayout,
+  hydraPanelLayoutPatch,
+  type HydraPanelLayout,
   pairCustomName,
   pairEffortsPhrase,
   pairHeadsProvider,
@@ -1280,20 +1283,30 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
         </div>
         <p className="codex-note">{t("The head's progress bar, or each of its steps as it goes.")}</p>
         <div className="kv">
-          <span>{t("Heads' panels")}</span>
+          <span>{t("Floating panel layout")}</span>
           <span>
             <ChoiceRow
-              aria="Heads' panels"
-              options={[["one", "One panel"], ["each", "A panel each"]]}
-              value={on(settings.hydraAutoPopsHeads, false) ? "each" : "one"}
-              onPick={(v) => toggle("hydraAutoPopsHeads", v === "each")}
+              aria="Floating panel layout"
+              options={[
+                ["single", "Single panel"],
+                ["independent", "One per sub-agent"],
+                ["off", "Off"],
+              ]}
+              value={hydraPanelLayout(settings)}
+              onPick={(v) => {
+                const patch = hydraPanelLayoutPatch(v as HydraPanelLayout);
+                toggle("hydraAutoOpensPanels", patch.hydraAutoOpensPanels);
+                toggle("hydraAutoPopsHeads", patch.hydraAutoPopsHeads);
+              }}
             />
           </span>
         </div>
         <p className="codex-note">
-          {on(settings.hydraAutoPopsHeads, false)
-            ? t("Each head after the first gets a panel of its own beside the chat while there is room, left and right until each side is full.")
-            : t("One panel over the chat lists every head.")}
+          {hydraPanelLayout(settings) === "off"
+            ? t("Does not open floating panels automatically. The chat still shows which sub-agents are running, and you can open a panel yourself.")
+            : hydraPanelLayout(settings) === "independent"
+              ? t("When multiple sub-agents run, each sub-agent after the first automatically opens its own floating panel: on both sides of the chat when wide enough, or stacked on one side when narrow.")
+              : t("Keeps all running sub-agents in one floating panel; switch between them from its top-left menu, or pop individual sub-agents out manually.")}
         </p>
         <ToggleRow
           title="Lower the default reasoning effort for heads"
