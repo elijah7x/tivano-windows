@@ -282,13 +282,18 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("quick:send", (p) => {
     // P2-42: a picked preset resolves through the same seeding as the
     // saved default — a pair that no longer exists falls back to Last
-    // selection rather than erroring the send.
+    // selection rather than erroring the send. P2-43/frozen: an explicit
+    // MODEL pick is an overriding choice too — it returns a pair-less
+    // chat, so the saved preset default must not seed sub-agents onto
+    // it (the old create-then-setThreadModel path left the pair bound
+    // and dropped the lead effort).
     const thread = engine.createThread(null, undefined, {
       ...(p.pairId
         ? { newThreadDefault: { kind: "pair" as const, pairId: p.pairId } }
-        : {}),
+        : p.model
+          ? { newThreadDefault: { kind: "model" as const, model: p.model } }
+          : {}),
     });
-    if (p.model) engine.setThreadModel(thread.id, p.model, null, null);
     engine.sendTurn(thread.id, p.text);
     opts.quick?.hide();
     if (p.openApp) opts.focusWindow?.();

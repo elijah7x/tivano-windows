@@ -23,7 +23,7 @@ import { themeById } from "../theme";
 import { ThemePicker } from "./ThemePicker";
 import { TokenActivitySection } from "./TokenActivitySection";
 import { ShortcutsSection } from "./ShortcutsSection";
-import { HydraSection } from "./HydraSection";
+import { HydraSection, modelsTitle } from "./HydraSection";
 import { McpSection } from "./McpSection";
 import { ForgeSection } from "./ForgeSection";
 import { WallpaperSection } from "./WallpaperSection";
@@ -1084,7 +1084,7 @@ function DefaultModelRow({ settings }: { settings: Settings }) {
         ))}
         {pairs.map((p) => (
           <option key={`p:${p.id}`} value={`pair:${p.id}`}>
-            {(p.name ?? "").trim() || t("Preset")}
+            {(p.name ?? "").trim() || modelsTitle(t, p, [])}
           </option>
         ))}
         {unavailable && (

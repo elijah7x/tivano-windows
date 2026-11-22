@@ -45,12 +45,17 @@ describe("P2-42 newThreadDefaultSeed", () => {
       codexEffort: "high",
       hydraPairId: pair.id,
       subagentMode: "preset",
+      hydraEnabled: true,
     });
   });
   it("a pair with no lead model leaves the model to Last selection", () => {
     const any = newHydraPair("mock");
     const seed = newThreadDefaultSeed({ kind: "pair", pairId: any.id }, [any], true, "mock");
-    expect(seed).toMatchObject({ hydraPairId: any.id, subagentMode: "preset" });
+    expect(seed).toMatchObject({
+      hydraPairId: any.id,
+      subagentMode: "preset",
+      hydraEnabled: true,
+    });
     expect(seed).not.toHaveProperty("codexModel");
   });
   it("deleted preset or Hydra off falls back to Last selection", () => {
@@ -109,6 +114,35 @@ describe("P2-42 createThread seeding", () => {
     expect(t.subagentMode).toBe("preset");
     const t2 = engine.createThread(null);
     expect(t2.hydraPairId).toBeUndefined();
+  });
+  it("preset default gates on the app-wide Hydra switch, not the chat default", () => {
+    const { engine } = makeEngine();
+    const pair = newHydraPair("mock");
+    // Frozen: settings.hydraEnabled (app-wide) gates the preset default;
+    // the per-chat hydraDefaultEnabled may be off — the seeded thread is
+    // still hydraEnabled (frozen hydraEnabled = true on the new thread).
+    engine.setSettings({
+      hydraPairs: [pair],
+      hydraEnabled: true,
+      hydraDefaultEnabled: false,
+      newThreadDefault: { kind: "pair", pairId: pair.id },
+    });
+    const t = engine.createThread(null);
+    expect(t.hydraPairId).toBe(pair.id);
+    expect(t.subagentMode).toBe("preset");
+    expect(t.hydraEnabled).toBe(true);
+  });
+  it("app-wide Hydra off falls back to Last selection for a preset default", () => {
+    const { engine } = makeEngine();
+    const pair = newHydraPair("mock");
+    engine.setSettings({
+      hydraPairs: [pair],
+      hydraEnabled: false,
+      newThreadDefault: { kind: "pair", pairId: pair.id },
+    });
+    const t = engine.createThread(null);
+    expect(t.hydraPairId).toBeUndefined();
+    expect(t.subagentMode).not.toBe("preset");
   });
   it("P2-43: an explicit pick wins over the saved default", () => {
     const { engine } = makeEngine();

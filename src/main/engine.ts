@@ -863,7 +863,9 @@ export class Engine {
         : (newThreadDefaultSeed(
             opts?.newThreadDefault ?? settings.newThreadDefault,
             settings.hydraPairs ?? [],
-            settings.hydraDefaultEnabled !== false,
+            // Frozen gates the preset default on the app-wide Hydra
+            // switch (settings.hydraEnabled), not the per-chat default.
+            settings.hydraEnabled !== false,
             this.provider.descriptor.mode,
           ) ?? {})),
     };

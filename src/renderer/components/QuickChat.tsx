@@ -11,7 +11,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../client";
 import { LanguageContext, useT } from "../locale";
-import { pairCustomName } from "../../shared/hydra";
+import { pairCustomName, type HydraPair } from "../../shared/hydra";
+import { modelsTitle } from "./HydraSection";
 import type {
   CodexModelCatalog,
   LanguageId,
@@ -30,19 +31,22 @@ function QuickChatInner() {
   const [pick, setPick] = useState<QuickPick | null>(null);
   const [presets, setPresets] = useState<{ id: string; label: string }[]>([]);
   const [busy, setBusy] = useState(false);
+  const defaultModelRef = useRef("");
 
-  useEffect(() => {
+  // Frozen rebuilds the view on every toggle — the panel's window is
+  // lazily kept, so each show refetches the catalog/presets and reseeds
+  // the chip from the saved default (the modelOverride reset).
+  const refresh = () => {
     void api()
       .invoke("models:list", {})
       .then((r) => {
         const cat = r as CodexModelCatalog;
         if (cat.state !== "ready") return; // honest: no fabricated list
         setModels(cat.models.map((m) => m.id));
+        defaultModelRef.current =
+          cat.models.find((m) => m.isDefault)?.id ?? cat.models[0]?.id ?? "";
         setPick((cur) =>
-          cur ?? {
-            kind: "model",
-            id: cat.models.find((m) => m.isDefault)?.id ?? cat.models[0]?.id ?? "",
-          },
+          cur ?? { kind: "model", id: defaultModelRef.current },
         );
       });
     void api()
@@ -52,17 +56,36 @@ function QuickChatInner() {
         setPresets(
           (s.hydraPairs ?? []).map((p) => ({
             id: p.id,
-            label: pairCustomName(p) ?? t("Preset"),
+            label: pairCustomName(p) ?? modelsTitle(t, p, []),
           })),
         );
-        // The saved default opens the chip on its pick when it resolves.
+        // Every open reseeds the pick — a preset created since the last
+        // show resolves here, and a cycled pick never carries over. With
+        // no saved default the chip opens on the catalog default.
         if (s.newThreadDefault?.kind === "pair")
           setPick({ kind: "pair", id: s.newThreadDefault.pairId });
         else if (s.newThreadDefault?.kind === "model")
           setPick({ kind: "model", id: s.newThreadDefault.model });
+        else
+          setPick(
+            defaultModelRef.current !== ""
+              ? { kind: "model", id: defaultModelRef.current }
+              : null,
+          );
       })
       .catch(() => undefined);
-    areaRef.current?.focus();
+  };
+  useEffect(() => {
+    refresh();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        refresh();
+        areaRef.current?.focus();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const options = (): QuickPick[] => [

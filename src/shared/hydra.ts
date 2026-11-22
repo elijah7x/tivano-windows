@@ -137,6 +137,7 @@ export function newThreadDefaultSeed(
   codexEffort?: string;
   hydraPairId?: string;
   subagentMode?: "preset";
+  hydraEnabled?: boolean;
 } | null {
   if (!choice) return null;
   if (choice.kind === "model") {
@@ -161,6 +162,9 @@ export function newThreadDefaultSeed(
       : {}),
     hydraPairId: pair.id,
     subagentMode: "preset",
+    // Frozen: seeding a preset marks the thread hydraEnabled even when the
+    // app-wide per-chat default (hydraDefaultEnabled) is off.
+    hydraEnabled: true,
   };
 }
 
