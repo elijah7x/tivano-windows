@@ -7,7 +7,7 @@
 // only when what is left is an existing file.
 
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { win32 as pathWin32 } from "node:path";
 
 export type MarkdownLinkTarget =
   | { kind: "web"; url: string }
@@ -91,11 +91,11 @@ function resolveLocalPath(
   stat: (path: string) => MarkdownLinkStat,
 ): MarkdownLinkTarget {
   let path = expandTilde(rawPath);
-  if (!isAbsolute(path)) {
+  if (!pathWin32.isAbsolute(path)) {
     if (base === undefined || base === "") return { kind: "missing" };
-    path = resolve(expandTilde(base), path);
+    path = pathWin32.resolve(expandTilde(base), path);
   } else {
-    path = resolve(path);
+    path = pathWin32.resolve(path);
   }
   if (stat(path) !== "none") return { kind: "file", path };
   const stripped = stripLineColumnSuffix(path, stat);

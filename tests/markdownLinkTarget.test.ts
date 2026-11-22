@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import { homedir } from "node:os";
-import { resolve, sep } from "node:path";
+import { win32 } from "node:path";
 import {
   resolveMarkdownLinkTarget,
   type MarkdownLinkStat,
@@ -27,8 +27,10 @@ function statWith(files: string[], dirs: string[] = []) {
   };
 }
 
-const abs = (rel: string) => resolve(BASE, rel);
-const home = (...rest: string[]) => resolve(homedir(), ...rest);
+// win32 semantics on every host — the app is a Windows app and the
+// resolver's outputs are win32 paths (matches hydraNonGit's precedent).
+const abs = (rel: string) => win32.resolve(BASE, rel);
+const home = (...rest: string[]) => win32.resolve(homedir(), ...rest);
 
 describe("resolveMarkdownLinkTarget (P2-31, frozen MarkdownLinkTarget)", () => {
   it("opens an existing relative file against the chat directory", () => {
