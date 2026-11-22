@@ -249,7 +249,10 @@ export function ChatView(props: {
     const el = timelineRef.current;
     if (!el) return;
     return watchSelectionResidue(el);
-  }, []);
+    // The timeline element only exists while a thread is open — the
+    // watcher must rebind when it mounts again (archived/deleted thread,
+    // first launch with no selection).
+  }, [thread != null]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });

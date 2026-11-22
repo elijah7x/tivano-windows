@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-12-14.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-23.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P2-34 selection residue: half-point line spacing leaves bottom selection
 // pixels stranded when a selection clears — frozen LinkParagraphView marks
@@ -19,8 +19,10 @@ export function watchSelectionResidue(el: HTMLElement): () => void {
       !sel.isCollapsed &&
       (el.contains(sel.anchorNode) || el.contains(sel.focusNode));
     if (hadInside && !inside) {
-      // translateZ(0) creates then drops a compositing layer, invalidating
-      // the element's paint — the Chromium needsDisplay equivalent.
+      // Write + forced reflow + reset in one task: a synchronous style
+      // invalidation over the whole element so the cleared selection's
+      // rects repaint rather than stranding fractional-line pixels (the
+      // Chromium-side equivalent of the frozen needsDisplay).
       el.style.transform = "translateZ(0)";
       void el.offsetHeight;
       el.style.transform = "";

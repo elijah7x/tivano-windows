@@ -960,7 +960,12 @@ export function Sidebar(props: {
           ref={threadMenuRef}
           className={`row-menu${threadMenu.alignEnd ? " align-end" : ""}`}
           role="menu"
-          style={{ left: threadMenu.x, top: threadMenu.y }}
+          // Keep every item reachable: bottom rows' menus would run off
+          // the viewport edge otherwise (same clamp as MessagePopover).
+          style={{
+            left: Math.min(threadMenu.x, Math.max(8, window.innerWidth - 190)),
+            top: Math.min(threadMenu.y, Math.max(8, window.innerHeight - 210)),
+          }}
         >
           {threadRowMenuItems({
             isHelper: !!threadMenu.th.parentThreadId,
