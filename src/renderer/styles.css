@@ -4935,7 +4935,9 @@ html[data-performance] .sweep-dots { display: none; }
   font: inherit;
   line-height: 1.5;
   overflow: hidden;
-  pointer-events: auto;
+  /* Decorative only — clicks fall through to the textarea so the caret
+   * and text selection behave as if the chip were plain text. */
+  pointer-events: none;
   cursor: default;
 }
 .mention-chip-name {

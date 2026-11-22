@@ -555,6 +555,9 @@ export function Composer(props: {
           setSelIdx(0);
         }}
         onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
+        // Scrolling moves the mirror's spans without a render — force one
+        // so the layout effect re-measures the chip rects.
+        onScroll={() => setChipRects((r) => [...r])}
         onPaste={(e) => {
           if (readOnly) return;
           const fl = e.clipboardData?.files;
