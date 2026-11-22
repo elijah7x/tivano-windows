@@ -40,6 +40,7 @@ interface Coordinator {
     veil: null,
   ): ReactNode[] | null;
   dispose(): void;
+  setOnLanded(fn: () => void): void;
 }
 const Coordinator = sandbox.module.exports.StreamingMarkdownCoordinator as new (
   onLanded: () => void,
@@ -146,5 +147,19 @@ describe("StreamingMarkdownCoordinator (frozen sync/deferred split)", () => {
     mq.flush();
     expect(landed).toBe(0);
     expect(c.parse("z", undefined, null)).toBe(null);
+  });
+
+  it("setOnLanded rebinds an in-flight deferred parse to the new consumer", () => {
+    const mq = manualQueue();
+    let a = 0;
+    let b = 0;
+    const c = new Coordinator(() => a++, mq.schedule);
+    c.parse("z\n\n```\n" + "w\n".repeat(6000), undefined, null);
+    // P2-32: the cached coordinator survives a remount — the new view
+    // rebinds before the queued parse lands.
+    c.setOnLanded(() => b++);
+    mq.flush();
+    expect(a).toBe(0);
+    expect(b).toBe(1);
   });
 });

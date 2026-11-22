@@ -817,7 +817,7 @@ export class StreamingMarkdownCoordinator {
   private running = false;
   private disposed = false;
   private generation = 0;
-  private readonly onLanded: () => void;
+  private onLanded: () => void;
   private readonly schedule: (fn: () => void) => void;
 
   constructor(
@@ -866,6 +866,14 @@ export class StreamingMarkdownCoordinator {
   dispose(): void {
     this.disposed = true;
     this.pending = null;
+  }
+
+  /** Rebind the landed callback. P2-32: a cached coordinator outlives
+   *  the ChatView mount that first created it — the remounted view
+   *  re-attaches its own bump so an in-flight deferred parse still
+   *  repaints the CURRENT timeline when it lands. */
+  setOnLanded(fn: () => void): void {
+    this.onLanded = fn;
   }
 
   private startNext(): void {

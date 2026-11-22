@@ -25,6 +25,10 @@ const NOTIFY_BODY = {
   failed: "Stopped with an error.",
 } as const;
 
+/** P2-32 (frozen ThreadRuntime.offscreenFlushMilliseconds): how often an
+ *  off-screen timeline publishes accumulated stream deltas. */
+export const OFFSCREEN_FLUSH_MS = 1000;
+
 function maybeNotifyDone(
   store: ClientStore,
   thread: ChatThread,
@@ -118,6 +122,14 @@ export class ClientStore {
   private sentVersions = new Map<string, number>();
   /** F20: threads waiting for a usage-limit reset (ephemeral mirror). */
   limitResumes: Record<string, number> = {};
+  /** P2-32 (frozen ThreadRuntime.shownTimelines): threads whose timeline
+   *  is mounted right now — the selected chat and an open helper panel.
+   *  Stream chunks landing on any other thread coalesce their re-render
+   *  to `OFFSCREEN_FLUSH_MS` instead of notifying per chunk. */
+  private readonly shownThreads = new Set<string>();
+  /** Pending off-screen mutations not yet published to subscribers. */
+  private unseenDirty = false;
+  private unseenTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly invoke: InvokeFn;
 
   constructor(invoke?: InvokeFn) {
@@ -134,8 +146,43 @@ export class ClientStore {
   }
 
   private notify(): void {
+    // Any publish lands pending off-screen mutations too (they share the
+    // snapshot object graph), so the deferred flag clears with it.
+    this.unseenDirty = false;
     this.publish();
     for (const fn of this.listeners) fn();
+  }
+
+  /** P2-32 (frozen noteShown/noteHidden): a timeline reports whether it
+   *  is on screen. Becoming shown flushes coalesced off-screen updates
+   *  at once — the chat "catches up" the moment it is opened. */
+  noteTimelineShown(threadId: string, shown: boolean): void {
+    if (shown) {
+      this.shownThreads.add(threadId);
+      this.flushUnseen();
+    } else {
+      this.shownThreads.delete(threadId);
+    }
+  }
+
+  /** Frozen offscreenFlushMilliseconds: unseen timelines flush at ~1 s.
+   *  One shared timer covers every off-screen thread — many streaming
+   *  chats still cost at most one render pass per interval. */
+  private deferUnseen(): void {
+    this.unseenDirty = true;
+    if (this.unseenTimer !== null) return;
+    this.unseenTimer = setTimeout(() => {
+      this.unseenTimer = null;
+      this.flushUnseen();
+    }, OFFSCREEN_FLUSH_MS);
+  }
+
+  private flushUnseen(): void {
+    if (this.unseenTimer !== null) {
+      clearTimeout(this.unseenTimer);
+      this.unseenTimer = null;
+    }
+    if (this.unseenDirty) this.notify();
   }
 
   /** Open a hydration cycle: events buffer until hydrate() lands the snapshot. */
@@ -491,6 +538,7 @@ export class ClientStore {
     this.drafts.delete(threadId);
     this.editTargets.delete(threadId);
     this.pendingSends.delete(threadId);
+    this.shownThreads.delete(threadId);
   }
 
   // ---- event application ------------------------------------------------
@@ -556,6 +604,15 @@ export class ClientStore {
         if (m) {
           if (event.content !== undefined) m.content = event.content;
           else if (event.delta !== undefined) m.content += event.delta;
+        }
+        // Frozen: deltas land on the runtime either way, but a timeline
+        // that is not shown only re-renders on the off-screen cadence —
+        // the mutation is in place, the publish waits for the timer or
+        // the next immediate event/show transition.
+        if (!this.shownThreads.has(event.threadId)) {
+          this.deferUnseen();
+          this.snapshot = { ...s, rev: this.snapshotRev };
+          return;
         }
         break;
       }

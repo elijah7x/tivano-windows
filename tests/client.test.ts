@@ -240,3 +240,133 @@ describe("per-thread drafts", () => {
     expect(invoke.mock.calls.some(([c]) => c === "followUps:enqueue")).toBe(false);
   });
 });
+
+describe("P2-32 off-screen stream coalescing (frozen offscreenFlush)", () => {
+  function streamStore(): ClientStore {
+    const store = new ClientStore(async () => ({}));
+    const gen = store.beginHydration();
+    store.hydrate(snap(5, [streamingThread("t1", "u1", "m1")]), gen);
+    return store;
+  }
+
+  function notifies(store: ClientStore): () => number {
+    let n = 0;
+    store.subscribe(() => n++);
+    return () => n;
+  }
+
+  it("coalesces unseen turn-chunks to one publish per off-screen window", () => {
+    vi.useFakeTimers();
+    try {
+      const store = streamStore();
+      const count = notifies(store);
+      for (let seq = 3; seq <= 12; seq++) {
+        store.apply({
+          type: "turn-chunk", threadId: "t1", turnId: "u1", seq, delta: "x", rev: 100 + seq,
+        });
+      }
+      expect(count()).toBe(0); // nothing repaints mid-window
+      expect(store.thread("t1")!.messages[0]!.content).toBe("old" + "x".repeat(10));
+      vi.advanceTimersByTime(999);
+      expect(count()).toBe(0);
+      vi.advanceTimersByTime(1);
+      expect(count()).toBe(1); // ~1 s cadence, a single publish for all ten
+      // The next window coalesces independently.
+      for (let seq = 13; seq <= 20; seq++) {
+        store.apply({
+          type: "turn-chunk", threadId: "t1", turnId: "u1", seq, delta: "y", rev: 100 + seq,
+        });
+      }
+      vi.advanceTimersByTime(1000);
+      expect(count()).toBe(2);
+      expect(store.thread("t1")!.messages[0]!.content).toBe("old" + "x".repeat(10) + "y".repeat(8));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("publishes every chunk immediately while the timeline is shown", () => {
+    const store = streamStore();
+    store.noteTimelineShown("t1", true);
+    const count = notifies(store);
+    for (let seq = 3; seq <= 7; seq++) {
+      store.apply({
+        type: "turn-chunk", threadId: "t1", turnId: "u1", seq, delta: "x", rev: 100 + seq,
+      });
+    }
+    expect(count()).toBe(5);
+  });
+
+  it("flushes pending unseen updates the moment the timeline is shown", () => {
+    const store = streamStore();
+    const count = notifies(store);
+    store.apply({
+      type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "NEW", rev: 6,
+    });
+    expect(count()).toBe(0);
+    store.noteTimelineShown("t1", true); // frozen: becoming shown flushes now
+    expect(count()).toBe(1);
+    expect(store.thread("t1")!.messages[0]!.content).toBe("oldNEW");
+  });
+
+  it("an immediate event publishes the pending unseen chunk with it", () => {
+    vi.useFakeTimers();
+    try {
+      const store = streamStore();
+      const count = notifies(store);
+      store.apply({
+        type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "NEW", rev: 6,
+      });
+      store.apply({
+        type: "turn-status", threadId: "t1", turnId: "u1", status: "done", rev: 7,
+      });
+      expect(count()).toBe(1); // the status publish carried the chunk
+      expect(store.thread("t1")!.messages[0]!.content).toBe("oldNEW");
+      vi.advanceTimersByTime(5000);
+      expect(count()).toBe(1); // no duplicate deferred flush
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still drops late/duplicate seq without scheduling a flush", () => {
+    vi.useFakeTimers();
+    try {
+      const store = streamStore();
+      const count = notifies(store);
+      store.apply({
+        type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 2, delta: "OLD", rev: 6,
+      });
+      vi.advanceTimersByTime(5000);
+      expect(count()).toBe(0);
+      expect(store.thread("t1")!.messages[0]!.content).toBe("old");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throttles per thread: a hidden helper defers while the chat stays live", () => {
+    vi.useFakeTimers();
+    try {
+      const store = new ClientStore(async () => ({}));
+      const gen = store.beginHydration();
+      store.hydrate(
+        snap(5, [streamingThread("t1", "u1", "m1"), streamingThread("t2", "u2", "m2")]),
+        gen,
+      );
+      store.noteTimelineShown("t1", true);
+      const count = notifies(store);
+      store.apply({
+        type: "turn-chunk", threadId: "t2", turnId: "u2", seq: 3, delta: "b", rev: 6,
+      });
+      expect(count()).toBe(0);
+      store.apply({
+        type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "a", rev: 7,
+      });
+      expect(count()).toBe(1); // the shown chunk lands t2's pending text too
+      expect(store.thread("t2")!.messages[0]!.content).toBe("oldb");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

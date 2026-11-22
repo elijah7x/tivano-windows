@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChatThread, Message, Settings } from "../../shared/types";
 import { useT } from "../locale";
 import { renderMarkdown } from "../markdown";
-import { tryCall } from "../client";
+import { tryCall, clientStore } from "../client";
 import { translateNotice } from "../i18n";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
@@ -80,6 +80,14 @@ export function HelperPanel(props: {
     const el = timelineRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [thread.messages.length, thread.turn?.seq]);
+
+  // P2-32 (frozen noteShown/noteHidden): the panel's timeline counts as
+  // shown — its stream chunks render immediately, not on the off-screen
+  // cadence.
+  useEffect(() => {
+    clientStore.noteTimelineShown(thread.id, true);
+    return () => clientStore.noteTimelineShown(thread.id, false);
+  }, [thread.id]);
 
   const w = Math.min(
     Math.max(sizeDrag?.w ?? props.size?.width ?? WIDTH, MIN_W),
