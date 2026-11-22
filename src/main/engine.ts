@@ -5185,7 +5185,9 @@ export class Engine {
         if (cur?.hydraHead?.status === "running")
           this.failHydraStart(
             cur,
-            `Hydra: ${persona.name} did not start because its backup could not finish (${e instanceof Error ? e.message : "unknown error"}).`,
+            `Hydra: ${persona.name} did not start because its backup could not finish (${
+              e instanceof Error ? e.message : "unknown error"
+            }).`,
             { note: true },
           );
       });

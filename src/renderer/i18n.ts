@@ -990,6 +990,8 @@ const zhHans: Record<string, string> = {
     "Hydra：侧边栏中没有名为 %@ 的项目，因此 %@ 未启动。",
   "Hydra: %@ did not start because its checkout could not be read.":
     "Hydra：无法读取 %@ 的检出目录，因此未启动。",
+  "Hydra: %@ did not start because its backup could not finish (%@).":
+    "Hydra：%@ 的备份未能完成（%@），因此未启动。",
   "Hydra: %@ is a system folder, so %@ did not start.":
     "Hydra：%@ 是系统文件夹，因此 %@ 未启动。",
   "Hydra: %@ lists files outside %@, so %@ did not start.":
