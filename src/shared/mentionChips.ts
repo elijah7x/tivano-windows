@@ -112,12 +112,30 @@ export function chipsFromText(
   paths: ReadonlySet<string>,
 ): MentionChip[] {
   const out: MentionChip[] = [];
-  const re = /@([^\s@]+)\s/g;
+  const re = /@([^\s@]+)(?=\s|$)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const path = m[1]!;
     if (!paths.has(path)) continue;
-    out.push({ path, start: m.index, end: m.index + path.length + 2 });
+    out.push({ path, start: m.index, end: m.index + m[0].length });
+  }
+  return out;
+}
+
+/** Chips in mirror order — sorted by start, overlapping/stale spans
+ *  dropped. The overlay rects index this exact list, so a chip minted
+ *  before an existing one (caret moved left, mid-text paste) can never
+ *  draw at another token's box. */
+export function renderableChips(
+  chips: MentionChip[],
+  text: string,
+): MentionChip[] {
+  const out: MentionChip[] = [];
+  let at = 0;
+  for (const c of [...chips].sort((a, b) => a.start - b.start)) {
+    if (c.start < at || c.end > text.length) continue;
+    out.push(c);
+    at = c.end;
   }
   return out;
 }

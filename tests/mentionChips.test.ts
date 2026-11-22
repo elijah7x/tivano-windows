@@ -10,6 +10,7 @@ import {
   chipToken,
   chipsAfterEdit,
   chipsFromText,
+  renderableChips,
 } from "../src/shared/mentionChips";
 
 describe("P2-44 mention chips", () => {
@@ -61,10 +62,38 @@ describe("P2-44 mention chips", () => {
     const ok = new Set(["src/a.ts", "b.md"]);
     const out = chipsFromText("use @src/a.ts and @nope.txt plus @b.md ", ok);
     expect(out).toEqual([
-      { path: "src/a.ts", start: 4, end: 14 },
-      { path: "b.md", start: 33, end: 39 },
+      { path: "src/a.ts", start: 4, end: 13 },
+      { path: "b.md", start: 33, end: 38 },
     ]);
     // @ alone or an unknown path stays plain text.
     expect(chipsFromText("@ @unknown ", ok)).toEqual([]);
+    // A token at end-of-text mints too — no trailing space required.
+    expect(chipsFromText("tail @b.md", ok)).toEqual([
+      { path: "b.md", start: 5, end: 10 },
+    ]);
+  });
+
+  it("renderableChips returns mirror order and drops stale spans", () => {
+    const text = "@a.md hi @b.md ";
+    const unsorted = [
+      { path: "b.md", start: 10, end: 15 },
+      { path: "a.md", start: 0, end: 5 },
+    ];
+    // Overlay rects index this list — order must follow the mirror.
+    expect(renderableChips(unsorted, text)).toEqual([
+      { path: "a.md", start: 0, end: 5 },
+      { path: "b.md", start: 10, end: 15 },
+    ]);
+    // A span past the text or overlapping the prior token drops out.
+    expect(
+      renderableChips(
+        [
+          { path: "a.md", start: 0, end: 5 },
+          { path: "gone", start: 3, end: 9 },
+          { path: "tail", start: 40, end: 45 },
+        ],
+        text,
+      ),
+    ).toEqual([{ path: "a.md", start: 0, end: 5 }]);
   });
 });

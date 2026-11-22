@@ -20,6 +20,7 @@ import {
   chipToken,
   chipsAfterEdit,
   chipsFromText,
+  renderableChips,
   type MentionChip,
 } from "../../shared/mentionChips";
 import { quoteExcerpt } from "../../shared/replyQuote";
@@ -206,7 +207,44 @@ export function Composer(props: {
   >([]);
   const mirrorRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    // Frozen ComposerTextView re-chips a reloaded draft from the file
+    // index — the port re-mints syntactically after exact-match
+    // resolution (drafts persist across thread switches).
     setChips([]);
+    const draft = clientStore.draft(thread.id);
+    const candidates = [
+      ...new Set(
+        Array.from(draft.matchAll(/@([^\s@]+)(?=\s|$)/g)).map((m) => m[1]!),
+      ),
+    ];
+    if (candidates.length === 0) return;
+    let alive = true;
+    void Promise.all(
+      candidates.map((path) =>
+        api()
+          .invoke("mention:search", { threadId: thread.id, query: path })
+          .then((r) =>
+            ((r as { paths: string[] }).paths ?? []).includes(path)
+              ? path
+              : null,
+          )
+          .catch(() => null),
+      ),
+    ).then((resolved) => {
+      if (!alive) return;
+      const ok = new Set(resolved.filter((x): x is string => x !== null));
+      if (ok.size > 0)
+        setChips((c) => {
+          const taken = new Set(c.map((x) => x.start));
+          return [
+            ...c,
+            ...chipsFromText(draft, ok).filter((m) => !taken.has(m.start)),
+          ];
+        });
+    });
+    return () => {
+      alive = false;
+    };
   }, [thread.id]);
   // Measure each token's box in a hidden mirror so the overlay chips sit
   // exactly over the textarea's real text (wrap + scroll included).
@@ -309,6 +347,9 @@ export function Composer(props: {
       }
     });
   };
+  // Mirror and overlay index this ONE list — rects never misalign with
+  // tokens even when a chip is minted before an existing one.
+  const renderable = renderableChips(chips, text);
   const providerName =
     props.mode === "synthetic-stdio"
       ? t("Synthetic stdio")
@@ -527,14 +568,19 @@ export function Composer(props: {
           const pasted = e.clipboardData?.getData("text");
           if (pasted?.includes("@")) {
             const prior = text;
+            // The paste lands at the caret — anchor there, never at the
+            // pasted text's first occurrence in the draft (that text may
+            // already exist earlier).
+            const selStart = (e.target as HTMLTextAreaElement).selectionStart;
             requestAnimationFrame(() => {
               const cur = taRef.current?.value;
               if (cur === undefined) return;
-              const at = cur.indexOf(pasted);
+              let at = cur.indexOf(pasted, selStart);
+              if (at === -1) at = cur.indexOf(pasted);
               if (at === -1) return;
               const candidates = [
                 ...new Set(
-                  Array.from(pasted.matchAll(/@([^\s@]+)\s/g)).map(
+                  Array.from(pasted.matchAll(/@([^\s@]+)(?=\s|$)/g)).map(
                     (m) => m[1]!,
                   ),
                 ),
@@ -663,9 +709,7 @@ export function Composer(props: {
             {(() => {
               const parts: React.ReactNode[] = [];
               let at = 0;
-              const sorted = [...chips].sort((a, b) => a.start - b.start);
-              for (const c of sorted) {
-                if (c.start < at || c.end > text.length) continue;
+              for (const c of renderable) {
                 parts.push(text.slice(at, c.start));
                 parts.push(
                   <span key={c.start} className="mention-mk">
@@ -679,7 +723,7 @@ export function Composer(props: {
             })()}
           </div>
           <div className="mention-overlay" aria-hidden="true">
-            {chips.map(
+            {renderable.map(
               (c, i) =>
                 chipRects[i] && (
                   <span
