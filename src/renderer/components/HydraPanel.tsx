@@ -421,7 +421,10 @@ export function HydraPanel(props: {
     onPointerUp: onDragUp,
     onPointerCancel: onDragUp,
     // A double-click on a drag surface docks a floating panel.
-    onDoubleClick: () => setFloatPos(null),
+    onDoubleClick: () => {
+      setFloatPos(null);
+      setMenu(null);
+    },
     title: t("Drag to move"),
   };
 
@@ -604,10 +607,12 @@ export function HydraPanel(props: {
             if (!rows.length) return;
             const idx = rows.indexOf(document.activeElement as HTMLElement);
             const next =
-              rows[
-                (idx + (e.key === "ArrowDown" ? 1 : rows.length - 1)) %
-                  rows.length
-              ];
+              idx < 0
+                ? rows[e.key === "ArrowDown" ? 0 : rows.length - 1]
+                : rows[
+                    (idx + (e.key === "ArrowDown" ? 1 : rows.length - 1)) %
+                      rows.length
+                  ];
             next?.focus();
           }}
           onContextMenu={(e) => {
