@@ -4892,3 +4892,54 @@ html[data-performance] .sweep-dots { display: none; }
   font-size: 10px; opacity: 0.45; text-align: right;
   -webkit-app-region: drag;
 }
+
+/* P2-44 mention chips (frozen FileMentionText NSTextAttachment): the
+ * textarea keeps the real "@path " text; .mention-edit wraps it so the
+ * mirror + overlay share its box. */
+.composer-edit {
+  flex: 1;
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+.mention-mirror {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font: inherit;
+  line-height: 1.5;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  overflow: hidden;
+}
+.mention-mirror .mention-mk {
+  white-space: pre-wrap;
+}
+.mention-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.mention-chip {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  font: inherit;
+  line-height: 1.5;
+  overflow: hidden;
+  pointer-events: auto;
+  cursor: default;
+}
+.mention-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
