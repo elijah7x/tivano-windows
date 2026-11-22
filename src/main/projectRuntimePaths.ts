@@ -58,6 +58,15 @@ export interface GrantRestoreResult {
 /** Ownership marker inside every main-created project directory. */
 export const PROJECT_MARKER_FILE = ".tivano-project.json";
 
+/** realpath can answer in NT-namespace form (long paths); strip the
+ *  \\?\UNC\ and \\?\ / \\.\ prefixes so a canonical path compares
+ *  equal to its plain spelling. */
+function stripNsPrefix(p: string): string {
+  return p
+    .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+    .replace(/^\\\\[?.]\\/i, "");
+}
+
 function markerPath(dir: string): string {
   return join(dir, PROJECT_MARKER_FILE);
 }
@@ -236,7 +245,7 @@ export class ProjectRuntimePaths {
       throw new WorkspaceError("WORKSPACE_INVALID", `directory must not be a symlink: ${dir}`);
     if (!st.isDirectory())
       throw new WorkspaceError("WORKSPACE_INVALID", `selection is not a directory: ${dir}`);
-    return realpathSync(dir);
+    return stripNsPrefix(realpathSync(dir));
   }
 
   /**
@@ -260,9 +269,13 @@ export class ProjectRuntimePaths {
 
   /** The project a directory is already bound to, or undefined. Both
    *  grant kinds count: selecting a dir another project owns re-opens
-   *  THAT project instead of minting a second binding. */
+   *  THAT project instead of minting a second binding. Grants written
+   *  before the NT-prefix strip may hold the resolved form — both
+   *  sides compare stripped. */
   findProjectByDirectory(canonicalDir: string): string | undefined {
-    for (const [id, g] of this.grants) if (g.directory === canonicalDir) return id;
+    const want = stripNsPrefix(canonicalDir);
+    for (const [id, g] of this.grants)
+      if (stripNsPrefix(g.directory) === want) return id;
     return undefined;
   }
 
@@ -276,7 +289,9 @@ export class ProjectRuntimePaths {
     try {
       const st = lstatSync(dir);
       if (!st.isDirectory() || st.isSymbolicLink()) return false;
-      return realpathSync(dir) === dir;
+      // realpath can answer in NT-namespace form (long paths); both
+      // sides compare with the \\?\ / \\.\ prefix stripped.
+      return stripNsPrefix(realpathSync(dir)) === stripNsPrefix(dir);
     } catch {
       return false;
     }
@@ -589,15 +604,17 @@ export class ProjectRuntimePaths {
         "WORKSPACE_INVALID",
         "WORKSPACE_INVALID: authorized workspace no longer a real directory",
       );
-    const physical = realpathSync(grant.directory);
-    if (physical !== grant.directory)
+    const physical = stripNsPrefix(realpathSync(grant.directory));
+    if (physical !== stripNsPrefix(grant.directory))
       throw new WorkspaceError(
         "WORKSPACE_INVALID",
         "WORKSPACE_INVALID: workspace path moved or re-linked",
       );
     let rootPhys: string;
     try {
-      rootPhys = realpathSync(join(this.dataRoot, "worktrees", grant.projectId));
+      rootPhys = stripNsPrefix(
+        realpathSync(join(this.dataRoot, "worktrees", grant.projectId)),
+      );
     } catch {
       throw new WorkspaceError(
         "WORKSPACE_INVALID",

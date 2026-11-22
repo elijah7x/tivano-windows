@@ -15,7 +15,16 @@ Long-horizon solo mission for Devin Desktop (single GUI chat, bypass mode, Windo
   ```powershell
   $dst = 'C:\tivano\dev-loop\autopilot\solo-v3.json'; $tmp = $dst + '.tmp'
   [IO.File]::WriteAllText($tmp, ($json + "`n"), [Text.UTF8Encoding]::new($false))
-  if (Test-Path -LiteralPath $dst) { [IO.File]::Replace($tmp, $dst, $null) } else { [IO.File]::Move($tmp, $dst) }
+  $ok = $false
+  for ($i = 1; $i -le 8; $i++) {
+    try {
+      if (Test-Path -LiteralPath $dst -PathType Leaf) { [IO.File]::Replace($tmp, $dst, [NullString]::Value) } else { [IO.File]::Move($tmp, $dst) }
+      $ok = $true; break
+    } catch { if ($i -lt 8) { Start-Sleep -Milliseconds (250 * $i) } }
+  }
+  if (-not $ok) {
+    try { [IO.File]::Copy($tmp, $dst, $true); try { [IO.File]::Delete($tmp) } catch { } } catch { $e = $_; try { [IO.File]::Delete($tmp) } catch { }; throw $e }
+  }
   ```
 - Update `solo-v3.json` at every phase and step change. Also keep `C:\tivano\dev-loop\autopilot\progress.json`, `parked.json`, and `hands-on.json` updated as `autopilot.md` requires so daily merge tracking, parked revisits, non-blocking audit tracking, hands-on milestone state, and the watchdog stay accurate.
 - Never end your turn to save a checkpoint, summarize, or hand over while work remains (or while polling): nobody reads the chat, and an ended turn stalls the mission until a watchdog nudge. Checkpoints go into `solo-v3.json` and `progress.json`; then continue in the same turn.
@@ -108,7 +117,7 @@ Deliver one PR titled `Parity: retarget the checklist to macOS v3.0.0` moving th
    - Confirm `git diff --name-only origin/main` lists only `docs/source-baseline.json` and `docs/parity.md`.
    - Run `npm ci` (if `node_modules` is missing) and `npm run verify`, then stop leftover worktree processes.
    - Commit via `-F`, push `nyx/rebaseline-v3-0-0`, and open PR titled `Parity: retarget the checklist to macOS v3.0.0` following `.github/pull_request_template.md`; state clearly in the body that updating these two baseline files is the sole scoped goal of this PR.
-   - Run `Invoke-AutopilotGate.ps1` (timeout >= 75 min), resolve any blocking findings (escalating to `Invoke-NeonFix.ps1` if stuck per `autopilot.md` §10), poll `nyx/audit` = `success` on the exact `headSha` (`autopilot.md` §8; if `audit-parked`, close the PR with a one-line comment and retry from `origin/main` addressing the audit feedback), merge with `--squash --match-head-commit <headSha> --delete-branch`, confirm `MERGED`, and remove the worktree.
+   - Run `Invoke-AutopilotGate.ps1` (timeout >= 75 min), resolve any blocking findings (escalating to `Invoke-NeonFix.ps1` if stuck per `autopilot.md` §10), poll `nyx/audit` = `success` on the exact `headSha` (`autopilot.md` §8; if `audit-parked`, close the PR with a one-line comment and retry from `origin/main` addressing the audit feedback), merge with `--squash --match-head-commit <headSha> --subject '<title> (#<pr>)' --body '<summary without attribution>' --delete-branch` (so GitHub never concatenates branch commit messages into `main`), confirm `MERGED`, and remove the worktree.
    - Post one tracking line to `#34`, set `solo-v3.json` `phase: 2`, `step: "plan"`, re-read this file, and enter Phase 2.
 
 ## 3. Phase 2 — Plan the queue
@@ -137,7 +146,7 @@ Turn actionable `docs/parity.md` rows into an ordered GitHub issue queue with ze
 Work every eligible `nyx-auto` issue with the `autopilot.md` per-issue loop until the batch (including parked revisits) is empty.
 
 1. Before picking the next issue, poll all PRs in `progress.json` `awaitingAudit` (`autopilot.md` §8) so any PR whose `nyx/audit` finished is merged, fixed, or parked right away.
-2. Pick the next open `nyx-auto` issue without `parked` (and not already in `awaitingAudit` or `parked.json`):
+2. Whenever moving on from a PR—including after leaving one in `awaitingAudit`—re-query open `nyx-auto` issues live from GitHub (`gh api 'repos/elijah7x/tivano-windows/issues?labels=nyx-auto&state=open&per_page=100' --paginate`, excluding `pull_request` items) instead of using the cached `solo-v3.json` `queue`. Pick the next open `nyx-auto` issue without `parked` (and not already in `awaitingAudit` or `parked.json`):
    1. **`audit-followup` issues first** (and any `build-break` issues), lowest `number` first.
    2. **Reopened issues second** (`state_reason == "reopened"` or a `reopened` event), lowest `number` first.
    3. **Remaining parity issues third**: take the first still-open eligible number in `solo-v3.json` `queue`, or if `queue` is exhausted, the lowest-numbered open eligible `nyx-auto` issue.
@@ -145,11 +154,12 @@ Work every eligible `nyx-auto` issue with the `autopilot.md` per-issue loop unti
    - Check `STOP`, fetch `origin --prune`, create or reuse `C:\tivano\dev-loop\work\<n>-<slug>` on `nyx/<n>-<slug>` (or a fresh `-r<k>` branch/worktree during a parked revisit per `autopilot.md` §11).
    - Read the issue and comments, read `scripts/dev-loop/dev-prompt.md`, inspect `C:\tivano\reference\tivano-v3.0.0` (read-only) for exact upstream behavior, implement with unit/e2e tests, update the matching `docs/parity.md` row to `partial` (never `done`) with `Notes`, and add `en` + `zh-Hans` strings (`src/renderer/i18n.ts`).
    - Run `npm ci` (if `node_modules` is missing) and `npm run verify`, then stop leftover worktree processes.
-   - Commit via `-F`, push `<branch>`, open or reuse the PR following `.github/pull_request_template.md` (every PR body must include `Closes #<n>` and name any changed-area tests skipped on `win32` under `Real Windows`), and run the dual-reviewer gate (timeout >= 75 min):
+   - Commit via `-F`, push `<branch>`, open or reuse the PR following `.github/pull_request_template.md` (every PR body must include `Closes #<n>` and name any changed-area tests skipped on `win32` under `Real Windows`; verify `Closes #<n>` is present in the PR body via `gh pr view` before running the gate / requesting `nyx/audit`), and run the dual-reviewer gate (timeout >= 75 min):
      ```powershell
      powershell -NoProfile -ExecutionPolicy Bypass -File C:\tivano\pr-bot\tool\scripts\dev-loop\Invoke-AutopilotGate.ps1 -PrNumber <pr>
      ```
-   - On gate `fail` (exit `1`), Devin makes its first fix commit. If the gate still fails after Devin's first fix round (or after 3 identical `npm run verify` failures), write the remaining blocking items to `C:\tivano\dev-loop\autopilot\runs\<n>\neon-<k>.md` and call `Invoke-NeonFix.ps1` (timeout >= 55 min, at most 2 Neon runs per PR head lineage tracked in `progress.json`):
+     Do **not** start edits or commits for review findings while `Invoke-AutopilotGate.ps1` is still running; wait for its exit code and act on the full result once.
+   - On gate `fail` (exit `1`), Devin makes its first fix commit (updating test counts in the PR body in the same step whenever a fix commit adds or removes tests). If the gate still fails after Devin's first fix round (or after 3 identical `npm run verify` failures), write the remaining blocking items to `C:\tivano\dev-loop\autopilot\runs\<n>\neon-<k>.md` and call `Invoke-NeonFix.ps1` (timeout >= 55 min, at most 2 Neon runs per PR head lineage tracked in `progress.json`):
      ```powershell
      powershell -NoProfile -ExecutionPolicy Bypass -File C:\tivano\pr-bot\tool\scripts\dev-loop\Invoke-NeonFix.ps1 `
        -PrNumber <pr> -IssueNumber <n> -WorktreeDir C:\tivano\dev-loop\work\<worktree-dir> `
@@ -157,9 +167,9 @@ Work every eligible `nyx-auto` issue with the `autopilot.md` per-issue loop unti
      ```
      On `ok`, review the diff, remove `audit-parked` if present, run `npm run verify`, commit with a plain message (no co-author or tool attribution), push, and re-gate (`autopilot.md` §10). On `no-change` or `unavailable`, park the issue (`autopilot.md` §11). (Never call `Invoke-GlmReview.ps1 -Mode consult`; GLM-5.3 only audits and reviews.)
    - On gate `pass` (exit `0`), check `nyx/audit` on the exact `headSha` (`autopilot.md` §8):
-     - `success`: check today's 20-merge cap, merge with `--squash --match-head-commit <headSha> --delete-branch`, confirm `MERGED`, remove the worktree, and append to `solo-v3.json` `done` and `progress.json` `merged`.
-     - `pending`, absent, or `arbitration pending`: record in `awaitingAudit` and immediately work on another eligible issue instead of idling.
-     - `failure` or `error` (not `PARKED` on current head): Devin makes its first fix commit as now; if the next audit on the new head still blocks on an item with the same `id` or `title`, write the remaining blocking items to `C:\tivano\dev-loop\autopilot\runs\<n>\neon-<k>.md` and call `Invoke-NeonFix.ps1` (`autopilot.md` §10; max 2 Neon runs per PR head lineage). On `no-change` or `unavailable`, fall back to `Audit rebuttal:` or parking (`autopilot.md` §11).
+     - `success` (**hard stop**): verify `Closes #<n>` is in the PR body (edit with `gh pr edit` if missing), check today's 20-merge cap, and merge immediately with `--squash --match-head-commit <headSha> --subject '<title> (#<pr>)' --body '<summary without attribution>' --delete-branch` (so GitHub never concatenates branch commit messages into `main`). Do **not** edit code or push commits for non-blocking, low, minor, nit, info, or advisory notes from the Devin review, GLM-5.3, or `nyx/audit` (only blocking findings, gate failures, and a `nyx/audit` failure justify a new commit; non-blocking notes may be filed as one `nyx-auto` follow-up issue only if they describe a real defect, never fixed on the current PR). Confirm `MERGED`, verify issue `#<n>` is closed (closing it with a comment if still open), remove the worktree, and append to `solo-v3.json` `done` and `progress.json` `merged`.
+     - `pending`, absent, or `arbitration pending`: record in `awaitingAudit` and immediately return to step 2 to re-query open `nyx-auto` issues from GitHub (`audit-followup` and reopened first) instead of using the cached queue or idling.
+     - `failure` or `error` (not `PARKED` on current head): if `nyx/audit` blocks only on PR-body text (stale test count, wrong claim in the body, missing closing keyword, or Devin/agent attribution lines), edit the PR body with `gh pr edit` and post an `Audit rebuttal:` comment without pushing a code commit. Otherwise Devin makes its first fix commit as now (updating test counts in the PR body in the same step if the fix adds or removes tests); if the next audit on the new head still blocks on an item with the same `id` or `title`, write the remaining blocking items to `C:\tivano\dev-loop\autopilot\runs\<n>\neon-<k>.md` and call `Invoke-NeonFix.ps1` (`autopilot.md` §10; max 2 Neon runs per PR head lineage). On `no-change` or `unavailable`, fall back to `Audit rebuttal:` or parking (`autopilot.md` §11).
      - `## Nyx audit - <sha7> - PARKED` comment on current head: park in `parked.json` (`autopilot.md` §11) and move on.
    - Post the one-line outcome to tracking issue `#34`.
 4. Re-read this file and `autopilot.md` after every issue outcome.
@@ -176,7 +186,7 @@ Reconcile `docs/parity.md` with what actually landed on `main`, then advance dir
 
 1. Fetch `origin/main` and create worktree `C:\tivano\dev-loop\work\parity-v3-final-sync` on branch `nyx/parity-v3-final-sync`.
 2. Audit `docs/parity.md` against `src/` and merged PRs: update `Notes` (implementing files, verification categories, `agent self-tested`) and any stale `not started` rows now partially implemented. **Never set any row to `done`** (a Windows maintainer confirms `done`).
-3. If `docs/parity.md` changed, run `npm run verify`, stop leftover worktree processes, commit, push, open a PR (`Parity: sync v3.0.0 checklist notes with landed work`), run `Invoke-AutopilotGate.ps1`, fix if needed, wait for `nyx/audit` = `success` on the exact `headSha` (`autopilot.md` §8), merge on pass, and remove the worktree. If no diff is needed, remove the worktree directly.
+3. If `docs/parity.md` changed, run `npm run verify`, stop leftover worktree processes, commit, push, open a PR (`Parity: sync v3.0.0 checklist notes with landed work`), run `Invoke-AutopilotGate.ps1`, fix if needed, wait for `nyx/audit` = `success` on the exact `headSha` (`autopilot.md` §8), merge on pass (`autopilot.md` §9, passing explicit `--subject` and `--body` without attribution), and remove the worktree. If no diff is needed, remove the worktree directly.
 4. Post one summary comment (via `--body-file`, public-text safe) to tracking issue `#34` (`Automated dev loop: progress log`) with counts of PRs merged, permanently `parked` issues, `n/a` rows, and the top remaining gaps.
 5. Set `solo-v3.json` `phase: 5`, `step: "milestone"`, `issue: 0`, re-read this file and `autopilot.md`, and enter Phase 5.
 
@@ -232,14 +242,17 @@ Keep every rule from `autopilot.md` and `dev-prompt.md`:
 - Never force-push, amend, rebase, or rewrite pushed history.
 - Never touch PRs or issues you did not open (other than eligible `nyx-auto` issues, tracking issue `#34`, and the `hands-on` milestone issue), and never approve, comment on, or close outside contributors' PRs.
 - Public text hygiene: never put machine names, user names, local paths, tokens, or secrets in issues, PRs, releases, commits, or comments; refer to this host only as `a Windows test machine`.
+- No agent attribution: never add `Co-authored-by:`, `Generated with` (such as `Generated with [Devin](...)`), `devin-ai-integration`, or any other agent attribution to commits, squash commit messages, PR bodies, or comments (in a PR body, only fill out the repository template's `Coding agent use` section).
 - Never install software, change system settings, or open a browser (`start`, `Invoke-Item`, `explorer`, `gh ... --web`).
 - Keep PR bodies, commit messages, failure files, builds, and evidence under `C:\tivano\dev-loop\autopilot\`, never inside a worktree.
 
 ## 9. Independent audit
 
 - After `Invoke-AutopilotGate.ps1` passes, never merge until commit status `nyx/audit` on the exact `headSha` is `success`.
-- While `nyx/audit` is `pending`, absent, or `arbitration pending`, record the PR in `progress.json` `awaitingAudit` and work on another issue instead of idling (`autopilot.md` §8). Poll `awaitingAudit` between issues and sleep 5 minutes only when no other eligible work exists.
-- On `nyx/audit` failure (when not `PARKED` on the current head), Devin makes its own first fix commit as now (`npm run verify`, push, re-gate so the auditor re-runs on the new head SHA). If the next audit on the new head still blocks on an item with the same `id` or `title`, write the remaining blocking items to `C:\tivano\dev-loop\autopilot\runs\<n>\neon-<k>.md` and call `Invoke-NeonFix.ps1` on the PR worktree (`autopilot.md` §10; at most 2 Neon runs per PR head lineage tracked in `progress.json`). On `ok`, review the diff, remove `audit-parked` if present, run `npm run verify`, commit with a plain message (without any co-author or tool attribution), push, and re-run the gate (audit re-runs automatically). On `no-change` or `unavailable`, fall back to posting **one** PR comment starting with `Audit rebuttal:` citing `file:line` or test-output evidence for each disputed finding `id` (then continuing other work while arbitration/re-audit runs) or parking (`autopilot.md` §11).
-- Never ignore, downgrade, or relabel `nyx/audit` findings as advisory. The rule in `autopilot.md` §7 treating out-of-scope or style-only `GLM-5.3:` items as advisory applies **only** to the GLM-5.3 reviewer inside your own gate.
+- **Hard stop on pass:** once `Invoke-AutopilotGate.ps1` exits `0` and `nyx/audit` is `success` on the exact `headSha`, merge immediately (`autopilot.md` §9). Do **not** edit code or push commits for non-blocking, low, minor, nit, info, or advisory notes from the Devin review, GLM-5.3, or `nyx/audit`. Only blocking findings, gate failures, and a `nyx/audit` failure justify a new commit. Non-blocking notes may be filed as **one** follow-up issue labelled `nyx-auto` only if they describe a real defect; never fix them on the current PR.
+- While `nyx/audit` is `pending`, absent, or `arbitration pending`, record the PR in `progress.json` `awaitingAudit` and re-query open `nyx-auto` issues from GitHub (taking `audit-followup` and reopened issues first, never using a cached queue) to work another issue instead of idling (`autopilot.md` §5, §8). Poll `awaitingAudit` between issues and sleep 5 minutes only when no other eligible work exists.
+- When `nyx/audit` blocks only on PR-body text (a stale test count, a wrong claim in the body, a missing closing keyword, or Devin/agent attribution lines), edit the PR body with `gh pr edit` and post an `Audit rebuttal:` comment; do **not** push a code commit.
+- On other `nyx/audit` failures (when not `PARKED` on the current head), Devin makes its own first fix commit as now (`npm run verify`, update test counts in the PR body in the same step if the fix adds or removes tests, push, re-gate so the auditor re-runs on the new head SHA). If the next audit on the new head still blocks on an item with the same `id` or `title`, write the remaining blocking items to `C:\tivano\dev-loop\autopilot\runs\<n>\neon-<k>.md` and call `Invoke-NeonFix.ps1` on the PR worktree (`autopilot.md` §10; at most 2 Neon runs per PR head lineage tracked in `progress.json`). On `ok`, review the diff, remove `audit-parked` if present, run `npm run verify`, commit with a plain message (without any co-author or tool attribution), push, and re-run the gate (audit re-runs automatically). On `no-change` or `unavailable`, fall back to posting **one** PR comment starting with `Audit rebuttal:` citing `file:line` or test-output evidence for each disputed finding `id` (then continuing other work while arbitration/re-audit runs) or parking (`autopilot.md` §11).
+- Never ignore, downgrade, or relabel **blocking** `nyx/audit` findings as advisory. The rule in `autopilot.md` §7 treating out-of-scope or style-only `GLM-5.3:` items as advisory applies **only** to the GLM-5.3 reviewer inside your own gate; leave items that the auditor itself marked advisory alone on a pass.
 - If the newest auditor comment is `## Nyx audit - <sha7> - PARKED` for the current head, park the issue in `parked.json` (`autopilot.md` §11) and move on to the next issue. On parked revisits, start with `Invoke-NeonFix.ps1` on the fresh branch (passing the `PARKED` audit comment as failures) before Devin's own attempt.
-- Always order eligible unparked `nyx-auto` issues as: `audit-followup` (and `build-break`) first, then reopened issues, then remaining parity issues.
+- Whenever moving on from a PR (including leaving one in `awaitingAudit`), re-query open `nyx-auto` issues from GitHub instead of using a cached queue, and always order eligible unparked `nyx-auto` issues as: `audit-followup` (and `build-break`) first, then reopened issues, then remaining parity issues.

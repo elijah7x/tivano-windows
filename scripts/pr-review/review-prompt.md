@@ -31,10 +31,10 @@ You are reviewing pull request {{PR}} of {{REPO}} for the product owner, who dec
 
 Write {{RUN}}\review.md in English, under 600 words, with these sections in this order:
 
-- `## Verdict`: exactly one of `merge`, `merge after small fixes`, `changes needed`.
+- `## Verdict`: exactly one of `merge`, `merge after small fixes`, `changes needed`. Choose `merge` whenever no blocking findings remain (even if you have non-blocking notes).
 - `## Summary`: 3-5 sentences.
 - `## Parity check`: what the change means for parity with the macOS baseline, compared against {{REFERENCE}}, and whether the claimed `docs/parity.md` status is justified. If that baseline path was not available, say the comparison was not possible.
-- `## Code findings`: one bullet per finding as `file:line — severity — concrete suggestion`; write `none` if there are none.
+- `## Code findings`: one bullet per finding as `file:line - severity - concrete suggestion`, where `severity` is explicitly `blocking` or `non-blocking` (do not use `low`, `minor`, or `nit` alone; if you add a qualifier, write `non-blocking (nit)`); write `none` if there are none. When `## Verdict` is `merge`, no blocking findings may appear here.
 - `## Verification`: summarize checks-summary.md in the five categories. Synthetic replay is the unit tests and the e2e run on this machine; real Windows is that the checks ran on a real Windows host under a standard account; real provider, desktop interaction and install/update are `NOT RUN`. Say which steps failed, if any.
 - `## Not checked`: what you did not look at.
 
@@ -48,7 +48,7 @@ Finally write {{RUN}}\verdict.json, the machine-readable form of the same verdic
 {"recommendation": "merge", "blocking": [], "nonBlocking": ["one line per optional point"]}
 ```
 
-- `recommendation` is `merge` or `changes`, and it is `merge` only when `blocking` is empty.
-- `blocking` has one single-line English string per problem that must be fixed before this PR may be merged: a correctness bug, a failing check the PR caused, a missing English or Simplified Chinese string, a license, attribution, secret or evidence problem, a parity status that the change and checks do not justify, or a change that mixes unrelated work. Every blocking point must also appear as a finding in `review.md`.
-- `nonBlocking` has one single-line string per optional improvement or observation that does not need to hold up the merge.
-- Match `## Verdict`: `merge` there means `"merge"` here. `merge after small fixes` and `changes needed` mean `"changes"`, with the points that must change listed in `blocking`. If you would merge as it stands and only have optional points, choose `merge` and put them in `nonBlocking`.
+- `recommendation` is `merge` or `changes`. A `merge` recommendation means no blocking findings remain (`blocking` must be empty); use `changes` whenever `blocking` is non-empty.
+- `blocking` has one single-line English string per problem that must be fixed before this PR may be merged: a correctness bug, a failing check the PR caused, a missing English or Simplified Chinese string, a license, attribution, secret or evidence problem, a parity status that the change and checks do not justify, or a change that mixes unrelated work. Every blocking point must also appear as a `blocking` finding in `review.md`.
+- `nonBlocking` has one single-line string per optional improvement or observation that does not need to hold up the merge. Every `non-blocking` finding in `review.md` belongs here (never in `blocking`).
+- Match `## Verdict`: `merge` there means `"merge"` here and zero blocking findings. `merge after small fixes` and `changes needed` mean `"changes"`, with the points that must change listed in `blocking`. If you would merge as it stands and only have optional points, choose `merge`, mark each finding `non-blocking` in `review.md`, and put them in `nonBlocking`.

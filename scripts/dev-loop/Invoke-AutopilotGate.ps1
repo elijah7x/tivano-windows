@@ -1,4 +1,4 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-16.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-22.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 # Usage: .\Invoke-AutopilotGate.ps1 -PrNumber <n> -ReviewRoot <pr-review state root> -StandardCredentialFile <file> [-ReviewCheckout <clone>] [-ReviewTokenFile <file>] [-Reference <macOS baseline clone>] [-Repo <owner/name>] [-Root <state root>] [-DevinModel <model>] [-ReviewTimeoutMin <min>] [-GlmTimeoutMin <min>] [-SkipGlm]
 # Runs Invoke-PrReview.ps1 (with posting enabled and -Force) for one PR, evaluates gate.json with the dev-loop merge gate rules, optionally runs Invoke-GlmReview.ps1 -Mode review for a second review, and emits one compact JSON summary line to stdout.
@@ -25,8 +25,10 @@ $script:CmdExe = Join-Path ([Environment]::GetFolderPath('System')) 'cmd.exe'
 $script:PowerShellExe = Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell\v1.0\powershell.exe'
 $script:ReviewScript = Join-Path $PSScriptRoot '..\pr-review\Invoke-PrReview.ps1'
 $script:GlmScript = Join-Path $PSScriptRoot 'Invoke-GlmReview.ps1'
+$script:StandardScript = Join-Path $PSScriptRoot '..\windows-acceptance\Invoke-AsStandardUser.ps1'
 $script:AcceptanceRepo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..')).TrimEnd('\')
 
+$script:GitPath = $null
 $script:GhPath = $null
 $script:WorkRoot = $null
 $script:RunDir = $null
@@ -51,6 +53,11 @@ function Read-Text {
 function Quote-Argument {
   param([AllowEmptyString()][string]$Value)
   return '"' + $Value + '"'
+}
+
+function ConvertTo-PsLiteral {
+  param([AllowEmptyString()][string]$Value)
+  return "'" + $Value.Replace("'", "''") + "'"
 }
 
 function Write-Log {
@@ -399,7 +406,685 @@ function Test-GateResult {
     }
   }
   $flakeCandidate = ($infra.Count -eq 0 -and $other.Count -eq 0 -and $newFailures.Count -gt 0)
-  return [pscustomobject]@{ infra = @($infra); content = @($content); newFailures = $newFailures; flakeCandidate = $flakeCandidate }
+  return [pscustomobject]@{ infra = [string[]]$infra.ToArray(); content = [string[]]$content.ToArray(); newFailures = $newFailures; flakeCandidate = $flakeCandidate }
+}
+
+function Invoke-Git {
+  param([string]$Directory, [string]$Arguments)
+  $tmpBase = $script:WorkRoot
+  if ($script:RunDir) { $tmpBase = $script:RunDir }
+  $out = Join-Path $tmpBase '.git.out.tmp'
+  $err = Join-Path $tmpBase '.git.err.tmp'
+  for ($try = 1; ; $try++) {
+    $code = Invoke-Tool $script:GitPath ('-C ' + (Quote-Argument $Directory) + ' ' + $Arguments) $out $err $script:WorkRoot
+    $result = [pscustomobject]@{ exitCode = $code; text = (Read-Text $out); error = (Read-Text $err) }
+    if ($code -eq 0 -or $try -ge 4 -or -not (Test-NetworkFailure $result.error)) { return $result }
+    Write-Log ('git network failure, retry ' + $try + '/3: ' + (ConvertTo-SingleLine ([string]$result.error) 160))
+    Start-Sleep -Seconds (20 * $try)
+  }
+}
+
+function Copy-RunOutput {
+  param([string]$From, [string]$To)
+  [IO.Directory]::CreateDirectory($To) | Out-Null
+  if (Test-Path -LiteralPath $From -PathType Container) {
+    Copy-Item -Path (Join-Path $From '*') -Destination $To -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Stop-TreeProcesses {
+  param([string]$Worktree)
+  if ([string]::IsNullOrWhiteSpace($Worktree)) { return }
+  try {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $keep = @{}
+    $id = $PID
+    while ($id -and -not $keep.ContainsKey($id)) {
+      $keep[$id] = $true
+      $proc = $all | Where-Object { $_.ProcessId -eq $id } | Select-Object -First 1
+      if ($proc) { $id = $proc.ParentProcessId } else { $id = 0 }
+    }
+    foreach ($proc in $all) {
+      if ($keep.ContainsKey($proc.ProcessId)) { continue }
+      $exeHit = $false
+      if ($null -ne $proc.ExecutablePath -and $proc.ExecutablePath.StartsWith($Worktree, [StringComparison]::OrdinalIgnoreCase)) { $exeHit = $true }
+      $cmdHit = $false
+      if ($null -ne $proc.CommandLine -and $proc.CommandLine.IndexOf($Worktree, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $cmdHit = $true }
+      if ($exeHit -or $cmdHit) {
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+      }
+    }
+  } catch { }
+}
+
+function Resolve-StandardAccountSid {
+  param([string]$CredentialFile)
+  $path = Get-AcceptancePath $CredentialFile
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw '-StandardCredentialFile does not exist.' }
+  $name = $null
+  if ($path.EndsWith('.json', [StringComparison]::OrdinalIgnoreCase)) {
+    $stored = Read-Text $path | ConvertFrom-Json
+    $name = [string](Get-JsonProp $stored 'user')
+  } else {
+    try {
+      $name = (Import-Clixml -LiteralPath $path).UserName
+    } catch {
+      $match = [regex]::Match((Read-Text $path), '<S N="UserName">([^<]*)</S>')
+      if ($match.Success) { $name = [Net.WebUtility]::HtmlDecode($match.Groups[1].Value) }
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($name)) { throw 'Cannot read the standard account name from -StandardCredentialFile.' }
+  $qualified = $name
+  if ($name.IndexOf('\') -lt 0) { $qualified = $env:COMPUTERNAME + '\' + $name }
+  return [Security.Principal.NTAccount]::new($qualified).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+
+function Normalize-RepoPath {
+  param([AllowEmptyString()][string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+  $norm = $Path.Trim().Replace('\', '/')
+  while ($norm.StartsWith('./', [StringComparison]::Ordinal)) {
+    $norm = $norm.Substring(2)
+  }
+  return $norm
+}
+
+function Test-SafeRelativeTestPath {
+  param([AllowEmptyString()][string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+  if ($Path.StartsWith('/', [StringComparison]::Ordinal) -or $Path.StartsWith('-', [StringComparison]::Ordinal)) { return $false }
+  if ($Path.Contains(':')) { return $false }
+  if ($Path -notmatch '^[A-Za-z0-9._/@ -]+$') { return $false }
+  $segments = @($Path -split '/')
+  foreach ($seg in $segments) {
+    if ($seg -eq '..' -or $seg -eq '' -or $seg -eq '.') { return $false }
+  }
+  return $true
+}
+
+function Get-PrChangedFiles {
+  param($Gate, [string]$ReviewDir, [string]$HeadSha)
+  $list = New-Object Collections.Generic.List[string]
+  $seen = @{}
+  if ($script:GitPath -and $script:ReviewCheckoutPath) {
+    $baseSha = [string](Get-JsonProp $Gate 'baseSha')
+    if ([string]::IsNullOrWhiteSpace($baseSha)) {
+      $mbRes = Invoke-Git $script:ReviewCheckoutPath ('merge-base origin/main ' + $HeadSha)
+      if ($mbRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($mbRes.text)) {
+        $baseSha = $mbRes.text.Trim()
+      }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($baseSha)) {
+      $diffRes = Invoke-Git $script:ReviewCheckoutPath ('-c core.quotepath=false diff --no-renames --name-only ' + $baseSha + '..' + $HeadSha)
+      if ($diffRes.exitCode -eq 0) {
+        $lines = @()
+        if ($null -ne $diffRes.text) {
+          $lines = @($diffRes.text -split "`r?`n")
+        }
+        foreach ($line in $lines) {
+          $norm = Normalize-RepoPath $line
+          if (-not $norm) { continue }
+          $key = $norm.ToLowerInvariant()
+          if (-not $seen.ContainsKey($key)) {
+            $seen[$key] = $true
+            $null = $list.Add($norm)
+          }
+        }
+        return [pscustomobject]@{ ok = $true; files = [string[]]$list.ToArray(); source = 'git-diff' }
+      }
+    }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($ReviewDir)) {
+    $prData = Read-JsonFile (Join-Path $ReviewDir 'pr.json')
+    if ($null -ne $prData) {
+      $rawFiles = Get-JsonProp $prData 'files'
+      if ($null -ne $rawFiles) {
+        $items = @($rawFiles | Where-Object { $null -ne $_ })
+        foreach ($item in $items) {
+          $norm = Normalize-RepoPath ([string](Get-JsonProp $item 'path'))
+          if (-not $norm) { continue }
+          $key = $norm.ToLowerInvariant()
+          if (-not $seen.ContainsKey($key)) {
+            $seen[$key] = $true
+            $null = $list.Add($norm)
+          }
+        }
+        return [pscustomobject]@{ ok = $true; files = [string[]]$list.ToArray(); source = 'pr-json' }
+      }
+    }
+  }
+  return [pscustomobject]@{ ok = $false; files = [string[]]@(); source = '' }
+}
+
+function Get-VitestJsonData {
+  param([string]$Path)
+  $data = Read-JsonFile $Path
+  if ($null -eq $data -or $data -isnot [pscustomobject]) { return $null }
+  return $data
+}
+
+function Test-VitestFileMatches {
+  param([string]$VitestFileName, [string]$RelativeFile)
+  if ([string]::IsNullOrWhiteSpace($VitestFileName) -or [string]::IsNullOrWhiteSpace($RelativeFile)) { return $false }
+  $norm = $VitestFileName.Replace('\', '/')
+  if ($norm.Equals($RelativeFile, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  return $norm.EndsWith('/' + $RelativeFile, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Find-VitestAssertion {
+  param($VitestData, [string]$RelativeFile, [string]$TestFullName)
+  if ($null -eq $VitestData) { return $null }
+  $rawResults = Get-JsonProp $VitestData 'testResults'
+  if ($null -eq $rawResults) { return $null }
+  $testResults = @($rawResults | Where-Object { $null -ne $_ })
+  $trimmedTarget = $TestFullName.Trim()
+  foreach ($tr in $testResults) {
+    $trName = [string](Get-JsonProp $tr 'name')
+    if (-not (Test-VitestFileMatches $trName $RelativeFile)) { continue }
+    $rawAssertions = Get-JsonProp $tr 'assertionResults'
+    $assertions = @()
+    if ($null -ne $rawAssertions) {
+      $assertions = @($rawAssertions | Where-Object { $null -ne $_ })
+    }
+    foreach ($ar in $assertions) {
+      $arFullName = [string](Get-JsonProp $ar 'fullName')
+      if ($arFullName -eq $TestFullName -or $arFullName.Trim() -eq $trimmedTarget) {
+        return [pscustomobject]@{
+          status = [string](Get-JsonProp $ar 'status')
+          failureMessages = @(ConvertTo-StringList (Get-JsonProp $ar 'failureMessages'))
+          fileMessage = [string](Get-JsonProp $tr 'message')
+        }
+      }
+    }
+  }
+  return $null
+}
+
+function Get-VitestResultKey {
+  param([AllowEmptyString()][string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
+  $norm = $Path.Trim().Replace('\', '/')
+  $prMarker = '/sandbox/pr/'
+  $baseMarker = '/sandbox/base/'
+  $prIdx = $norm.IndexOf($prMarker, [StringComparison]::OrdinalIgnoreCase)
+  if ($prIdx -ge 0) { return $norm.Substring($prIdx + $prMarker.Length).ToLowerInvariant() }
+  $baseIdx = $norm.IndexOf($baseMarker, [StringComparison]::OrdinalIgnoreCase)
+  if ($baseIdx -ge 0) { return $norm.Substring($baseIdx + $baseMarker.Length).ToLowerInvariant() }
+  return (Split-Path -Leaf $norm).ToLowerInvariant()
+}
+
+function Test-HasUncollectedPrFileFailure {
+  param($PrVitest, $BaseVitest)
+  if ($null -eq $PrVitest) { return $false }
+  $rawPrResults = Get-JsonProp $PrVitest 'testResults'
+  if ($null -eq $rawPrResults) { return $false }
+  $baseFailedFiles = @{}
+  if ($null -ne $BaseVitest) {
+    $rawBaseResults = Get-JsonProp $BaseVitest 'testResults'
+    if ($null -ne $rawBaseResults) {
+      foreach ($btr in @($rawBaseResults | Where-Object { $null -ne $_ })) {
+        if ([string](Get-JsonProp $btr 'status') -ne 'failed') { continue }
+        # Only a base file that also failed to load (no failed assertions) excuses a PR load failure.
+        $bFailedAssertions = 0
+        $bAssertions = Get-JsonProp $btr 'assertionResults'
+        if ($null -ne $bAssertions) {
+          foreach ($bar in @($bAssertions | Where-Object { $null -ne $_ })) {
+            if ([string](Get-JsonProp $bar 'status') -eq 'failed') { $bFailedAssertions++ }
+          }
+        }
+        if ($bFailedAssertions -gt 0) { continue }
+        $bKey = Get-VitestResultKey ([string](Get-JsonProp $btr 'name'))
+        if ($bKey) { $baseFailedFiles[$bKey] = $true }
+      }
+    }
+  }
+  foreach ($tr in @($rawPrResults | Where-Object { $null -ne $_ })) {
+    if ([string](Get-JsonProp $tr 'status') -ne 'failed') { continue }
+    $rawAssertions = Get-JsonProp $tr 'assertionResults'
+    $failedAssertions = 0
+    if ($null -ne $rawAssertions) {
+      foreach ($ar in @($rawAssertions | Where-Object { $null -ne $_ })) {
+        if ([string](Get-JsonProp $ar 'status') -eq 'failed') { $failedAssertions++ }
+      }
+    }
+    if ($failedAssertions -eq 0) {
+      $prKey = Get-VitestResultKey ([string](Get-JsonProp $tr 'name'))
+      if (-not $prKey -or -not $baseFailedFiles.ContainsKey($prKey)) {
+        return $true
+      }
+    }
+  }
+  return $false
+}
+
+function Get-FlakeFailureInfo {
+  param([string[]]$NewFailures, [string]$ReviewDir)
+  $files = New-Object Collections.Generic.List[string]
+  $seenFiles = @{}
+  $tests = New-Object Collections.Generic.List[object]
+  $firstFailures = New-Object Collections.Generic.List[object]
+
+  $prVitest = $null
+  $baseVitest = $null
+  if (-not [string]::IsNullOrWhiteSpace($ReviewDir)) {
+    $prVitest = Get-VitestJsonData (Join-Path $ReviewDir 'results-pr\vitest.json')
+    $baseVitest = Get-VitestJsonData (Join-Path $ReviewDir 'results-base\vitest.json')
+  }
+  if (Test-HasUncollectedPrFileFailure $prVitest $baseVitest) {
+    return [pscustomobject]@{
+      ok = $false
+      files = [string[]]@()
+      tests = [object[]]@()
+      firstFailures = [object[]]@()
+      reason = 'results-pr vitest.json contains an uncollected test file failure'
+    }
+  }
+
+  $absentSuffix = ' (absent in base run)'
+  foreach ($entry in @($NewFailures)) {
+    if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+    $sep = $entry.IndexOf(' > ', [StringComparison]::Ordinal)
+    if ($sep -le 0) {
+      return [pscustomobject]@{
+        ok = $false
+        files = [string[]]@()
+        tests = [object[]]@()
+        firstFailures = [object[]]@()
+        reason = 'cannot parse test file path from newFailures entry'
+      }
+    }
+    $relFile = Normalize-RepoPath ($entry.Substring(0, $sep))
+    if (-not (Test-SafeRelativeTestPath $relFile)) {
+      return [pscustomobject]@{
+        ok = $false
+        files = [string[]]@()
+        tests = [object[]]@()
+        firstFailures = [object[]]@()
+        reason = 'unsafe or non-relative test file path: ' + $relFile
+      }
+    }
+    $rawTestName = $entry.Substring($sep + 3)
+    if ($rawTestName.EndsWith($absentSuffix, [StringComparison]::Ordinal)) {
+      $rawTestName = $rawTestName.Substring(0, $rawTestName.Length - $absentSuffix.Length)
+    }
+    $fileKey = $relFile.ToLowerInvariant()
+    if (-not $seenFiles.ContainsKey($fileKey)) {
+      $seenFiles[$fileKey] = $true
+      $null = $files.Add($relFile)
+    }
+    $null = $tests.Add([pscustomobject]@{ file = $relFile; fullName = $rawTestName })
+
+    $firstMsg = ''
+    $found = Find-VitestAssertion $prVitest $relFile $rawTestName
+    if ($null -ne $found) {
+      $msgs = @($found.failureMessages)
+      if ($msgs.Count -gt 0) {
+        $firstMsg = ConvertTo-SingleLine $msgs[0] 300
+      } elseif (-not [string]::IsNullOrWhiteSpace($found.fileMessage)) {
+        $firstMsg = ConvertTo-SingleLine $found.fileMessage 300
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace($firstMsg)) {
+      $firstMsg = ConvertTo-SingleLine $entry 300
+    }
+    $null = $firstFailures.Add([ordered]@{
+      file = $relFile
+      test = $rawTestName.Trim()
+      message = $firstMsg
+    })
+  }
+
+  if ($files.Count -eq 0) {
+    return [pscustomobject]@{
+      ok = $false
+      files = [string[]]@()
+      tests = [object[]]@()
+      firstFailures = [object[]]@()
+      reason = 'no failing test files parsed from newFailures'
+    }
+  }
+  return [pscustomobject]@{
+    ok = $true
+    files = [string[]]$files.ToArray()
+    tests = [object[]]$tests.ToArray()
+    firstFailures = [object[]]$firstFailures.ToArray()
+    reason = ''
+  }
+}
+
+function Test-ReviewerBlockingOnlyFlake {
+  param($Gate, [string[]]$FailingFiles, [string[]]$ChangedFiles)
+  $verdict = Get-JsonProp $Gate 'verdict'
+  if ($null -eq $verdict) { return $false }
+  $rec = ([string](Get-JsonProp $verdict 'recommendation')).Trim().ToLowerInvariant()
+  $blocking = @(ConvertTo-StringList (Get-JsonProp $verdict 'blocking'))
+  if ($rec -eq 'merge' -and $blocking.Count -eq 0) { return $true }
+  if ($blocking.Count -eq 0) { return $false }
+
+  $failingTokens = New-Object Collections.Generic.List[string]
+  foreach ($f in @($FailingFiles)) {
+    if ([string]::IsNullOrWhiteSpace($f)) { continue }
+    $null = $failingTokens.Add($f)
+    $null = $failingTokens.Add($f.Replace('/', '\'))
+    $leaf = Split-Path -Leaf $f
+    if ($leaf) { $null = $failingTokens.Add($leaf) }
+  }
+  $failingTokenArr = [string[]]$failingTokens.ToArray()
+
+  $changedTokens = New-Object Collections.Generic.List[string]
+  foreach ($c in @($ChangedFiles)) {
+    $null = $changedTokens.Add($c)
+    $null = $changedTokens.Add($c.Replace('/', '\'))
+  }
+  $changedTokenArr = [string[]]$changedTokens.ToArray()
+
+  foreach ($point in $blocking) {
+    foreach ($ct in $changedTokenArr) {
+      if ($ct -and $point.IndexOf($ct, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        return $false
+      }
+    }
+    $matchesFlake = $false
+    foreach ($ft in $failingTokenArr) {
+      if ($ft -and $point.IndexOf($ft, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        $matchesFlake = $true
+        break
+      }
+    }
+    if (-not $matchesFlake) { return $false }
+  }
+  return $true
+}
+
+function Invoke-FlakeRerun {
+  param(
+    [int]$PrNumber,
+    [string]$HeadSha,
+    [string[]]$FailingFiles,
+    [object[]]$FailingTests,
+    [string]$RunDir
+  )
+  $flakeDir = Join-Path $RunDir 'flake-retry'
+  $cmdDir = Join-Path $flakeDir 'bin'
+  $sandbox = Join-Path $flakeDir 'sandbox'
+  $prTree = Join-Path $sandbox 'pr'
+  $checksSandbox = Join-Path $sandbox 'checks'
+  $resultsSandbox = Join-Path $sandbox 'results'
+  $checksDir = Join-Path $flakeDir 'checks'
+  $resultsDir = Join-Path $flakeDir 'results'
+  $unitLogPath = Join-Path $resultsDir 'unit.log'
+  $vitestJsonPath = Join-Path $resultsDir 'vitest.json'
+
+  $fileArgParts = New-Object Collections.Generic.List[string]
+  foreach ($relFile in @($FailingFiles)) {
+    $null = $fileArgParts.Add((Quote-Argument $relFile))
+  }
+  $fileArgsJoined = $fileArgParts.ToArray() -join ' '
+  $vitestCmdLine = 'node.exe ".\node_modules\vitest\vitest.mjs" run --reporter=default --reporter=json "--outputFile.json=%RES%\vitest.json" ' + $fileArgsJoined
+
+  $treeCreated = $false
+  try {
+    if (-not $script:GitPath) {
+      return [pscustomobject]@{ passed = $false; reason = 'git was not found on PATH'; command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
+    }
+    if (-not (Test-Path -LiteralPath $script:StandardScript -PathType Leaf)) {
+      return [pscustomobject]@{ passed = $false; reason = 'Invoke-AsStandardUser.ps1 is missing'; command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
+    }
+    $standardScriptPath = Get-AcceptancePath $script:StandardScript
+    Assert-CmdSafePath 'Invoke-AsStandardUser.ps1' $standardScriptPath
+
+    $verifyHead = Invoke-Git $script:ReviewCheckoutPath ('rev-parse --verify --quiet ' + $HeadSha + '^{commit}')
+    if ($verifyHead.exitCode -ne 0) {
+      $fetchRes = Invoke-Git $script:ReviewCheckoutPath ('fetch --no-tags origin main +refs/pull/' + $PrNumber + '/head:refs/remotes/origin/pr-' + $PrNumber)
+      if ($fetchRes.exitCode -ne 0) {
+        return [pscustomobject]@{ passed = $false; reason = ('git fetch failed: ' + (Get-ErrorSummary $fetchRes)); command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
+      }
+    }
+
+    [IO.Directory]::CreateDirectory($flakeDir) | Out-Null
+    [IO.Directory]::CreateDirectory($cmdDir) | Out-Null
+    [IO.Directory]::CreateDirectory($sandbox) | Out-Null
+
+    $treeCreated = $true
+    $wtAdd = Invoke-Git $script:ReviewCheckoutPath ('worktree add --detach ' + (Quote-Argument $prTree) + ' ' + $HeadSha)
+    if ($wtAdd.exitCode -ne 0) {
+      return [pscustomobject]@{ passed = $false; reason = ('git worktree add failed: ' + (Get-ErrorSummary $wtAdd)); command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
+    }
+
+    foreach ($relFile in @($FailingFiles)) {
+      $absTest = Join-Path $prTree ($relFile.Replace('/', '\'))
+      if (-not (Test-Path -LiteralPath $absTest -PathType Leaf)) {
+        return [pscustomobject]@{ passed = $false; reason = ('failing test file not found in PR worktree: ' + $relFile); command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
+      }
+    }
+
+    $rerunCmdPath = Join-Path $cmdDir 'rerun-flake.cmd'
+    $cmdLines = New-Object Collections.Generic.List[string]
+    $null = $cmdLines.Add('@echo off')
+    $null = $cmdLines.Add('rem Generated for one flake rerun by Invoke-AutopilotGate.ps1.')
+    $null = $cmdLines.Add('setlocal DisableDelayedExpansion')
+    $null = $cmdLines.Add('set "WT=%~1"')
+    $null = $cmdLines.Add('set "RES=%~2"')
+    $null = $cmdLines.Add('if "%WT%"=="" exit /b 2')
+    $null = $cmdLines.Add('if "%RES%"=="" exit /b 2')
+    $null = $cmdLines.Add('if not exist "%WT%\" exit /b 2')
+    $null = $cmdLines.Add('if not exist "%RES%\" mkdir "%RES%"')
+    $null = $cmdLines.Add('if not exist "%RES%\" exit /b 2')
+    $null = $cmdLines.Add('set "STEP_INSTALL=null"')
+    $null = $cmdLines.Add('set "STEP_BUILD=null"')
+    $null = $cmdLines.Add('set "STEP_UNIT=null"')
+    $null = $cmdLines.Add('pushd "%WT%"')
+    $null = $cmdLines.Add('if errorlevel 1 (')
+    $null = $cmdLines.Add('  > "%RES%\steps.json" echo {"error":"cannot enter the worktree","install":null,"build":null,"unit":null}')
+    $null = $cmdLines.Add('  exit /b 1')
+    $null = $cmdLines.Add(')')
+    $null = $cmdLines.Add('call npm.cmd ci --no-audit --no-fund > "%RES%\install.log" 2>&1')
+    $null = $cmdLines.Add('set "STEP_INSTALL=%ERRORLEVEL%"')
+    $null = $cmdLines.Add('if not "%STEP_INSTALL%"=="0" goto :finish')
+    $null = $cmdLines.Add('call npm.cmd run build > "%RES%\build.log" 2>&1')
+    $null = $cmdLines.Add('set "STEP_BUILD=%ERRORLEVEL%"')
+    $null = $cmdLines.Add('if not "%STEP_BUILD%"=="0" goto :finish')
+    $null = $cmdLines.Add('call ' + $vitestCmdLine + ' > "%RES%\unit.log" 2>&1')
+    $null = $cmdLines.Add('set "STEP_UNIT=%ERRORLEVEL%"')
+    $null = $cmdLines.Add(':finish')
+    $null = $cmdLines.Add('popd')
+    $null = $cmdLines.Add('if exist "%RES%" (')
+    $null = $cmdLines.Add('  > "%RES%\steps.json" echo {"install":%STEP_INSTALL%,"build":%STEP_BUILD%,"unit":%STEP_UNIT%}')
+    $null = $cmdLines.Add(')')
+    $null = $cmdLines.Add('exit /b 0')
+    Write-Text $rerunCmdPath (($cmdLines.ToArray() -join "`r`n") + "`r`n")
+
+    $standardSid = Resolve-StandardAccountSid $script:CredentialPath
+    $operatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $icacls = Join-Path ([Environment]::GetFolderPath('System')) 'icacls.exe'
+    $lockCode = Invoke-Tool $icacls ((Quote-Argument $flakeDir) + ' /inheritance:r /grant:r "*' + $operatorSid + ':(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"') `
+      (Join-Path $flakeDir 'acl-run.out.log') (Join-Path $flakeDir 'acl-run.err.log') $script:WorkRoot
+    if ($lockCode -ne 0) {
+      return [pscustomobject]@{ passed = $false; reason = ('icacls could not restrict flake-retry dir: ' + (Get-Tail (Join-Path $flakeDir 'acl-run.err.log') 5)); command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
+    }
+    $listCode = Invoke-Tool $icacls ((Quote-Argument $flakeDir) + ' /grant "*' + $standardSid + ':(RX)"') `
+      (Join-Path $flakeDir 'acl-list.out.log') (Join-Path $flakeDir 'acl-list.err.log') $script:WorkRoot
+    if ($listCode -ne 0) {
+      return [pscustomobject]@{ passed = $false; reason = ('icacls could not grant list on flake-retry dir: ' + (Get-Tail (Join-Path $flakeDir 'acl-list.err.log') 5)); command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
+    }
+    $binCode = Invoke-Tool $icacls ((Quote-Argument $cmdDir) + ' /grant "*' + $standardSid + ':(OI)(CI)RX"') `
+      (Join-Path $flakeDir 'acl-bin.out.log') (Join-Path $flakeDir 'acl-bin.err.log') $script:WorkRoot
+    if ($binCode -ne 0) {
+      return [pscustomobject]@{ passed = $false; reason = ('icacls could not grant RX on flake-retry bin dir: ' + (Get-Tail (Join-Path $flakeDir 'acl-bin.err.log') 5)); command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
+    }
+    $aclCode = Invoke-Tool $icacls ((Quote-Argument $sandbox) + ' /grant "*' + $standardSid + ':(OI)(CI)M"') `
+      (Join-Path $flakeDir 'acl.out.log') (Join-Path $flakeDir 'acl.err.log') $script:WorkRoot
+    if ($aclCode -ne 0) {
+      return [pscustomobject]@{ passed = $false; reason = ('icacls could not grant Modify on flake-retry sandbox: ' + (Get-Tail (Join-Path $flakeDir 'acl.err.log') 5)); command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
+    }
+
+    $wrapperPath = Join-Path $flakeDir 'standard-flake.ps1'
+    $wrapperLines = New-Object Collections.Generic.List[string]
+    $null = $wrapperLines.Add('# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-22.')
+    $null = $wrapperLines.Add('# Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app')
+    $null = $wrapperLines.Add('# Generated for one flake rerun by Invoke-AutopilotGate.ps1.')
+    $null = $wrapperLines.Add('$ErrorActionPreference = ''Stop''')
+    $null = $wrapperLines.Add('$Code = 0')
+    $null = $wrapperLines.Add('try {')
+    $null = $wrapperLines.Add('  & ' + (ConvertTo-PsLiteral $standardScriptPath) + ' -CredentialFile ' + (ConvertTo-PsLiteral $script:CredentialPath) + ' -Evidence ' + (ConvertTo-PsLiteral $checksSandbox) + ' -Command ' + (ConvertTo-PsLiteral $script:CmdExe) + ' -Arguments @(''/d'', ''/c'', ' + (ConvertTo-PsLiteral $rerunCmdPath) + ', ' + (ConvertTo-PsLiteral $prTree) + ', ' + (ConvertTo-PsLiteral $resultsSandbox) + ') -WorkingDirectory ' + (ConvertTo-PsLiteral $prTree) + ' -TimeoutSec 900')
+    $null = $wrapperLines.Add('  $Code = [int]$LASTEXITCODE')
+    $null = $wrapperLines.Add('} catch {')
+    $null = $wrapperLines.Add('  [Console]::Error.WriteLine($_.Exception.Message)')
+    $null = $wrapperLines.Add('  $Code = 1')
+    $null = $wrapperLines.Add('}')
+    $null = $wrapperLines.Add('exit $Code')
+    [IO.File]::WriteAllText($wrapperPath, (($wrapperLines.ToArray() -join "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding($true)))
+
+    $stdoutPath = Join-Path $flakeDir 'standard-flake.out.log'
+    $stderrPath = Join-Path $flakeDir 'standard-flake.err.log'
+    $shortHead = $HeadSha
+    if ($shortHead.Length -ge 7) { $shortHead = $shortHead.Substring(0, 7) }
+    Write-Log ('flake rerun pr #' + $PrNumber + ' head ' + $shortHead + ' files: ' + (@($FailingFiles) -join ', '))
+    $process = Start-Process -FilePath $script:PowerShellExe `
+      -ArgumentList ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + (Quote-Argument $wrapperPath)) `
+      -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath `
+      -WorkingDirectory $script:WorkRoot -WindowStyle Hidden -PassThru
+    if (-not $process) {
+      return [pscustomobject]@{ passed = $false; reason = 'could not start standard-account flake rerun'; command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
+    }
+    $null = $process.Handle
+    if (-not $process.WaitForExit(1020000)) {
+      $taskkill = Join-Path ([Environment]::GetFolderPath('System')) 'taskkill.exe'
+      $null = Invoke-Tool $taskkill ('/T /F /PID ' + $process.Id) (Join-Path $flakeDir 'kill.out.log') (Join-Path $flakeDir 'kill.err.log') $script:WorkRoot
+      $null = $process.WaitForExit(5000)
+      return [pscustomobject]@{ passed = $false; reason = 'flake rerun timed out'; command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
+    }
+    $process.WaitForExit()
+
+    Copy-RunOutput $resultsSandbox $resultsDir
+    Copy-RunOutput $checksSandbox $checksDir
+
+    $steps = Read-JsonFile (Join-Path $resultsDir 'steps.json')
+    if ($null -eq $steps) {
+      return [pscustomobject]@{ passed = $false; reason = 'flake rerun produced no steps.json'; command = $vitestCmdLine; unitLogPath = $unitLogPath; vitestJsonPath = $vitestJsonPath }
+    }
+    $stepInstall = Get-JsonProp $steps 'install'
+    $stepBuild = Get-JsonProp $steps 'build'
+    $stepUnit = Get-JsonProp $steps 'unit'
+    if ($null -eq $stepInstall -or [int]$stepInstall -ne 0) {
+      return [pscustomobject]@{ passed = $false; reason = ('flake rerun install exit ' + (Format-Step $stepInstall)); command = $vitestCmdLine; unitLogPath = $unitLogPath; vitestJsonPath = $vitestJsonPath }
+    }
+    if ($null -eq $stepBuild -or [int]$stepBuild -ne 0) {
+      return [pscustomobject]@{ passed = $false; reason = ('flake rerun build exit ' + (Format-Step $stepBuild)); command = $vitestCmdLine; unitLogPath = $unitLogPath; vitestJsonPath = $vitestJsonPath }
+    }
+    if ($null -eq $stepUnit -or [int]$stepUnit -ne 0) {
+      return [pscustomobject]@{ passed = $false; reason = ('flake rerun unit exit ' + (Format-Step $stepUnit)); command = $vitestCmdLine; unitLogPath = $unitLogPath; vitestJsonPath = $vitestJsonPath }
+    }
+
+    $rerunVitest = Get-VitestJsonData $vitestJsonPath
+    if ($null -eq $rerunVitest) {
+      return [pscustomobject]@{ passed = $false; reason = 'flake rerun produced no readable vitest.json'; command = $vitestCmdLine; unitLogPath = $unitLogPath; vitestJsonPath = $vitestJsonPath }
+    }
+    $numFailed = Get-JsonProp $rerunVitest 'numFailedTests'
+    $numPassed = Get-JsonProp $rerunVitest 'numPassedTests'
+    if ($null -eq $numFailed -or [int]$numFailed -ne 0 -or $null -eq $numPassed -or [int]$numPassed -le 0) {
+      return [pscustomobject]@{ passed = $false; reason = 'flake rerun vitest.json reported failures or zero passed tests'; command = $vitestCmdLine; unitLogPath = $unitLogPath; vitestJsonPath = $vitestJsonPath }
+    }
+    $rawRerunResults = Get-JsonProp $rerunVitest 'testResults'
+    if ($null -ne $rawRerunResults) {
+      foreach ($tr in @($rawRerunResults | Where-Object { $null -ne $_ })) {
+        if ([string](Get-JsonProp $tr 'status') -ne 'passed') {
+          return [pscustomobject]@{ passed = $false; reason = 'flake rerun vitest.json has a non-passing test file'; command = $vitestCmdLine; unitLogPath = $unitLogPath; vitestJsonPath = $vitestJsonPath }
+        }
+      }
+    }
+    foreach ($expected in @($FailingTests)) {
+      $found = Find-VitestAssertion $rerunVitest ([string]$expected.file) ([string]$expected.fullName)
+      if ($null -eq $found -or $found.status -ne 'passed') {
+        return [pscustomobject]@{ passed = $false; reason = ('originally failing test did not pass on rerun: ' + [string]$expected.file + ' > ' + [string]$expected.fullName); command = $vitestCmdLine; unitLogPath = $unitLogPath; vitestJsonPath = $vitestJsonPath }
+      }
+    }
+
+    return [pscustomobject]@{
+      passed = $true
+      reason = ''
+      command = $vitestCmdLine
+      unitLogPath = $unitLogPath
+      vitestJsonPath = $vitestJsonPath
+    }
+  } catch {
+    return [pscustomobject]@{
+      passed = $false
+      reason = ('flake rerun error: ' + (ConvertTo-SingleLine $_.Exception.Message 240))
+      command = $vitestCmdLine
+      unitLogPath = $unitLogPath
+      vitestJsonPath = $vitestJsonPath
+    }
+  } finally {
+    if ($treeCreated) {
+      Stop-TreeProcesses $prTree
+      if ($script:GitPath -and $script:ReviewCheckoutPath) {
+        if (Test-Path -LiteralPath $prTree) {
+          $null = Invoke-Git $script:ReviewCheckoutPath ('worktree remove --force ' + (Quote-Argument $prTree))
+        }
+        if (Test-Path -LiteralPath $prTree) {
+          $null = Invoke-Tool $script:CmdExe ('/d /c rmdir /s /q ' + (Quote-Argument $prTree)) (Join-Path $flakeDir '.rmdir.out.tmp') (Join-Path $flakeDir '.rmdir.err.tmp') $script:WorkRoot
+        }
+        $null = Invoke-Git $script:ReviewCheckoutPath 'worktree prune'
+      }
+    }
+  }
+}
+
+function Invoke-FlakeRetryIfEligible {
+  param(
+    $Gate,
+    [string]$GatePath,
+    $Evaluation,
+    [string]$HeadSha,
+    [int]$PrNumber,
+    [string]$RunDir
+  )
+  $reviewDir = ''
+  if (-not [string]::IsNullOrWhiteSpace($GatePath)) {
+    $reviewDir = Split-Path -Parent $GatePath
+  }
+  $failureInfo = Get-FlakeFailureInfo -NewFailures @($Evaluation.newFailures) -ReviewDir $reviewDir
+  if (-not $failureInfo.ok) {
+    Write-Log ('flake retry skipped: ' + $failureInfo.reason)
+    return [pscustomobject]@{ attempted = $false; passed = $false; reason = $failureInfo.reason; files = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
+  }
+  $changedInfo = Get-PrChangedFiles -Gate $Gate -ReviewDir $reviewDir -HeadSha $HeadSha
+  if (-not $changedInfo.ok) {
+    Write-Log 'flake retry skipped: could not determine PR changed files'
+    return [pscustomobject]@{ attempted = $false; passed = $false; reason = 'could not determine PR changed files'; files = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
+  }
+  $changedSet = @{}
+  foreach ($cf in @($changedInfo.files)) {
+    $changedSet[$cf.ToLowerInvariant()] = $true
+  }
+  $overlap = New-Object Collections.Generic.List[string]
+  foreach ($ff in @($failureInfo.files)) {
+    if ($changedSet.ContainsKey($ff.ToLowerInvariant())) {
+      $null = $overlap.Add($ff)
+    }
+  }
+  if ($overlap.Count -gt 0) {
+    $msg = 'failing test file(s) are part of the PR diff: ' + ($overlap.ToArray() -join ', ')
+    Write-Log ('flake retry skipped: ' + $msg)
+    return [pscustomobject]@{ attempted = $false; passed = $false; reason = $msg; files = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
+  }
+  if (-not (Test-ReviewerBlockingOnlyFlake -Gate $Gate -FailingFiles @($failureInfo.files) -ChangedFiles @($changedInfo.files))) {
+    Write-Log 'flake retry skipped: reviewer verdict has blocking points beyond the unrelated failing unit tests'
+    return [pscustomobject]@{ attempted = $false; passed = $false; reason = 'reviewer verdict has non-flake blocking points'; files = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
+  }
+
+  $rerun = Invoke-FlakeRerun -PrNumber $PrNumber -HeadSha $HeadSha -FailingFiles @($failureInfo.files) -FailingTests @($failureInfo.tests) -RunDir $RunDir
+  return [pscustomobject]@{
+    attempted = $true
+    passed = [bool]$rerun.passed
+    reason = [string]$rerun.reason
+    files = [string[]]$failureInfo.files
+    firstFailures = [object[]]$failureInfo.firstFailures
+    command = [string]$rerun.command
+    unitLogPath = [string]$rerun.unitLogPath
+    vitestJsonPath = [string]$rerun.vitestJsonPath
+  }
 }
 
 function Write-GateFailures {
@@ -485,6 +1170,7 @@ $headShaOut = ''
 $verdictOut = 'unavailable'
 $failuresOut = New-Object Collections.Generic.List[string]
 $gatePathOut = ''
+$flakeRetriedOut = $null
 $glmOut = [ordered]@{
   status = 'skipped'
   verdict = ''
@@ -557,6 +1243,8 @@ try {
   $env:GIT_TERMINAL_PROMPT = '0'
   $env:GCM_INTERACTIVE = 'never'
 
+  $git = Get-Command -Name 'git' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($git) { $script:GitPath = $git.Source }
   $gh = Get-Command -Name 'gh' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $gh) { throw 'GitHub CLI (gh) was not found on PATH.' }
   $script:GhPath = $gh.Source
@@ -601,7 +1289,45 @@ try {
         foreach ($item in $evaluation.infra) { $null = $failuresOut.Add($item) }
         Write-Log ('gate infra unavailable: ' + ($evaluation.infra -join '; '))
       } else {
-        if ($evaluation.content.Count -gt 0 -or $extra.Count -gt 0) {
+        $flakePassed = $false
+        if ($evaluation.content.Count -gt 0 -and $extra.Count -eq 0 -and $evaluation.flakeCandidate) {
+          # Any error in the optional flake retry falls back to the ordinary gate failure.
+          $flakeRetry = [pscustomobject]@{ passed = $false }
+          try {
+            $flakeRetry = Invoke-FlakeRetryIfEligible -Gate $review.gate -GatePath $gatePathOut -Evaluation $evaluation -HeadSha $headShaOut -PrNumber $PrNumber -RunDir $script:RunDir
+          } catch {
+            Write-Log ('flake retry failed, keeping the gate failure: ' + $_.Exception.Message)
+            $flakeRetry = [pscustomobject]@{ passed = $false }
+          }
+          if ($flakeRetry.passed) {
+            $flakePassed = $true
+            $flakeRetriedOut = [ordered]@{
+              files = [string[]]$flakeRetry.files
+              firstFailures = [object[]]$flakeRetry.firstFailures
+              command = [string]$flakeRetry.command
+              rerunVitestJson = [string]$flakeRetry.vitestJsonPath
+              rerunUnitLog = [string]$flakeRetry.unitLogPath
+            }
+            $evaluation = [pscustomobject]@{
+              infra = [string[]]@()
+              content = [string[]]@()
+              newFailures = [string[]]@()
+              flakeCandidate = $false
+            }
+            $flakeNote = 'flakeRetried passed on single rerun for unrelated test file(s): ' + (@($flakeRetry.files) -join ', ')
+            $null = $notesOut.Add($flakeNote)
+            Write-Log $flakeNote
+            foreach ($ff in @($flakeRetry.firstFailures)) {
+              Write-Log ('flakeRetried first failure [' + $ff['file'] + '] ' + $ff['test'] + ': ' + $ff['message'])
+            }
+          } elseif ($flakeRetry.attempted) {
+            $flakeFailNote = 'flake retry failed again: ' + $flakeRetry.reason
+            $null = $notesOut.Add($flakeFailNote)
+            Write-Log $flakeFailNote
+          }
+        }
+
+        if (-not $flakePassed -and ($evaluation.content.Count -gt 0 -or $extra.Count -gt 0)) {
           $verdictOut = 'fail'
           $exitCode = 1
           foreach ($item in @($extra) + @($evaluation.content)) {
@@ -677,9 +1403,13 @@ $summary = [ordered]@{
   verdict = $verdictOut
   failures = [string[]]$failuresOut.ToArray()
   gatePath = $gatePathOut
+  flakeRetried = $flakeRetriedOut
   glm = $glmOut
   notes = [string[]]$notesOut.ToArray()
 }
-$json = ConvertTo-Json -InputObject $summary -Depth 4 -Compress
+$json = ConvertTo-Json -InputObject $summary -Depth 6 -Compress
+if ($script:RunDir -and (Test-Path -LiteralPath $script:RunDir -PathType Container)) {
+  try { Write-Text (Join-Path $script:RunDir 'summary.json') ($json + "`n") } catch { }
+}
 [Console]::Out.WriteLine($json)
 exit $exitCode

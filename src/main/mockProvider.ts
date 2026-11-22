@@ -187,6 +187,18 @@ export class MockProvider implements ProviderAdapter {
     // P1-37 fixture: `[mock:hydra-identity]` = one delegation whose entry
     // carries the adaptive mode's `identity` number plus `role` title.
     const wantsHydraIdentity = prompt.includes("[mock:hydra-identity]");
+    // P1-08 fixture: `[mock:hydra-path]` followed by the absolute path —
+    // the delegation routes the head at that folder so a test drives
+    // non-Git/system/broken-Git routing with a real directory. A quoted
+    // path exercises folders whose names contain spaces.
+    const hydraPathMatch = prompt.match(/\[mock:hydra-path\]("[^"]+"|\S+)/);
+    const wantsHydraPath = hydraPathMatch !== null;
+    const hydraPathArg = wantsHydraPath
+      ? hydraPathMatch[1]!.replace(/^"|"$/g, "")
+      : "";
+    const hydraPathEntry = wantsHydraPath
+      ? `[{"task":"Folder work","prompt":"Try it.","project":${JSON.stringify(hydraPathArg)}}]`
+      : "";
     // P1-12 fixture: `[mock:hydra-continue]` — the lead's reply to the
     // batch report emits one `"continue": "Hank"` entry, sending the
     // rework back into Hank's own session and copy (same job). It
@@ -261,7 +273,8 @@ export class MockProvider implements ProviderAdapter {
       wantsHydraDeadCheckout || wantsHydraWaitRoute || wantsHydraWaitQ ||
       wantsHydraQuiet || wantsHydraFailStart || wantsHydraFailAll ||
       wantsHydraFailTransient || wantsHydraRole || wantsHydraIdentity ||
-      wantsHydraLoop || wantsHydraLoopFail || continueReport || looped
+      wantsHydraLoop || wantsHydraLoopFail || continueReport || looped ||
+      wantsHydraPath
     ) {
       const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute || wantsHydraWaitQ
         ? wantsHydraWaitMany
@@ -279,6 +292,8 @@ export class MockProvider implements ProviderAdapter {
           ? '[{"task":"Lost errand","prompt":"Try it.","project":"ghost-proj"}]'
         : wantsHydraDeadCheckout
           ? '[{"task":"Dead checkout","prompt":"Try it.","project":"ghost-checkout"}]'
+        : wantsHydraPath
+          ? hydraPathEntry
         : wantsHydraQuiet
           ? '[{"task":"Sit still","prompt":"Open up then sit silent. [mock:quiet]"}]'
         : wantsHydraFailStart

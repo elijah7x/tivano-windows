@@ -75,7 +75,13 @@ Check EVERY factual claim in the PR body against the actual code and diff, inclu
 - claims in the checklist (such as English + Simplified Chinese strings in `src/renderer/i18n.ts`, `docs/parity.md` status, license headers on new files, and dependency/asset declarations), and
 - behavioral claims in the summary.
 
-Record each checked claim in `claims` with `"holds": true` or `"holds": false` and `file:line` (or PR-section) evidence.
+Record each checked claim in `claims` with `"holds": true` or `"holds": false` and `file:line` (or PR-section) evidence. Reserve `"holds": false` strictly for material false claims:
+- overstated test counts or overstated coverage,
+- claiming that skipped or unrun checks ran,
+- misclassified or substituted verification categories, or
+- claims that contradict the shipped behavior (including false checklist assertions).
+
+Do NOT set `"holds": false` for a stale under-count of tests (for example, stating "12 tests" when the test file has 15) or wording that is outdated without overstating coverage or contradicting the shipped behavior. Record those with `"holds": true` and note the discrepancy in `evidence` or as an `"advisory"` finding.
 
 ### (e) Seams with earlier merged work
 Inspect the integration seams between this PR and earlier merged code in the worktree (IPC channels, main/preload/renderer bridges, provider dispatch, default settings, stores, menus, shortcuts, i18n, and types). Flag unwired code, orphaned helpers, mismatched contracts, or existing entry points that should have been wired to the new behavior.
@@ -89,11 +95,11 @@ Re-examine each disputed finding from `Prior audit findings` against the current
 ## Verdict rules
 
 - Use stable finding IDs (`A1`, `A2`, ...). Do not duplicate deterministic findings already listed above unless you uncovered additional evidence or impact.
-- Mark style-only observations, naming preferences, minor refactors, and optional improvements as `"severity": "advisory"`. Advisory items MUST NOT cause a block.
+- Mark style-only observations, naming preferences, minor refactors, stale test under-counts or outdated non-overstated PR body wording, and optional improvements as `"severity": "advisory"`. Advisory items MUST NOT cause a block.
 - Set `"verdict": "block"` IF AND ONLY IF at least one of the following holds:
   1. There is at least one item in `findings` with `"severity": "blocking"`, OR
   2. There is at least one item in `acceptance` with `"status": "missing"` or `"status": "substituted"`, OR
-  3. There is at least one item in `claims` with `"holds": false`.
+  3. There is at least one item in `claims` with `"holds": false` (material false claims only; never stale under-counts or outdated non-overstated wording).
 - Otherwise, set `"verdict": "pass"`.
 - Never output `"verdict": "block"` without at least one blocking finding, missing/substituted acceptance item, or failing claim (`"holds": false`).
 
