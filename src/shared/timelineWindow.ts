@@ -66,13 +66,20 @@ export function timelineFollowReset(
 /** Frozen release: while the reader is interacting, any upward motion
  *  away from the end unpins the follow. A held finger is not a release;
  *  a starting turn is not either — growth under a top anchor never reads
- *  as the reader leaving the end because `delta` excludes it. */
+ *  as the reader leaving the end because `delta` excludes it.
+ *  `unexplainedUp` covers the input the port's event gate cannot see:
+ *  a native-scrollbar drag (or keyboard paging) fires no wheel/touch/
+ *  pointer event, yet the port's own writes only ever raise scrollTop —
+ *  so a scrollTop drop with an UNCHANGED scrollHeight is still the
+ *  reader moving up (a layout clamp shrinks scrollHeight too and is
+ *  excluded by the caller). */
 export function scrollFollowRelease(
   distanceFromBottom: number,
   delta: number,
   userScrolling: boolean,
+  unexplainedUp = false,
 ): boolean {
-  return userScrolling && distanceFromBottom > 0.5 && delta < -0.1;
+  return (userScrolling || unexplainedUp) && distanceFromBottom > 0.5 && delta < -0.1;
 }
 
 /** Frozen re-pin: the reader scrolling back down re-follows once the end

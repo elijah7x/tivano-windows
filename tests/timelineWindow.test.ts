@@ -89,6 +89,19 @@ describe("scroll follow (P2-30, frozen ThreadTimeline)", () => {
     expect(scrollFollowRelease(30, -0.2, true)).toBe(true);
   });
 
+  it("releases on an unexplained scrollTop drop (native-scrollbar drag)", () => {
+    // A scrollbar drag or keyboard paging fires no wheel/touch/pointer
+    // event — the port's writes only raise scrollTop, so an unchanged-
+    // scrollHeight drop is still reader motion and must release.
+    expect(scrollFollowRelease(30, -5, false, true)).toBe(true);
+    // Still pinned at the end or moving down: no release either way.
+    expect(scrollFollowRelease(0.4, -5, false, true)).toBe(false);
+    expect(scrollFollowRelease(30, 5, false, true)).toBe(false);
+    // A layout clamp (scrollHeight shrank) is not unexplained — the
+    // caller passes unexplainedUp=false for it, keeping the old gate.
+    expect(scrollFollowRelease(30, -5, false, false)).toBe(false);
+  });
+
   it("re-pins only while scrolling back down into the 8px band", () => {
     // Approaching the end and inside it: re-pin.
     expect(scrollFollowRepin(8, 20)).toBe(true);

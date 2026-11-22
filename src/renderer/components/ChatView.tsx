@@ -203,11 +203,17 @@ export function ChatView(props: {
   // P2-30 (frozen ThreadTimeline tracking): whether growth pins to the
   // end, the last observed scroll geometry for direction, and the input
   // recency that tells the reader's own scrolling apart from layout or
-  // anchor motion.
+  // anchor motion. Frozen sees reader drags through isReaderInteracting;
+  // the port's pointer/wheel gate misses native-scrollbar drags and
+  // keyboard paging, so onScroll additionally treats a scrollTop drop
+  // with an unchanged scrollHeight as reader motion (the port's writes
+  // only ever raise scrollTop — a layout clamp shrinks scrollHeight).
   const timelineFollowingRef = useRef(true);
-  const timelineLastScrollRef = useRef<{ top: number; dist: number } | null>(
-    null,
-  );
+  const timelineLastScrollRef = useRef<{
+    top: number;
+    dist: number;
+    h: number;
+  } | null>(null);
   const timelineInteractRef = useRef(false);
   const timelineWheelUntilRef = useRef(0);
   useEffect(() => {
@@ -542,11 +548,20 @@ export function ChatView(props: {
           const prev = timelineLastScrollRef.current;
           const delta = prev ? top - prev.top : 0;
           const prevDist = prev ? prev.dist : Number.MAX_VALUE;
-          timelineLastScrollRef.current = { top, dist };
+          // A native-scrollbar drag (and keyboard paging) fires no
+          // wheel/touch/pointer event the gate can see — but the port's
+          // own writes only ever raise scrollTop, so a drop with an
+          // unchanged scrollHeight is still reader motion. A layout
+          // clamp (window collapse shrinking scrollHeight) stays out.
+          const unexplainedUp =
+            delta < -0.1 && el.scrollHeight === (prev?.h ?? el.scrollHeight);
+          timelineLastScrollRef.current = { top, dist, h: el.scrollHeight };
           const userScrolling =
             timelineInteractRef.current ||
             Date.now() < timelineWheelUntilRef.current;
-          if (scrollFollowRelease(dist, delta, userScrolling)) {
+          if (
+            scrollFollowRelease(dist, delta, userScrolling, unexplainedUp)
+          ) {
             timelineFollowingRef.current = false;
           } else if (userScrolling && scrollFollowRepin(dist, prevDist)) {
             // Frozen re-pin evaluates only under reader-driven motion
