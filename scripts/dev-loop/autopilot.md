@@ -48,7 +48,16 @@ Write helper pattern:
 ```powershell
 $tmp = $dst + '.tmp'
 [IO.File]::WriteAllText($tmp, ($json + "`n"), [Text.UTF8Encoding]::new($false))
-if (Test-Path -LiteralPath $dst) { [IO.File]::Replace($tmp, $dst, $null) } else { [IO.File]::Move($tmp, $dst) }
+$ok = $false
+for ($i = 1; $i -le 8; $i++) {
+  try {
+    if (Test-Path -LiteralPath $dst -PathType Leaf) { [IO.File]::Replace($tmp, $dst, [NullString]::Value) } else { [IO.File]::Move($tmp, $dst) }
+    $ok = $true; break
+  } catch { if ($i -lt 8) { Start-Sleep -Milliseconds (250 * $i) } }
+}
+if (-not $ok) {
+  try { [IO.File]::Copy($tmp, $dst, $true); try { [IO.File]::Delete($tmp) } catch { } } catch { $e = $_; try { [IO.File]::Delete($tmp) } catch { }; throw $e }
+}
 ```
 
 ## 3. Non-interactive discipline

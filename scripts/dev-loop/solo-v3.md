@@ -15,7 +15,16 @@ Long-horizon solo mission for Devin Desktop (single GUI chat, bypass mode, Windo
   ```powershell
   $dst = 'C:\tivano\dev-loop\autopilot\solo-v3.json'; $tmp = $dst + '.tmp'
   [IO.File]::WriteAllText($tmp, ($json + "`n"), [Text.UTF8Encoding]::new($false))
-  if (Test-Path -LiteralPath $dst) { [IO.File]::Replace($tmp, $dst, $null) } else { [IO.File]::Move($tmp, $dst) }
+  $ok = $false
+  for ($i = 1; $i -le 8; $i++) {
+    try {
+      if (Test-Path -LiteralPath $dst -PathType Leaf) { [IO.File]::Replace($tmp, $dst, [NullString]::Value) } else { [IO.File]::Move($tmp, $dst) }
+      $ok = $true; break
+    } catch { if ($i -lt 8) { Start-Sleep -Milliseconds (250 * $i) } }
+  }
+  if (-not $ok) {
+    try { [IO.File]::Copy($tmp, $dst, $true); try { [IO.File]::Delete($tmp) } catch { } } catch { $e = $_; try { [IO.File]::Delete($tmp) } catch { }; throw $e }
+  }
   ```
 - Update `solo-v3.json` at every phase and step change. Also keep `C:\tivano\dev-loop\autopilot\progress.json`, `parked.json`, and `hands-on.json` updated as `autopilot.md` requires so daily merge tracking, parked revisits, non-blocking audit tracking, hands-on milestone state, and the watchdog stay accurate.
 - Never end your turn to save a checkpoint, summarize, or hand over while work remains (or while polling): nobody reads the chat, and an ended turn stalls the mission until a watchdog nudge. Checkpoints go into `solo-v3.json` and `progress.json`; then continue in the same turn.

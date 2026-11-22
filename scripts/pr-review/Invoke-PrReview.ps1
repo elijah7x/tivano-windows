@@ -107,11 +107,37 @@ function Save-State {
   param([string]$Path, $State)
   $temporary = $Path + '.tmp'
   Write-Text $temporary ((ConvertTo-Json -InputObject $State -Depth 8) + "`n")
-  if (Test-Path -LiteralPath $Path) {
-    # PowerShell turns $null into an empty string for a string parameter; File.Replace needs a real null.
-    [IO.File]::Replace($temporary, $Path, [NullString]::Value)
-  } else {
-    [IO.File]::Move($temporary, $Path)
+  for ($attempt = 1; $attempt -le 8; $attempt++) {
+    try {
+      if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        # PowerShell turns $null into an empty string for a string parameter; File.Replace needs a real null.
+        [IO.File]::Replace($temporary, $Path, [NullString]::Value)
+      } else {
+        [IO.File]::Move($temporary, $Path)
+      }
+      return
+    } catch {
+      if ($attempt -lt 8) {
+        Start-Sleep -Milliseconds (250 * $attempt)
+      }
+    }
+  }
+  try {
+    [IO.File]::Copy($temporary, $Path, $true)
+    try {
+      if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+        [IO.File]::Delete($temporary)
+      }
+    } catch { }
+    return
+  } catch {
+    $fallbackErr = $_
+    try {
+      if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+        [IO.File]::Delete($temporary)
+      }
+    } catch { }
+    throw $fallbackErr
   }
 }
 

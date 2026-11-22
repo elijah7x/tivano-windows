@@ -778,10 +778,37 @@ function Save-WatchdogState {
   param($State)
   $temporary = $script:WatchdogPath + '.tmp'
   Write-Text $temporary ((ConvertTo-Json -InputObject $State -Depth 6) + "`n")
-  if (Test-Path -LiteralPath $script:WatchdogPath) {
-    [IO.File]::Replace($temporary, $script:WatchdogPath, [NullString]::Value)
-  } else {
-    [IO.File]::Move($temporary, $script:WatchdogPath)
+  for ($attempt = 1; $attempt -le 8; $attempt++) {
+    try {
+      if (Test-Path -LiteralPath $script:WatchdogPath -PathType Leaf) {
+        # PowerShell turns $null into an empty string for a string parameter; File.Replace needs a real null.
+        [IO.File]::Replace($temporary, $script:WatchdogPath, [NullString]::Value)
+      } else {
+        [IO.File]::Move($temporary, $script:WatchdogPath)
+      }
+      return
+    } catch {
+      if ($attempt -lt 8) {
+        Start-Sleep -Milliseconds (250 * $attempt)
+      }
+    }
+  }
+  try {
+    [IO.File]::Copy($temporary, $script:WatchdogPath, $true)
+    try {
+      if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+        [IO.File]::Delete($temporary)
+      }
+    } catch { }
+    return
+  } catch {
+    $fallbackErr = $_
+    try {
+      if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+        [IO.File]::Delete($temporary)
+      }
+    } catch { }
+    throw $fallbackErr
   }
 }
 

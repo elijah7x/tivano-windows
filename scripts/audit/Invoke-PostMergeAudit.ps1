@@ -49,10 +49,37 @@ function Write-TextAtomic {
   }
   $tmp = $Path + '.tmp.' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
   [IO.File]::WriteAllText($tmp, $Text, (New-Object Text.UTF8Encoding($false)))
-  if (Test-Path -LiteralPath $Path -PathType Leaf) {
-    [IO.File]::Replace($tmp, $Path, $null)
-  } else {
-    [IO.File]::Move($tmp, $Path)
+  for ($attempt = 1; $attempt -le 8; $attempt++) {
+    try {
+      if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        # PowerShell turns $null into an empty string for a string parameter; File.Replace needs a real null.
+        [IO.File]::Replace($tmp, $Path, [NullString]::Value)
+      } else {
+        [IO.File]::Move($tmp, $Path)
+      }
+      return
+    } catch {
+      if ($attempt -lt 8) {
+        Start-Sleep -Milliseconds (250 * $attempt)
+      }
+    }
+  }
+  try {
+    [IO.File]::Copy($tmp, $Path, $true)
+    try {
+      if (Test-Path -LiteralPath $tmp -PathType Leaf) {
+        [IO.File]::Delete($tmp)
+      }
+    } catch { }
+    return
+  } catch {
+    $fallbackErr = $_
+    try {
+      if (Test-Path -LiteralPath $tmp -PathType Leaf) {
+        [IO.File]::Delete($tmp)
+      }
+    } catch { }
+    throw $fallbackErr
   }
 }
 
