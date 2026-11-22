@@ -369,10 +369,15 @@ export async function hydraBackupReport(
     if (!existed && !exists) continue;
     if (existed && !exists) removed += 1;
     if (!existed && exists) added += 1;
-    const result = await runDiff(
+    // A throwing runner must not reject the report — the caller's
+    // landing waits on this, so a diff that dies becomes the frozen
+    // "Could not diff" line instead of a wedged batch.
+    const result: Awaited<ReturnType<HydraDiffRunner>> = await runDiff(
       existed ? before : emptyFile,
       exists ? after : emptyFile,
-    );
+    ).catch((e: unknown) => ({
+      failed: e instanceof Error ? e.message : "the diff did not finish",
+    }));
     if (result.failed !== undefined || result.output === undefined) {
       append(`Could not diff ${path}: ${result.failed ?? "the diff did not finish"}`);
     } else {

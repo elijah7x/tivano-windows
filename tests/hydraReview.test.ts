@@ -62,6 +62,13 @@ function rig() {
         diff: ps.map((p) => `diff --git a/${p} b/${p}\n+synthetic\n`).join(""),
       };
     },
+    // In-place heads' reports diff owned files through this op too —
+    // a missing method wedges landingPending (gate finding on pr-109).
+    hydraBackupDiff: async (_p: string, before: string, after: string) => ({
+      kind: "ok" as const,
+      output: `stub diff ${before} -> ${after}`,
+      hitCap: false,
+    }),
   } as unknown as Parameters<Engine["attachWorktrees"]>[0]);
   engine.setSettings({ hydraIsolateHeads: false });
   return { engine, store, dataRoot, projectId: project.id, calls };

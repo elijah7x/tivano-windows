@@ -5178,7 +5178,17 @@ export class Engine {
         d,
         persona,
         identityPrompt,
-      );
+      ).catch((e) => {
+        // A backup/backup-diff throw outside the caught sendTurn would
+        // otherwise leave the head running with no report forever.
+        const cur = this.store.state.threads.find((t) => t.id === head.id);
+        if (cur?.hydraHead?.status === "running")
+          this.failHydraStart(
+            cur,
+            `Hydra: ${persona.name} did not start because its backup could not finish (${e instanceof Error ? e.message : "unknown error"}).`,
+            { note: true },
+          );
+      });
       return;
     }
     // F22 isolation (frozen makeHydraCopy): with copies on and a copyable
@@ -5408,11 +5418,21 @@ export class Engine {
    *  Tivano itself made. The home folder is judged separately by its
    *  owned files, never here. */
   private hydraTouchesProtectedRoot(p: string): boolean {
+    // Frozen hydraPathTouchesProtectedRoot canonicalizes first — a
+    // junction or alias must not slip a protected root past the gate.
+    let pp = p;
+    try {
+      pp = realpathSync(pp)
+        .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+        .replace(/^\\\\[?.]\\/i, "");
+    } catch {
+      /* keep the normalized path */
+    }
     const roots = this.hydraSystemRoots().map(sepFold);
     const taskWs = sepFold(
       join(this.hydraDataRootCanonical(), "worktrees").replace(/[\\/]+$/, ""),
     );
-    const pn = p.replace(/[\\/]+$/, "");
+    const pn = pp.replace(/[\\/]+$/, "");
     const pl = sepFold(pn);
     if (pl === taskWs || pl.startsWith(taskWs + "\\")) return false;
     return (
@@ -5622,37 +5642,46 @@ export class Engine {
     }
     const projectId = head.projectId ?? undefined;
     const empty = this.hydraEmptyDiffAnchor();
-    const diff =
-      empty === undefined
-        ? undefined
-        : await hydraBackupReport(
-            { ...info, personaName: info.name },
-            async (before, after) => {
-              if (this.worktrees === undefined || projectId === undefined) {
-                return { failed: "Git is unavailable" };
-              }
-              const r = await this.worktrees.hydraBackupDiff(
-                projectId,
-                before,
-                after,
-              );
-              return r.kind === "ok"
-                ? { output: r.output, hitCap: r.hitCap }
-                : { failed: r.reason };
-            },
-            empty,
-          );
-    const cur = this.store.state.threads.find((t) => t.id === headId);
-    if (cur?.hydraHead && diff !== undefined) {
-      // Frozen: `[spoken, diff].joined(separator: "\n\n")` — the head's
-      // own text first, the backup diff after it. The summary field is
-      // schema-capped at 64KB, so the join is clamped rather than left
-      // to quarantine the store on the next save.
-      cur.hydraHead.summary = `${cur.hydraHead.summary ?? ""}\n\n${diff}`
-        .trim()
-        .slice(0, 64 * 1024);
+    try {
+      const diff =
+        empty === undefined
+          ? undefined
+          : await hydraBackupReport(
+              { ...info, personaName: info.name },
+              async (before, after) => {
+                if (
+                  this.worktrees === undefined ||
+                  projectId === undefined ||
+                  typeof this.worktrees.hydraBackupDiff !== "function"
+                ) {
+                  return { failed: "Git is unavailable" };
+                }
+                const r = await this.worktrees.hydraBackupDiff(
+                  projectId,
+                  before,
+                  after,
+                );
+                return r.kind === "ok"
+                  ? { output: r.output, hitCap: r.hitCap }
+                  : { failed: r.reason };
+              },
+              empty,
+            );
+      const cur = this.store.state.threads.find((t) => t.id === headId);
+      if (cur?.hydraHead && diff !== undefined) {
+        // Frozen: `[spoken, diff].joined(separator: "\n\n")` — the head's
+        // own text first, the backup diff after it. The summary field is
+        // schema-capped at 64KB, so the join is clamped rather than left
+        // to quarantine the store on the next save.
+        cur.hydraHead.summary = `${cur.hydraHead.summary ?? ""}\n\n${diff}`
+          .trim()
+          .slice(0, 64 * 1024);
+      }
+    } finally {
+      // Whatever the report did, the landing always finishes — a wedged
+      // landingPending would hold the whole batch's reports forever.
+      this.finishHydraLanding(headId);
     }
-    this.finishHydraLanding(headId);
   }
 
   /** P1-08 (frozen HydraGitIdentityReader, bounded): a `.git` entry on
