@@ -103,6 +103,7 @@ describe("hydraPanelMenuItems (frozen panelMenu order)", () => {
     continueOk: false,
     floating: false,
     readOnly: false,
+    hasDismiss: true,
   };
 
   it("opens the head's chat first, then panel rows after a divider", () => {
@@ -151,9 +152,20 @@ describe("hydraPanelMenuItems (frozen panelMenu order)", () => {
     ]);
   });
 
-  it("still dismisses a reviews-only panel with no heads", () => {
+  it("never opens with a bare divider and never renders a dead Dismiss", () => {
+    // A reviews-only panel with no heads: panel rows alone, no sep.
     expect(
       hydraPanelMenuItems({ ...base, hasHead: false }),
-    ).toEqual(["sep", "dismiss"]);
+    ).toEqual(["dismiss"]);
+    expect(
+      hydraPanelMenuItems({ ...base, hasHead: false, floating: true }),
+    ).toEqual(["dock", "dismiss"]);
+    // A host that cannot hide the panel gets no dead Dismiss row.
+    expect(
+      hydraPanelMenuItems({ ...base, hasDismiss: false }),
+    ).toEqual(["open"]);
+    expect(
+      hydraPanelMenuItems({ ...base, hasHead: false, hasDismiss: false }),
+    ).toEqual([]);
   });
 });

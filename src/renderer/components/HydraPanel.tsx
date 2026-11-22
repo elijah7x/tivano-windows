@@ -74,8 +74,9 @@ export type HydraPanelMenuItem =
   | "dismiss";
 
 /** Frozen panelMenu order, port-adapted: the head's chat first, then
- *  its Continue/Stop under their gates, a divider, then the panel rows —
- *  Dock back when floating, and Dismiss always. Upstream's per-head
+ *  its Continue/Stop under their gates, a divider only when head rows
+ *  precede it, then the panel rows — Dock back when floating, and
+ *  Dismiss when the host can hide the panel. Upstream's per-head
  *  pop-out rows have no port window to map to. */
 export function hydraPanelMenuItems(opts: {
   hasHead: boolean;
@@ -83,6 +84,7 @@ export function hydraPanelMenuItems(opts: {
   continueOk: boolean;
   floating: boolean;
   readOnly: boolean;
+  hasDismiss: boolean;
 }): HydraPanelMenuItem[] {
   const rows: HydraPanelMenuItem[] = [];
   if (opts.hasHead) rows.push("open");
@@ -90,10 +92,11 @@ export function hydraPanelMenuItems(opts: {
     if (opts.continueOk) rows.push("continue");
     if (opts.running) rows.push("stop");
   }
-  rows.push("sep");
-  if (opts.floating) rows.push("dock");
-  rows.push("dismiss");
-  return rows;
+  const panelRows: HydraPanelMenuItem[] = [];
+  if (opts.floating) panelRows.push("dock");
+  if (opts.hasDismiss) panelRows.push("dismiss");
+  if (rows.length && panelRows.length) rows.push("sep");
+  return [...rows, ...panelRows];
 }
 
 function statusLabel(
@@ -347,21 +350,28 @@ export function HydraPanel(props: {
     title: t("Drag to move"),
   };
 
+  // The menu's head is re-resolved live: a head that finished between
+  // the right-click and the click re-checks its own status instead of
+  // firing a stale Stop.
+  const menuHead = menu?.head
+    ? (props.threads.find((x) => x.id === menu.head!.id) ?? menu.head)
+    : null;
   const menuRows = menu
     ? hydraPanelMenuItems({
-        hasHead: menu.head !== null,
-        running: menu.head?.hydraHead?.status === "running",
+        hasHead: menuHead !== null,
+        running: menuHead?.hydraHead?.status === "running",
         continueOk:
-          menu.head !== null &&
-          menu.head.hydraHead !== undefined &&
-          hydraContinueEligible(menu.head.hydraHead, menu.head),
+          menuHead !== null &&
+          menuHead.hydraHead !== undefined &&
+          hydraContinueEligible(menuHead.hydraHead, menuHead),
         floating: floatPos !== null,
         readOnly: props.readOnly === true,
+        hasDismiss: props.onDismiss !== undefined,
       })
     : [];
-  const menuHeadName = menu?.head?.hydraHead?.name ?? t("this sub-agent");
+  const menuHeadName = menuHead?.hydraHead?.name ?? t("this sub-agent");
   const runMenu = (item: HydraPanelMenuItem) => {
-    const head = menu?.head;
+    const head = menuHead;
     setMenu(null);
     if (item === "open" && head)
       void callApi("threads:select", { id: head.id }).catch(() => {});
@@ -498,7 +508,7 @@ export function HydraPanel(props: {
           aria-hidden="true"
         />
       )}
-      {menu && (
+      {menu && menuRows.length > 0 && (
         <div
           className="link-pop hydra-menu"
           role="menu"

@@ -1010,13 +1010,16 @@ const zhHans: Record<string, string> = {
   "Heads": "子智能体",
   "A Hydra head working for the lead": "为主对话工作的 Hydra 子智能体",
   "Back to lead": "返回主对话",
-  // P1-31: frozen panel menu rows (upstream HydraPanel.panelMenu).
+  // P1-31: frozen panel menu rows (upstream HydraPanel.panelMenu) —
+  // zh-Hans verbatim from the frozen catalog; "Dock the panel" is
+  // port-added (no upstream string — the port's dock bound for the
+  // always-floating panel).
   "Open %@'s chat": "打开 %@ 的对话",
-  "Continue sub-agent": "继续该子智能体",
+  "Continue sub-agent": "继续此子代理",
   "Stop %@": "停止 %@",
-  "this sub-agent": "该子智能体",
+  "this sub-agent": "此子代理",
   "Dock the panel": "将面板归位",
-  "Dismiss the panel; sub-agents keep working": "关闭面板；子智能体继续工作",
+  "Dismiss the panel; sub-agents keep working": "收起面板；子代理继续工作",
   "Hydra": "Hydra",
   "Hydra is on": "Hydra 已开启",
   "Hydra is on in Settings": "Hydra 已在设置中开启",
