@@ -563,7 +563,13 @@ export const requestValidators = {
     // A81: top-edge-dragged terminal drawer height (frozen 140–760).
     terminalHeight: vOptional(vNumber(140, 760)),
   }),
-  "links:open-external": vObject({ url: vNonEmptyString(2048) }),
+  "links:open-external": vObject({
+    url: vNonEmptyString(2048),
+    // P2-31: the chat whose timeline held the link — its working
+    // directory resolves a relative local-file target (frozen
+    // markdownLinkBase).
+    threadId: vOptional(vId),
+  }),
   // Embedded terminal. No shell/command/path keys exist anywhere in these
   // schemas — main derives shell and cwd from the authorized grant alone.
   "terminals:list": vObject({ threadId: vId }),

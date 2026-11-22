@@ -110,23 +110,26 @@ describe("safe markdown rendering", () => {
     }
   });
 
-  it("renders only http/https links as anchors", () => {
+  it("renders web and local-file links as anchors, nothing else", () => {
     const cases: Array<[string, boolean]> = [
       ["[ok](https://example.com/x?y=1)", true],
       ["[ok](http://example.com)", true],
       ["[js](javascript:alert(1))", false],
-      ["[file](file:///etc/passwd)", false],
+      // P2-31: local-file targets anchor so the click can reach the
+      // main-side resolver (frozen MarkdownLinkTarget).
+      ["[file](file:///etc/passwd)", true],
       ["[data](data:text/html,hi)", false],
-      ["[rel](/etc/passwd)", false],
-      ["[unc](\\\\host\\share)", false],
-      ["[win](C:\\Windows\\system32)", false],
+      ["[rel](/etc/passwd)", true],
+      ["[unc](\\\\host\\share)", true],
+      ["[win](C:\\Windows\\system32)", true],
+      ["[rel](out/report.pdf)", true],
+      ["[line](Foo.ts:12)", true],
       ["[ftp](ftp://host/x)", false],
     ];
     for (const [source, anchored] of cases) {
       const found = walk(md(source));
       if (anchored) {
         expect(found.hrefs.length, source).toBe(1);
-        expect(found.hrefs[0]).toMatch(/^https?:\/\//);
       } else {
         expect(found.hrefs.length, source).toBe(0);
       }

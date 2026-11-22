@@ -429,7 +429,13 @@ export function App(): React.JSX.Element {
       if (!a) return;
       e.preventDefault();
       const href = a.getAttribute("href");
-      if (href) tryCall("links:open-external", { url: href });
+      if (!href) return;
+      // P2-31: the timeline the link sits in carries the working
+      // directory a relative file target resolves against (frozen
+      // markdownLinkBase).
+      const host = a.closest("[data-chat-id]");
+      const threadId = host?.getAttribute("data-chat-id") ?? undefined;
+      tryCall("links:open-external", { url: href, threadId });
     };
     document.addEventListener("click", onClick);
     return () => document.removeEventListener("click", onClick);

@@ -22,6 +22,23 @@ function isSafeLink(url: string): boolean {
   }
 }
 
+// P2-31 (frozen MarkdownLinkTarget): a chat link may also name a LOCAL
+// file — `out/report.pdf`, `Foo.ts:12`, `~/x`, `C:\x`, `file:///x`. The
+// anchor renders so the click can reach main's resolver; dangerous
+// schemes and real `scheme://` URLs (http handled by isSafeLink above)
+// still degrade to text. A pseudo-scheme like `Foo.ts:12` has no `//`,
+// so it passes through like frozen's host==nil case.
+function isLocalLink(url: string): boolean {
+  const trimmed = url.trim();
+  if (trimmed.length === 0 || trimmed.length > 2048) return false;
+  if (/^file:\/\//i.test(trimmed)) return true;
+  // An explicit non-file scheme URL is never a local path.
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) return false;
+  if (/^(javascript|data|vbscript|about|blob|chrome|view-source):/i.test(trimmed))
+    return false;
+  return true;
+}
+
 type Token =
   | { kind: "text"; text: string }
   | { kind: "strong"; text: string }
@@ -105,7 +122,8 @@ function renderInline(
       case "code":
         return createElement("code", { key: k }, t.text);
       case "link":
-        if (!isSafeLink(t.url)) return createElement("span", { key: k }, t.text);
+        if (!isSafeLink(t.url) && !isLocalLink(t.url))
+          return createElement("span", { key: k }, t.text);
         return createElement(
           "a",
           { key: k, href: t.url, rel: "noreferrer", "data-md-link": "1" },
@@ -897,5 +915,5 @@ export class StreamingMarkdownCoordinator {
   }
 }
 
-/** Test helper: true when a URL would render as an anchor. */
-export { isSafeLink };
+/** Test helpers: true when a URL would render as an anchor. */
+export { isSafeLink, isLocalLink };
