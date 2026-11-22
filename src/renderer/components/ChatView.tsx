@@ -278,7 +278,12 @@ export function ChatView(props: {
       (props.threads ?? []).filter((x) => x.hydraHead?.leadId === threadId),
     [props.threads, threadId],
   );
-  const [hydraPanelHidden, setHydraPanelHidden] = useState(false);
+  // Frozen ThreadRuntime init: isHydraPanelHidden = !hydraAutoOpensPanels
+  // — under Off a fresh thread starts with the panel hidden (the working
+  // pill shows instead); Single/Independent open it.
+  const [hydraPanelHidden, setHydraPanelHidden] = useState(
+    () => props.settings?.hydraAutoOpensPanels === false,
+  );
   const headCount = useRef(0);
   // A84 (frozen StreamVeil): per-message veil bookkeeping — how much text
   // the latest flush added and the EMA of flush gaps that paces the fade.
@@ -310,12 +315,19 @@ export function ChatView(props: {
     return c;
   };
   useEffect(() => {
-    setHydraPanelHidden(false);
+    setHydraPanelHidden(props.settings?.hydraAutoOpensPanels === false);
     headCount.current = 0;
     veilRef.current.clear();
     mdCoordRef.current.forEach((c) => c.dispose());
     mdCoordRef.current.clear();
   }, [threadId]);
+  // Frozen AppModel: turning the layout Off hides any open panel —
+  // turning it On only allows future auto-opens, nothing re-opens on
+  // the flip itself.
+  useEffect(() => {
+    if (props.settings?.hydraAutoOpensPanels === false)
+      setHydraPanelHidden(true);
+  }, [props.settings?.hydraAutoOpensPanels]);
   // P2-40: panels open on their own only under the Single/Independent
   // layouts (frozen hydraAutoOpensPanels); Off shows the working pill.
   useEffect(() => {
