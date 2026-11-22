@@ -43,10 +43,11 @@ export function hydraPanelClamp(
   vw: number,
   vh: number,
 ): { x: number; y: number } {
-  const minVis = Math.min(80, w, h);
+  const minVisX = Math.min(80, w);
+  const minVisY = Math.min(80, h);
   return {
-    x: Math.min(Math.max(x, minVis - w), Math.max(minVis - w, vw - minVis)),
-    y: Math.min(Math.max(y, 0), Math.max(0, vh - minVis)),
+    x: Math.min(Math.max(x, minVisX - w), Math.max(minVisX - w, vw - minVisX)),
+    y: Math.min(Math.max(y, 0), Math.max(0, vh - minVisY)),
   };
 }
 
@@ -327,7 +328,11 @@ export function HydraPanel(props: {
       w: rect.width,
       moved: false,
     };
-    e.currentTarget.setPointerCapture(e.pointerId);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Stale pointerId (pointer already released) — move/up still apply.
+    }
   };
   const onDragMove = (e: React.PointerEvent<HTMLElement>) => {
     const d = dragRef.current;

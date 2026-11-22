@@ -43,10 +43,10 @@ describe("hydraPanelDragBegun (frozen PanelDragHandle slop)", () => {
 
 describe("hydraPanelClamp (floated panel stays reachable)", () => {
   it("keeps a dragged-off panel partly inside the viewport", () => {
-    // A 40px-tall strip keeps its whole height visible-cap: 40px must
-    // stay grabbable on each axis (minVis = min(80, w, h)).
-    expect(hydraPanelClamp(-9999, 40, 600, 40, 1280, 800).x).toBe(-560);
-    expect(hydraPanelClamp(9999, 40, 600, 40, 1280, 800).x).toBe(1240);
+    // A 600x40 strip keeps 80px visible horizontally (min(80, w)) and
+    // its whole 40px height vertically (min(80, h)) — per-axis caps.
+    expect(hydraPanelClamp(-9999, 40, 600, 40, 1280, 800).x).toBe(-520);
+    expect(hydraPanelClamp(9999, 40, 600, 40, 1280, 800).x).toBe(1200);
     // Vertically: never above the top, never fully below the bottom.
     expect(hydraPanelClamp(10, -50, 600, 40, 1280, 800).y).toBe(0);
     expect(hydraPanelClamp(10, 9999, 600, 40, 1280, 800).y).toBe(760);
