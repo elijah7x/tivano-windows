@@ -523,6 +523,7 @@ export const requestValidators = {
     hydraArchivesCodexHeads: vOptional(vBoolean),
     hydraShowsHeadDetails: vOptional(vBoolean),
     hydraAutoPopsHeads: vOptional(vBoolean),
+    providersShowExecutablePath: vOptional(vBoolean),
     hydraTempersHeadEffort: vOptional(vBoolean),
     hasSeenHydraIntro: vOptional(vBoolean),
     hydraPairs: vOptional(vArray(vHydraPair, 64)),

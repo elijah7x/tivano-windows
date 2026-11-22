@@ -1980,10 +1980,13 @@ select.runtime-mode:disabled {
 .prov-dot.notInstalled { background: var(--text-2); opacity: 0.5; }
 .prov-rail-expand {
   position: absolute;
-  left: calc(100% + 6px);
+  /* The 6px visual gap lives in the flyout's own padding so the strip
+     between rail and card still counts as hovered — a pointer crossing
+     it must not drop :hover and hide the flyout. */
+  left: 100%;
   top: 0;
   min-width: 180px;
-  padding: 5px;
+  padding: 5px 5px 5px 11px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-2);

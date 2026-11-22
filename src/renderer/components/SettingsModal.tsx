@@ -826,7 +826,10 @@ export function SettingsModal(props: {
 
         <ProvidersSection
           codex={codex}
-          cliState={cli?.state}
+          executablePathVisible={settings.providersShowExecutablePath === true}
+          onExecutablePathVisible={(v) =>
+            tryCall("settings:set", { providersShowExecutablePath: v })
+          }
           codexRoute={t("Codex CLI")}
           renderCodexCard={({ executablePath }) => (
             <div className="about codex-setup" aria-busy={busy !== null}>
@@ -910,33 +913,31 @@ export function SettingsModal(props: {
             </p>
           )}
           {loadErr && <p className="codex-setup-error" role="alert">{loadErr}</p>}
-          {executablePath && (
-            <div className="choice-row">
-              <button
-                className="choice"
-                disabled={!canWrite}
-                onClick={() => void run("choose", () => api().invoke("codex:choose", {}))}
-              >
-                {busy === "choose" || codex?.chooserBusy ? t("Choosing…") : t("Choose program…")}
-              </button>
-              <button
-                className="choice"
-                disabled={!canWrite || !codex?.pendingExecutable}
-                onClick={() => void run("save", () => api().invoke("codex:save", {}))}
-              >
-                {busy === "save" ? t("Saving…") : t("Save")}
-              </button>
-              <button
-                className="choice"
-                disabled={
-                  !canWrite || (!codex?.savedExecutable && !codex?.pendingExecutable)
-                }
-                onClick={() => void run("clear", () => api().invoke("codex:clear", {}))}
-              >
-                {busy === "clear" ? t("Clearing…") : t("Clear")}
-              </button>
-            </div>
-          )}
+          <div className="choice-row">
+            <button
+              className="choice"
+              disabled={!canWrite}
+              onClick={() => void run("choose", () => api().invoke("codex:choose", {}))}
+            >
+              {busy === "choose" || codex?.chooserBusy ? t("Choosing…") : t("Choose program…")}
+            </button>
+            <button
+              className="choice"
+              disabled={!canWrite || !codex?.pendingExecutable}
+              onClick={() => void run("save", () => api().invoke("codex:save", {}))}
+            >
+              {busy === "save" ? t("Saving…") : t("Save")}
+            </button>
+            <button
+              className="choice"
+              disabled={
+                !canWrite || (!codex?.savedExecutable && !codex?.pendingExecutable)
+              }
+              onClick={() => void run("clear", () => api().invoke("codex:clear", {}))}
+            >
+              {busy === "clear" ? t("Clearing…") : t("Clear")}
+            </button>
+          </div>
           <div className="choice-row">
             <button className="choice" disabled={busy !== null} onClick={() => void run("load")}>
               {busy === "load" ? t("Loading") : t(loadErr ? "Retry" : "Refresh status")}

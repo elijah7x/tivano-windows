@@ -267,6 +267,9 @@ export interface Settings {
   /** Each head after the first gets a panel of its own (frozen default
    *  false — one panel lists every head). */
   hydraAutoPopsHeads?: boolean;
+  /** Settings › Providers shows the executable-path surfaces inside each
+   *  provider card (frozen card-top switch, default off). */
+  providersShowExecutablePath?: boolean;
   /** Lower the default reasoning effort for heads (frozen default true;
    *  effort set in a pair is unaffected). */
   hydraTempersHeadEffort?: boolean;

@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-12-14.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-23.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P2-39/P2-19 (frozen SettingsIconRail + ProvidersSettingsPage): a compact
 // provider list that collapses to an icon rail and floats out an expanded
@@ -10,23 +10,26 @@
 // renders honestly disabled).
 
 import { useMemo, useState } from "react";
-import type { CodexSetupState } from "../../shared/types";
+import type { CodexInfo, CodexSetupState } from "../../shared/types";
 import { useT } from "../locale";
 
 export type ProviderListStatus = "ready" | "attention" | "notInstalled";
 
-/** Frozen ProviderListStatus mapping against this build's Codex CLI state:
- *  installed → ready; repair/foreign → needs attention; absent/unavailable
- *  → not installed. Nothing fabricated — unknown states stay unmarked. */
-export function providerListStatus(cliState: string | undefined): ProviderListStatus | null {
-  switch (cliState) {
-    case "installed":
+/** Frozen ProviderListStatus mapping against the Codex PROVIDER's own
+ *  runtime state (never Tivano's CLI shim): a configured or fixture
+ *  runtime is ready, an unsupported configuration needs attention, an
+ *  unconfigured provider is not installed. Nothing fabricated — a
+ *  non-Codex launch (runtime null) stays unmarked. */
+export function providerListStatus(
+  runtimeState: CodexInfo["state"] | null | undefined,
+): ProviderListStatus | null {
+  switch (runtimeState) {
+    case "fixture":
+    case "configured-unverified":
       return "ready";
-    case "repair":
-    case "foreign":
+    case "unsupported":
       return "attention";
-    case "absent":
-    case "unavailable":
+    case "unconfigured":
       return "notInstalled";
     default:
       return null;
@@ -58,7 +61,10 @@ interface ProviderRow {
 
 export function ProvidersSection(props: {
   codex: CodexSetupState | null;
-  cliState: string | undefined;
+  /** Persisted card-top switch (frozen, default off): shows the
+   *  executable-path surfaces inside the provider card. */
+  executablePathVisible: boolean;
+  onExecutablePathVisible: (visible: boolean) => void;
   /** Provider route shown under its name on the first card (frozen). */
   codexRoute: string;
   /** The provider card's real content; `executablePath` mirrors the
@@ -68,18 +74,21 @@ export function ProvidersSection(props: {
   const t = useT();
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  // Card-top switches (frozen: both default off). A saved custom path
-  // already acts as an on-switch, so the toggle starts effectively on.
-  const [executablePathOn, setExecutablePathOn] = useState(false);
-  const executablePath = executablePathOn || props.codex?.savedExecutable != null;
+  // The executable-path switch is the persisted frozen toggle — the
+  // chooser row itself always renders (the Codex-setup flow needs it).
+  const executablePath = props.executablePathVisible;
 
   const providers = useMemo<ProviderRow[]>(() => {
     const q = search.trim().toLowerCase();
     const rows: ProviderRow[] = [
-      { id: "codex", label: t("Codex"), status: providerListStatus(props.cliState) },
+      {
+        id: "codex",
+        label: t("Codex"),
+        status: providerListStatus(props.codex?.runtime?.state),
+      },
     ];
     return q === "" ? rows : rows.filter((r) => r.label.toLowerCase().includes(q));
-  }, [search, props.cliState, t]);
+  }, [search, props.codex?.runtime?.state, t]);
 
   const sel = selected && providers.some((p) => p.id === selected) ? selected : null;
   const statusLabel = (p: ProviderRow) =>
@@ -100,8 +109,8 @@ export function ProvidersSection(props: {
         <label className="prov-switch">
           <input
             type="checkbox"
-            checked={executablePath}
-            onChange={(e) => setExecutablePathOn(e.target.checked)}
+            checked={props.executablePathVisible}
+            onChange={(e) => props.onExecutablePathVisible(e.target.checked)}
           />
           <span>{t("Custom executable path")}</span>
         </label>

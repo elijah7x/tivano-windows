@@ -883,6 +883,7 @@ const zhHans: Record<string, string> = {
   "Ready": "已就绪",
   "Needs attention": "需要关注",
   "Check for updates": "检查更新",
+  "CLI update checks are not available in this build": "此构建暂不提供 CLI 更新检查",
   "Custom executable path": "自定义可执行文件路径",
   "Installed": "已安装",
   "Installed, but it points to an older copy of Tivano. Repair it to use this one.":
