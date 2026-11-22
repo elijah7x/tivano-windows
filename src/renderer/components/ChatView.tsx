@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-22.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Chat area: header with the labelled mock badge, message timeline with
 // streaming/approval/error/interruption states, and the composer.
@@ -466,6 +466,7 @@ export function ChatView(props: {
           thread={thread}
           threads={props.threads}
           readOnly={props.readOnly === true}
+          onDismiss={() => setHydraPanelHidden(true)}
         />
       )}
       {props.readOnly && (
