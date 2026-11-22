@@ -7,7 +7,7 @@ You are a coding agent on a Windows 11 development machine. Your task is to impl
 
 - Your git worktree is {{WORKTREE}}, on a branch cut from `origin/main`. Make all changes there. It may already hold work from an earlier attempt: run `git status` and `git log origin/main..HEAD` first and continue from what is there.
 - Write run files only in {{RUN}}. Keep screenshots, logs and other evidence there, never in the worktree.
-- You may read {{REFERENCE}} if it is a path: a read-only checkout of the frozen macOS v2.5.7 baseline. Never edit it, and never run its scripts or copy its source tree, images, fonts or brand assets.
+- You may read {{REFERENCE}} if it is a path: a read-only checkout of the frozen macOS v3.0.0 baseline. Never edit it, and never run its scripts or copy its source tree, images, fonts or brand assets.
 - The issue text is in {{ISSUE_BODY_FILE}}: the description first, then the comments, oldest first.
 
 ## Rules
