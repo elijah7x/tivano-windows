@@ -5144,12 +5144,22 @@ export class Engine {
         .replace(/^\\\\[?.]\\/i, "");
     };
     const parent = dirname(this.dataRoot);
-    const siblings = ["Tivano", "Tivano Dev", "Tivano Preview"].map((n) =>
-      canonOr(join(parent, n)),
-    );
-    const dotdirs = [".tivano", ".tivano-dev", ".tivano-preview"].map((n) =>
-      canonOr(join(homedir(), n)),
-    );
+    const siblings = [
+      "Tivano",
+      "Tivano Dev",
+      "Tivano Preview",
+      "Tivano Windows",
+      "Tivano Windows Dev",
+      "Tivano Windows Preview",
+    ].map((n) => canonOr(join(parent, n)));
+    const dotdirs = [
+      ".tivano",
+      ".tivano-dev",
+      ".tivano-preview",
+      ".tivano-windows",
+      ".tivano-windows-dev",
+      ".tivano-windows-preview",
+    ].map((n) => canonOr(join(homedir(), n)));
     return [
       env("SystemRoot", "C:\\Windows"),
       env("windir", "C:\\Windows"),
@@ -5252,7 +5262,8 @@ export class Engine {
    *  both the durable grant and the display path (frozen
    *  `projects.filter { HydraPaths.same($0.path, canonical) }`). */
   private projectForDirectory(canonical: string): Project | undefined {
-    const norm = (p: string) => p.replace(/[\\/]+$/, "").toLowerCase();
+    const norm = (p: string) =>
+      p.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
     const bound = this.paths?.findProjectByDirectory(canonical);
     const listed = this.store.state.projects.filter(
       (p) =>
@@ -5283,6 +5294,15 @@ export class Engine {
       this.failHydraStart(head, msg, { note: true });
       return false;
     };
+    // Every route needs the grant model: a routed folder binds a
+    // registerUser grant and a sidebar project, so an engine without
+    // runtime paths cannot honestly place the head — refuse here rather
+    // than fail later at exec-verify.
+    if (!this.paths) {
+      return refuse(
+        `Hydra: ${personaName} did not start because its checkout could not be read.`,
+      );
+    }
     // HydraPaths.canonical: normalized absolute, realpath when live.
     // NT namespace prefixes are stripped first — \\?\C:\Windows would
     // otherwise slip the system-root compare while still opening.
@@ -5532,15 +5552,18 @@ export class Engine {
       if (project.isShelved) this.setProjectShelved(project.id, false);
     }
     // Frozen applyHydraRoute: a routed head retitles to
-    // "Persona · task · folder" (+ " · profile" when routed to one).
-    const taskTitle = info.task.replace(/\s+/g, " ").trim().slice(0, 60);
-    const folderName =
-      project !== undefined && project.id !== lead.projectId
-        ? project.name
-        : basename(canonical) || canonical;
-    head.title =
-      `${personaName} · ${taskTitle} · ${folderName}` +
-      (info.profile ? ` · ${info.profile}` : "");
+    // "Persona · task · folder" (+ " · profile" when routed to one) —
+    // only when it carries a task; an empty one keeps its spawned title.
+    if (info.task.trim() !== "") {
+      const taskTitle = info.task.replace(/\s+/g, " ").trim().slice(0, 60);
+      const folderName =
+        project !== undefined && project.id !== lead.projectId
+          ? project.name
+          : basename(canonical) || canonical;
+      head.title =
+        `${personaName} · ${taskTitle} · ${folderName}` +
+        (info.profile ? ` · ${info.profile}` : "");
+    }
     this.store.update(() => {});
     this.emit({ type: "thread-updated", thread: head });
     return true;
