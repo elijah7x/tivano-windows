@@ -209,6 +209,16 @@ export function ChatView(props: {
   // with an unchanged scrollHeight as reader motion (the port's writes
   // only ever raise scrollTop — a layout clamp shrinks scrollHeight).
   const timelineFollowingRef = useRef(true);
+  // The tail's last landed id and the outstanding wait row's key let the
+  // growth effect spot the two frozen re-pin events: the reader's own
+  // send (attended — always back to the end) and a newly-appeared
+  // approval/question row (frozen "fetches any reader").
+  const timelineLastMsgRef = useRef<string | null>(null);
+  const timelineWaitRef = useRef<string | null>(null);
+  // The port's own scroll writes (follow snap, anchor shift, minimap
+  // jump) suppress the unexplained-motion release/re-pin for a beat —
+  // otherwise a minimap scrollIntoView reads as the reader moving up.
+  const timelineProgrammaticUntilRef = useRef(0);
   const timelineLastScrollRef = useRef<{
     top: number;
     dist: number;
@@ -276,20 +286,56 @@ export function ChatView(props: {
     return () => window.clearTimeout(t);
   }, [threadId]);
 
+  const waitKey =
+    turn?.status === "waiting-approval"
+      ? (turn.approval?.id ?? turn.question?.providerKey ?? turn.id)
+      : null;
   useEffect(() => {
     // P2-30 (frozen pinned-follow): growth keeps the end in view only
     // while the reader stays pinned — a scroll-up during streaming
     // released the pin in onScroll, so a starting turn or a flush never
     // yanks a paged-back reader down.
-    if (timelineFollowingRef.current)
+    const el = timelineRef.current;
+    const last = thread?.messages[thread.messages.length - 1];
+    const lastId = last?.id ?? null;
+    // Frozen: "Sending a message always brings the reader back to the
+    // conversation's end" — an attended send re-pins even when the
+    // reader had released the tail.
+    if (
+      lastId !== null &&
+      lastId !== timelineLastMsgRef.current &&
+      last?.role === "user"
+    ) {
+      timelineFollowingRef.current = true;
+    }
+    timelineLastMsgRef.current = lastId;
+    // Frozen fetches any reader for a question row — a newly-outstanding
+    // approval/question re-pins once (the id guard keeps an answered or
+    // lingering row from holding the pin while the reader reviews).
+    if (waitKey !== null && waitKey !== timelineWaitRef.current) {
+      timelineFollowingRef.current = true;
+    }
+    timelineWaitRef.current = waitKey;
+    // Frozen revives a stale pin: a released reader already sitting at
+    // the end follows new growth again.
+    if (
+      el &&
+      !timelineFollowingRef.current &&
+      el.scrollHeight - el.scrollTop - el.clientHeight <= 8
+    ) {
+      timelineFollowingRef.current = true;
+    }
+    if (timelineFollowingRef.current) {
+      timelineProgrammaticUntilRef.current = Date.now() + 100;
       endRef.current?.scrollIntoView({ block: "end" });
+    }
     // Following the live tail past the eager limit collapses the window
     // (frozen): a reader who paged back keeps what they loaded only while
     // nothing new pins them to the end.
     setTimelineVisible((v) =>
       timelineFollowReset(v, timelineFollowingRef.current),
     );
-  }, [thread?.messages.length, thread?.turn?.seq, thread?.turn?.status]);
+  }, [thread?.messages.length, thread?.turn?.seq, thread?.turn?.status, waitKey]);
 
   // A page landing prepends rows: hold the reader's spot by measuring the
   // document growth and shifting scrollTop by the same amount (frozen
@@ -302,11 +348,13 @@ export function ChatView(props: {
     const anchor = timelineAnchorRef.current;
     if (el && anchor !== null) {
       timelineAnchorRef.current = null;
+      timelineProgrammaticUntilRef.current = Date.now() + 100;
       el.scrollTop = el.scrollHeight - anchor;
     }
     const jumpId = timelineJumpRef.current;
     if (el && jumpId !== null) {
       timelineJumpRef.current = null;
+      timelineProgrammaticUntilRef.current = Date.now() + 100;
       el
         .querySelector<HTMLElement>(`[data-mid="${jumpId}"]`)
         ?.scrollIntoView({ block: "start" });
@@ -549,12 +597,18 @@ export function ChatView(props: {
           const delta = prev ? top - prev.top : 0;
           const prevDist = prev ? prev.dist : Number.MAX_VALUE;
           // A native-scrollbar drag (and keyboard paging) fires no
-          // wheel/touch/pointer event the gate can see — but the port's
-          // own writes only ever raise scrollTop, so a drop with an
-          // unchanged scrollHeight is still reader motion. A layout
-          // clamp (window collapse shrinking scrollHeight) stays out.
-          const unexplainedUp =
-            delta < -0.1 && el.scrollHeight === (prev?.h ?? el.scrollHeight);
+          // wheel/touch/pointer event the gate can see — so a scrollTop
+          // change with an unchanged scrollHeight that is not one of the
+          // port's own writes (follow snap, anchor shift, minimap jump —
+          // all suppressed by the programmatic window) is reader motion:
+          // a drop is them moving up, a rise is them moving down. A
+          // layout clamp (window collapse shrinking scrollHeight) stays
+          // out because the height must match.
+          const programmatic =
+            Date.now() < timelineProgrammaticUntilRef.current;
+          const sameHeight = el.scrollHeight === (prev?.h ?? el.scrollHeight);
+          const unexplainedUp = !programmatic && sameHeight && delta < -0.1;
+          const unexplainedDown = !programmatic && sameHeight && delta > 0.1;
           timelineLastScrollRef.current = { top, dist, h: el.scrollHeight };
           const userScrolling =
             timelineInteractRef.current ||
@@ -563,11 +617,16 @@ export function ChatView(props: {
             scrollFollowRelease(dist, delta, userScrolling, unexplainedUp)
           ) {
             timelineFollowingRef.current = false;
-          } else if (userScrolling && scrollFollowRepin(dist, prevDist)) {
+          } else if (
+            (userScrolling || unexplainedDown) &&
+            scrollFollowRepin(dist, prevDist)
+          ) {
             // Frozen re-pin evaluates only under reader-driven motion
-            // (the `scrolled` gate: a drag or a wheel-fed offset change)
-            // — a programmatic snap or layout reflow landing inside the
-            // 8px band must not re-pin behind the reader's back.
+            // (the `scrolled` gate): wheel/touch/pointer recency OR the
+            // unexplained-down path that covers scrollbar drags and
+            // keyboard paging — a programmatic snap or layout reflow
+            // landing inside the 8px band must not re-pin behind the
+            // reader's back.
             timelineFollowingRef.current = true;
           }
           // P1-26/P2-30: within a screenful of the top while moving up,
@@ -1006,6 +1065,11 @@ export function ChatView(props: {
         messages={thread.messages}
         scrollRef={timelineRef}
         onJumpToMessage={(id) => {
+          // The minimap's own scrollIntoView lands right after this —
+          // suppress it as reader motion so a jump to the tall last
+          // reply is not unpinned by the port's own scroll (frozen: a
+          // jump to the last block keeps isPinnedToBottom).
+          timelineProgrammaticUntilRef.current = Date.now() + 100;
           const idx = timelineItems.findIndex((it) =>
             it.kind === "lone"
               ? it.message.id === id

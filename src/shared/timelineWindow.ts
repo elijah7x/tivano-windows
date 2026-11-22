@@ -60,8 +60,9 @@ export function timelineFollowReset(
 
 // P2-30 (frozen ThreadTimeline scroll tracking): only the reader's own
 // scrolling decides whether the timeline follows new text. `delta` is the
-// reader's own motion (anchor growth excluded by the caller), positive is
-// downward.
+// raw scrollTop change (positive is downward); the caller excludes anchor
+// and growth motion through the same-height/programmatic gates, so what
+// reaches these helpers reads as reader motion.
 
 /** Frozen release: while the reader is interacting, any upward motion
  *  away from the end unpins the follow. A held finger is not a release;
