@@ -85,6 +85,7 @@ function fakeWorktrees(
   | "hydraLand"
   | "hydraCopyRemove"
   | "hydraReviewDiff"
+  | "hydraBackupDiff"
   | "autoWorktreeEligibility"
 > {
   const fail = { kind: "unavailable" as const, reason: "stub" };
@@ -109,6 +110,7 @@ function fakeWorktrees(
     hydraLand: async () => fail,
     hydraCopyRemove: async () => fail,
     hydraReviewDiff: async () => fail,
+    hydraBackupDiff: async () => fail,
   };
 }
 

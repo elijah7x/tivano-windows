@@ -767,6 +767,31 @@ export interface ChatThread {
      *  repository — the head changes files in place, never gets a copy
      *  and nothing merges on report. */
     isNonGitCheckout?: boolean | undefined;
+    /** P2-05 (frozen HydraJobHeadRecord.files, held on the head itself):
+     *  the paths this head owns, relative to its checkout — or to
+     *  `filesBase` when that is set. [] = the head only reads. A
+     *  "continue" entry's `files` replaces the list. */
+    files?: string[] | undefined;
+    /** P2-05 (frozen HydraHeadInfo.filesBase): the routed folder was the
+     *  home directory itself, so the file list resolves against home
+     *  while the head's workplace narrowed to the deepest common owned
+     *  directory. */
+    filesBase?: string | undefined;
+    /** P2-05 (frozen HydraHeadInfo.backupPath): the folder under
+     *  `<dataRoot>/hydra-backups` holding this head's owned files as
+     *  they were before it started — only set for a head that changed
+     *  a non-Git checkout in place. */
+    backupPath?: string | undefined;
+    /** P2-05 (frozen HydraHeadInfo.backupOwnedPaths): every owned path
+     *  the backup has covered so far — a "continue" listing new files
+     *  extends it, so the report diffs the new files like the first. */
+    backupOwnedPaths?: string[] | undefined;
+    /** P2-05 (frozen backedUpFiles/newFiles/notBackedUpFiles): the
+     *  copy's outcome per owned path — backed up, absent at backup
+     *  time, or skipped (size cap, unsupported path or copy failure). */
+    backedUpFiles?: string[] | undefined;
+    newFiles?: string[] | undefined;
+    notBackedUpFiles?: string[] | undefined;
     /** F22 isolation: the copy could not be removed and is kept on
      *  disk at `worktreeDir` (frozen kept-copy path). */
     copyKept?: boolean | undefined;

@@ -39,6 +39,15 @@ export interface HydraDelegation {
    *  `preset` on Chimera entries) — resolves against the usable
    *  presets the policy listed. */
   identity?: number | undefined;
+  /** P2-05 (frozen `files`): the paths this head owns, relative to its
+   *  checkout — [] for a head that only reads and reports. Required on
+   *  every new-head entry (filesGiven); absent on one means the whole
+   *  entry is refused. */
+  files?: string[] | undefined;
+  /** P2-05 (frozen `filesGiven`): the entry carried a `"files"` array —
+   *  even an empty one. A continue entry without one inherits the
+   *  head's recorded list where a conversion applies. */
+  filesGiven?: boolean | undefined;
 }
 
 const singleLine = (s: string, limit: number): string => {
@@ -59,6 +68,11 @@ export function delegationFromEntry(entry: unknown): HydraDelegation | null {
   // entries); it stands in for `task` when the lead names one.
   const task = get("task") ?? get("role") ?? singleLine(prompt, 60);
   const idn = (entry as Record<string, unknown>).identity;
+  // P2-05 (frozen files/filesGiven): only string elements survive;
+  // an entry that names no "files" array at all is what `filesGiven`
+  // reports — the dispatch refuses new-head entries without it.
+  const filesRaw = (entry as Record<string, unknown>).files;
+  const filesGiven = Array.isArray(filesRaw);
   return {
     task,
     prompt,
@@ -70,6 +84,10 @@ export function delegationFromEntry(entry: unknown): HydraDelegation | null {
       typeof idn === "number" && Number.isInteger(idn) && idn > 0
         ? idn
         : undefined,
+    files: filesGiven
+      ? filesRaw.filter((f): f is string => typeof f === "string")
+      : undefined,
+    filesGiven,
   };
 }
 
@@ -430,14 +448,22 @@ export function parseHydraReportNotes(reply: string): HydraReportNotes | undefin
   return notes;
 }
 
-/** Frozen `sharedFolderRule`, bounded: the owned-files list and its
- *  backup/diff do not exist in this port (no "files" field), so the
- *  rule narrows to change-in-place plus the Unfinished escape. */
+/** Frozen `sharedFolderRule` (v3.0.0): the in-place contract — Tivano
+ *  backed the owned files up first and diffs them for the lead. */
 export const HYDRA_SHARED_FOLDER_RULE =
-  "This folder is not a Git repository, so you change files in place without a copy or merge. If you need to change a file the brief did not name, stop before changing it and report under Unfinished which file, what change and why; the lead decides whether to send you back to do it.";
+  "This folder is not a Git repository, so you change files in place. Tivano backed up the files you own before you started and shows the lead their diff. Change only the files you own. If you need to change any other file, stop before changing it and report under Unfinished which file, what change and why; the lead decides whether to send you back to do it.";
 
-function sharedWorkplaceRules(path: string, isNonGit?: boolean): string {
-  return `${isNonGit ? HYDRA_SHARED_FOLDER_RULE + "\n" : ""}You work in the lead's checkout at ${path}, alongside the lead and the other heads, who are changing other files at the same time. Changes you did not make are expected there: leave every one of them alone, never stash, check out, reset, restore or clean anything, and never move work into a branch or worktree, whatever the project's own guidelines say about agents and worktrees. Do not use git status or git diff to check your work: they show everyone's changes, and the lead does the verifying.`;
+export function sharedWorkplaceRules(
+  path: string,
+  isNonGit?: boolean | undefined,
+  filesBase?: string | undefined,
+): string {
+  // Frozen workplaceRules .shared: a filesBase line leads when the
+  // head's list resolves against a folder other than its workplace.
+  const baseLine = filesBase
+    ? `Paths in your file list and the team split are relative to ${filesBase}; you work in ${path}.\n`
+    : "";
+  return `${baseLine}${isNonGit ? HYDRA_SHARED_FOLDER_RULE + "\n" : ""}You work in the lead's checkout at ${path}, alongside the lead and the other heads, who are changing other files at the same time. Changes you did not make are expected there: leave every one of them alone, never stash, check out, reset, restore or clean anything, and never move work into a branch or worktree, whatever the project's own guidelines say about agents and worktrees. Do not use git status or git diff to check your work: they show everyone's changes, and the lead does the verifying.`;
 }
 
 export function delegatedHeadPrompt(
@@ -446,19 +472,28 @@ export function delegatedHeadPrompt(
   checkoutPath: string,
   identityPrompt?: string | undefined,
   isNonGit?: boolean | undefined,
+  filesBase?: string | undefined,
 ): string {
   // P1-37: the adaptive mode's identity rides the brief (frozen
   // rolePrompt on the waiting item) — one line under the task.
   const identity = identityPrompt?.trim()
     ? `\nYou work as this sub-agent identity: ${identityPrompt.trim()}\n`
     : "";
+  // Frozen v2HeadPrompt's own-files line (the Team split it follows in
+  // the packet is outside this port's brief surface — the line stands
+  // on its own).
+  const filesLine = (delegation.files ?? []).length
+    ? "Change only files you own. Report any needed change to other files under Unfinished before changing them."
+    : "You change no files: read, investigate and report what you found.";
   return `You are ${persona.name}, a Hydra head in Tivano: one of several helpers working in parallel for a lead agent. The lead delegated this task to you.
 
 ## Your task: ${delegation.task}${identity}
 ${withoutVerificationSteps(delegation.prompt)}
 
 ## Where you work
-${sharedWorkplaceRules(checkoutPath, isNonGit)}
+${sharedWorkplaceRules(checkoutPath, isNonGit, filesBase)}
+
+${filesLine}
 
 ## How to work
 ${HOW_TO_WORK}
@@ -816,8 +851,8 @@ const POLICY_REPORT_STYLE_RULE =
 /** Frozen `projectRule`/`v2DelegationRequest` route clause, bounded:
  *  a head routes by a sidebar project's NAME or an ABSOLUTE PATH — the
  *  path is created when its parent exists, system folders are refused
- *  and a non-Git folder is changed in place without a copy or merge
- *  (no "files" list or per-file narrowing in this port). */
+ *  and a non-Git folder is changed in place without a copy or merge.
+ *  P2-05: the frozen home/backup sentences apply verbatim now. */
 function policyProjectRule(
   projects: { name: string; path: string }[],
   ownName: string | undefined,
@@ -828,7 +863,7 @@ function policyProjectRule(
       projects.map((p) => `${p.name} (\`${p.path}\`)`).join(", ") +
       "."
     : "";
-  return `Heads may work in any project. A head works in ${own} unless it is sent to another: an entry of the delegation block names it with "project", a sidebar project's name or the absolute path of a worktree, another repository or any folder, including non-Git folders — a folder the path names is created when its parent exists, system folders are refused, and a name that matches no sidebar project and is no absolute path does not start the head. Non-Git folders are changed in place without a copy or merge.${named} Whatever a head changes lands in the checkout it worked in, already there when its report arrives.`;
+  return `Heads may work in any project. A head works in ${own} unless it is sent to another: an entry of the delegation block names it with "project", a sidebar project's name or the absolute path of a worktree, another repository or any folder, including non-Git folders — a folder the path names is created when its parent exists, system folders are refused, and a name that matches no sidebar project and is no absolute path does not start the head. Non-Git folders, the home folder included, are changed in place without a copy or merge. Tivano backs up a head's listed files first and shows you their diff when it reports, so list exact files. A head that only reads may work in the home folder with "files": []. A head that writes there gets the narrowest folder containing its files. A head that needs other files stops and reports, and you send it back with "continue" if you agree.${named} Whatever a head changes lands in the checkout it worked in, already there when its report arrives.`;
 }
 
 /**
@@ -863,10 +898,10 @@ export function hydraLeadPolicy(opts: {
   return `[Hydra is on] You lead ${team} ("heads").${tiltRule} Delegate first, work second: anything bigger than a single obvious change to a single file is a job for heads. Audits, reviews, a feature across several files, a refactor, "check everything", research across many files, several tasks in one message: in your first reply, look at the code only long enough to write good briefs, a minute and a handful of files rather than ten, and then send the heads out, all of them in that one block. Never spend minutes reading before you delegate, and never do inline what heads could be doing in parallel. Only a truly single-focus request, one file and one obvious change, is yours to do alone, and size the team to the work rather than to how many heads are free: a small job whose pieces depend on each other is one head's task, or your own, not a team of heads.         Finish your reply with one fenced block
 
 \`\`\`hydra
-[{"task": "short title", "prompt": "complete, self-contained instructions with the exact files and acceptance criteria"}]
+[{"task": "short title", "prompt": "complete, self-contained instructions with the exact files and acceptance criteria", "files": ["paths/this/head/changes"]}]
 \`\`\`
 
-and stop there: do not wait, poll or verify anything after it. When a request is yours to do alone, do it and end with no block at all: an empty block sends no heads and is not needed. An entry may also carry its head's announced name, as in \`{"task": "...", "prompt": "...", "name": "Otto"}\`: the announced name is authoritative and the spawned head carries exactly it, so repeating the same block spawns the same names. An entry for work in another project carries \`"project"\` with that project's name, as in \`{"task": "...", "prompt": "...", "project": "gaze-site"}\`. To send a finished head of this request back to its part, use an entry \`{"continue": "<head name>", "prompt": "..."}\`; heads of earlier requests cannot be sent back, so give their part to a new head. Name new heads with the next roster names in order after the team listed above (Hank, Walter, Ada, Otto, Nova, Remy, Iris, Milo, Juno, Ezra, Lena, Bo, Kai, Vera, Finn, Mira, Odin, Suki, Rex, Zola, Pip, Ivo, Lux, Tova, Gus, then Hank 2 and so on), and omit the name when unsure: the next heads in order go out instead. Never invent names outside the roster: there is no head called Ives (the roster has Ivo), and an unknown name falls back to the next head in order rather than renaming anyone.${profileRule} Inside a prompt never open a fenced code block of your own (three backticks would end the hydra block early and no head would go out): describe code in words, quote identifiers with single backticks, or indent a snippet by four spaces. Each entry goes out to a head the moment its closing brace streams, before the block is finished, so write the entries in the order the heads should start and complete one entry before beginning the next. ${whereHeadsWork}; heads never see your context, so write every prompt for a capable colleague who has read nothing yet, with the exact files, symbols and acceptance criteria, give no two heads the same file, and give no head work that rests on another head's unfinished changes: they run in parallel and never see each other's work. Keep each brief bounded: one head, one task, one report you can act on. ${POLICY_BRIEF_RULE} ${POLICY_VERIFICATION_RULE} ${policyProjectRule(opts.projects ?? [], opts.ownProjectName)} A head can be sent to read and report as well as to change files, so the reading goes out in parallel too. Say in one line which heads you sent out and what each one does. The block is the only way to send heads out: never use an agent, task, spawn_agent or sub-agent tool of your own, which would run the work inside your own session instead of as a head in Tivano. Every head runs on this chat's own provider and model, with whatever tools that provider gives a chat. The reports arrive as a later message with the work already in place: build on them, do not redo them, never send out heads to verify or redo other heads, and never use git status or git diff to check on heads, since the checkout changes under you while they work. A message that opens with [Hydra] is from Tivano, not the user. ${POLICY_REPORT_STYLE_RULE}`;
+and stop there: do not wait, poll or verify anything after it. Every new-head entry needs "files": the paths that head changes, or [] for a head that only reads and reports. No path may appear in two entries. When a request is yours to do alone, do it and end with no block at all: an empty block sends no heads and is not needed. An entry may also carry its head's announced name, as in \`{"task": "...", "prompt": "...", "name": "Otto"}\`: the announced name is authoritative and the spawned head carries exactly it, so repeating the same block spawns the same names. An entry for work in another project carries \`"project"\` with that project's name, as in \`{"task": "...", "prompt": "...", "project": "gaze-site"}\`. To send a finished head of this request back to its part, use an entry \`{"continue": "<head name>", "prompt": "..."}\`; heads of earlier requests cannot be sent back, so give their part to a new head. Name new heads with the next roster names in order after the team listed above (Hank, Walter, Ada, Otto, Nova, Remy, Iris, Milo, Juno, Ezra, Lena, Bo, Kai, Vera, Finn, Mira, Odin, Suki, Rex, Zola, Pip, Ivo, Lux, Tova, Gus, then Hank 2 and so on), and omit the name when unsure: the next heads in order go out instead. Never invent names outside the roster: there is no head called Ives (the roster has Ivo), and an unknown name falls back to the next head in order rather than renaming anyone.${profileRule} Inside a prompt never open a fenced code block of your own (three backticks would end the hydra block early and no head would go out): describe code in words, quote identifiers with single backticks, or indent a snippet by four spaces. Each entry goes out to a head the moment its closing brace streams, before the block is finished, so write the entries in the order the heads should start and complete one entry before beginning the next. ${whereHeadsWork}; heads never see your context, so write every prompt for a capable colleague who has read nothing yet, with the exact files, symbols and acceptance criteria, give no two heads the same file, and give no head work that rests on another head's unfinished changes: they run in parallel and never see each other's work. Keep each brief bounded: one head, one task, one report you can act on. ${POLICY_BRIEF_RULE} ${POLICY_VERIFICATION_RULE} ${policyProjectRule(opts.projects ?? [], opts.ownProjectName)} A head can be sent to read and report as well as to change files, so the reading goes out in parallel too. Say in one line which heads you sent out and what each one does. The block is the only way to send heads out: never use an agent, task, spawn_agent or sub-agent tool of your own, which would run the work inside your own session instead of as a head in Tivano. Every head runs on this chat's own provider and model, with whatever tools that provider gives a chat. The reports arrive as a later message with the work already in place: build on them, do not redo them, never send out heads to verify or redo other heads, and never use git status or git diff to check on heads, since the checkout changes under you while they work. A message that opens with [Hydra] is from Tivano, not the user. ${POLICY_REPORT_STYLE_RULE}`;
 }
 
 /** Frozen `teamStatus` — the lead's team in a line, for the front of
@@ -922,7 +957,7 @@ export function hydraDelegationRequest(tilt: HydraTilt = "active"): string {
   // decision rule rides every user turn.
   const t = hydraTiltName(tilt);
   return `[Hydra setting: enabled, ${t.name}]
-Use Hydra heads for this request when it involves multiple files, an audit, broad research, or independent tasks. Keep a single obvious change in one file with the lead. Before you start, decide which parts go to heads: ${t.rule}. Delegate through the final hydra block so Tivano runs the selected heads; do not use native agent tools. Follow any explicit request below to work alone or limit delegation.
+Use Hydra heads for this request when it involves multiple files, an audit, broad research, or independent tasks. Keep a single obvious change in one file with the lead. Before you start, decide which parts go to heads: ${t.rule}. Delegate through the final hydra block so Tivano runs the selected heads; do not use native agent tools. Every new-head entry needs "files" ([] for read-only). Follow any explicit request below to work alone or limit delegation.
 
 ---
 

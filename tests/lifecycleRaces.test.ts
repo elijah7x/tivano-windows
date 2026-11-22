@@ -63,6 +63,7 @@ type HeldGit = Pick<
   | "hydraLand"
   | "hydraCopyRemove"
   | "hydraReviewDiff"
+  | "hydraBackupDiff"
   | "autoWorktreeEligibility"
 >;
 
@@ -98,6 +99,7 @@ function heldWorktrees(
     hydraLand: async () => fail,
     hydraCopyRemove: async () => fail,
     hydraReviewDiff: async () => fail,
+    hydraBackupDiff: async () => fail,
   };
 }
 
@@ -262,6 +264,7 @@ describe("P1-40 chat lifecycle races", () => {
       hydraLand: async () => fail,
       hydraCopyRemove: async () => fail,
       hydraReviewDiff: async () => fail,
+      hydraBackupDiff: async () => fail,
     };
     const r = rig(seen, { n: 0 }, stub);
     const unsent: string[] = [];

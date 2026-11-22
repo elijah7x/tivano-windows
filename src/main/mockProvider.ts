@@ -183,6 +183,12 @@ export class MockProvider implements ProviderAdapter {
     // budget) and `[mock:hydra-loop-fail]` the same with quiet-fail
     // heads (producedNothing refunds). Loops stick per lead thread —
     // the report turn itself carries no token.
+    // P2-05 fixtures: `[mock:hydra-nofiles]` — one entry missing its
+    // "files" array entirely (frozen missing-files refusal);
+    // `[mock:hydra-overlap]` — two entries claiming the same path
+    // (frozen overlap refusal on the later one).
+    const wantsHydraNoFiles = prompt.includes("[mock:hydra-nofiles]");
+    const wantsHydraOverlap = prompt.includes("[mock:hydra-overlap]");
     const wantsHydraRole = prompt.includes("[mock:hydra-role]");
     // P1-37 fixture: `[mock:hydra-identity]` = one delegation whose entry
     // carries the adaptive mode's `identity` number plus `role` title.
@@ -197,7 +203,25 @@ export class MockProvider implements ProviderAdapter {
       ? hydraPathMatch[1]!.replace(/^"|"$/g, "")
       : "";
     const hydraPathEntry = wantsHydraPath
-      ? `[{"task":"Folder work","prompt":"Try it.","project":${JSON.stringify(hydraPathArg)}}]`
+      ? `[{"task":"Folder work","prompt":"Try it.","project":${JSON.stringify(hydraPathArg)},"files":[]}]`
+      : "";
+    // P2-05 fixture: `[mock:hydra-path-files]<path>|<f1,f2>` — the entry
+    // routes at the folder like [mock:hydra-path] AND carries its owned
+    // "files" list, so a test drives the home-folder narrowing, the
+    // pre-brief backup and the report's diff. An optional third segment
+    // is the relative path the head touches in its (possibly narrowed)
+    // workspace; default is the first owned file.
+    const hydraPathFilesMatch = prompt.match(
+      /\[mock:hydra-path-files\]("[^"]+"|[^\s|]+)\|([^\s|]+)(?:\|([^\s|]+))?/,
+    );
+    const wantsHydraPathFiles = hydraPathFilesMatch !== null;
+    const hydraPathFilesEntry = wantsHydraPathFiles
+      ? (() => {
+          const p = hydraPathFilesMatch[1]!.replace(/^"|"$/g, "");
+          const files = hydraPathFilesMatch[2]!.split(",").filter(Boolean);
+          const touch = hydraPathFilesMatch[3] ?? files[0] ?? "touched.txt";
+          return `[{"task":"Folder work","prompt":"Try it. [mock:touch ${touch}]","project":${JSON.stringify(p)},"files":${JSON.stringify(files)}}]`;
+        })()
       : "";
     // P1-12 fixture: `[mock:hydra-continue]` — the lead's reply to the
     // batch report emits one `"continue": "Hank"` entry, sending the
@@ -274,47 +298,54 @@ export class MockProvider implements ProviderAdapter {
       wantsHydraQuiet || wantsHydraFailStart || wantsHydraFailAll ||
       wantsHydraFailTransient || wantsHydraRole || wantsHydraIdentity ||
       wantsHydraLoop || wantsHydraLoopFail || continueReport || looped ||
-      wantsHydraPath
+      wantsHydraPath || wantsHydraPathFiles || wantsHydraNoFiles ||
+      wantsHydraOverlap
     ) {
       const entries = wantsHydraWait || wantsHydraWaitMany || wantsHydraWaitRoute || wantsHydraWaitQ
         ? wantsHydraWaitMany
-          ? '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"},{"task":"Part two","prompt":"Second part."},{"task":"Part three","prompt":"Third part."}]'
+          ? '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]","files":[]},{"task":"Part two","prompt":"Second part.","files":[]},{"task":"Part three","prompt":"Third part.","files":[]}]'
           : wantsHydraWaitRoute
-            ? '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"},{"task":"Lost errand","prompt":"Try it.","project":"ghost-proj"}]'
+            ? '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]","files":[]},{"task":"Lost errand","prompt":"Try it.","project":"ghost-proj","files":[]}]'
           : wantsHydraWaitQ
-            ? '[{"task":"Ask something","prompt":"Work then ask. [mock:question]"}]'
-            : '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]"}]'
+            ? '[{"task":"Ask something","prompt":"Work then ask. [mock:question]","files":[]}]'
+            : '[{"task":"Hold for approval","prompt":"Work then hold. [mock:approval]","files":[]}]'
         : wantsHydraTouch
-          ? '[{"task":"Write alpha","prompt":"Write the file. [mock:touch hydra-alpha.txt]"},{"task":"Write beta","prompt":"Write the file. [mock:touch hydra-beta.txt]"}]'
+          ? '[{"task":"Write alpha","prompt":"Write the file. [mock:touch hydra-alpha.txt]","files":["hydra-alpha.txt"]},{"task":"Write beta","prompt":"Write the file. [mock:touch hydra-beta.txt]","files":["hydra-beta.txt"]}]'
         : wantsHydraProfile
-          ? '[{"task":"Deep pass","prompt":"Deep work.","profile":"deep"},{"task":"Plain pass","prompt":"Plain work."}]'
+          ? '[{"task":"Deep pass","prompt":"Deep work.","profile":"deep","files":[]},{"task":"Plain pass","prompt":"Plain work.","files":[]}]'
         : wantsHydraBadRoute
-          ? '[{"task":"Lost errand","prompt":"Try it.","project":"ghost-proj"}]'
+          ? '[{"task":"Lost errand","prompt":"Try it.","project":"ghost-proj","files":[]}]'
         : wantsHydraDeadCheckout
-          ? '[{"task":"Dead checkout","prompt":"Try it.","project":"ghost-checkout"}]'
+          ? '[{"task":"Dead checkout","prompt":"Try it.","project":"ghost-checkout","files":[]}]'
+        : wantsHydraPathFiles
+          ? hydraPathFilesEntry
         : wantsHydraPath
           ? hydraPathEntry
+        : wantsHydraNoFiles
+          ? '[{"task":"No list","prompt":"Try it."}]'
+        : wantsHydraOverlap
+          ? '[{"task":"First claim","prompt":"Try it.","files":["claimed.txt"]},{"task":"Second claim","prompt":"Try it.","files":["claimed.txt"]}]'
         : wantsHydraQuiet
-          ? '[{"task":"Sit still","prompt":"Open up then sit silent. [mock:quiet]"}]'
+          ? '[{"task":"Sit still","prompt":"Open up then sit silent. [mock:quiet]","files":[]}]'
         : wantsHydraFailStart
-          ? '[{"task":"Quiet fail one","prompt":"Try it. [mock:fail-quiet]"},{"task":"Quiet fail two","prompt":"Try it. [mock:fail-quiet]"},{"task":"Steady part","prompt":"Normal work."}]'
+          ? '[{"task":"Quiet fail one","prompt":"Try it. [mock:fail-quiet]","files":[]},{"task":"Quiet fail two","prompt":"Try it. [mock:fail-quiet]","files":[]},{"task":"Steady part","prompt":"Normal work.","files":[]}]'
         : wantsHydraFailAll
-          ? '[{"task":"Quiet fail one","prompt":"Try it. [mock:fail-quiet]"},{"task":"Quiet fail two","prompt":"Try it. [mock:fail-quiet]"}]'
+          ? '[{"task":"Quiet fail one","prompt":"Try it. [mock:fail-quiet]","files":[]},{"task":"Quiet fail two","prompt":"Try it. [mock:fail-quiet]","files":[]}]'
         : wantsHydraFailTransient
-          ? '[{"task":"Flaky start","prompt":"Try it. [mock:fail-quiet-transient]"},{"task":"Steady part","prompt":"Normal work."}]'
+          ? '[{"task":"Flaky start","prompt":"Try it. [mock:fail-quiet-transient]","files":[]},{"task":"Steady part","prompt":"Normal work.","files":[]}]'
         : wantsHydraRole
-          ? '[{"role":"Outline it","prompt":"Normal work."}]'
+          ? '[{"role":"Outline it","prompt":"Normal work.","files":[]}]'
         : wantsHydraIdentity
-          ? '[{"role":"Scout","prompt":"Map the area.","identity":1},{"role":"No pick","prompt":"Plain work."}]'
+          ? '[{"role":"Scout","prompt":"Map the area.","identity":1,"files":[]},{"role":"No pick","prompt":"Plain work.","files":[]}]'
         : continueReport
           ? continueGhost
             ? '[{"task":"Rework Nova","prompt":"Try again.","continue":"Nova"}]'
             : '[{"task":"Rework Hank","prompt":"Rework your part: tighten the intro.","continue":"Hank"}]'
         : wantsHydraLoopFail || (looped && this.hydraLoops.get(ctx.threadId) === "fail")
-          ? '[{"task":"Quiet fail","prompt":"Try it. [mock:fail-quiet]"}]'
+          ? '[{"task":"Quiet fail","prompt":"Try it. [mock:fail-quiet]","files":[]}]'
         : wantsHydraLoop || looped
-          ? '[{"task":"Loop part","prompt":"Normal work."}]'
-          : '[{"task":"Draft the outline","prompt":"Write a short outline."},{"task":"Verify the numbers","prompt":"Check the arithmetic."}]';
+          ? '[{"task":"Loop part","prompt":"Normal work.","files":[]}]'
+          : '[{"task":"Draft the outline","prompt":"Write a short outline.","files":[]},{"task":"Verify the numbers","prompt":"Check the arithmetic.","files":[]}]';
       // Split so the first entry closes one chunk BEFORE the second —
       // deterministic incremental dispatch (a head spawns while the
       // block is still open), and a window exists to stop mid-block.

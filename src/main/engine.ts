@@ -6,8 +6,8 @@
 // events can never contaminate a session.
 
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { Store } from "./store";
 import {
@@ -40,7 +40,7 @@ import {
   QUIET_STALL_NOTE,
   STALLED_NOTE,
   delegatedHeadPrompt,
-  HYDRA_SHARED_FOLDER_RULE,
+  sharedWorkplaceRules,
   hydraDelegationRequest,
   hydraIsTransientFailure,
   hydraLeadPolicy,
@@ -58,6 +58,14 @@ import {
   type HydraDelegation,
   type HydraReport,
 } from "../shared/hydraDelegation";
+import {
+  copyHydraOwnedFiles,
+  hydraBackupReport,
+  hydraCanonical,
+  hydraOwnedDirectory,
+  hydraOwnedPathIsSafe,
+  hydraOwnershipPath,
+} from "./hydraBackup";
 import {
   chimeraAdaptivePolicy,
   chimeraEffectivePrompt,
@@ -132,6 +140,13 @@ function countUserTurns(thread: ChatThread): number {
 
 function boundedText(text: string): string {
   return text.length <= MAX_MESSAGE_CHARS ? text : text.slice(0, MAX_MESSAGE_CHARS) + "…";
+}
+
+/** One separator/case fold for path compares — NTFS reads
+ *  case-insensitively and `/`-separated input must not slip a
+ *  `\`-joined root. */
+function sepFold(s: string): string {
+  return s.replace(/\//g, "\\").toLowerCase();
 }
 
 export class EngineError extends Error {
@@ -365,6 +380,7 @@ export class Engine {
     | "hydraLand"
     | "hydraCopyRemove"
     | "hydraReviewDiff"
+    | "hydraBackupDiff"
     | "autoWorktreeEligibility"
   >;
   attachWorktrees(w: NonNullable<Engine["worktrees"]>): void {
@@ -4529,6 +4545,14 @@ export class Engine {
     const s = this.store.state.settings;
     const launch = this.hydraLaunchFor(lead);
     if (!launch) return "";
+    // Frozen hydraTargetNotice: a dispatch-time notice is consumed on
+    // the next send — it opens the prompt before everything else.
+    const targetNotice = this.hydraTargetNotices.get(lead.id);
+    if (targetNotice !== undefined) {
+      this.hydraTargetNotices.delete(lead.id);
+    }
+    const noticePrefix =
+      targetNotice !== undefined ? `${targetNotice}\n\n` : "";
     const project = this.store.state.projects.find((p) => p.id === lead.projectId);
     const policy = hydraLeadPolicy({
       tilt: s.hydraTilt ?? "active",
@@ -4559,7 +4583,7 @@ export class Engine {
     if (isReport) {
       const canDelegate =
         (this.hydraRounds.get(lead.id) ?? 0) < MAX_DELEGATION_ROUNDS;
-      return queuedNote + policy + "\n\n" + hydraReportNote(team, canDelegate);
+      return noticePrefix + queuedNote + policy + "\n\n" + hydraReportNote(team, canDelegate);
     }
     // P1-36/P1-37: the adaptive mode's Chimera policy — role titles,
     // the numbered identity list and the auto-dispatch note ride the
@@ -4573,6 +4597,7 @@ export class Engine {
           )
         : "";
     return (
+      noticePrefix +
       queuedNote +
       hydraDelegationRequest(s.hydraTilt ?? "active") +
       policy +
@@ -4612,6 +4637,17 @@ export class Engine {
   /** Frozen hydraLanding queue — landings into one lead's checkout
    *  serialize, so two returning heads never merge onto each other. */
   private readonly hydraLandings = new Map<string, Promise<void>>();
+  /** P2-05 (frozen `owners`): which entry of a delegation batch owns
+   *  each resolved path — a second claim refuses at its own dispatch
+   *  (bounded: entries already out cannot un-start, so an overlapping
+   *  LATER entry is the one refused). */
+  private readonly hydraOwners = new Map<
+    string,
+    Map<string, { path: string; names: string[] }>
+  >();
+  /** P2-05 (frozen `hydraTargetNotice`): a notice set at dispatch rides
+   *  the front of the lead's next wire prompt, then clears. */
+  private readonly hydraTargetNotices = new Map<string, string>();
 
   /** Frozen spawnWaitingHeads: send out queued delegations as far as the
    *  launch's cap has room — after every spawn and every head finish. */
@@ -4657,7 +4693,7 @@ export class Engine {
     if (this.hydraBatchJob.get(batchId) !== (this.hydraBudgetGen.get(lead.id) ?? 0)) {
       return this.refuseDelegation(
         lead,
-        `${name} was not sent back: it belongs to an earlier request`,
+        `${name} was not sent back: it belongs to an earlier request; send a new head with a "files" array`,
       );
     }
     if (!target || info?.leadId !== lead.id) {
@@ -4671,25 +4707,119 @@ export class Engine {
         ? "it is still at work"
         : info.landing !== undefined && target.worktreeDir === undefined
           ? "its copy was already released"
-          : undefined;
+          : info.landingPending === true
+            ? "its copy is being released"
+            : undefined;
     if (reason) {
       return this.refuseDelegation(lead, `${name} was not sent back: ${reason}`);
     }
-    try {
-      // Frozen v2ContinuePrompt: the send-back lead-in, the workplace
-      // rule (an isolated head keeps its own copy), then the standing
-      // three-line report reminder.
-      const workRule =
-        info.baseTree !== undefined
-          ? "You keep your own copy and files. "
-          : info.isNonGitCheckout === true
-            ? `${HYDRA_SHARED_FOLDER_RULE} `
-            : "";
-      this.sendTurn(
-        target.id,
-        `The lead sends you back to your part:\n${d.prompt}\n\n${workRule}Report as before: one or two sentences of result, then exactly the three lines \`Deviations: ...\`, \`Unfinished: ...\` and \`Uncertain: ...\`, each \`none\` when empty; do not list changed files.`,
-        { authored: false, hydraBrief: true },
+    // Frozen continueHydraHead: the head's folder is re-checked — a head
+    // routed before every Tivano folder was refused may still sit in one.
+    const home = this.hydraHomeCanonical();
+    if (
+      info.targetCheckout !== undefined &&
+      sepFold(hydraCanonical(info.targetCheckout)) !== sepFold(home) &&
+      this.hydraTouchesProtectedRoot(info.targetCheckout)
+    ) {
+      return this.refuseDelegation(
+        lead,
+        `${name} was not sent back: its folder ${info.targetCheckout} is one Tivano keeps its own data in`,
       );
+    }
+    const checkout =
+      info.targetCheckout ?? this.threadDirectory(target.id) ?? undefined;
+    // The lead may list paths the head was never sent with, including
+    // folders Tivano writes itself; those never reach a head.
+    const base = info.filesBase ?? checkout;
+    if (base !== undefined) {
+      for (const file of d.files ?? []) {
+        if (!hydraOwnedPathIsSafe(file, base)) {
+          return this.refuseDelegation(
+            lead,
+            `${name} was not sent back: its files list ${file}, which is outside ${base}`,
+          );
+        }
+        const resolved = hydraCanonical(join(base, file));
+        if (
+          sepFold(resolved) === sepFold(home) ||
+          this.hydraTouchesProtectedRoot(resolved)
+        ) {
+          return this.refuseDelegation(
+            lead,
+            `${name} was not sent back: its files list ${file}, which is a folder Tivano keeps its own data in`,
+          );
+        }
+      }
+    }
+    // Frozen: the latest delegation's files replace the head's owned
+    // list — the backup below copies only the ones it does not hold yet.
+    info.files = d.files ?? [];
+    // Frozen v2ContinuePrompt's workplace: an isolated head keeps its
+    // own copy; a shared one gets the full workplace rules (the
+    // filesBase line, then the shared-folder rule when it is in place).
+    const hasOwnCopy =
+      info.baseTree !== undefined && target.worktreeDir !== undefined;
+    const workRule = hasOwnCopy
+      ? "You keep your own copy and files. "
+      : checkout !== undefined
+        ? `${sharedWorkplaceRules(checkout, info.isNonGitCheckout === true, info.filesBase)} `
+        : "You keep your own copy and files. ";
+    const brief = `The lead sends you back to your part:\n${d.prompt}\n\n${workRule}Report as before: one or two sentences of result, then exactly the three lines \`Deviations: ...\`, \`Unfinished: ...\` and \`Uncertain: ...\`, each \`none\` when empty; do not list changed files.`;
+    if (checkout !== undefined && info.isNonGitCheckout === true && !hasOwnCopy) {
+      // Files the lead listed now are copied before the head hears its
+      // brief, even for a head first sent with none (frozen). The head
+      // is at work again from here — the slot it holds is real.
+      info.status = "running";
+      info.finishedAt = undefined;
+      info.stopReason = undefined;
+      info.stalledNote = undefined;
+      info.summary = undefined;
+      info.landing = undefined;
+      info.batchId = batchId;
+      this.store.update(() => {});
+      void this.prepareHydraBackup(target.id, checkout).then(() => {
+        const cur = this.store.state.threads.find((t) => t.id === target.id);
+        const ci = cur?.hydraHead;
+        // Stopped or sent elsewhere while the files were copied: the
+        // brief is stale (frozen status/batchID/idle guards).
+        if (
+          !cur ||
+          !ci ||
+          ci.leadId !== lead.id ||
+          ci.batchId !== batchId ||
+          ci.status !== "running"
+        )
+          return;
+        if (
+          cur.turn &&
+          (cur.turn.status === "running" ||
+            cur.turn.status === "waiting-approval")
+        )
+          return;
+        try {
+          this.sendTurn(cur.id, brief, {
+            authored: false,
+            hydraBrief: true,
+          });
+        } catch (err) {
+          this.refuseDelegation(
+            lead,
+            `the rework of ${name} could not start: ${(err as Error)?.message ?? String(err)}`,
+          );
+          return;
+        }
+        if (cur.hydraHead!.status !== "running") return;
+        this.armHydraWatchdog(cur);
+        this.store.update(() => {});
+        this.emit({ type: "thread-updated", thread: cur });
+      });
+      return;
+    }
+    try {
+      this.sendTurn(target.id, brief, {
+        authored: false,
+        hydraBrief: true,
+      });
     } catch (err) {
       this.refuseDelegation(
         lead,
@@ -4758,51 +4888,103 @@ export class Engine {
           this.hydraBatchJob.get(t.hydraHead!.batchId) === jobGen,
       );
       if (!target) {
-        // Frozen v2ConvertingEarlierHeads: a finished earlier-request
-        // head converts to a fresh head when its files resolve — this
-        // port has no "files" field, so the refusal is the reachable
-        // branch (upstream refuses identically without files).
+        // Frozen v2ConvertingEarlierHeads: a "continue" naming a finished
+        // EARLIER-request head converts to a fresh head that inherits the
+        // entry's files or the ones the earlier head recorded, works in
+        // the earlier head's checkout, and is briefed to continue from
+        // its already-landed changes. With no files on either side it
+        // stays a continue and takes the frozen refusal.
         const earlier = this.store.state.threads.find(
           (t) =>
             isNamed(t) &&
             t.hydraHead!.status !== "running" &&
             this.hydraBatchJob.get(t.hydraHead!.batchId) !== jobGen,
         );
-        return this.refuseDelegation(
-          lead,
-          earlier
-            ? `${d.continue} was not sent back: it belongs to an earlier request`
-            : `${d.continue} was not sent back: no head of that name`,
-        );
+        if (!earlier) {
+          return this.refuseDelegation(
+            lead,
+            `${d.continue} was not sent back: no head of that name`,
+          );
+        }
+        const earlierInfo = earlier.hydraHead!;
+        const files = d.filesGiven === true ? d.files : earlierInfo.files;
+        if (files === undefined) {
+          return this.refuseDelegation(
+            lead,
+            `${d.continue} was not sent back: it belongs to an earlier request; send a new head with a "files" array`,
+          );
+        }
+        const earlierName = earlierInfo.name;
+        const earlierTarget = earlierInfo.targetCheckout;
+        const leadCheckout = this.threadDirectory(lead.id) ?? undefined;
+        d = {
+          ...d,
+          continue: undefined,
+          name: undefined,
+          files,
+          filesGiven: true,
+          project:
+            d.project === undefined &&
+            earlierTarget !== undefined &&
+            (leadCheckout === undefined ||
+              sepFold(earlierTarget) !== sepFold(leadCheckout))
+              ? earlierTarget
+              : d.project,
+          task: d.task.trim() === "" ? `${earlierName}'s part` : d.task,
+          // Frozen v2EarlierHeadBrief verbatim.
+          prompt: `${earlierName} worked on this part in an earlier request of this chat; its changes are already in the checkout. Continue from them:\n\n${d.prompt}`,
+        };
+      } else {
+        const info = target.hydraHead!;
+        const reason =
+          info.status === "running"
+            ? "it is still at work"
+            : info.landing !== undefined && target.worktreeDir === undefined
+              ? "its copy was already released"
+              : info.landingPending === true
+                ? "its copy is being released"
+                : this.hydraWaiting.get(lead.id)?.some(
+                        (w) => w.continueThreadId === target.id,
+                      )
+                  ? "it is already queued for continuation"
+                  : undefined;
+        if (reason) {
+          return this.refuseDelegation(
+            lead,
+            `${d.continue} was not sent back: ${reason}`,
+          );
+        }
+        if (!this.hydraAdmitOwnership(lead, batchId, d, d.continue)) return;
+        const queue = this.hydraWaiting.get(lead.id) ?? [];
+        queue.push({
+          d,
+          batchId,
+          queuedAt: Date.now(),
+          continueThreadId: target.id,
+        });
+        this.hydraWaiting.set(lead.id, queue);
+        this.spawnWaitingHeads(lead.id);
+        return;
       }
-      const info = target.hydraHead!;
-      const reason =
-        info.status === "running"
-          ? "it is still at work"
-          : info.landing !== undefined && target.worktreeDir === undefined
-            ? "its copy was already released"
-            : this.hydraWaiting.get(lead.id)?.some(
-                    (w) => w.continueThreadId === target.id,
-                  )
-              ? "it is already queued for continuation"
-              : undefined;
-      if (reason) {
-        return this.refuseDelegation(
-          lead,
-          `${d.continue} was not sent back: ${reason}`,
-        );
-      }
-      const queue = this.hydraWaiting.get(lead.id) ?? [];
-      queue.push({
-        d,
-        batchId,
-        queuedAt: Date.now(),
-        continueThreadId: target.id,
-      });
-      this.hydraWaiting.set(lead.id, queue);
-      this.spawnWaitingHeads(lead.id);
-      return;
     }
+    // Frozen v2MissingFilesRefusal, bounded per entry (the port dispatches
+    // as each entry's brace closes, so entries already out cannot
+    // un-start): every new-head entry needs its "files" array.
+    if (d.filesGiven !== true) {
+      return this.refuseDelegation(
+        lead,
+        `its entry has no "files" array — resend it with "files": the paths that head changes, or [] for a head that only reads and reports`,
+      );
+    }
+    // Frozen needsTarget/hydraLeadWorktree, bounded: upstream redirects a
+    // file-owning head with no "project" into the lead's unambiguous
+    // linked-worktree reference, proven by touched-path and tool-command
+    // evidence this port does not keep — so the redirect is unreachable
+    // here. The case it covers upstream (the lead already running inside
+    // a Tivano worktree) is unreachable too: `lead.worktreePath == nil`
+    // guards it out, and the head still works in that worktree through
+    // threadDirectory.
+    if (!this.hydraAdmitOwnership(lead, batchId, d, d.name ?? d.task)) return;
     const team = this.store.state.threads.filter(
       (t) => t.hydraHead?.leadId === lead.id,
     );
@@ -4925,31 +5107,9 @@ export class Engine {
     // sidebar project routes by name; anything else routes only as an
     // absolute path, and a non-path unknown name is the frozen refusal.
     const routeRef = d.project?.trim();
-    // Frozen expandingTildeInPath: a leading ~ resolves to the home
-    // folder, ~user to that user's profile dir (Windows: the sibling
-    // under the parent of the current home, only when it exists —
-    // otherwise the name stays unresolved like an unknown project).
-    const expanded = (() => {
-      if (
-        routeRef === "~" ||
-        routeRef?.startsWith("~/") ||
-        routeRef?.startsWith("~\\")
-      ) {
-        return join(homedir(), routeRef.slice(1).replace(/^[/\\]/, ""));
-      }
-      const m = /^~([^/\\]+)[/\\]?(.*)$/.exec(routeRef ?? "");
-      if (m) {
-        const profile = join(dirname(homedir()), m[1]!);
-        try {
-          if (lstatSync(profile).isDirectory()) {
-            return m[2] ? join(profile, m[2]) : profile;
-          }
-        } catch {
-          /* no such profile — leave unresolved */
-        }
-      }
-      return routeRef;
-    })();
+    // Frozen expandingTildeInPath (hydraExpandTilde): ~ resolves to
+    // home, ~user to that user's profile dir.
+    const expanded = this.hydraExpandTilde(routeRef);
     if (
       expanded &&
       !this.store.state.projects.some(
@@ -4984,18 +5144,26 @@ export class Engine {
         head.hydraHead!.isNonGitCheckout =
           this.hydraGitProbe(headDir).state !== "git";
     }
+    // P2-05 (frozen startTivanoHead): a non-Git head's owned files are
+    // backed up before it hears its brief — the report diffs them.
+    if (head.hydraHead!.isNonGitCheckout === true) {
+      void this.prepareBackedUpHead(
+        head.id,
+        d,
+        persona,
+        identityPrompt,
+      );
+      return;
+    }
     // F22 isolation (frozen makeHydraCopy): with copies on and a copyable
     // checkout the head gets its own detached worktree first and runs
     // there; a checkout that cannot be copied honestly keeps the shared
     // one — the head's record shows which it was. A non-Git checkout is
     // never copied: it is changed in place (frozen isNonGitCheckout).
+    // A non-Git head already returned through prepareBackedUpHead; any
+    // head reaching here is not in-place.
     const copySource = this.hydraCopySource(lead, head);
-    if (
-      launch?.isolatesHeads &&
-      copySource &&
-      this.worktrees &&
-      head.hydraHead?.isNonGitCheckout !== true
-    ) {
+    if (launch?.isolatesHeads && copySource && this.worktrees) {
       void this.prepareIsolatedHead(head.id, lead, d, persona, copySource, batchId, identityPrompt);
       return;
     }
@@ -5010,7 +5178,7 @@ export class Engine {
       );
     }
     try {
-      this.sendTurn(head.id, delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)", identityPrompt, head.hydraHead?.isNonGitCheckout === true), {
+      this.sendTurn(head.id, delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)", identityPrompt), {
         authored: false,
         hydraBrief: true,
       });
@@ -5065,6 +5233,10 @@ export class Engine {
         batchId,
         status: "running",
         spawnedAt: Date.now(),
+        // P2-05 (frozen files): the paths this head owns — drives the
+        // home-folder narrowing, the pre-brief backup and the
+        // report's diff.
+        files: d.files,
       },
     };
     this.store.update((doc) => {
@@ -5186,6 +5358,261 @@ export class Engine {
       .replace(/^\\\\[?.]\\/i, "")
       .replace(/[\\/]+$/, "")
       .toLowerCase();
+  }
+
+  /** The canonical home folder — the value `canonical == home` compares
+   *  against on this platform (realpath'd like routed candidates). */
+  private hydraHomeCanonical(): string {
+    let home = homedir();
+    try {
+      home = realpathSync(home);
+    } catch {
+      /* keep the env form */
+    }
+    return home
+      .replace(/^\\\\\?\\UNC\\/i, "\\\\")
+      .replace(/^\\\\[?.]\\/i, "")
+      .replace(/[\\/]+$/, "");
+  }
+
+  /** Frozen `hydraPathTouchesProtectedRoot` plus the port's drive/UNC
+   *  root guards: a path is refused when it IS a protected root, sits
+   *  INSIDE one, or CONTAINS one — the app's own task workspaces are the
+   *  one exemption, so a routed head can still be sent into a checkout
+   *  Tivano itself made. The home folder is judged separately by its
+   *  owned files, never here. */
+  private hydraTouchesProtectedRoot(p: string): boolean {
+    const roots = this.hydraSystemRoots().map(sepFold);
+    const taskWs = sepFold(
+      join(this.hydraDataRootCanonical(), "worktrees").replace(/[\\/]+$/, ""),
+    );
+    const pn = p.replace(/[\\/]+$/, "");
+    const pl = sepFold(pn);
+    if (pl === taskWs || pl.startsWith(taskWs + "\\")) return false;
+    return (
+      pl === "" ||
+      /^[A-Za-z]:$/.test(pn) ||
+      /^[\\/]+$/.test(pn) ||
+      /^\\\\[^\\/]+[\\/][^\\/]+$/.test(pn) ||
+      roots.some(
+        (r) => pl === r || pl.startsWith(r + "\\") || r.startsWith(pl + "\\"),
+      )
+    );
+  }
+
+  /** Frozen `expandingTildeInPath` as routing and ownership share it: a
+   *  leading ~ resolves to the home folder, ~user to that user's
+   *  profile dir (the sibling under the parent of the current home,
+   *  only when it exists — otherwise the name stays unresolved). */
+  private hydraExpandTilde(reference: string | undefined): string | undefined {
+    if (
+      reference === "~" ||
+      reference?.startsWith("~/") ||
+      reference?.startsWith("~\\")
+    ) {
+      return join(homedir(), reference.slice(1).replace(/^[/\\]/, ""));
+    }
+    const m = /^~([^/\\]+)[/\\]?(.*)$/.exec(reference ?? "");
+    if (m) {
+      const profile = join(dirname(homedir()), m[1]!);
+      try {
+        if (lstatSync(profile).isDirectory()) {
+          return m[2] ? join(profile, m[2]) : profile;
+        }
+      } catch {
+        /* no such profile — leave unresolved */
+      }
+    }
+    return reference;
+  }
+
+  /** Frozen `v2OwnershipCheckout`: the folder an entry's files resolve
+   *  against — the lead's own checkout with no "project", the named
+   *  sidebar project's dir (the lead's own checkout again when it is
+   *  the lead's project), else the path resolved against the lead's
+   *  checkout. nil lead checkout → no base → every file is invalid. */
+  private hydraOwnershipCheckout(
+    lead: ChatThread,
+    d: HydraDelegation,
+  ): string | undefined {
+    const leadCheckout = this.threadDirectory(lead.id) ?? undefined;
+    const ref = d.project?.trim();
+    if (!ref) return leadCheckout;
+    const expanded = this.hydraExpandTilde(ref) ?? ref;
+    const proj = this.store.state.projects.find(
+      (p) => p.name.toLowerCase() === expanded.toLowerCase(),
+    );
+    if (proj) {
+      return proj.id === lead.projectId ? leadCheckout : proj.directory;
+    }
+    // Frozen resolves an absolute reference standalone — it never
+    // touches the lead's checkout. A relative one resolves against it
+    // (nil lead checkout → nil result → every file invalid).
+    if (isAbsolute(expanded)) return resolve(expanded);
+    return leadCheckout === undefined
+      ? undefined
+      : resolve(leadCheckout, expanded);
+  }
+
+  /** Frozen ownership pass over one admitted entry (`v2OwnershipPath` +
+   *  the invalid-paths and overlap refusals), bounded per entry: every
+   *  owned path must resolve inside the entry's checkout, and a path
+   *  already claimed by an earlier entry of this batch refuses here —
+   *  entries already out cannot un-start, so the LATER entry is the one
+   *  refused rather than the whole block. */
+  private hydraAdmitOwnership(
+    lead: ChatThread,
+    batchId: string,
+    d: HydraDelegation,
+    name: string,
+  ): boolean {
+    const checkout = this.hydraOwnershipCheckout(lead, d);
+    const owners = this.hydraOwners.get(batchId) ?? new Map<string, { path: string; names: string[] }>();
+    const invalid: string[] = [];
+    const overlaps: { path: string; names: string[] }[] = [];
+    const seen = new Set<string>();
+    for (const file of d.files ?? []) {
+      const expanded = this.hydraExpandTilde(file.trim()) ?? "";
+      const path = checkout
+        ? hydraOwnershipPath(expanded, checkout)
+        : undefined;
+      if (path === undefined) {
+        invalid.push(`${name}: ${expanded === "" ? "<empty path>" : file}`);
+        continue;
+      }
+      const key = sepFold(path);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const claim = owners.get(key) ?? { path, names: [] };
+      claim.names.push(name);
+      owners.set(key, claim);
+      if (claim.names.length > 1) overlaps.push(claim);
+    }
+    this.hydraOwners.set(batchId, owners);
+    if (invalid.length) {
+      this.refuseDelegation(
+        lead,
+        `these ownership paths are empty, outside their target checkout, or have no resolvable checkout:\n${invalid.join("\n")}\nTo work in a folder outside your checkout, set "project" to that folder's absolute path and list "files" relative to it.`,
+      );
+      return false;
+    }
+    if (overlaps.length) {
+      this.refuseDelegation(
+        lead,
+        `more than one task claims the same path.\n${overlaps.map((c) => `- ${c.path}: ${c.names.join(", ")}`).join("\n")}\nResend one whole block with each path owned once.`,
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /** Frozen `prepareHydraBackup`: before a non-Git head hears its
+   *  brief, the files it owns are copied under the data root so the
+   *  report can diff them. A continuation's newly listed files join
+   *  the same backup; a head deleted mid-copy loses only the folder. */
+  private async prepareHydraBackup(
+    headId: string,
+    checkout: string,
+  ): Promise<void> {
+    const head = this.store.state.threads.find((t) => t.id === headId);
+    const info = head?.hydraHead;
+    if (!info) return;
+    const files = info.files ?? [];
+    if (!files.length) return;
+    const base = info.filesBase ?? checkout;
+    const isContinuation = info.backupPath !== undefined;
+    const owned = new Set(
+      (info.backupOwnedPaths ?? []).map((p) =>
+        sepFold(normalize(p).replace(/[\\/]+$/, "")),
+      ),
+    );
+    const folder =
+      info.backupPath ?? join(this.dataRoot, "hydra-backups", headId);
+    const added = isContinuation
+      ? files.filter(
+          (f) => !owned.has(sepFold(normalize(f).replace(/[\\/]+$/, ""))),
+        )
+      : files;
+    if (!added.length) return;
+    const result = await copyHydraOwnedFiles(added, base, folder).catch(
+      () => null,
+    );
+    const cur = this.store.state.threads.find((t) => t.id === headId);
+    if (!cur?.hydraHead) {
+      if (!isContinuation) {
+        try {
+          rmSync(folder, { recursive: true, force: true });
+        } catch {
+          /* nothing to undo */
+        }
+      }
+      return;
+    }
+    if (result === null) return;
+    const ci = cur.hydraHead;
+    ci.backupPath = folder;
+    ci.backupOwnedPaths = [...(ci.backupOwnedPaths ?? []), ...added];
+    ci.backedUpFiles = [...(ci.backedUpFiles ?? []), ...result.copied];
+    ci.newFiles = [...(ci.newFiles ?? []), ...result.added];
+    ci.notBackedUpFiles = [...(ci.notBackedUpFiles ?? []), ...result.skipped];
+    this.store.update(() => {});
+  }
+
+  /** The empty file `git diff --no-index` diffs a missing side against —
+   *  the port's stand-in for /dev/null (frozen passes it for `-N`). */
+  private hydraEmptyDiffAnchor(): string | undefined {
+    const p = join(this.dataRoot, "hydra-backups", ".empty");
+    try {
+      if (!existsSync(p)) {
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, "");
+      }
+      return p;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Frozen `hydraHeadFinished`'s deferred half: an in-place head's
+   *  report waits for the diff of its backed-up files, then joins the
+   *  batch like any other — landingPending holds the batch open the
+   *  same way a copy's landing does. */
+  private async hydraBackupReportThenLand(headId: string): Promise<void> {
+    const head = this.store.state.threads.find((t) => t.id === headId);
+    const info = head?.hydraHead;
+    if (!head || !info || info.backupPath === undefined) {
+      return this.finishHydraLanding(headId);
+    }
+    const projectId = head.projectId ?? undefined;
+    const empty = this.hydraEmptyDiffAnchor();
+    const diff =
+      empty === undefined
+        ? undefined
+        : await hydraBackupReport(
+            { ...info, personaName: info.name },
+            async (before, after) => {
+              if (this.worktrees === undefined || projectId === undefined) {
+                return { failed: "Git is unavailable" };
+              }
+              const r = await this.worktrees.hydraBackupDiff(
+                projectId,
+                before,
+                after,
+              );
+              return r.kind === "ok"
+                ? { output: r.output, hitCap: r.hitCap }
+                : { failed: r.reason };
+            },
+            empty,
+          );
+    const cur = this.store.state.threads.find((t) => t.id === headId);
+    if (cur?.hydraHead && diff !== undefined) {
+      // Frozen: `[spoken, diff].joined(separator: "\n\n")` — the head's
+      // own text first, the backup diff after it.
+      cur.hydraHead.summary =
+        `${cur.hydraHead.summary ?? ""}\n\n${diff}`.trim();
+    }
+    this.finishHydraLanding(headId);
   }
 
   /** P1-08 (frozen HydraGitIdentityReader, bounded): a `.git` entry on
@@ -5344,57 +5771,55 @@ export class Engine {
         .replace(/^\\\\[?.]\\/i, "");
     }
     const norm = canonical.replace(/[\\/]+$/, "");
-    // Compares run in one separator form — a `/`-separated canonical
-    // must not slip a `\`-joined root (and vice versa).
-    const sepN = (s: string) => s.replace(/\//g, "\\").toLowerCase();
-    const lower = sepN(norm);
-    const roots = this.hydraSystemRoots().map(sepN);
-    // Frozen hydraPathTouchesProtectedRoot: a path is refused when it
-    // IS a protected root, sits INSIDE one, or CONTAINS one — the
-    // app's own task workspaces are the one exemption, so a routed
-    // head can still be sent into a checkout Tivano itself made.
-    const taskWs = sepN(
-      join(this.hydraDataRootCanonical(), "worktrees").replace(/[\\/]+$/, ""),
-    );
-    const inTaskWs = lower === taskWs || lower.startsWith(taskWs + "\\");
-    // Windows bound: frozen exempts the home folder because owned files
-    // narrow it per-file (P2-05); without that slice a head in home
-    // would edit the whole profile in place, so it stays refused.
-    const homeLower = (() => {
-      let home = homedir();
-      try {
-        home = realpathSync(home);
-      } catch {
-        /* keep the env form */
-      }
-      return sepN(
-        home
-          .replace(/^\\\\\?\\UNC\\/i, "\\\\")
-          .replace(/^\\\\[?.]\\/i, "")
-          .replace(/[\\/]+$/, ""),
-      );
-    })();
-    // The same predicate runs on the resolved repo top below — a named
-    // folder may pass while its checkout (rev-parse --show-toplevel) is
-    // the home dir or a protected root, and the head must still refuse.
-    const touchesProtected = (p: string): boolean => {
-      const pn = p.replace(/[\\/]+$/, "");
-      const pl = sepN(pn);
-      return (
-        pl === "" ||
-        pl === homeLower ||
-        homeLower.startsWith(pl + "\\") ||
-        /^[A-Za-z]:$/.test(pn) ||
-        /^[\\/]+$/.test(pn) ||
-        /^\\\\[^\\/]+[\\/][^\\/]+$/.test(pn) ||
-        roots.some(
-          (r) => pl === r || pl.startsWith(r + "\\") || r.startsWith(pl + "\\"),
-        )
-      );
-    };
-    if (!inTaskWs && touchesProtected(canonical)) {
+    const lower = sepFold(norm);
+    // P2-05 (frozen): the home folder is allowed — it holds every
+    // protected folder, so it never matches the "contains" rule; it is
+    // judged one owned file at a time below.
+    const home = this.hydraHomeCanonical();
+    const homeLower = sepFold(home);
+    if (lower !== homeLower && this.hydraTouchesProtectedRoot(canonical)) {
       return refuse(
         `Hydra: ${display} is a system folder, so ${personaName} did not start.`,
+      );
+    }
+    // Frozen home route: every owned file must stay under home and out
+    // of a protected folder (two files can share home while one sits in
+    // or contains one). Their deepest common existing directory becomes
+    // the head's workplace and home stays their list's base.
+    if (lower === homeLower) {
+      const files = head.hydraHead!.files ?? [];
+      for (const file of files) {
+        if (!hydraOwnedPathIsSafe(file, home)) {
+          return refuse(
+            `Hydra: ${file} lists files outside ${home}, so ${personaName} did not start.`,
+          );
+        }
+      }
+      for (const file of files) {
+        const resolved = hydraCanonical(join(home, file));
+        if (
+          sepFold(resolved) === homeLower ||
+          this.hydraTouchesProtectedRoot(resolved)
+        ) {
+          return refuse(
+            `Hydra: ${file} is a system folder, so ${personaName} did not start.`,
+          );
+        }
+      }
+      const narrowed = hydraOwnedDirectory(files, home);
+      if (narrowed !== undefined && sepFold(narrowed) !== homeLower) {
+        canonical = narrowed;
+        head.hydraHead!.filesBase = home;
+      }
+    }
+    // Frozen re-runs the same gate on the (possibly narrowed) canonical
+    // — the refusal names the resolved path here, not the reference.
+    if (
+      sepFold(canonical.replace(/[\\/]+$/, "")) !== homeLower &&
+      this.hydraTouchesProtectedRoot(canonical)
+    ) {
+      return refuse(
+        `Hydra: ${canonical} is a system folder, so ${personaName} did not start.`,
       );
     }
     // Missing folder → created only when its parent is a live folder
@@ -5456,11 +5881,9 @@ export class Engine {
     // system-folder route (the task-workspaces exemption carries over
     // because Tivano's own worktrees are repos).
     if (probe.state === "git") {
-      const rootL = sepN(probe.root.replace(/[\\/]+$/, ""));
       if (
-        rootL !== taskWs &&
-        !rootL.startsWith(taskWs + "\\") &&
-        touchesProtected(probe.root)
+        sepFold(probe.root.replace(/[\\/]+$/, "")) !== homeLower &&
+        this.hydraTouchesProtectedRoot(probe.root)
       ) {
         return refuse(
           `Hydra: ${display} is a system folder, so ${personaName} did not start.`,
@@ -5641,7 +6064,7 @@ export class Engine {
         { note: true },
       );
     }
-    const brief = delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)", identityPrompt, cur.hydraHead?.isNonGitCheckout === true);
+    const brief = delegatedHeadPrompt(persona, d, dir ?? "(no project checkout)", identityPrompt, cur.hydraHead?.isNonGitCheckout === true, cur.worktreeDir === undefined ? cur.hydraHead?.filesBase : undefined);
     try {
       this.sendTurn(cur.id, brief, {
         authored: false,
@@ -5650,6 +6073,80 @@ export class Engine {
     } catch (err) {
       // 2.2.12 parity: a head already turning (its row was messaged while
       // the copy bound) keeps its brief queued at the front until that
+      // turn ends — being busy is not a start failure.
+      const busy =
+        cur.turn &&
+        (cur.turn.status === "running" || cur.turn.status === "waiting-approval");
+      if (busy && (cur.followUps?.length ?? 0) < Engine.FOLLOWUP_MAX) {
+        this.store.update(() => {
+          this.queueOf(cur).unshift({
+            id: randomUUID(),
+            text: brief,
+            createdAt: Date.now(),
+          });
+          cur.updatedAt = Date.now();
+        });
+        this.emitQueue(cur);
+        this.armHydraWatchdog(cur);
+        this.emit({ type: "thread-updated", thread: cur });
+        return;
+      }
+      return this.failHydraStart(
+        cur,
+        `The head could not start: ${(err as Error)?.message ?? String(err)}`,
+      );
+    }
+    if (cur.hydraHead!.status !== "running") return;
+    this.armHydraWatchdog(cur);
+    this.store.update(() => {});
+    this.emit({ type: "thread-updated", thread: cur });
+  }
+
+  /** Frozen startTivanoHead's non-Git half: the head's owned files are
+   *  copied under the data root first, THEN the brief goes out — its
+   *  report later diffs the checkout against those copies. A head
+   *  stopped while the copy ran never hears the brief (frozen
+   *  hydraHeadCanStart between the steps). */
+  private async prepareBackedUpHead(
+    headId: string,
+    d: HydraDelegation,
+    persona: HydraPersona,
+    identityPrompt?: string | undefined,
+  ): Promise<void> {
+    const head = this.store.state.threads.find((t) => t.id === headId);
+    if (!head?.hydraHead || head.hydraHead.status !== "running") return;
+    // Frozen startTivanoHead: a head whose checkout cannot be read
+    // never starts — it ends failed and the lead hears why.
+    if (!this.hydraCheckoutUsable(head)) {
+      return this.failHydraStart(
+        head,
+        `Hydra: ${persona.name} did not start because its checkout could not be read.`,
+        { note: true },
+      );
+    }
+    const checkout = this.threadDirectory(head.id) ?? undefined;
+    if (checkout !== undefined) {
+      await this.prepareHydraBackup(head.id, checkout);
+    }
+    const cur = this.store.state.threads.find((t) => t.id === headId);
+    if (!cur?.hydraHead || cur.hydraHead.status !== "running") return;
+    const dir = this.threadDirectory(cur.id);
+    const brief = delegatedHeadPrompt(
+      persona,
+      d,
+      dir ?? "(no project checkout)",
+      identityPrompt,
+      cur.hydraHead.isNonGitCheckout === true,
+      cur.worktreeDir === undefined ? cur.hydraHead.filesBase : undefined,
+    );
+    try {
+      this.sendTurn(cur.id, brief, {
+        authored: false,
+        hydraBrief: true,
+      });
+    } catch (err) {
+      // 2.2.12 parity: a head already turning (its row was messaged while
+      // the backup ran) keeps its brief queued at the front until that
       // turn ends — being busy is not a start failure.
       const busy =
         cur.turn &&
@@ -5944,6 +6441,16 @@ export class Engine {
       this.emit({ type: "thread-updated", thread: head });
       return;
     }
+    // P2-05 (frozen hydraHeadFinished): an in-place head's report waits
+    // for the diff of its backed-up files — landingPending holds the
+    // batch open the same way a copy's landing does.
+    if (info.backupPath !== undefined && head.worktreeDir === undefined) {
+      info.landingPending = true;
+      void this.hydraBackupReportThenLand(head.id);
+      this.store.update(() => {});
+      this.emit({ type: "thread-updated", thread: head });
+      return;
+    }
     this.queueHydraReport(head);
     // A finished head makes room: delegations waiting on the cap go out
     // first, then the batch settles and the report flushes (frozen order).
@@ -6093,6 +6600,8 @@ export class Engine {
     for (const r of flushable) {
       for (const k of [...this.hydraCaptures.keys()])
         if (k.startsWith(`${leadId}:${r.batchId}:`)) this.hydraCaptures.delete(k);
+      // P2-05: the batch's ownership claims die with it too.
+      this.hydraOwners.delete(r.batchId ?? "");
     }
     try {
       // Frozen refundRound: a flushed batch whose every head provably

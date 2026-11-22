@@ -1371,6 +1371,52 @@ export class GitService {
     }
   }
 
+  /** P2-05 (frozen `hydraBackupReport`'s diff step, bounded): one file
+   *  pair's `git diff --no-index` — the port's stand-in for
+   *  `/usr/bin/diff -ruN`, with the same exit contract (0 same,
+   *  1 differs, >1 error). Both paths are absolute and may live outside
+   *  any repository, so no cwd grant applies; the op still passes the
+   *  same dispose/cancel/deadline gate and semaphore. */
+  async hydraBackupDiff(
+    projectId: string,
+    before: string,
+    after: string,
+  ): Promise<
+    | { kind: "ok"; output: string; hitCap: boolean }
+    | { kind: "unavailable"; reason: string }
+  > {
+    const fail = (r: string) => ({ kind: "unavailable" as const, reason: r });
+    if (this.unavailableReason) return fail(this.unavailableReason);
+    const op = this.newOp(projectId);
+    let acquired = false;
+    try {
+      await this.acquire(op);
+      acquired = true;
+      const r = await this.awaitOp(
+        op,
+        this.runOp(op, ["diff", "--no-index", "--no-ext-diff", "--", before, after], {
+          maxBytes: 80_000,
+        }),
+      );
+      if (r.code === 0 || r.code === 1)
+        return {
+          kind: "ok",
+          output: r.stdout,
+          hitCap: r.overflowed === true || r.stdout.length >= 80_000,
+        };
+      return fail(
+        r.timedOut
+          ? "the diff timed out"
+          : r.stderr.trim() || r.spawnError || r.executorFailed || `diff exited ${r.code}`,
+      );
+    } catch (e) {
+      return fail(reason(e));
+    } finally {
+      if (acquired) this.release();
+      op.settle();
+    }
+  }
+
   /** P1-39 (frozen `autoWorktreeEligibility`): may the checkout host an
    *  automatic worktree? `.nonGit` — not a repository at all — means the
    *  chat honestly stays local; `.unavailable` — root mismatch, no

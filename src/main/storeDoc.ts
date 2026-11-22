@@ -750,6 +750,15 @@ const vThreadHead = vObject({
       ),
       targetCheckout: vOptional(vMaxString(2000)),
       isNonGitCheckout: vOptional(vBoolean),
+      // P2-05: the head's owned file list and its in-place backup
+      // record (frozen HydraHeadInfo files*/backup* fields).
+      files: vOptional(vArray(vMaxString(2000), 10_000)),
+      filesBase: vOptional(vMaxString(2000)),
+      backupPath: vOptional(vMaxString(2000)),
+      backupOwnedPaths: vOptional(vArray(vMaxString(2000), 10_000)),
+      backedUpFiles: vOptional(vArray(vMaxString(2000), 10_000)),
+      newFiles: vOptional(vArray(vMaxString(2000), 10_000)),
+      notBackedUpFiles: vOptional(vArray(vMaxString(2000), 10_000)),
       copyKept: vOptional(vBoolean),
       landingPending: vOptional(vBoolean),
       spawnedAt: vTs,

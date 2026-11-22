@@ -6,11 +6,19 @@
 // Tivano cannot read — a non-Git folder is changed in place (no copy,
 // no merge) and joins the sidebar.
 
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Engine } from "../src/main/engine";
+import {
+  copyHydraOwnedFiles,
+  hydraBackupReport,
+  hydraCanonical,
+  hydraOwnedDirectory,
+  hydraOwnedPathIsSafe,
+  hydraOwnershipPath,
+} from "../src/main/hydraBackup";
 import { MockProvider } from "../src/main/mockProvider";
 import { ProjectRuntimePaths } from "../src/main/projectRuntimePaths";
 import { Store } from "../src/main/store";
@@ -368,3 +376,443 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(gitPrompt).not.toContain("not a Git repository");
   });
 });
+
+// P2-05 (frozen owned-files contract): every new-head entry carries a
+// "files" array — [] for a read-only head — and no two entries of one
+// block claim the same path. A non-Git head's owned files are backed
+// up before its brief, then the report diffs them against what the
+// head left. Home narrows to the deepest common existing folder of
+// the owned paths; owned paths never reach a protected root.
+describe("P2-05 owned-files contract (frozen v2)", () => {
+  // A refused delegation reaches the lead as a queued follow-up turn
+  // (frozen refusal-turn), not a notice — search both the queue and
+  // the messages the follow-up turn already consumed.
+  const refusals = (engine: Engine, leadId: string) => {
+    const t = engine.snapshot().threads.find((x) => x.id === leadId)!;
+    return [
+      ...(t.followUps ?? []).map((f) => f.text),
+      ...t.messages.map((m) => m.content),
+    ];
+  };
+
+  it("an entry with no files array is refused and no head goes out", async () => {
+    const { engine } = rig();
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "do it [mock:hydra-nofiles]");
+    await waitFor(() =>
+      refusals(engine, lead.id).some((n) =>
+        n.includes('its entry has no "files" array'),
+      ),
+    );
+    expect(heads(engine, lead.id)).toHaveLength(0);
+  }, 20_000);
+
+  it("two entries claiming the same path refuse the later one", async () => {
+    const { engine, projectId } = rig();
+    // The lead's own checkout is the ownership base when an entry names
+    // no project — bind it so the claim resolves at all.
+    const lead = engine.createThread(projectId, "lead");
+    engine.sendTurn(lead.id, "do it [mock:hydra-overlap]");
+    await waitFor(() =>
+      refusals(engine, lead.id).some((n) =>
+        n.includes("claims the same path"),
+      ),
+    );
+    // The first claimant went out; the second was refused with both
+    // task names listed (frozen overlap listing).
+    expect(heads(engine, lead.id)).toHaveLength(1);
+    const refusal = refusals(engine, lead.id).find((n) =>
+      n.includes("claims the same path"),
+    )!;
+    expect(refusal).toContain("First claim");
+    expect(refusal).toContain("Second claim");
+    expect(refusal).toContain("claimed.txt");
+  }, 20_000);
+
+  it("a non-Git head's owned files are backed up before it starts, then diffed on report", async () => {
+    const { engine, dataRoot } = rig();
+    const folder = tmp("tivano-owned-");
+    mkdirSync(join(folder, "sub"), { recursive: true });
+    writeFileSync(join(folder, "sub", "a.txt"), "before\n");
+    // The head owns the folder `sub`; the mock writes `sub/b.txt`
+    // inside it — an owned-path-new file the report counts as added.
+    const stub = fakeWorktreesStub();
+    engine.attachWorktrees(stub as never);
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(
+      lead.id,
+      `do it [mock:hydra-path-files]${folder}|sub|sub/b.txt`,
+    );
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    const info = head.hydraHead!;
+    await waitFor(() => info.status !== "running");
+    expect(info.status).toBe("completed");
+    expect(info.isNonGitCheckout).toBe(true);
+    // The backup copied the owned dir's contents before the brief.
+    const backup = info.backupPath!;
+    expect(backup).toBeDefined();
+    expect(backup.startsWith(join(dataRoot, "hydra-backups"))).toBe(true);
+    expect(readFileSync(join(backup, "sub", "a.txt"), "utf8")).toBe("before\n");
+    const norm = (p: string) => p.replace(/[\\/]+/g, "\\").toLowerCase();
+    expect((info.backedUpFiles ?? []).map(norm)).toContain(
+      norm("sub\\a.txt"),
+    );
+    // The report carries the frozen footer and the added count, and the
+    // stubbed diff ran at least once.
+    await waitFor(() =>
+      (info.summary ?? "").includes("worked in place in"),
+    );
+    expect(info.summary).toContain("worked in place in");
+    expect(info.summary).toContain("the originals are at");
+    expect(info.summary).toMatch(/Added: [1-9]/);
+    expect(stub.diffs.length).toBeGreaterThan(0);
+    // The real write landed in the owned folder, not anywhere else.
+    expect(existsSync(join(folder, "sub", "b.txt"))).toBe(true);
+  }, 20_000);
+
+  it("a continuation keeps the same backup folder and re-arms the same head", async () => {
+    const { engine } = rig();
+    const folder = tmp("tivano-owned-cont-");
+    mkdirSync(join(folder, "sub"), { recursive: true });
+    writeFileSync(join(folder, "sub", "a.txt"), "one\n");
+    engine.attachWorktrees(fakeWorktreesStub() as never);
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(
+      lead.id,
+      `do it [mock:hydra-path-files]${folder}|sub|sub/a.txt [mock:hydra-continue]`,
+    );
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    const info = head.hydraHead!;
+    await waitFor(() => info.status !== "running");
+    const backup1 = info.backupPath!;
+    expect(backup1).toBeDefined();
+    // The lead's reply to the batch report emits {"continue":"Hank"}
+    // — same request, so the SAME head is re-armed and runs again.
+    await waitFor(() => info.status === "running", 15_000);
+    await waitFor(() => info.status !== "running", 15_000);
+    // The backup folder survives a continuation in place.
+    expect(info.backupPath).toBe(backup1);
+  }, 20_000);
+
+  it("a home-routed head narrows to the deepest common folder of its files", async () => {
+    const { engine } = rig();
+    let homeLeaf: string;
+    try {
+      homeLeaf = mkdtempSync(join(homedir(), "tivano-nongit-home-"));
+    } catch {
+      return; // Cannot stage under this host's home — nothing to prove.
+    }
+    roots.push(homeLeaf);
+    const sub = join(homeLeaf, "deep", "deeper");
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(sub, "f.txt"), "x\n");
+    const rel = (p: string) =>
+      p.slice(homedir().length).replace(/^[\\/]+/, "").replace(/\\/g, "/");
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(
+      lead.id,
+      `do it [mock:hydra-path-files]${homedir()}|${rel(join(homeLeaf, "deep", "deeper", "f.txt"))}`,
+    );
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    const info = head.hydraHead!;
+    await waitFor(() => info.status !== "running");
+    expect(info.status).toBe("completed");
+    // filesBase keeps home; the actual checkout narrowed to the file's
+    // own folder (the deepest common EXISTING directory of the list).
+    const home = realpathSync(homedir());
+    expect(realpathSync(info.filesBase!)).toBe(home);
+    expect(realpathSync(info.targetCheckout!)).toBe(realpathSync(sub));
+    // The brief names the non-Git rule for a shared in-place folder.
+    const brief = head.messages.find(
+      (m) => m.role === "user" && m.content.includes("not a Git repository"),
+    );
+    expect(brief).toBeDefined();
+  }, 20_000);
+
+  it("an owned path inside a protected folder is refused", async () => {
+    const { engine } = rig();
+    const lead = engine.createThread(null, "lead");
+    // .tivano under home is a protected root — an owned path inside it
+    // refuses the head before anything is routed or copied.
+    engine.sendTurn(
+      lead.id,
+      `do it [mock:hydra-path-files]${homedir()}|.tivano/seed.txt`,
+    );
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    const info = head.hydraHead!;
+    await waitFor(() => info.status !== "running");
+    expect(info.status).toBe("failed");
+    expect(info.summary).toContain("system folder");
+  }, 20_000);
+
+  it("a continue entry for an earlier-request head converts to a fresh owned head", async () => {
+    const { engine } = rig();
+    const folder = tmp("tivano-earlier-");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "a.txt"), "one\n");
+    engine.attachWorktrees(fakeWorktreesStub() as never);
+    const lead = engine.createThread(null, "lead");
+    // Turn 1: Hank owns a.txt in the non-Git folder (files recorded).
+    engine.sendTurn(
+      lead.id,
+      `do it [mock:hydra-path-files]${folder}|a.txt`,
+    );
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const hank = heads(engine, lead.id)[0]!;
+    await waitFor(() => hank.hydraHead!.status !== "running");
+    expect(hank.hydraHead!.name).toBe("Hank");
+    // Turn 2 (new request generation): a fresh plain head goes out —
+    // when ITS report lands, the latched continue of "Hank" must take
+    // the earlier-request conversion: a NEW head with the recorded
+    // files, not a re-arm of the earlier request's Hank. The lead must
+    // be fully idle first: the batch report rides a follow-up turn of
+    // its own, so wait for that turn to consume it and drain.
+    const other = tmp("tivano-other-");
+    mkdirSync(other, { recursive: true });
+    await waitFor(() => {
+      const t = engine.snapshot().threads.find((x) => x.id === lead.id)!;
+      return (
+        t.messages.some((m) => m.content.includes("Hydra reports:")) &&
+        t.turn?.status !== "running" &&
+        (t.followUps ?? []).length === 0
+      );
+    }, 15_000);
+    engine.sendTurn(
+      lead.id,
+      `again [mock:hydra-continue] [mock:hydra-path]${other}`,
+    );
+    await waitFor(() => heads(engine, lead.id).length >= 3, 15_000);
+    const all = heads(engine, lead.id);
+    const fresh = all[2]!.hydraHead!;
+    await waitFor(() => fresh.status !== "running", 15_000);
+    expect(fresh.name).not.toBe("Hank");
+    expect(fresh.status).toBe("completed");
+    expect(fresh.files).toEqual(["a.txt"]);
+    // The fresh head works in the earlier head's checkout and hears
+    // the frozen earlier-head brief.
+    expect(realpathSync(fresh.targetCheckout!)).toBe(realpathSync(folder));
+    const brief = all[2]!.messages.find(
+      (m) =>
+        m.role === "user" &&
+        m.content.includes("worked on this part in an earlier request"),
+    );
+    expect(brief).toBeDefined();
+    expect(brief!.content).toContain("Hank");
+  }, 20_000);
+});
+
+// P2-05 unit surface — the port of AppModel+HydraBackup.swift: path
+// canonicalization, the owned-path safety check, the deepest common
+// owned directory, the pre-brief copy and the bounded report.
+describe("P2-05 hydraBackup module (frozen AppModel+HydraBackup)", () => {
+  it("hydraCanonical strips NT namespace prefixes and realpaths the existing prefix", () => {
+    const base = tmp("tivano-canon-");
+    const leaf = join(base, "missing", "leaf");
+    const canon = hydraCanonical(leaf);
+    expect(canon).toBe(join(realpathSync(base), "missing", "leaf"));
+    if (process.platform === "win32") {
+      expect(hydraCanonical(`\\\\?\\${base}`)).toBe(realpathSync(base));
+      expect(hydraCanonical(`\\\\.\\${base}`)).toBe(realpathSync(base));
+      expect(hydraCanonical("\\\\?\\UNC\\server\\share\\x")).toBe(
+        "\\\\server\\share\\x",
+      );
+    }
+  });
+
+  it("hydraOwnedPathIsSafe refuses absolute and escaping paths", () => {
+    const base = tmp("tivano-safe-");
+    expect(hydraOwnedPathIsSafe("a.txt", base)).toBe(true);
+    expect(hydraOwnedPathIsSafe("sub/dir/b.txt", base)).toBe(true);
+    expect(hydraOwnedPathIsSafe(".", base)).toBe(true);
+    expect(hydraOwnedPathIsSafe("..", base)).toBe(false);
+    expect(hydraOwnedPathIsSafe("../sib.txt", base)).toBe(false);
+    expect(hydraOwnedPathIsSafe(join(base, "abs.txt"), base)).toBe(false);
+    if (process.platform === "win32") {
+      expect(hydraOwnedPathIsSafe("C:\\abs.txt", base)).toBe(false);
+      // A link that resolves outside the base is unsafe even though
+      // its lexical path stays inside.
+      const link = join(base, "link");
+      const outside = tmp("tivano-outside-");
+      try {
+        symlinkSync(outside, link, "junction");
+        expect(hydraOwnedPathIsSafe("link", base)).toBe(false);
+      } catch {
+        /* host cannot make junctions — nothing to prove here */
+      }
+    }
+  });
+
+  it("hydraOwnedDirectory folds to the deepest common existing folder", () => {
+    const base = tmp("tivano-own-");
+    mkdirSync(join(base, "a", "b"), { recursive: true });
+    writeFileSync(join(base, "a", "b", "f.txt"), "x");
+    mkdirSync(join(base, "a", "c"), { recursive: true });
+    // Existing leaf dirs: common = their shared parent.
+    expect(hydraOwnedDirectory(["a/b", "a/c"], base)).toBe(
+      hydraCanonical(join(base, "a")),
+    );
+    // A missing leaf climbs to the deepest EXISTING ancestor (a/b), and
+    // the file path itself never counts as a directory.
+    expect(hydraOwnedDirectory(["a/b/f.txt", "a/c/gone.txt"], base)).toBe(
+      hydraCanonical(join(base, "a")),
+    );
+    expect(hydraOwnedDirectory(["a/b"], base)).toBe(
+      hydraCanonical(join(base, "a", "b")),
+    );
+    expect(hydraOwnedDirectory([], base)).toBeUndefined();
+  });
+
+  it("hydraOwnershipPath resolves lexically and refuses outsiders", () => {
+    const base = tmp("tivano-ownpath-");
+    const ok = hydraOwnershipPath("a/b.txt", base);
+    expect(ok).toBe(hydraOwnershipPath("a\\b.txt", base));
+    expect(hydraOwnershipPath(".", base)).toBeDefined();
+    expect(hydraOwnershipPath("", base)).toBeUndefined();
+    expect(hydraOwnershipPath("../sib", base)).toBeUndefined();
+    // An absolute file under the checkout claims lexically; one
+    // outside refuses — v2OwnershipPath never realpaths.
+    expect(hydraOwnershipPath(join(base, "in.txt"), base)).toBeDefined();
+    expect(hydraOwnershipPath("\\\\outside\\other", base)).toBeUndefined();
+  });
+
+  it("copyHydraOwnedFiles copies files, recurses dirs, marks missing new, skips the unsafe", async () => {
+    const base = tmp("tivano-copy-");
+    mkdirSync(join(base, "dir"), { recursive: true });
+    writeFileSync(join(base, "dir", "one.txt"), "1\n");
+    writeFileSync(join(base, "top.txt"), "t\n");
+    const folder = join(tmp("tivano-backup-"), "head");
+    const r = await copyHydraOwnedFiles(
+      ["dir", "top.txt", "missing.txt", "../escape.txt"],
+      base,
+      folder,
+    );
+    const norm = (p: string) => p.replace(/[\\/]+/g, "\\").toLowerCase();
+    expect(r.copied.map(norm)).toEqual(
+      expect.arrayContaining([norm("dir\\one.txt"), norm("top.txt")]),
+    );
+    expect(r.added.map(norm)).toEqual([norm("missing.txt")]);
+    expect(r.skipped.map(norm)).toEqual([norm("..\\escape.txt")]);
+    expect(readFileSync(join(folder, "dir", "one.txt"), "utf8")).toBe("1\n");
+    expect(readFileSync(join(folder, "top.txt"), "utf8")).toBe("t\n");
+    // The backup root itself can never be swallowed by an owned folder.
+    const inner = await copyHydraOwnedFiles(
+      [".."],
+      join(folder, "x"),
+      join(folder, "x", "y"),
+    );
+    expect(inner.copied).toHaveLength(0);
+  });
+
+  it("hydraBackupReport diffs owned files: changed, added, removed, skipped, footer", async () => {
+    const base = tmp("tivano-report-");
+    const backup = join(tmp("tivano-rback-"), "h");
+    mkdirSync(join(backup, "sub"), { recursive: true });
+    // Before-state in the backup; after-state in the live base.
+    writeFileSync(join(backup, "same.txt"), "a\n");
+    writeFileSync(join(base, "same.txt"), "a\n");
+    writeFileSync(join(backup, "changed.txt"), "old\n");
+    writeFileSync(join(base, "changed.txt"), "new\n");
+    writeFileSync(join(backup, "gone.txt"), "was here\n");
+    mkdirSync(join(base, "sub"), { recursive: true });
+    writeFileSync(join(base, "sub", "fresh.txt"), "added\n");
+    const empty = join(tmp("tivano-empty-"), "e");
+    writeFileSync(empty, "");
+    const diffs: [string, string][] = [];
+    const report = await hydraBackupReport(
+      {
+        backupPath: backup,
+        targetCheckout: base,
+        backupOwnedPaths: ["same.txt", "changed.txt", "gone.txt", "sub"],
+        backedUpFiles: ["same.txt", "changed.txt", "gone.txt"],
+        newFiles: ["sub"],
+        notBackedUpFiles: ["big.bin"],
+        personaName: "Ada",
+      },
+      async (before, after) => {
+        diffs.push([before, after]);
+        return {
+          output: `diff ${before} -> ${after}`,
+          hitCap: false,
+        };
+      },
+      empty,
+    );
+    expect(report).toBeDefined();
+    expect(report).toContain("Added: 1; removed: 1.");
+    expect(report).toContain("Ada worked in place in");
+    expect(report).toContain(`the originals are at ${backup}`);
+    expect(report).toContain("Not backed up (size, unsupported path or copy failure): big.bin");
+    // changed, gone and the new sub/fresh.txt each got a diff run —
+    // the same file emits no output but still ran.
+    expect(diffs).toHaveLength(4);
+    expect(diffs.some(([b]) => b === empty)).toBe(true); // added file's null side
+    // A failed diff lands as a line, not a lost file.
+    const failed = await hydraBackupReport(
+      {
+        backupPath: backup,
+        targetCheckout: base,
+        backupOwnedPaths: ["changed.txt"],
+        backedUpFiles: ["changed.txt"],
+        personaName: "Bo",
+      },
+      async () => ({ failed: "Git is unavailable" }),
+      empty,
+    );
+    expect(failed).toContain("Could not diff changed.txt: Git is unavailable");
+    expect(failed).toContain("Added: 0; removed: 0.");
+    // Truncation: output past the report cap marks the report.
+    const huge = "x".repeat(25_000);
+    const trunc = await hydraBackupReport(
+      {
+        backupPath: backup,
+        targetCheckout: base,
+        backupOwnedPaths: ["changed.txt"],
+        backedUpFiles: ["changed.txt"],
+        personaName: "Kai",
+      },
+      async () => ({ output: huge }),
+      empty,
+    );
+    expect(trunc).toContain("[Diff truncated at 20,000 characters.]");
+    expect(trunc!.length).toBeLessThan(30_000);
+  });
+});
+
+/** A worktrees stub whose only live method is `hydraBackupDiff` — the
+ *  non-Git report path's diff; everything else fails unavailable like
+ *  the other suites' stubs. */
+function fakeWorktreesStub() {
+  const fail = { kind: "unavailable" as const, reason: "stub" };
+  const diffs: [string, string][] = [];
+  return {
+    diffs,
+    autoWorktreeEligibility: async () => "nonGit" as const,
+    worktreeCheck: async (_p: string, name: string) => ({ kind: "ok" as const, name }),
+    worktreeAdd: async () => fail,
+    worktreeRemove: async () => fail,
+    branches: async () => fail,
+    switchBranch: async () => fail,
+    createBranch: async () => fail,
+    renameBranch: async () => fail,
+    hydraCapture: async () => fail,
+    hydraCopyAdd: async () => fail,
+    hydraEndTree: async () => fail,
+    hydraLand: async () => fail,
+    hydraCopyRemove: async () => fail,
+    hydraReviewDiff: async () => fail,
+    hydraBackupDiff: async (_p: string, before: string, after: string) => {
+      diffs.push([before, after]);
+      const left = existsSync(before) ? readFileSync(before, "utf8") : "";
+      const right = existsSync(after) ? readFileSync(after, "utf8") : "";
+      return {
+        kind: "ok" as const,
+        output: left === right ? "" : `stub diff ${before} -> ${after}\n-${left}+${right}`,
+        hitCap: false,
+      };
+    },
+  };
+}
