@@ -210,6 +210,20 @@ export function ChatView(props: {
   );
   const timelineInteractRef = useRef(false);
   const timelineWheelUntilRef = useRef(0);
+  useEffect(() => {
+    // A pointer released outside the timeline (or the window) still ends
+    // the press — element-level onPointerUp alone can leave the flag
+    // stuck and let a later programmatic scroll read as reader input.
+    const clear = () => {
+      timelineInteractRef.current = false;
+    };
+    window.addEventListener("pointerup", clear);
+    window.addEventListener("pointercancel", clear);
+    return () => {
+      window.removeEventListener("pointerup", clear);
+      window.removeEventListener("pointercancel", clear);
+    };
+  }, []);
   const timelineItems = useMemo(
     () => (thread ? groupMessages(thread.messages) : []),
     [thread?.messages, thread],
@@ -534,10 +548,11 @@ export function ChatView(props: {
             Date.now() < timelineWheelUntilRef.current;
           if (scrollFollowRelease(dist, delta, userScrolling)) {
             timelineFollowingRef.current = false;
-          } else if (scrollFollowRepin(dist, prevDist)) {
-            // Frozen re-pin has no interaction gate: any landing inside
-            // the 8px band while approaching the end follows again —
-            // a minimap jump to the end re-pins the same as a drag.
+          } else if (userScrolling && scrollFollowRepin(dist, prevDist)) {
+            // Frozen re-pin evaluates only under reader-driven motion
+            // (the `scrolled` gate: a drag or a wheel-fed offset change)
+            // — a programmatic snap or layout reflow landing inside the
+            // 8px band must not re-pin behind the reader's back.
             timelineFollowingRef.current = true;
           }
           // P1-26/P2-30: within a screenful of the top while moving up,
