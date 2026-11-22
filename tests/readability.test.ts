@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-24.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-23.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P2-46 (frozen previews .1/.32): reply tables wrap long cells so only a
 // genuinely too-wide table scrolls, and the spacing around turns, lines,
