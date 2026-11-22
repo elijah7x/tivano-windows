@@ -408,6 +408,37 @@ html[data-performance] .sky-doll.sway { animation: none; }
   color: var(--text);
 }
 
+/* P2-34 thread-row ⋯/context menu (frozen RowActionsButton popover +
+   AppKit context menu). Fixed so it anchors at the pointer or the button. */
+.row-menu {
+  position: fixed;
+  min-width: 190px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  z-index: 60;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+.row-menu.align-end {
+  transform: translateX(-100%);
+}
+.row-menu [role="menuitem"] {
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: calc(12.5px + var(--fs-ui-off));
+  cursor: pointer;
+}
+.row-menu [role="menuitem"]:hover:not(:disabled) { background: var(--surface-3); }
+.row-menu [role="menuitem"].danger { color: var(--danger); }
+
 .sidebar-foot {
   border-top: 1px solid var(--border);
   padding: 6px 8px 10px;

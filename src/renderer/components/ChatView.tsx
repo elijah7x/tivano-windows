@@ -33,6 +33,7 @@ import { HydraStaveBar } from "./HydraStaveBar";
 import { WorkingSpinner } from "./SpinnerCells";
 import { HydraDelegationCard } from "./HydraDelegationCard";
 import { HydraReportRow } from "./HydraReportRow";
+import { watchSelectionResidue } from "../selectionRepaint";
 import { MessagePopover } from "./MessagePopover";
 import { NewThreadPrompt } from "./NewThreadPrompt";
 import type { MessagePopoverState } from "./MessagePopover";
@@ -239,6 +240,16 @@ export function ChatView(props: {
     }, 40);
     return () => window.clearTimeout(t);
   }, [threadId]);
+
+  // P2-34: clearing a selection inside the timeline forces one full
+  // repaint — fractional line boxes strand a thin line under the first
+  // selected line otherwise (frozen LinkParagraphView needsDisplay on
+  // had→cleared).
+  useEffect(() => {
+    const el = timelineRef.current;
+    if (!el) return;
+    return watchSelectionResidue(el);
+  }, []);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
