@@ -3,7 +3,7 @@
 // Chat area: header with the labelled mock badge, message timeline with
 // streaming/approval/error/interruption states, and the composer.
 
-import { createElement, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createElement, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ChatThread, CheckpointRecordView, CodexInfo, Message, Project, Settings, Turn } from "../../shared/types";
 import { INTERRUPTED_MARKER } from "../../shared/types";
 import { AttachChip } from "./AttachChip";
@@ -12,9 +12,8 @@ import { useT } from "../locale";
 import { translateError, translateNotice } from "../i18n";
 import {
   renderMarkdown,
-  renderMarkdownStreaming,
+  StreamingMarkdownCoordinator,
   type MarkdownLabels,
-  type StreamingParse,
 } from "../markdown";
 import { api, callApi, clientStore } from "../client";
 import { ApprovalCard } from "./ApprovalCard";
@@ -295,16 +294,27 @@ export function ChatView(props: {
       }
     >(),
   );
-  // P1-29 (frozen MarkdownParser.Parse): per-message incremental parse —
-  // stable leading blocks are reused element-for-element and just the tail
-  // re-renders per chunk, so a long reply keeps streaming instead of
-  // reparsing the whole text every flush.
-  const mdRef = useRef(new Map<string, StreamingParse>());
+  // P1-29/P1-31-follow-up (frozen StreamingParseCoordinator): per-message
+  // incremental parse — stable leading blocks are reused element-for-
+  // element and just the tail re-renders per chunk; a tail past the sync
+  // bound parses deferred and paints the last landed result meanwhile,
+  // so a giant open block never stalls a render.
+  const mdCoordRef = useRef(new Map<string, StreamingMarkdownCoordinator>());
+  const [, mdBump] = useReducer((x: number) => x + 1, 0);
+  const mdCoordFor = (id: string): StreamingMarkdownCoordinator => {
+    let c = mdCoordRef.current.get(id);
+    if (!c) {
+      c = new StreamingMarkdownCoordinator(() => mdBump());
+      mdCoordRef.current.set(id, c);
+    }
+    return c;
+  };
   useEffect(() => {
     setHydraPanelHidden(false);
     headCount.current = 0;
     veilRef.current.clear();
-    mdRef.current.clear();
+    mdCoordRef.current.forEach((c) => c.dispose());
+    mdCoordRef.current.clear();
   }, [threadId]);
   useEffect(() => {
     if (heads.length > headCount.current) setHydraPanelHidden(false);
@@ -555,17 +565,14 @@ export function ChatView(props: {
             veil: { chars: number; ms: number } | null,
           ): React.ReactNode => {
             if (m.status !== "streaming") {
-              mdRef.current.delete(m.id);
+              const c = mdCoordRef.current.get(m.id);
+              if (c) {
+                c.dispose();
+                mdCoordRef.current.delete(m.id);
+              }
               return renderMarkdown(source, labels);
             }
-            const r = renderMarkdownStreaming(
-              source,
-              labels,
-              mdRef.current.get(m.id) ?? null,
-              veil,
-            );
-            mdRef.current.set(m.id, r.state);
-            return r.nodes;
+            return mdCoordFor(m.id).parse(source, labels, veil);
           };
           const renderMessage = (m: Message): React.JSX.Element | null => {
           const ck = m.role === "assistant" && m.turnId

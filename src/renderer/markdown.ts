@@ -699,6 +699,9 @@ export interface StreamingParse {
   stableNodes: ReactNode[];
   /** Line index where the unstable tail begins; always a block start. */
   restart: number;
+  /** UTF-16 offset in `source` where the `restart` line begins. The
+   *  coordinator needs it to size the unstable tail without re-scanning. */
+  restartChar: number;
   /** Line count the last parse covered. */
   lines: number;
   /** The source the last parse covered — reuse requires a pure append. */
@@ -741,16 +744,157 @@ export function renderMarkdownStreaming(
       break;
     }
   }
+  // UTF-16 offset of the restart line, for the coordinator's tail-size
+  // bound. LINE_SPLIT separators are 1-2 code units (\r\n counts two).
+  const restartLine = boundary >= 0 ? starts[boundary]! : start;
+  let restartChar = 0;
+  if (restartLine > 0) {
+    if (boundary < 0 && resume) {
+      restartChar = prev!.restartChar;
+    } else {
+      for (let li = 0; li < restartLine; li++) {
+        restartChar += lines[li]!.length;
+        restartChar +=
+          source.charCodeAt(restartChar) === 13 &&
+          source.charCodeAt(restartChar + 1) === 10
+            ? 2
+            : 1;
+      }
+    }
+  }
   const state: StreamingParse =
     boundary >= 0
       ? {
           stableNodes: [...stable, ...nodes.slice(0, boundary)],
           restart: starts[boundary]!,
+          restartChar,
           lines: lines.length,
           source,
         }
-      : { stableNodes: stable, restart: start, lines: lines.length, source };
+      : { stableNodes: stable, restart: start, restartChar, lines: lines.length, source };
   return { nodes: [...stable, ...nodes], state };
+}
+
+/**
+ * Frozen `StreamingParseCoordinator`: requests under this tail size parse
+ * synchronously in the caller; a bigger unstable tail is deferred so the
+ * render paints the last landed result while the new parse completes.
+ * Upstream sizes the tail in UTF-8 bytes; UTF-16 code units is the same
+ * order of bound and errs small for non-ASCII text.
+ */
+export const STREAM_SYNC_TAIL_CHARS = 4096;
+
+interface StreamRequest {
+  text: string;
+  labels: MarkdownLabels | undefined;
+  veil: StreamVeil | null;
+}
+
+/**
+ * Per-message streaming-parse coordinator (frozen
+ * `MarkdownView.StreamingParseCoordinator`). `parse` is called from render
+ * like frozen's: an append whose unstable tail fits
+ * `STREAM_SYNC_TAIL_CHARS` parses on the spot (~1 ms for typical flushes);
+ * a larger tail schedules a deferred parse and keeps returning the last
+ * landed nodes until it publishes. Non-appending text bumps the
+ * generation and drops in-flight results, so a stale deferred parse can
+ * never overwrite a newer request.
+ *
+ * The frozen coordinator defers onto `Task.detached`; this port defers
+ * onto a scheduled task on the same thread — the observable contract
+ * (stale paint while the big parse lands, newest request wins) is
+ * identical, and the incremental parse stays bounded by the tail, not
+ * the document. `schedule` is injectable for tests.
+ */
+export class StreamingMarkdownCoordinator {
+  private requested: string | null = null;
+  private result: {
+    text: string;
+    nodes: ReactNode[];
+    state: StreamingParse;
+  } | null = null;
+  private pending: StreamRequest | null = null;
+  private running = false;
+  private disposed = false;
+  private generation = 0;
+  private readonly onLanded: () => void;
+  private readonly schedule: (fn: () => void) => void;
+
+  constructor(
+    onLanded: () => void,
+    schedule?: (fn: () => void) => void,
+  ) {
+    this.onLanded = onLanded;
+    this.schedule = schedule ?? ((fn) => setTimeout(fn, 0));
+  }
+
+  /**
+   * Request the nodes for `text`. Returns the latest landed nodes —
+   * `null` until the first parse completes when the very first request
+   * already exceeds the sync bound.
+   */
+  parse(
+    text: string,
+    labels: MarkdownLabels | undefined,
+    veil: StreamVeil | null,
+  ): ReactNode[] | null {
+    if (this.disposed) return null;
+    if (this.requested === text) return this.result?.nodes ?? null;
+    if (this.requested !== null && !text.startsWith(this.requested)) {
+      this.generation += 1;
+      this.result = null;
+    }
+    this.requested = text;
+    const tailChars = text.length - (this.result?.state.restartChar ?? 0);
+    if (tailChars <= STREAM_SYNC_TAIL_CHARS) {
+      this.pending = null;
+      const r = renderMarkdownStreaming(
+        text,
+        labels,
+        this.result?.state ?? null,
+        veil,
+      );
+      this.result = { text, nodes: r.nodes, state: r.state };
+    } else {
+      this.pending = { text, labels, veil };
+      this.startNext();
+    }
+    return this.result?.nodes ?? null;
+  }
+
+  /** Drop queued work; a scheduled parse in flight lands nowhere. */
+  dispose(): void {
+    this.disposed = true;
+    this.pending = null;
+  }
+
+  private startNext(): void {
+    if (this.running || this.pending === null || this.disposed) return;
+    const req = this.pending;
+    this.pending = null;
+    if (req.text === this.result?.text) return;
+    this.running = true;
+    const generation = this.generation;
+    const prev = this.result?.state ?? null;
+    this.schedule(() => {
+      const r = renderMarkdownStreaming(req.text, req.labels, prev, req.veil);
+      this.running = false;
+      // Frozen: append-only streams may outpace parsing — publish only if
+      // this is still the newest generation, the current request extends
+      // the parsed text, and nothing newer already landed.
+      if (
+        !this.disposed &&
+        this.generation === generation &&
+        this.requested !== null &&
+        this.requested.startsWith(req.text) &&
+        (this.result === null || req.text.length > this.result.text.length)
+      ) {
+        this.result = { text: req.text, nodes: r.nodes, state: r.state };
+        this.onLanded();
+      }
+      this.startNext();
+    });
+  }
 }
 
 /** Test helper: true when a URL would render as an anchor. */
