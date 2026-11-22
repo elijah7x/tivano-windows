@@ -368,6 +368,46 @@ describe("A58 pair binding (frozen hydraLaunch slice)", () => {
     store.close();
   });
 
+  // #102 (audit follow-up on #95): the adaptive lock also counts the
+  // cap-held waiting queue — frozen canSwitchChimeraMode requires
+  // hydraWaitingCount == 0, not just no running/pending heads.
+  it("the adaptive mode switch refuses while delegations wait under the cap", async () => {
+    const { engine, store } = make();
+    engine.setSettings({ hydraMaxHeads: 1 });
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-waitmany]");
+    await waitFor(
+      () =>
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+    // Two delegations sit in hydraWaiting — entering adaptive refuses.
+    expect(() => engine.setSubagentMode(lead.id, "adaptive")).toThrow(
+      /switch modes/,
+    );
+    // Non-adaptive switches stay free (frozen: only the adaptive edge
+    // is locked).
+    expect(() => engine.setSubagentMode(lead.id, "same")).not.toThrow();
+    store.close();
+  });
+
+  it("leaving adaptive also refuses while delegations wait", async () => {
+    const { engine, store } = make();
+    engine.setSettings({ hydraMaxHeads: 1 });
+    const lead = engine.createThread(null, "lead");
+    engine.setSubagentMode(lead.id, "adaptive");
+    engine.sendTurn(lead.id, "go [mock:hydra-waitmany]");
+    await waitFor(
+      () =>
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+    expect(() => engine.setSubagentMode(lead.id, "same")).toThrow(
+      /switch modes/,
+    );
+    store.close();
+  });
+
   it("a profile-routed head wears the profile name and its model fields", async () => {
     const { engine, store } = make();
     const profile = {
