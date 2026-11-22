@@ -1982,7 +1982,8 @@ try {
       if (-not $isNewHead) {
         # A pass holds only for the main it was trial-merged onto; re-audit when main moves.
         if ($state.verdict -eq 'pass') {
-          if (-not [string]::IsNullOrWhiteSpace($mainSha) -and $state.baseSha -eq $mainSha) {
+          # A body edit does not move the head, so recheck the body for agent attribution before reusing a pass.
+          if (-not [string]::IsNullOrWhiteSpace($mainSha) -and $state.baseSha -eq $mainSha -and -not (Test-DevinAttribution $prBody)) {
             $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already passed for head ' + $sha7 })
             continue
           }
