@@ -10,8 +10,8 @@ Tivano Windows is an independent derivative of Tivano for macOS, currently imple
 
 ## Parity target and reference source
 
-- The target is **Tivano for macOS v2.5.7**, commit `8d1b8c2814f51d105cb5bf4a0e3a6aa04fef8ca1`, recorded in [docs/source-baseline.json](docs/source-baseline.json). Do not substitute main, dev or another tag. v2.2.34 and v2.0.0 are historical baselines.
-- The reference source is read-only. Fetch it from the GitHub tag `v2.5.7` ([release](https://github.com/elijah7x/tivano/releases/tag/v2.5.7)). Do not develop inside it or run its scripts.
+- The target is **Tivano for macOS v3.0.0**, commit `15e03374f077343e500e8e5e3574c8c598162171`, recorded in [docs/source-baseline.json](docs/source-baseline.json). Do not substitute main, dev or another tag. v2.5.7, v2.2.34 and v2.0.0 are historical baselines.
+- The reference source is read-only. Fetch it from the GitHub tag `v3.0.0` ([release](https://github.com/elijah7x/tivano/releases/tag/v3.0.0)). Do not develop inside it or run its scripts.
 - Do not copy the whole Mac source tree. Do not copy images, fonts or brand assets whose licensing has not been verified.
 
 ## Verification reporting
