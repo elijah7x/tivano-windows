@@ -1397,7 +1397,7 @@ function Invoke-AutoMerge {
       }
 
       # (c) PR body contains a closing keyword for the issue number parsed from nyx/<n>-...
-      $branchMatch = [regex]::Match($headRef, '^nyx/([0-9]+)-')
+      $branchMatch = [regex]::Match($headRef, '^nyx/(?:h-)?([0-9]+)-')
       if (-not $branchMatch.Success) {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (branch ' + $headRef + ' does not match nyx/<issue>-...)')
         continue

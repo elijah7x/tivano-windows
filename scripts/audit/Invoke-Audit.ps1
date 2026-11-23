@@ -7,7 +7,7 @@ param(
   [string]$ConfigPath = 'C:\tivano\audit\config.json',
   [int]$PrNumber = 0,
   [int]$SinglePr = 0,
-  [int]$MaxParallel = 3,
+  [int]$MaxParallel = 2,
   [string]$BaseMainSha = '',
   [switch]$DryRun
 )
@@ -2606,6 +2606,8 @@ function Invoke-SinglePrAudit {
     $ResultsOut,
     $SkippedOut,
     $ErrorsOut,
+    $Pr = $null,
+    [int]$ArbiterDailyCap = 0,
     [switch]$IsDryRun
   )
   $num = [int]$Decision.prNumber
@@ -2630,6 +2632,28 @@ function Invoke-SinglePrAudit {
     Write-Log ('PR #' + $num + ' head ' + $sha7 + ': ' + $claim.reason + '; skipping')
     $null = $SkippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = $claim.reason })
     return
+  }
+
+  # The decision was computed before the claim; another audit may have finished in between, so recompute it under the claim.
+  if ($null -ne $Pr) {
+    $fresh = $null
+    try {
+      $fresh = Get-PrAuditDecision -Config $Config -Pr $Pr -StateDir $StateDir -MainSha $MainSha -ArbiterDailyCap $ArbiterDailyCap
+    } catch {
+      Release-PrClaim -LockPath $claim.lockPath -OwnerPid $PID
+      throw
+    }
+    if ($fresh.action -eq 'skip' -or [string]$fresh.headSha -ne $headSha -or [int]$fresh.nextRound -ne $nextRound -or [bool]$fresh.arbiterRetryOnly -ne $arbiterRetryOnly) {
+      Release-PrClaim -LockPath $claim.lockPath -OwnerPid $PID
+      Write-Log ('PR #' + $num + ' head ' + $sha7 + ': decision changed while waiting for the claim; skipping this stale run')
+      if ($fresh.action -eq 'skip') { $null = $SkippedOut.Add($fresh.skipRecord) } else { $null = $SkippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'decision changed before the claim' }) }
+      return
+    }
+    $state = $fresh.state
+    $statePath = [string]$fresh.statePath
+    $rebuttalText = [string]$fresh.rebuttalText
+    $priorFindingsText = [string]$fresh.priorFindingsText
+    $rebuttalCommentId = [long]$fresh.rebuttalCommentId
   }
 
   try {
@@ -3544,6 +3568,8 @@ try {
             -ResultsOut $resultsOut `
             -SkippedOut $skippedOut `
             -ErrorsOut $errorsOut `
+            -Pr $pulls[0] `
+            -ArbiterDailyCap $arbiterDailyCap `
             -IsDryRun:$DryRun
         }
       } else {
@@ -3590,6 +3616,8 @@ try {
             -ResultsOut $resultsOut `
             -SkippedOut $skippedOut `
             -ErrorsOut $errorsOut `
+            -Pr $pr `
+            -ArbiterDailyCap $arbiterDailyCap `
             -IsDryRun:$DryRun
         }
       } else {

@@ -133,6 +133,24 @@ function Invoke-WithNamedMutex {
   }
 }
 
+function Test-BaseStepsReliable {
+  # Only a baseline whose install, build, typecheck and unit steps all passed is reused; a failing or partial base is rerun next time.
+  param($Steps)
+  if ($null -eq $Steps) { return $false }
+  foreach ($name in @('install', 'build', 'typecheck', 'unit')) {
+    $prop = $Steps.PSObject.Properties[$name]
+    if (-not $prop -or $null -eq $prop.Value) { return $false }
+    if ([int]$prop.Value -ne 0) { return $false }
+  }
+  return $true
+}
+
+function Invoke-WithUntrustedChecksLock {
+  # PR code runs under one shared standard account that can modify every active sandbox, so checks of different PRs never overlap.
+  param([scriptblock]$Action)
+  return (Invoke-WithNamedMutex 'Global\TivanoUntrustedChecks' 7200000 $Action)
+}
+
 function Invoke-WithStateLock {
   param([scriptblock]$Action)
   return (Invoke-WithNamedMutex 'Global\TivanoPrReviewState' 120000 $Action)
@@ -307,6 +325,12 @@ function Restore-BaseCache {
     if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $false }
     if (-not (Test-Path -LiteralPath $cachedResults -PathType Container)) { return $false }
     if (-not (Test-Path -LiteralPath $cachedChecks -PathType Container)) { return $false }
+    $cachedSteps = $null
+    try { $cachedSteps = Get-Content -LiteralPath (Join-Path $cachedResults 'steps.json') -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
+    if (-not (Test-BaseStepsReliable $cachedSteps) -or -not (Test-Path -LiteralPath (Join-Path $cachedResults 'vitest.json') -PathType Leaf)) {
+      Remove-Item -LiteralPath $entryDir -Recurse -Force -ErrorAction SilentlyContinue
+      return $false
+    }
     $markerText = Read-Text $markerPath
     if ([string]::IsNullOrWhiteSpace($markerText)) { return $false }
     $marker = $markerText | ConvertFrom-Json
@@ -1173,20 +1197,26 @@ try {
           if ($addBase.exitCode -ne 0) { throw ('git worktree add (base) failed: ' + $addBase.error) }
           $worktrees += $baseTree
           # Base runs first and its results are copied out before any PR code runs.
-          $standardBase = Invoke-StandardChecks 'base' $checksBase (Join-Path $sandbox 'results-base') $baseTree $runDir
-          Copy-RunOutput (Join-Path $sandbox 'results-base') $resultsBase
-          Copy-RunOutput $checksBase $checksBaseOut
+          $standardBase = Invoke-WithUntrustedChecksLock {
+            $r = Invoke-StandardChecks 'base' $checksBase (Join-Path $sandbox 'results-base') $baseTree $runDir
+            Copy-RunOutput (Join-Path $sandbox 'results-base') $resultsBase | Out-Null
+            Copy-RunOutput $checksBase $checksBaseOut | Out-Null
+            $r
+          }
         }
         $standardBase.summary = Get-StandardSummary $checksBaseOut
         $stepsBase = Get-Steps (Join-Path $resultsBase 'steps.json')
         if (-not $baseCacheHit -and $null -ne $standardBase.summary -and $null -ne $stepsBase -and
-            $stepsBase.PSObject.Properties['install'] -and $null -ne $stepsBase.install -and [int]$stepsBase.install -eq 0) {
+            (Test-BaseStepsReliable $stepsBase) -and (Test-Path -LiteralPath (Join-Path $resultsBase 'vitest.json') -PathType Leaf)) {
           Publish-BaseCache $resolvedBaseCacheRoot $mergeBase $resultsBase $checksBaseOut 20
         }
 
-        $standardPr = Invoke-StandardChecks 'pr' $checksPr (Join-Path $sandbox 'results-pr') $prTree $runDir
-        Copy-RunOutput (Join-Path $sandbox 'results-pr') $resultsPr
-        Copy-RunOutput $checksPr (Join-Path $runDir 'checks-pr')
+        $standardPr = Invoke-WithUntrustedChecksLock {
+          $r = Invoke-StandardChecks 'pr' $checksPr (Join-Path $sandbox 'results-pr') $prTree $runDir
+          Copy-RunOutput (Join-Path $sandbox 'results-pr') $resultsPr | Out-Null
+          Copy-RunOutput $checksPr (Join-Path $runDir 'checks-pr') | Out-Null
+          $r
+        }
         $standardPr.summary = Get-StandardSummary (Join-Path $runDir 'checks-pr')
 
         $stepsPr = Get-Steps (Join-Path $resultsPr 'steps.json')

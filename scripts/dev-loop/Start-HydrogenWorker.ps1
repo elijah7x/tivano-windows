@@ -886,6 +886,15 @@ function Invoke-ClaimIssue {
   } finally {
     Remove-Item -LiteralPath $commentFile -Force -ErrorAction SilentlyContinue
   }
+  $recheck = Invoke-Gh ('issue view ' + $IssueNumber + ' -R ' + $Repo + ' --json labels')
+  if ($recheck.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($recheck.text)) {
+    $nowLabels = @(Get-LabelNames (Get-JsonProp ($recheck.text | ConvertFrom-Json) 'labels'))
+    if ($nowLabels -contains 'lane-devin') {
+      $null = Invoke-Gh ('issue edit ' + $IssueNumber + ' -R ' + $Repo + ' --remove-label lane-hydrogen')
+      Write-Log ('issue #' + $IssueNumber + ' was claimed by the Devin lane at the same time; backed off')
+      return $false
+    }
+  }
   Write-Log ('claimed issue #' + $IssueNumber + ' with lane-hydrogen')
   return $true
 }
@@ -1239,6 +1248,31 @@ try {
       $targetBranch = $hpr.branch
       $targetHeadSha = $hpr.headSha
       $sessionReason = 'nyx/audit status is ' + $auditState
+      break
+    }
+  }
+
+  # (a2) Resume an issue this lane claimed whose session ended before a PR was opened; release it after 3 sessions.
+  if ([string]::IsNullOrWhiteSpace($sessionKind)) {
+    foreach ($iss in $openIssues) {
+      $orphanNum = 0
+      $rawOrphan = Get-JsonProp $iss 'number'
+      if ($null -ne $rawOrphan) { $orphanNum = [int]$rawOrphan }
+      if ($orphanNum -le 0) { continue }
+      $orphanLabels = @(Get-LabelNames (Get-JsonProp $iss 'labels'))
+      if ($orphanLabels -notcontains 'lane-hydrogen') { continue }
+      if ($orphanLabels -contains 'parked' -or $orphanLabels -contains 'audit-parked' -or $orphanLabels -contains 'needs-human') { continue }
+      if ($issuesWithOpenPr.ContainsKey($orphanNum)) { continue }
+      if ($progressParked.issues.ContainsKey($orphanNum)) { continue }
+      $priorSessions = @(Get-ChildItem -LiteralPath $script:SessionsDir -Directory -Filter ('issue-' + $orphanNum + '-*') -ErrorAction SilentlyContinue)
+      if ($priorSessions.Count -ge 3) {
+        $null = Invoke-Gh ('issue edit ' + $orphanNum + ' -R ' + $Repo + ' --remove-label lane-hydrogen')
+        Write-Log ('released lane-hydrogen on issue #' + $orphanNum + ' after ' + $priorSessions.Count + ' sessions without a PR')
+        continue
+      }
+      $sessionKind = 'implement'
+      $targetIssue = $orphanNum
+      $sessionReason = 'resuming claimed issue with no PR (session ' + ($priorSessions.Count + 1) + ' of 3)'
       break
     }
   }

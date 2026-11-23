@@ -1102,7 +1102,17 @@ function Invoke-FlakeRetryIfEligible {
     return [pscustomobject]@{ attempted = $false; passed = $false; reason = 'reviewer verdict has non-flake blocking points'; files = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
   }
 
-  $rerun = Invoke-FlakeRerun -PrNumber $PrNumber -HeadSha $HeadSha -FailingFiles @($failureInfo.files) -FailingTests @($failureInfo.tests) -RunDir $RunDir
+  # PR code runs under one shared standard account, so the rerun waits for any other PR's checks (same lock as Invoke-PrReview.ps1).
+  $checksMutex = New-Object System.Threading.Mutex($false, 'Global\TivanoUntrustedChecks')
+  $checksLocked = $false
+  try {
+    try { $checksLocked = $checksMutex.WaitOne(7200000) } catch [System.Threading.AbandonedMutexException] { $checksLocked = $true }
+    if (-not $checksLocked) { throw 'Timed out waiting for the untrusted-checks lock.' }
+    $rerun = Invoke-FlakeRerun -PrNumber $PrNumber -HeadSha $HeadSha -FailingFiles @($failureInfo.files) -FailingTests @($failureInfo.tests) -RunDir $RunDir
+  } finally {
+    if ($checksLocked) { try { $checksMutex.ReleaseMutex() } catch { } }
+    $checksMutex.Dispose()
+  }
   return [pscustomobject]@{
     attempted = $true
     passed = [bool]$rerun.passed
