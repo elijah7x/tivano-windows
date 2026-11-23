@@ -320,7 +320,7 @@ function Parse-TimestampOffset {
 function Test-AuthQuotaErrorText {
   param([AllowEmptyString()][string]$Text)
   if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-  return ($Text -match '(?i)auth|login|not logged in|UNAUTHENTICATED|PERMISSION_DENIED|quota|RESOURCE_EXHAUSTED|\b429\b')
+  return ($Text -match '(?i)\bauth(?:entication|enticate|enticated)?\b|\blogin\b|log\s+in|logged\s+in|UNAUTHENTICATED|PERMISSION_DENIED|quota|RESOURCE_EXHAUSTED|\b429\b|usage limit|rate limit exceeded|too many requests')
 }
 
 function Test-RegionNetworkErrorText {
@@ -1085,7 +1085,8 @@ try {
             $retryableOut = (-not (Test-NonRetryableErrorText $errorOut))
           }
           Write-Log ('agy failed (retryable=' + $retryableOut + '): ' + $errorOut)
-          if (-not $retryableOut) {
+          # Retryable network or quota errors still pause agy (short or long by class) so the next escalation does not hit the same failure at once.
+          if ((-not $retryableOut) -or (Test-AuthQuotaErrorText $errorOut) -or (Test-RegionNetworkErrorText $errorOut)) {
             $cooldownInfo = Write-HealthCooldown -HealthPath $healthPath -ErrorText $errorOut -ErrorCode $errCode -ModelName $Model -Retryable $retryableOut
             $cooldownClassOut = $cooldownInfo.cooldownClass
           }

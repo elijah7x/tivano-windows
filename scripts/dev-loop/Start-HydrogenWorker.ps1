@@ -389,7 +389,7 @@ function Stop-TreeProcesses {
 function Test-AuthQuotaErrorText {
   param([AllowEmptyString()][string]$Text)
   if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-  return ($Text -match '(?i)auth(?!or(?:s|ed|ing|ity|ities)?\b)|login|log\s+in|logged\s+in|UNAUTHENTICATED|PERMISSION_DENIED|quota|RESOURCE_EXHAUSTED|\b429\b|usage limit|exhausted your capacity|rate limit exceeded|too many requests')
+  return ($Text -match '(?i)\bauth(?:entication|enticate|enticated)?\b|\blogin\b|log\s+in|logged\s+in|UNAUTHENTICATED|PERMISSION_DENIED|quota|RESOURCE_EXHAUSTED|\b429\b|usage limit|exhausted your capacity|rate limit exceeded|too many requests')
 }
 
 function Test-RegionNetworkErrorText {
@@ -823,7 +823,7 @@ function Inspect-SessionLogsForCooldown {
     }
   }
 
-  if (Test-CooldownErrorText $errText) {
+  if ((Test-CooldownErrorText $errText) -or (Test-AuthQuotaErrorText $errText) -or (Test-RegionNetworkErrorText $errText)) {
     $summary = ConvertTo-SingleLine $errText 260
     $cd = Write-HealthCooldown -HealthPath $script:HealthPath -ErrorText $summary -ErrorCode '' -ModelName $Model
     Write-Log ('previous session stderr hit cooldown error; agy cooldown (' + $cd.cooldownClass + ', ' + $cd.durationLabel + ') until ' + $cd.cooldownUntil + ': ' + $summary)
@@ -831,7 +831,7 @@ function Inspect-SessionLogsForCooldown {
   }
 
   if ([string]::IsNullOrWhiteSpace($errText) -and -not [string]::IsNullOrWhiteSpace($outText) -and $outText.Length -le 4096) {
-    if (Test-CooldownErrorText $outText) {
+    if ((Test-CooldownErrorText $outText) -or (Test-AuthQuotaErrorText $outText) -or (Test-RegionNetworkErrorText $outText)) {
       $summary = ConvertTo-SingleLine $outText 260
       $cd = Write-HealthCooldown -HealthPath $script:HealthPath -ErrorText $summary -ErrorCode '' -ModelName $Model
       Write-Log ('previous session short stdout hit cooldown error; agy cooldown (' + $cd.cooldownClass + ', ' + $cd.durationLabel + ') until ' + $cd.cooldownUntil + ': ' + $summary)
