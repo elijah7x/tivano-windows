@@ -565,13 +565,6 @@ export class ClientStore {
       case "slash-recorded":
         s.recentCommands = event.recentCommands;
         break;
-      case "memory-pressure":
-        clearMarkdownCache();
-        emitMemoryPressure(event.critical);
-        return;
-      case "window-activity":
-        setWindowActive(event.active);
-        return;
       case "turn-chunk": {
         const t = this.thread(event.threadId);
         const turn = t?.turn;

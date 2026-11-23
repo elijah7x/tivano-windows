@@ -369,7 +369,9 @@ export class Engine {
   }
 
   private touchThreadAccess(threadId: string): void {
-    this.threadAccessOrder.set(threadId, ++this.accessTick);
+    const ts = Math.max(Date.now(), this.accessTick + 1);
+    this.accessTick = ts;
+    this.threadAccessOrder.set(threadId, ts);
   }
 
   /** P2-63: read a thread's persisted messages without reloading a released
@@ -386,15 +388,34 @@ export class Engine {
     }
   }
 
-  /** P2-63: update main-window active/visible state and flush visible streams
-   *  when the window returns to view. */
+  private dropPendingChunk(threadId: string): void {
+    const buf = this.pendingChunks.get(threadId);
+    if (!buf) return;
+    if (buf.timer) clearTimeout(buf.timer);
+    this.pendingChunks.delete(threadId);
+  }
+
+  /** P2-63: update main-window visible state and flush or speed up buffered
+   *  streams when the window returns to view. */
   setWindowActive(active: boolean): void {
     if (this.windowActive === active) return;
     this.windowActive = active;
     if (active) {
       for (const threadId of [...this.pendingChunks.keys()]) {
         const t = this.store.state.threads.find((x) => x.id === threadId);
-        if (t && this.threadStreamDelayMs(t) === 0) this.flushPendingChunk(threadId);
+        if (!t) continue;
+        const nextDelay = this.threadStreamDelayMs(t);
+        if (nextDelay === 0) {
+          this.flushPendingChunk(threadId);
+        } else {
+          const buf = this.pendingChunks.get(threadId);
+          if (buf && nextDelay < buf.delayMs) {
+            if (buf.timer) clearTimeout(buf.timer);
+            buf.delayMs = nextDelay;
+            buf.timer = setTimeout(() => this.flushPendingChunk(threadId), nextDelay);
+            buf.timer.unref?.();
+          }
+        }
       }
     }
   }
@@ -417,12 +438,22 @@ export class Engine {
     if (!buf) return;
     if (buf.timer) clearTimeout(buf.timer);
     this.pendingChunks.delete(threadId);
+    const thread = this.store.state.threads.find((t) => t.id === buf.threadId);
+    const turn = thread?.turn;
+    const msg =
+      turn && turn.id === buf.turnId
+        ? thread.messages.find((m) => m.id === turn.assistantMessageId)
+        : undefined;
     this.emit({
       type: "turn-chunk",
       threadId: buf.threadId,
       turnId: buf.turnId,
       seq: buf.seq,
-      ...(buf.content !== undefined ? { content: buf.content } : { delta: buf.delta ?? "" }),
+      ...(msg !== undefined
+        ? { content: msg.content }
+        : buf.content !== undefined
+          ? { content: buf.content }
+          : { delta: buf.delta ?? "" }),
     });
   }
 
@@ -807,13 +838,16 @@ export class Engine {
     let releasedThreads = 0;
     let stoppedSessions = 0;
     for (const t of candidates) {
-      if (!t.isArchived) {
-        if (remainingOverLimit <= 0) continue;
-        remainingOverLimit -= 1;
+      if (!t.isArchived && remainingOverLimit <= 0) continue;
+      let released = false;
+      try {
+        released = this.store.releaseThreadHistory(t.id);
+      } catch {
+        continue;
       }
-      if (this.store.releaseThreadHistory(t.id)) {
-        releasedThreads += 1;
-      }
+      if (!released) continue;
+      if (!t.isArchived) remainingOverLimit -= 1;
+      releasedThreads += 1;
       if (this.provider.endSession) {
         this.provider.endSession(t.id);
         stoppedSessions += 1;
@@ -831,7 +865,9 @@ export class Engine {
       }
     }
 
-    this.emit({ type: "memory-pressure", critical });
+    if (releasedThreads > 0 || stoppedSessions > 0) {
+      this.emit({ type: "memory-pressure", critical });
+    }
     return { releasedThreads, stoppedSessions };
   }
 
@@ -1035,6 +1071,8 @@ export class Engine {
         data.ui.selectedThreadId = null;
     });
     for (const tid of removedThreads) {
+      this.dropPendingChunk(tid);
+      this.threadAccessOrder.delete(tid);
       this.handles.get(tid)?.cancel();
       this.provider.endSession?.(tid);
     }
@@ -1382,6 +1420,8 @@ export class Engine {
     // Latch the queue first — a synchronous cancel→endTurn callback must
     // never fire a pendingSend on a thread being deleted.
     this.pendingSends.delete(id);
+    this.dropPendingChunk(id);
+    this.threadAccessOrder.delete(id);
     this.handles.get(id)?.cancel();
     this.handles.delete(id);
     this.provider.endSession?.(id);
@@ -1504,10 +1544,10 @@ export class Engine {
     threadId: string,
     id: string,
   ): { name: string; size: number; path?: string } | undefined {
-    const t = this.mustThread(threadId);
+    this.mustThread(threadId);
     const pending = this.pendingAttachments.get(threadId)?.find((a) => a.id === id);
     if (pending) return { name: pending.name, size: pending.size, path: pending.path };
-    for (const m of t.messages) {
+    for (const m of this.readThreadMessages(threadId)) {
       const a = m.attachments?.find((x) => x.id === id);
       if (a) return { name: a.name, size: a.size };
     }
@@ -3611,7 +3651,9 @@ export class Engine {
     if (thread.projectId === target) return true;
     // Frozen gate: not archived, no started turn, nothing live.
     const started =
-      thread.turn !== null || thread.messages.some((m) => m.role === "user");
+      thread.turn !== null ||
+      thread.hasStartedTurn === true ||
+      this.readThreadMessages(id).some((m) => m.role === "user");
     if (thread.isArchived || started || this.limitWaits.has(id)) return false;
     // applyThreadAffiliation: stop the session, drop queued sends, clear
     // the provider identity — terminals are closed by the IPC layer
@@ -4529,6 +4571,7 @@ export class Engine {
     level: "info" | "warning" | "error",
     turnId?: string,
   ): void {
+    this.ensureThreadLoaded(thread.id);
     thread.messages.push({
       id: `codexnote-${turnId ?? "thread"}-${randomUUID()}`,
       role: "system",
@@ -6519,6 +6562,10 @@ export class Engine {
         if (rounds > 0) this.hydraRounds.set(leadId, rounds - 1);
         this.hydraRefunds.set(leadId, refunds + 1);
       }
+      this.sendTurn(leadId, reportMessage(flushable, stillWorking), {
+        authored: false,
+        hydraReport: flushable.map((r) => r.headIndex),
+      });
       if (lead.hydraJobs?.length) {
         for (const batchId of byBatch.keys()) {
           const job = lead.hydraJobs.find((j) => j.id === batchId && j.isOpen);
@@ -6542,11 +6589,8 @@ export class Engine {
           job.ending = anyFailed ? "failed" : anyStopped ? "stopped" : "completed";
           job.merge = anyUnmerged ? "failed" : anyLanded ? "merged" : "nothing";
         }
+        this.store.update(() => {});
       }
-      this.sendTurn(leadId, reportMessage(flushable, stillWorking), {
-        authored: false,
-        hydraReport: flushable.map((r) => r.headIndex),
-      });
     } catch {
       // Busy/closed raced — reports go back pending; the next endTurn
       // retries the flush.

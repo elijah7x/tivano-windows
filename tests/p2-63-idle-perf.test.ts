@@ -3,7 +3,7 @@
 // P2-63 idle CPU, background pacing, archive switch, memory-pressure release
 // with auto-shelving off, and Hydra all-merged recovery skip.
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createElement } from "react";
@@ -141,17 +141,70 @@ describe("P2-63 memory pressure with automatic shelving off", () => {
     engine.sendTurn(t0.id, "[mock:slow] run");
     const t1 = engine.createThread(null, "idle-1");
     const t2 = engine.createThread(null, "idle-2");
+    const t3 = engine.createThread(null, "idle-3");
     const selected = engine.createThread(null, "selected");
     const helper = engine.spawnHelper(selected.id, "Helper", "help me");
     engine.selectThread(selected.id);
     store.flushNow();
 
-    engine.handleMemoryPressure(true);
+    const res = engine.handleMemoryPressure(true);
+    expect(res.releasedThreads).toBeGreaterThanOrEqual(2);
     expect(store.isThreadHistoryReleased(t0.id)).toBe(false);
     expect(store.isThreadHistoryReleased(selected.id)).toBe(false);
     expect(store.isThreadHistoryReleased(helper.id)).toBe(false);
-    expect(existsSync(join(root, TURNS_DIRNAME, `${t1.id}.json`))).toBe(true);
-    expect(t2.id).toBeTruthy();
+    // Oldest idle threads were released while keeping within critical limit.
+    expect(store.isThreadHistoryReleased(t1.id)).toBe(true);
+    expect(store.isThreadHistoryReleased(t2.id)).toBe(true);
+    expect(existsSync(join(root, TURNS_DIRNAME, `${t3.id}.json`))).toBe(true);
+
+    engine.shutdown();
+    store.close();
+  });
+
+  it("survives releaseThreadHistory fs errors and protects corrupt segments on reload", async () => {
+    const root = freshRoot();
+    const store = new Store(root);
+    store.open();
+    const engine = new Engine(store, new MockProvider({ tickMs: 1 }), root, "0.0.0-test");
+    const bad = engine.createThread(null, "bad-release");
+    const good = engine.createThread(null, "good-release");
+    const keep1 = engine.createThread(null, "keep-1");
+    const keep2 = engine.createThread(null, "keep-2");
+    const active = engine.createThread(null, "active");
+    engine.sendTurn(bad.id, "one");
+    engine.sendTurn(good.id, "two");
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (bad.turn?.status === "done" && good.turn?.status === "done") break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    engine.selectThread(keep1.id);
+    engine.selectThread(keep2.id);
+    engine.selectThread(active.id);
+    store.flushNow();
+
+    const origRelease = store.releaseThreadHistory.bind(store);
+    const spy = vi.spyOn(store, "releaseThreadHistory").mockImplementation((id: string) => {
+      if (id === bad.id) throw new Error("EPERM: simulated rename lock");
+      return origRelease(id);
+    });
+    const res = engine.handleMemoryPressure(true);
+    spy.mockRestore();
+    expect(res.releasedThreads).toBeGreaterThanOrEqual(1);
+    expect(store.isThreadHistoryReleased(bad.id)).toBe(false);
+    expect(store.isThreadHistoryReleased(good.id)).toBe(true);
+    expect(keep1.id && keep2.id).toBeTruthy();
+
+    // Corrupt the on-disk segment for `good`, then reload: must clear turn & protect segment.
+    writeFileSync(join(root, TURNS_DIRNAME, `${good.id}.json`), "{not-valid-json");
+    expect(store.reloadThreadHistory(good.id)).toBe(false);
+    expect(store.isThreadHistoryReleased(good.id)).toBe(false);
+    const goodAfter = engine.snapshot().threads.find((t) => t.id === good.id)!;
+    expect(goodAfter.turn).toBeNull();
+    expect(goodAfter.messages).toEqual([]);
+    // Flushing must NOT overwrite or re-create a clean turns/<good>.json over quarantined evidence.
+    store.flushNow();
+    expect(existsSync(join(root, TURNS_DIRNAME, `${good.id}.json`))).toBe(false);
 
     engine.shutdown();
     store.close();
@@ -331,27 +384,44 @@ describe("P2-63 non-visible panels stream paced", () => {
     vi.advanceTimersByTime(90);
     const helperChunks = events.filter((e) => e.type === "turn-chunk" && e.threadId === helper.id);
     expect(helperChunks).toHaveLength(1);
-    expect((helperChunks[0] as { delta?: string }).delta).toBe("H1H2");
+    expect((helperChunks[0] as { content?: string }).content).toBe("H1H2");
     // Offscreen `bg` is still held until 1000ms (or select).
     expect(events.filter((e) => e.type === "turn-chunk" && e.threadId === bg.id)).toHaveLength(0);
 
-    // Selecting `bg` catches up immediately without waiting for the 1000ms timer.
+    // Selecting `bg` catches up immediately without waiting for the 1000ms timer
+    // and emits authoritative full content.
     engine.selectThread(bg.id);
     const bgChunks = events.filter((e) => e.type === "turn-chunk" && e.threadId === bg.id);
     expect(bgChunks).toHaveLength(1);
-    expect((bgChunks[0] as { delta?: string }).delta).toBe("ABC");
+    expect((bgChunks[0] as { content?: string }).content).toBe("ABC");
 
     // Once `bg` is active & selected, chunks arrive immediately.
     bgCb.onChunk(4, "D");
     expect(events.filter((e) => e.type === "turn-chunk" && e.threadId === bg.id)).toHaveLength(2);
 
-    // Inactive window paces even the active thread at 1000ms until restored.
+    // Interleaved thread-updated while deltas are buffered never duplicates text in ClientStore.
+    const client = new ClientStore(async () => ({}));
+    let rev = 1;
+    const snap = makeSnap(rev, structuredClone(engine.snapshot().threads), bg.id);
+    client.hydrate(snap, client.beginHydration());
+    const unsub = engine.onEvent((e) => {
+      rev += 1;
+      client.onBridgeEvent({ ...e, rev } as AppEvent);
+    });
     engine.setWindowActive(false);
     bgCb.onChunk(5, "E");
     bgCb.onChunk(6, "F");
-    expect(events.filter((e) => e.type === "turn-chunk" && e.threadId === bg.id)).toHaveLength(2);
+    engine.renameThread(bg.id, "renamed-bg");
     vi.advanceTimersByTime(1000);
+    unsub();
+    const clientMsg = client.thread(bg.id)!.messages.find((m) => m.role === "assistant")!;
+    expect(clientMsg.content).toBe("ABCDEF");
+
+    // Restoring window flushes buffered panel/visible chunks cleanly.
+    bgCb.onChunk(7, "G");
     expect(events.filter((e) => e.type === "turn-chunk" && e.threadId === bg.id)).toHaveLength(3);
+    engine.setWindowActive(true);
+    expect(events.filter((e) => e.type === "turn-chunk" && e.threadId === bg.id)).toHaveLength(4);
 
     engine.shutdown();
     store.close();

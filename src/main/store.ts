@@ -572,7 +572,17 @@ export class Store {
     }
     const seg = this.loadTurnSegment(id);
     this.releasedSegments.delete(id);
-    if (seg === "missing" || seg === "skipped") return false;
+    if (seg === "missing") {
+      t.messages = [];
+      t.turn = null;
+      return false;
+    }
+    if (seg === "skipped") {
+      t.messages = [];
+      t.turn = null;
+      this.protectedSegments.add(id);
+      return false;
+    }
     t.messages = seg.messages;
     if (t.turn === null) t.turn = seg.turn;
     return true;

@@ -567,14 +567,16 @@ bootstrap = app.whenReady().then(async () => {
 
   // P2-63: track window focus/visible/minimized state so renderer animations,
   // timers and background streaming pace down while inactive/minimized/hidden.
+  // Unfocused-but-visible keeps the active chat streaming live while pausing
+  // renderer animations/timers; minimized/hidden pauses both.
   const syncWindowActivity = () => {
-    const active =
+    const visible =
       !!win &&
       !win.isDestroyed() &&
       win.isVisible() &&
-      !win.isMinimized() &&
-      win.isFocused();
-    eng.setWindowActive(active);
+      !win.isMinimized();
+    const active = visible && !!win?.isFocused();
+    eng.setWindowActive(visible);
     broadcast({ type: "window-activity", active });
   };
   win.on("focus", syncWindowActivity);
@@ -600,7 +602,11 @@ bootstrap = app.whenReady().then(async () => {
     const warning = critical || heapRatio >= 0.7 || rssMb >= 768;
     if (!warning) return;
     lastMemPressureAt = now;
-    eng.handleMemoryPressure(critical);
+    try {
+      eng.handleMemoryPressure(critical);
+    } catch (err) {
+      console.error("[memTimer] memory-pressure release failed:", err);
+    }
   }, 30_000);
   memTimer.unref?.();
   win.once("closed", () => clearInterval(memTimer));
