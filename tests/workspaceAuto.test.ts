@@ -12,6 +12,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Engine } from "../src/main/engine";
+import type {
+  GitRunHandle,
+  GitRunResult,
+  GitRunner,
+} from "../src/main/gitExec";
 import { GitService } from "../src/main/gitService";
 import type { ProviderAdapter, TurnContext } from "../src/main/provider";
 import { ProjectRuntimePaths } from "../src/main/projectRuntimePaths";
@@ -463,5 +468,97 @@ describe.skipIf(!haveDirectGit)("autoWorktreeEligibility — real git probe", ()
     writeFileSync(join(repo, ".git", "MERGE_HEAD"), realGit(repo, ["rev-parse", "HEAD"]));
     const r = realGitService(repo);
     expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("unavailable");
+  });
+});
+
+// #104 (audit follow-up on #98): the win32 eligibility path never ran in
+// any test — the POSIX-gated probe above skips this suite's host. A
+// simulated containment refusal plus an injected-runner run of the
+// probe's real git sequence cover it instead.
+describe("autoWorktreeEligibility — win32 simulation", () => {
+  const gitResult = (over: Partial<GitRunResult>): GitRunResult => ({
+    code: 0,
+    signal: null,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    overflowed: false,
+    cancelled: false,
+    ...over,
+  });
+
+  function winRig(repoDir: string, runner?: GitRunner) {
+    const dataRoot = tmp("wtauto-wdata-");
+    const store = new Store(dataRoot);
+    store.open();
+    stores.push(store);
+    const paths = new ProjectRuntimePaths([], join(dataRoot, "grants.json"), dataRoot);
+    const engine = new Engine(
+      store,
+      {
+        descriptor: { id: "m", label: "M", mode: "mock", synthetic: true },
+        start() {
+          throw new Error("never");
+        },
+        dispose: () => Promise.resolve({ children: [], orphanedPending: 0 }),
+      } as ProviderAdapter,
+      dataRoot,
+      "0.0.0-test",
+      paths,
+    );
+    const { project } = engine.openUserDirectory(repoDir);
+    const git = new GitService({
+      paths,
+      projects: () => engine.snapshot().projects,
+      mutable: () => true,
+      emit: () => {},
+      dataRoot,
+      platform: "win32",
+      ...(runner ? { runner } : {}),
+    });
+    services.push(git);
+    return { git, projectId: project.id };
+  }
+
+  it("win32 without the attested runner answers git-containment's unavailable", async () => {
+    const dir = tmp("wtauto-wplain-");
+    const r = winRig(dir);
+    // platform win32 + no deps.runner pins unavailableReason =
+    // git-containment — the probe refuses before any spawn.
+    expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("unavailable");
+  });
+
+  it("win32 with an injected runner runs the probe's real git sequence", async () => {
+    const dir = tmp("wtauto-wrepo-");
+    // A real .git dir: operationInProgress checks its markers on disk.
+    mkdirSync(join(dir, ".git"));
+    const calls: string[][] = [];
+    const runner: GitRunner = {
+      run: (args) => {
+        calls.push([...args]);
+        const cmd = args.join(" ");
+        const result = cmd.includes("--is-inside-work-tree")
+          ? gitResult({ stdout: "true\n" })
+          : cmd.includes("--show-toplevel")
+            ? gitResult({ stdout: dir + "\n" })
+            : cmd.includes("--git-dir")
+              ? gitResult({ stdout: join(dir, ".git") + "\n" })
+              : gitResult({});
+        return {
+          done: Promise.resolve(result),
+          cancel() {},
+          pid: 1,
+        } as GitRunHandle;
+      },
+      active: () => new Set(),
+    };
+    const r = winRig(dir, runner);
+    expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("eligible");
+    // The frozen probe order: inside-work-tree → toplevel → HEAD → git-dir.
+    const flat = calls.map((c) => c.join(" "));
+    expect(flat.some((c) => c.includes("--is-inside-work-tree"))).toBe(true);
+    expect(flat.some((c) => c.includes("--show-toplevel"))).toBe(true);
+    expect(flat.some((c) => c.includes("--verify") && c.includes("HEAD"))).toBe(true);
+    expect(flat.some((c) => c.includes("--git-dir"))).toBe(true);
   });
 });
