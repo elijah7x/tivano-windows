@@ -286,9 +286,10 @@ export function ChatView(props: {
     return () => window.clearTimeout(t);
   }, [threadId]);
 
+  const wt = thread?.turn;
   const waitKey =
-    turn?.status === "waiting-approval"
-      ? (turn.approval?.id ?? turn.question?.providerKey ?? turn.id)
+    wt?.status === "waiting-approval"
+      ? (wt.approval?.id ?? wt.question?.providerKey ?? wt.id)
       : null;
   useEffect(() => {
     // P2-30 (frozen pinned-follow): growth keeps the end in view only
