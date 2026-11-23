@@ -929,8 +929,8 @@ export function ChatView(props: {
                 onClick={() => setHydraPanelHidden(false)}
               >
                 {running.length === 1
-                  ? t("%@ is working", running[0]?.hydraHead?.name ?? t("A sub-agent"))
-                  : t("%d sub-agents are working", String(running.length))}
+                  ? t("%@ is working", running[0]?.hydraHead?.name ?? t("Sub-agent"))
+                  : t("%d sub-agents working", String(running.length))}
               </button>
             );
           })()}
