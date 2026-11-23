@@ -1,6 +1,6 @@
 # Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-23.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Start-HydrogenWorker.ps1 [-Repo <owner/name>] [-LaneRoot <dir>] [-GateRoot <dir>] [-ReferenceRoot <dir>] [-Model <id>] [-Label <label>] [-MaxOpenPrs <n>] [-DailyMergeCap <n>] [-PrintTimeoutMinutes <min>] [-HardKillMinutes <min>] [-CooldownHours <hrs>] [-AgyPath <exe>] [-PromptPath <file>]
+# Usage: .\Start-HydrogenWorker.ps1 [-Repo <owner/name>] [-LaneRoot <dir>] [-GateRoot <dir>] [-ReferenceRoot <dir>] [-Model <id>] [-Label <label>] [-MaxOpenPrs <n>] [-DailyMergeCap <n>] [-PrintTimeoutMinutes <min>] [-HardKillMinutes <min>] [-CooldownHours <hrs>] [-ShortCooldownMinutes <min>] [-AgyPath <exe>] [-PromptPath <file>]
 # Scheduled worker tick for the Gemini 4 Hydrogen implementer lane. Single-instance via named mutex; launches at most one detached agy session at a time.
 
 param(
@@ -15,6 +15,7 @@ param(
   [ValidateRange(5, 480)][int]$PrintTimeoutMinutes = 150,
   [ValidateRange(10, 600)][int]$HardKillMinutes = 170,
   [ValidateRange(1, 48)][int]$CooldownHours = 6,
+  [ValidateRange(1, 1440)][int]$ShortCooldownMinutes = 30,
   [string]$AgyPath = '',
   [string]$PromptPath = ''
 )
@@ -385,10 +386,73 @@ function Stop-TreeProcesses {
   } catch { }
 }
 
+function Test-AuthQuotaErrorText {
+  param([AllowEmptyString()][string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+  return ($Text -match '(?i)auth(?!or(?:s|ed|ing|ity|ities)?\b)|login|log\s+in|logged\s+in|UNAUTHENTICATED|PERMISSION_DENIED|quota|RESOURCE_EXHAUSTED|\b429\b|usage limit|exhausted your capacity|rate limit exceeded|too many requests')
+}
+
+function Test-RegionNetworkErrorText {
+  param([AllowEmptyString()][string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+  return ($Text -match '(?i)location is not supported|FAILED_PRECONDITION|UNAVAILABLE|DEADLINE_EXCEEDED|ECONNRESET|ETIMEDOUT|socket hang up|schannel|(?<![A-Za-z])TLS(?![A-Za-z])|network|\b(?:502|503|504)\b')
+}
+
 function Test-CooldownErrorText {
   param([AllowEmptyString()][string]$Text)
   if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
-  return ($Text -match '(?i)FAILED_PRECONDITION|User location is not supported|UNAUTHENTICATED|PERMISSION_DENIED|not logged in|not authenticated|RESOURCE_EXHAUSTED|quota exceeded|out of quota|usage limit|exhausted your capacity|rate limit exceeded|too many requests')
+  return ($Text -match '(?i)FAILED_PRECONDITION|location is not supported|DEADLINE_EXCEEDED|ECONNRESET|ETIMEDOUT|socket hang up|schannel|UNAUTHENTICATED|PERMISSION_DENIED|not logged in|not authenticated|RESOURCE_EXHAUSTED|quota exceeded|out of quota|usage limit|exhausted your capacity|rate limit exceeded|too many requests')
+}
+
+function Format-CooldownDuration {
+  param([int]$Minutes)
+  if ($Minutes -gt 0 -and ($Minutes % 60) -eq 0) {
+    return ([string]([int]($Minutes / 60)) + 'h')
+  }
+  return ([string]$Minutes + 'm')
+}
+
+function Get-CooldownClassification {
+  param(
+    [AllowEmptyString()][string]$Text,
+    [AllowEmptyString()][string]$CodeKind = '',
+    [bool]$AgyRetryable = $false
+  )
+  if (Test-AuthQuotaErrorText $Text) {
+    $mins = $CooldownHours * 60
+    return [pscustomobject]@{
+      cooldownClass = 'auth-quota'
+      cooldownMinutes = $mins
+      durationLabel = (Format-CooldownDuration $mins)
+    }
+  }
+  $isHttpRetryable = ($AgyRetryable -and (-not [string]::IsNullOrWhiteSpace($CodeKind)) -and $CodeKind.Equals('http', [StringComparison]::OrdinalIgnoreCase))
+  if ($isHttpRetryable -or (Test-RegionNetworkErrorText $Text)) {
+    return [pscustomobject]@{
+      cooldownClass = 'network'
+      cooldownMinutes = $ShortCooldownMinutes
+      durationLabel = (Format-CooldownDuration $ShortCooldownMinutes)
+    }
+  }
+  return [pscustomobject]@{
+    cooldownClass = 'unknown'
+    cooldownMinutes = $ShortCooldownMinutes
+    durationLabel = (Format-CooldownDuration $ShortCooldownMinutes)
+  }
+}
+
+function Parse-DateTimeOffset {
+  param([AllowEmptyString()][string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+  $parsed = [DateTimeOffset]::MinValue
+  if ([DateTimeOffset]::TryParse(
+      $Value,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [Globalization.DateTimeStyles]::RoundtripKind,
+      [ref]$parsed)) {
+    return $parsed
+  }
+  return $null
 }
 
 function Parse-AgyError {
@@ -420,12 +484,14 @@ function Parse-AgyError {
     return [pscustomobject]@{
       message = $fallbackMsg
       errorCode = ''
+      codeKind = ''
       retryable = (-not $isCooldown)
     }
   }
 
   $shortErr = ConvertTo-SingleLine ([string](Get-JsonProp $parsed 'short_error')) 260
   $errCode = ConvertTo-SingleLine ([string](Get-JsonProp $parsed 'error_code')) 80
+  $codeKind = ConvertTo-SingleLine ([string](Get-JsonProp $parsed 'code_kind')) 40
   $retryProp = Get-JsonProp $parsed 'retryable'
   $retryable = $true
   if ($null -ne $retryProp) {
@@ -449,6 +515,7 @@ function Parse-AgyError {
   return [pscustomobject]@{
     message = (ConvertTo-SingleLine $msg 300)
     errorCode = $errCode
+    codeKind = $codeKind
     retryable = $retryable
   }
 }
@@ -463,41 +530,102 @@ function Get-ActiveCooldown {
   $retryVal = Get-JsonProp $data 'retryable'
   if ($null -ne $retryVal -and [bool]$retryVal) { return $null }
 
-  $until = [DateTimeOffset]::MinValue
-  $hasUntil = $false
-  $untilRaw = [string](Get-JsonProp $data 'cooldownUntil')
-  if (-not [string]::IsNullOrWhiteSpace($untilRaw)) {
-    $hasUntil = [DateTimeOffset]::TryParse(
-      $untilRaw,
-      [Globalization.CultureInfo]::InvariantCulture,
-      [Globalization.DateTimeStyles]::RoundtripKind,
-      [ref]$until
-    )
+  $nowUtc = [DateTimeOffset]::UtcNow
+  $until = Parse-DateTimeOffset ([string](Get-JsonProp $data 'cooldownUntil'))
+  if ($null -ne $until -and $nowUtc -ge $until) { return $null }
+
+  $setAt = Parse-DateTimeOffset ([string](Get-JsonProp $data 'setAtUtc'))
+  $recordedRaw = [string](Get-JsonProp $data 'recordedAt')
+  if ($null -eq $setAt) {
+    $setAt = Parse-DateTimeOffset $recordedRaw
   }
-  if (-not $hasUntil) {
-    $recordedRaw = [string](Get-JsonProp $data 'recordedAt')
-    $recorded = [DateTimeOffset]::MinValue
-    if (-not [string]::IsNullOrWhiteSpace($recordedRaw) -and
-        [DateTimeOffset]::TryParse(
-          $recordedRaw,
-          [Globalization.CultureInfo]::InvariantCulture,
-          [Globalization.DateTimeStyles]::RoundtripKind,
-          [ref]$recorded
-        )) {
-      $until = $recorded.AddHours($CooldownHours)
-      $hasUntil = $true
-    }
+  if ($null -eq $setAt -and $null -ne $until) {
+    $setAt = $until.AddHours(-$CooldownHours)
   }
-  if (-not $hasUntil) { return $null }
-  if ([DateTimeOffset]::UtcNow -ge $until) { return $null }
 
   $storedError = ConvertTo-SingleLine ([string](Get-JsonProp $data 'error')) 300
+  $storedCode = ConvertTo-SingleLine ([string](Get-JsonProp $data 'errorCode')) 80
+  $storedClass = ([string](Get-JsonProp $data 'cooldownClass')).Trim().ToLowerInvariant()
+  $reasonForClass = ($storedCode + ' ' + $storedError).Trim()
+  if ([string]::IsNullOrWhiteSpace($storedClass) -and
+      $storedCode.Equals('AUTH_OR_QUOTA', [StringComparison]::OrdinalIgnoreCase) -and
+      (-not [string]::IsNullOrWhiteSpace($storedError))) {
+    $reasonForClass = $storedError
+  }
+  $classified = Get-CooldownClassification -Text $reasonForClass
+
+  $effectiveClass = $classified.cooldownClass
+  if ($effectiveClass -eq 'unknown') {
+    if ($storedClass -eq 'network' -or $storedClass -eq 'auth-quota' -or $storedClass -eq 'unknown') {
+      $effectiveClass = $storedClass
+    }
+  }
+
+  $effectiveMinutes = $ShortCooldownMinutes
+  if ($effectiveClass -eq 'auth-quota') {
+    $effectiveMinutes = $CooldownHours * 60
+  }
+  $rawMinutes = Get-JsonProp $data 'cooldownMinutes'
+  if ($null -ne $rawMinutes) {
+    $parsedMins = 0
+    try { $parsedMins = [int]$rawMinutes } catch { $parsedMins = 0 }
+    if ($parsedMins -gt 0) {
+      $effectiveMinutes = $parsedMins
+    }
+  }
+
+  if ($null -eq $until) {
+    if ($null -eq $setAt) { return $null }
+    $until = $setAt.AddMinutes($effectiveMinutes)
+  }
+
+  if ($effectiveClass -eq 'network' -and $null -ne $setAt) {
+    $shortUntil = $setAt.AddMinutes($ShortCooldownMinutes)
+    if ($shortUntil -lt $until) {
+      $oldUntilStr = $until.UtcDateTime.ToString('o')
+      $until = $shortUntil
+      $newUntilStr = $until.UtcDateTime.ToString('o')
+      $effectiveMinutes = $ShortCooldownMinutes
+      $persistRecorded = $recordedRaw
+      if ([string]::IsNullOrWhiteSpace($persistRecorded)) {
+        $persistRecorded = $setAt.UtcDateTime.ToString('o')
+      }
+      $storedModel = [string](Get-JsonProp $data 'model')
+      if ([string]::IsNullOrWhiteSpace($storedModel)) {
+        $storedModel = $Model
+      }
+      $updatedPayload = [ordered]@{
+        status = 'unavailable'
+        retryable = $false
+        error = $storedError
+        errorCode = $storedCode
+        cooldownClass = 'network'
+        cooldownMinutes = $ShortCooldownMinutes
+        recordedAt = $persistRecorded
+        setAtUtc = $setAt.UtcDateTime.ToString('o')
+        cooldownUntil = $newUntilStr
+        model = $storedModel
+      }
+      try {
+        Save-JsonAtomic -Path $HealthPath -Object $updatedPayload
+      } catch {
+        Write-Log ('failed to update shortened cooldown in health.json: ' + $_.Exception.Message)
+      }
+      Write-Log ('re-evaluated agy cooldown (network, ' + (Format-CooldownDuration $ShortCooldownMinutes) + ') until ' + $newUntilStr + ' (was ' + $oldUntilStr + ')')
+    }
+  }
+
+  if ($nowUtc -ge $until) { return $null }
+
   if ([string]::IsNullOrWhiteSpace($storedError)) {
     $storedError = 'agy unavailable (cooldown active until ' + $until.UtcDateTime.ToString('o') + ')'
   }
   return [pscustomobject]@{
     error = $storedError
     cooldownUntil = $until.UtcDateTime.ToString('o')
+    cooldownClass = $effectiveClass
+    cooldownMinutes = $effectiveMinutes
+    durationLabel = (Format-CooldownDuration $effectiveMinutes)
   }
 }
 
@@ -506,23 +634,47 @@ function Write-HealthCooldown {
     [string]$HealthPath,
     [string]$ErrorText,
     [string]$ErrorCode,
-    [string]$ModelName
+    [string]$ModelName,
+    [string]$CodeKind = '',
+    [bool]$AgyRetryable = $false
   )
+  $combined = ($ErrorCode + ' ' + $ErrorText).Trim()
+  $classified = Get-CooldownClassification -Text $combined -CodeKind $CodeKind -AgyRetryable $AgyRetryable
+  $resolvedCode = $ErrorCode
+  if ([string]::IsNullOrWhiteSpace($resolvedCode)) {
+    if ($classified.cooldownClass -eq 'auth-quota') {
+      $resolvedCode = 'AUTH_OR_QUOTA'
+    } elseif ($classified.cooldownClass -eq 'network') {
+      $resolvedCode = 'NETWORK_OR_REGION'
+    }
+  }
   $nowUtc = [DateTimeOffset]::UtcNow
-  $untilUtc = $nowUtc.AddHours($CooldownHours)
+  $untilUtc = $nowUtc.AddMinutes($classified.cooldownMinutes)
+  $nowIso = $nowUtc.UtcDateTime.ToString('o')
+  $untilIso = $untilUtc.UtcDateTime.ToString('o')
   $payload = [ordered]@{
     status = 'unavailable'
     retryable = $false
     error = (ConvertTo-SingleLine $ErrorText 300)
-    errorCode = $ErrorCode
-    recordedAt = $nowUtc.UtcDateTime.ToString('o')
-    cooldownUntil = $untilUtc.UtcDateTime.ToString('o')
+    errorCode = $resolvedCode
+    cooldownClass = $classified.cooldownClass
+    cooldownMinutes = $classified.cooldownMinutes
+    recordedAt = $nowIso
+    setAtUtc = $nowIso
+    cooldownUntil = $untilIso
     model = $ModelName
   }
   try {
     Save-JsonAtomic -Path $HealthPath -Object $payload
   } catch {
     Write-Log ('failed to write health.json: ' + $_.Exception.Message)
+  }
+  return [pscustomobject]@{
+    cooldownClass = $classified.cooldownClass
+    cooldownMinutes = $classified.cooldownMinutes
+    durationLabel = $classified.durationLabel
+    setAtUtc = $nowIso
+    cooldownUntil = $untilIso
   }
 }
 
@@ -538,7 +690,10 @@ function Write-HealthOk {
     retryable = $true
     error = ''
     errorCode = ''
+    cooldownClass = ''
+    cooldownMinutes = 0
     recordedAt = $nowUtc.UtcDateTime.ToString('o')
+    setAtUtc = ''
     cooldownUntil = ''
     model = $ModelName
   }
@@ -660,25 +815,26 @@ function Inspect-SessionLogsForCooldown {
   $agyErr = Parse-AgyError -StderrText $errText -StdoutText $outText
   if ($null -ne $agyErr) {
     $combined = $agyErr.errorCode + ' ' + $agyErr.message
-    if ((-not [bool]$agyErr.retryable) -or (Test-CooldownErrorText $combined)) {
-      Write-Log ('previous session hit agy auth/quota error; activating ' + $CooldownHours + 'h cooldown: ' + $agyErr.message)
-      Write-HealthCooldown -HealthPath $script:HealthPath -ErrorText $agyErr.message -ErrorCode $agyErr.errorCode -ModelName $Model
+    $isHttpRetryable = ([bool]$agyErr.retryable -and (-not [string]::IsNullOrWhiteSpace($agyErr.codeKind)) -and $agyErr.codeKind.Equals('http', [StringComparison]::OrdinalIgnoreCase))
+    if ((-not [bool]$agyErr.retryable) -or $isHttpRetryable -or (Test-CooldownErrorText $combined) -or (Test-AuthQuotaErrorText $combined) -or (Test-RegionNetworkErrorText $combined)) {
+      $cd = Write-HealthCooldown -HealthPath $script:HealthPath -ErrorText $agyErr.message -ErrorCode $agyErr.errorCode -ModelName $Model -CodeKind $agyErr.codeKind -AgyRetryable ([bool]$agyErr.retryable)
+      Write-Log ('previous session hit agy error; agy cooldown (' + $cd.cooldownClass + ', ' + $cd.durationLabel + ') until ' + $cd.cooldownUntil + ': ' + $agyErr.message)
       return $true
     }
   }
 
   if (Test-CooldownErrorText $errText) {
     $summary = ConvertTo-SingleLine $errText 260
-    Write-Log ('previous session stderr hit auth/quota error; activating ' + $CooldownHours + 'h cooldown: ' + $summary)
-    Write-HealthCooldown -HealthPath $script:HealthPath -ErrorText $summary -ErrorCode 'AUTH_OR_QUOTA' -ModelName $Model
+    $cd = Write-HealthCooldown -HealthPath $script:HealthPath -ErrorText $summary -ErrorCode '' -ModelName $Model
+    Write-Log ('previous session stderr hit cooldown error; agy cooldown (' + $cd.cooldownClass + ', ' + $cd.durationLabel + ') until ' + $cd.cooldownUntil + ': ' + $summary)
     return $true
   }
 
   if ([string]::IsNullOrWhiteSpace($errText) -and -not [string]::IsNullOrWhiteSpace($outText) -and $outText.Length -le 4096) {
     if (Test-CooldownErrorText $outText) {
       $summary = ConvertTo-SingleLine $outText 260
-      Write-Log ('previous session short stdout hit auth/quota error; activating ' + $CooldownHours + 'h cooldown: ' + $summary)
-      Write-HealthCooldown -HealthPath $script:HealthPath -ErrorText $summary -ErrorCode 'AUTH_OR_QUOTA' -ModelName $Model
+      $cd = Write-HealthCooldown -HealthPath $script:HealthPath -ErrorText $summary -ErrorCode '' -ModelName $Model
+      Write-Log ('previous session short stdout hit cooldown error; agy cooldown (' + $cd.cooldownClass + ', ' + $cd.durationLabel + ') until ' + $cd.cooldownUntil + ': ' + $summary)
       return $true
     }
   }
@@ -1014,10 +1170,10 @@ try {
     }
   }
 
-  # Respect agy cooldown after auth/quota errors.
+  # Respect agy cooldown after errors.
   $cooldown = Get-ActiveCooldown -HealthPath $script:HealthPath
   if ($null -ne $cooldown) {
-    Write-Log ('agy cooldown active until ' + $cooldown.cooldownUntil + ': ' + $cooldown.error + '; exiting')
+    Write-Log ('agy cooldown (' + $cooldown.cooldownClass + ', ' + $cooldown.durationLabel + ') until ' + $cooldown.cooldownUntil + ': ' + $cooldown.error + '; exiting')
     exit 0
   }
 
@@ -1057,8 +1213,8 @@ try {
     $agyExePath = Resolve-AgyExecutable -RequestedPath $AgyPath
   } catch {
     $missingMsg = ConvertTo-SingleLine $_.Exception.Message 300
-    Write-Log ('agy missing: ' + $missingMsg)
-    Write-HealthCooldown -HealthPath $script:HealthPath -ErrorText $missingMsg -ErrorCode 'AGY_NOT_FOUND' -ModelName $Model
+    $cd = Write-HealthCooldown -HealthPath $script:HealthPath -ErrorText $missingMsg -ErrorCode 'AGY_NOT_FOUND' -ModelName $Model
+    Write-Log ('agy missing; agy cooldown (' + $cd.cooldownClass + ', ' + $cd.durationLabel + ') until ' + $cd.cooldownUntil + ': ' + $missingMsg)
     exit 1
   }
   Assert-CmdSafePath 'agy.exe' $agyExePath
