@@ -779,6 +779,10 @@ html[data-performance] .sky-doll.sway { animation: none; }
   padding: 0.4em 0.65em;
   text-align: left;
   overflow-wrap: anywhere;
+  /* Frozen: only a table whose columns would each fall below seven
+   * resolved sizes scrolls sideways — the floor keeps a genuinely wide
+   * table scrolling instead of squeezing cells to unreadable ribbons. */
+  min-width: 7em;
 }
 
 .msg .md-table .md-al-center {
