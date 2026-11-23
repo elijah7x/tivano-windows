@@ -111,6 +111,7 @@ type PendingTicket = PendingPermission | PendingQuestion;
 interface ActiveTurn {
   localTurnId: string;
   providerTurnId: string | null;
+  turnStarted: boolean;
   cb: ProviderCallbacks;
   seq: number;
   terminal: boolean;
@@ -119,6 +120,7 @@ interface ActiveTurn {
   reasoningId: string | null;
   reasoningText: string;
   startedTools: Set<string>;
+  toolMeta: Map<string, { kind: ToolActivity["kind"]; title: string }>;
   turnUsage: { input: number; output: number; cached: number };
 }
 
@@ -273,10 +275,22 @@ class ZCodeSession {
     };
   }
 
+  hasActiveTurn(): boolean {
+    return this.turn !== null && !this.turn.terminal;
+  }
+
   beginTurn(context: TurnContext, cb: ProviderCallbacks): void {
+    if (this.turn && !this.turn.terminal) {
+      throw new ZCodeProviderError(
+        "ZCODE_BUSY: another turn is already active on this session",
+        "ZCODE_BUSY",
+      );
+    }
+    this.withdrawAllPending(this.turn);
     const active: ActiveTurn = {
       localTurnId: context.turnId,
       providerTurnId: null,
+      turnStarted: false,
       cb,
       seq: 0,
       terminal: false,
@@ -285,6 +299,7 @@ class ZCodeSession {
       reasoningId: null,
       reasoningText: "",
       startedTools: new Set(),
+      toolMeta: new Map(),
       turnUsage: { input: 0, output: 0, cached: 0 },
     };
     this.turn = active;
@@ -373,24 +388,29 @@ class ZCodeSession {
       spec,
       limits,
       {
-        onFrame: (msg) => this.rpc?.onFrame(msg),
+        onFrame: (msg) => {
+          if (this.transport === transport) rpc.onFrame(msg);
+        },
         onProtocolError: (err) => {
-          this.rpc?.failAllPending(err.message);
-          this.handleDead(err.message);
+          if (this.transport !== transport) return;
+          rpc.failAllPending(err.message);
+          this.handleDead(transport, err.message);
         },
         onExit: () => {},
         onClose: (code, signal) => {
           this.transports.delete(transport);
+          if (this.transport !== transport) return;
           const tail = transport.stderrTail();
           const reason =
             tail.trim() ||
             `ZCode process exited (${code !== null ? `code ${code}` : `signal ${signal ?? "?"}`})`;
-          this.rpc?.failAllPending(reason);
-          this.handleDead(reason);
+          rpc.failAllPending(reason);
+          this.handleDead(transport, reason);
         },
         onSpawnError: (err) => {
-          this.rpc?.failAllPending(err.message);
-          this.handleDead(err.message);
+          if (this.transport !== transport) return;
+          rpc.failAllPending(err.message);
+          this.handleDead(transport, err.message);
         },
       },
       this.provider.spawnImplForMode(),
@@ -402,105 +422,130 @@ class ZCodeSession {
     const rpc = new CodexRpc(
       transport,
       {
-        onServerRequest: (id, method, params) => this.handleServerRequest(rpc, id, method, params),
-        onNotification: (method, params) => this.handleNotification(method, params),
-        onClosed: (reason) => this.handleDead(reason),
+        onServerRequest: (id, method, params) => {
+          if (this.transport === transport) this.handleServerRequest(rpc, id, method, params);
+        },
+        onNotification: (method, params) => {
+          if (this.transport === transport) this.handleNotification(method, params);
+        },
+        onClosed: (reason) => {
+          if (this.transport === transport) this.handleDead(transport, reason);
+        },
         onFatal: (err) => {
-          this.handleDead(err.message);
+          if (this.transport === transport) this.handleDead(transport, err.message);
           void transport.dispose();
         },
       },
       {
         requestTimeoutMs: 90_000,
         onMutatingTimeout: (method) => {
-          this.handleDead(`ZCode request timed out (${method})`);
+          if (this.transport === transport) {
+            this.handleDead(transport, `ZCode request timed out (${method})`);
+          }
           void transport.dispose();
         },
       },
     );
     this.rpc = rpc;
-    transport.start();
 
-    const pid = this.accountProviderId;
-    const accRes = await rpc.request(
-      "provider/updateAccountConfig",
-      {
-        revision: "tivano-1",
-        basedOnZCodeBuiltinRevision: revision,
-        providers: { [pid]: { access: { type: "zhipu-account", entitled: true } } },
-        states: { [pid]: { availability: "available", entitled: true, current: true } },
-      },
-      { timeoutMs: 90_000, mutating: true },
-    );
-    if (!isObj(accRes) || accRes.status !== "received") {
-      throw new ZCodeProviderError(
-        "ZCode did not accept the account configuration.",
-        "ZCODE_PROTOCOL_ERROR",
-      );
-    }
+    try {
+      transport.start();
 
-    const existing = this.provider.lookupBinding(this.localThreadId);
-    const resumeId = existing?.providerId === "zcode" ? existing.codexThreadId : undefined;
-    const mode = zcodeMode(context.runtimeMode, context.interactionMode);
-
-    let sessionRes: unknown;
-    if (resumeId) {
-      sessionRes = await rpc.request(
-        "session/resume",
-        { sessionId: resumeId },
-        { timeoutMs: 90_000, mutating: true },
-      );
-    } else {
-      sessionRes = await rpc.request(
-        "session/create",
+      const pid = this.accountProviderId;
+      const accRes = await rpc.request(
+        "provider/updateAccountConfig",
         {
-          workspace: {
-            workspacePath: this.workspaceDirectory,
-            workspaceKey: this.workspaceDirectory,
-          },
-          model: this.selection(context.model, context.effort),
-          mode,
-          persistence: "deferred",
+          revision: "tivano-1",
+          basedOnZCodeBuiltinRevision: revision,
+          providers: { [pid]: { access: { type: "zhipu-account", entitled: true } } },
+          states: { [pid]: { availability: "available", entitled: true, current: true } },
         },
         { timeoutMs: 90_000, mutating: true },
       );
-    }
-    const sessionObj = isObj(sessionRes) && isObj(sessionRes.session) ? sessionRes.session : null;
-    const sid = sessionObj ? str(sessionObj.sessionId) : null;
-    if (!sid || (resumeId && sid !== resumeId)) {
-      throw new ZCodeProviderError(
-        "ZCode did not return the requested session.",
-        "ZCODE_PROTOCOL_ERROR",
+      if (!isObj(accRes) || accRes.status !== "received") {
+        throw new ZCodeProviderError(
+          "ZCode did not accept the account configuration.",
+          "ZCODE_PROTOCOL_ERROR",
+        );
+      }
+
+      const existing = this.provider.lookupBinding(this.localThreadId);
+      const resumeId = existing?.providerId === "zcode" ? existing.codexThreadId : undefined;
+      const mode = zcodeMode(context.runtimeMode, context.interactionMode);
+
+      let sessionRes: unknown;
+      if (resumeId) {
+        sessionRes = await rpc.request(
+          "session/resume",
+          { sessionId: resumeId },
+          { timeoutMs: 90_000, mutating: true },
+        );
+      } else {
+        sessionRes = await rpc.request(
+          "session/create",
+          {
+            workspace: {
+              workspacePath: this.workspaceDirectory,
+              workspaceKey: this.workspaceDirectory,
+            },
+            model: this.selection(context.model, context.effort),
+            mode,
+            persistence: "deferred",
+          },
+          { timeoutMs: 90_000, mutating: true },
+        );
+      }
+      const sessionObj = isObj(sessionRes) && isObj(sessionRes.session) ? sessionRes.session : null;
+      const sid = sessionObj ? str(sessionObj.sessionId) : null;
+      if (!sid || (resumeId && sid !== resumeId)) {
+        throw new ZCodeProviderError(
+          "ZCode did not return the requested session.",
+          "ZCODE_PROTOCOL_ERROR",
+        );
+      }
+      this.zcodeSessionId = sid;
+
+      if (!existing || existing.providerId !== "zcode") {
+        await this.provider.bindThread(this.localThreadId, {
+          providerId: "zcode",
+          codexThreadId: sid,
+          cwd: this.workspaceDirectory,
+          codexHomeId: pid,
+          schemaPin: ZCODE_SCHEMA_PIN,
+          cliVersion: this.provider.config.version,
+          savedAt: Date.now(),
+        });
+      }
+
+      await rpc.request(
+        "session/setMode",
+        { sessionId: sid, mode },
+        { timeoutMs: 90_000, mutating: true },
       );
+      this.appliedMode = mode;
+
+      await rpc.request(
+        "session/subscribe",
+        { sessionId: sid, deliveryKind: "desktop-continuous" },
+        { timeoutMs: 90_000, mutating: true },
+      );
+
+      this.phase = "ready";
+    } catch (err) {
+      if (this.transport === transport) {
+        this.transport = null;
+        this.rpc = null;
+        this.appliedMode = null;
+        this.zcodeSessionId = null;
+        this.phase = "dead";
+      }
+      rpc.failAllPending(err instanceof Error ? err.message : String(err));
+      const cleanup = await transport.dispose().catch(() => null);
+      this.transports.delete(transport);
+      if (cleanup && !cleanup.confirmed) this.cleanupFailures.set(transport, cleanup);
+      else this.cleanupFailures.delete(transport);
+      throw err;
     }
-    this.zcodeSessionId = sid;
-
-    if (!existing || existing.providerId !== "zcode") {
-      await this.provider.bindThread(this.localThreadId, {
-        providerId: "zcode",
-        codexThreadId: sid,
-        cwd: this.workspaceDirectory,
-        codexHomeId: pid,
-        schemaPin: ZCODE_SCHEMA_PIN,
-        cliVersion: this.provider.config.version,
-        savedAt: Date.now(),
-      });
-    }
-
-    await rpc.request(
-      "session/setMode",
-      { sessionId: sid, mode },
-      { timeoutMs: 90_000, mutating: true },
-    );
-    this.appliedMode = mode;
-
-    await rpc.request(
-      "session/subscribe",
-      { sessionId: sid, deliveryKind: "desktop-continuous" },
-      { timeoutMs: 90_000, mutating: true },
-    );
-
-    this.phase = "ready";
   }
 
   private handleServerRequest(rpc: CodexRpc, id: RpcId, method: string, params: unknown): void {
@@ -538,14 +583,24 @@ class ZCodeSession {
           const optionId = str(opt.optionId);
           if (!optionId || !("response" in opt)) continue;
           payloads[optionId] = opt.response;
-          const role: ApprovalOption["role"] =
-            str(opt.kind) === "allow_once" ? "approve" : "deny";
+          const rawKind = str(opt.kind) ?? "";
+          const isAllow =
+            rawKind === "allow_once" ||
+            rawKind === "allow_always" ||
+            rawKind.startsWith("allow");
+          const role: ApprovalOption["role"] = isAllow ? "approve" : "deny";
+          const scope: ApprovalOption["scope"] =
+            rawKind === "allow_always" || rawKind === "reject_always" ? "session" : "once";
           options.push({
             id: optionId,
             title: str(opt.name) ?? optionId,
             role,
-            scope: "once",
+            scope,
           });
+        }
+        if (options.length === 0) {
+          rpc.respondError(id, -32602, "No permission options provided");
+          return;
         }
         this.pending.set(key, { kind: "permission", rpcId: id, payloads });
         const input = isObj(p.input) ? p.input : null;
@@ -669,6 +724,7 @@ class ZCodeSession {
         active.providerTurnId = id;
         active.turnUsage = { input: 0, output: 0, cached: 0 };
       }
+      active.turnStarted = true;
       return;
     }
 
@@ -719,6 +775,7 @@ class ZCodeSession {
         break;
       }
       case "turn.completed": {
+        if (!active.turnStarted) return;
         if (id && active.providerTurnId && id !== active.providerTurnId) return;
         const effectiveTurnId = id ?? active.providerTurnId ?? active.localTurnId;
         this.completedProviderTurns.add(effectiveTurnId);
@@ -790,6 +847,7 @@ class ZCodeSession {
       const input = isObj(payload.input) ? payload.input : null;
       const mapped = mapToolCall(name, input, this.workspaceDirectory);
       active.startedTools.add(id);
+      active.toolMeta.set(id, { kind: mapped.kind, title: mapped.title });
       active.cb.onToolActivity?.({
         itemId: id,
         kind: mapped.kind,
@@ -832,9 +890,11 @@ class ZCodeSession {
         }
       }
     }
+    const meta = active.toolMeta.get(id);
     active.cb.onToolActivity?.({
       itemId: id,
-      kind: "other",
+      kind: meta?.kind ?? "other",
+      ...(meta?.title ? { title: meta.title } : {}),
       status: ok ? "completed" : "failed",
       ...(detail ? { detail } : {}),
     });
@@ -849,11 +909,20 @@ class ZCodeSession {
     active.cb.onReasoning?.({ itemId: rid, done: true, finalText });
   }
 
-  private withdrawAllPending(active: ActiveTurn): void {
+  private withdrawAllPending(active: ActiveTurn | null, rejectRpc = false): void {
     for (const [key, ticket] of this.pending.entries()) {
       this.pending.delete(key);
-      if (ticket.kind === "permission") active.cb.onApprovalWithdrawn?.(key);
-      else active.cb.onQuestionWithdrawn?.(key);
+      if (rejectRpc && !ticket.writing && this.rpc) {
+        if (ticket.kind === "question") {
+          this.rpc.respond(ticket.rpcId, { action: "decline" });
+        } else {
+          this.rpc.respondError(ticket.rpcId, -32000, "Turn cancelled");
+        }
+      }
+      if (active) {
+        if (ticket.kind === "permission") active.cb.onApprovalWithdrawn?.(key);
+        else active.cb.onQuestionWithdrawn?.(key);
+      }
     }
   }
 
@@ -873,9 +942,13 @@ class ZCodeSession {
     else active.cb.onError(error ?? "ZCode reported an error.");
   }
 
-  private handleDead(reason: string): void {
+  private handleDead(deadTransport: StdioTransport<CodexMessage> | null, reason: string): void {
+    if (deadTransport && this.transport !== deadTransport) return;
     this.phase = "dead";
     this.rpc = null;
+    this.transport = null;
+    this.zcodeSessionId = null;
+    this.appliedMode = null;
     const active = this.turn;
     if (active && !active.terminal) {
       this.finishTurn(
@@ -919,6 +992,7 @@ class ZCodeSession {
 
   decline(turnId: string, optionId: string): void {
     this.resolveApproval(turnId, false, optionId);
+    this.cancelTurn(turnId);
   }
 
   answerQuestion(
@@ -955,10 +1029,21 @@ class ZCodeSession {
     const active = this.turn;
     if (!active || active.localTurnId !== turnId || active.terminal) return;
     active.cancelIntent = true;
+    if (active.providerTurnId) {
+      this.completedProviderTurns.add(active.providerTurnId);
+    }
+    this.withdrawAllPending(active, true);
     if (this.rpc && this.zcodeSessionId) {
       void this.rpc
         .request("session/stop", { sessionId: this.zcodeSessionId }, { timeoutMs: 10_000 })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          if (!active.terminal && this.turn === active) {
+            this.finishTurn(active, "interrupted");
+          }
+        });
+    } else {
+      this.finishTurn(active, "interrupted");
     }
   }
 
@@ -1127,6 +1212,12 @@ export class ZCodeProvider implements ProviderAdapter {
     if (!session) {
       session = new ZCodeSession(this, context.threadId, context.workspace);
       this.sessions.set(context.threadId, session);
+    }
+    if (session.hasActiveTurn()) {
+      throw new ZCodeProviderError(
+        "ZCODE_BUSY: another turn is already active on this session",
+        "ZCODE_BUSY",
+      );
     }
     session.beginTurn(context, callbacks);
     const threadId = context.threadId;

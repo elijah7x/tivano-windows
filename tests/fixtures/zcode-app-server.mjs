@@ -69,8 +69,8 @@ function notify(method, params) {
 const pendingServerRequests = new Map();
 function serverRequest(method, params) {
   const id = `server-${++srvSeq}`;
-  return new Promise((resolve) => {
-    pendingServerRequests.set(id, resolve);
+  return new Promise((resolve, reject) => {
+    pendingServerRequests.set(id, { resolve, reject });
     send({ id, method, params });
   });
 }
@@ -133,6 +133,30 @@ async function runTurn(content, modelSelection) {
     return;
   }
 
+  if (lower.includes("empty-approval")) {
+    let errCode = null;
+    try {
+      await serverRequest("interaction/requestPermission", {
+        sessionId: currentSessionId,
+        toolCallId: `tc-empty-${turnId}`,
+        toolName: "Bash",
+        input: { command: "echo empty" },
+        reason: "Empty options check",
+        options: [],
+      });
+    } catch (err) {
+      errCode = err?.code ?? -32000;
+    }
+    emitEvent(turnId, "model.streaming", {
+      kind: "text_delta",
+      assistantMessageId: `msg-${turnId}`,
+      delta: `empty-approval-err=${errCode}`,
+    });
+    emitEvent(turnId, "turn.completed", { resultType: "success" });
+    activeTurn = null;
+    return;
+  }
+
   if (lower.includes("approval")) {
     const decision = await serverRequest("interaction/requestPermission", {
       sessionId: currentSessionId,
@@ -142,6 +166,7 @@ async function runTurn(content, modelSelection) {
       reason: "Needs command approval",
       options: [
         { optionId: "allow_once", kind: "allow_once", name: "Allow once", response: { granted: true } },
+        { optionId: "allow_always", kind: "allow_always", name: "Allow always", response: { granted: true, always: true } },
         { optionId: "reject_once", kind: "reject_once", name: "Deny", response: { granted: false } },
       ],
     });
@@ -273,16 +298,21 @@ rl.on("line", (line) => {
     return;
   }
   if (!msg.method && "id" in msg) {
-    const resolve = pendingServerRequests.get(String(msg.id));
-    if (resolve) {
+    const entry = pendingServerRequests.get(String(msg.id));
+    if (entry) {
       pendingServerRequests.delete(String(msg.id));
-      resolve(msg.result);
+      if (msg.error) entry.reject(msg.error);
+      else entry.resolve(msg.result);
     }
     return;
   }
   const { id, method, params } = msg;
   switch (method) {
     case "provider/updateAccountConfig":
+      if (process.env.TIVANO_ZCODE_FIXTURE_FAIL_CONNECT === "1") {
+        respondError(id, -32010, "fixture account reject");
+        break;
+      }
       respond(id, {
         receivedRevision: params?.revision ?? "tivano-1",
         providerCount: Object.keys(params?.providers ?? {}).length,

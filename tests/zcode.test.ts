@@ -38,7 +38,7 @@ import type { ApprovalRequest, CodexQuestionRequest, ProviderThreadBinding } fro
 import { PROVIDER_CATALOG, providerMetadata, resolveZaiRegion } from "../src/shared/providers";
 import { HYDRA_PROVIDER_NAMES, hydraProviderName } from "../src/shared/hydra";
 import { REQUEST_CHANNELS, requestValidators } from "../src/shared/ipc";
-import { translate } from "../src/renderer/i18n";
+import { translate, translateError } from "../src/renderer/i18n";
 import { Store } from "../src/main/store";
 import { Engine } from "../src/main/engine";
 import { ProjectRuntimePaths } from "../src/main/projectRuntimePaths";
@@ -163,8 +163,10 @@ interface Collected {
   chunks: string[];
   reasoning: string[];
   approvals: Array<Omit<ApprovalRequest, "id" | "turnId" | "status">>;
+  approvalsWithdrawn: string[];
   questions: Array<Omit<CodexQuestionRequest, "status">>;
-  tools: Array<{ itemId: string; status: string; title?: string; detail?: string }>;
+  questionsWithdrawn: string[];
+  tools: Array<{ itemId: string; kind: string; status: string; title?: string; detail?: string }>;
   fileChanges: string[];
   usages: Array<{ usedTokens: number; windowTokens?: number; sessionTotalTokens?: number }>;
   reports: Array<{ model: string | null; effort: string | null }>;
@@ -180,7 +182,9 @@ function collectCallbacks(): { cb: ProviderCallbacks; c: Collected } {
     chunks: [],
     reasoning: [],
     approvals: [],
+    approvalsWithdrawn: [],
     questions: [],
+    questionsWithdrawn: [],
     tools: [],
     fileChanges: [],
     usages: [],
@@ -199,12 +203,15 @@ function collectCallbacks(): { cb: ProviderCallbacks; c: Collected } {
         if (r.delta) c.reasoning.push(r.delta);
       },
       onApproval: (a) => c.approvals.push(a),
+      onApprovalWithdrawn: (k) => c.approvalsWithdrawn.push(k),
       onApprovalAnswerWritten: (k) => c.approvedWritten.push(k),
       onQuestion: (q) => c.questions.push(q),
+      onQuestionWithdrawn: (k) => c.questionsWithdrawn.push(k),
       onQuestionAnswered: (k) => c.questionAnswered.push(k),
       onToolActivity: (a) =>
         c.tools.push({
           itemId: a.itemId,
+          kind: a.kind,
           status: a.status,
           ...(a.title !== undefined ? { title: a.title } : {}),
           ...(a.detail !== undefined ? { detail: a.detail } : {}),
@@ -542,12 +549,16 @@ describe("ZCodeProvider (fixture)", () => {
     const grant: WorkspaceGrant = { projectId: "p1", directory: ws };
 
     // 1) tool-fail-nonfatal: failing tool + subagent result -> turn still completes done
+    //    and completed/failed tool activity preserves original kind + title
     const r1 = collectCallbacks();
     p.start({ prompt: "tool-fail-nonfatal", threadId: "t-tool", turnId: "1", workspace: grant }, r1.cb);
     await waitFor(() => r1.c.done || r1.c.errors.length > 0);
     expect(r1.c.done).toBe(true);
     expect(r1.c.errors).toEqual([]);
-    expect(r1.c.tools.some((t) => t.status === "failed")).toBe(true);
+    const failedTool = r1.c.tools.find((t) => t.status === "failed");
+    expect(failedTool).toBeDefined();
+    expect(failedTool?.kind).toBe("command");
+    expect(failedTool?.title).toBe("false");
     // Subagent tool result tc-sub-* without parent tool_call must NOT appear
     expect(r1.c.tools.some((t) => t.itemId.startsWith("tc-sub-"))).toBe(false);
 
@@ -582,7 +593,7 @@ describe("ZCodeProvider (fixture)", () => {
     await p.dispose();
   });
 
-  it("handles permission approvals, user input questions, and turn cancellation", async () => {
+  it("handles permission approvals (allow_once/allow_always/empty), questions, decline, busy guard, and cancel", async () => {
     const ws = tmp("zc-ws-interact-");
     const cfg = fixtureConfig();
     const p = new ZCodeProvider({
@@ -593,15 +604,39 @@ describe("ZCodeProvider (fixture)", () => {
     });
     const grant: WorkspaceGrant = { projectId: "p1", directory: ws };
 
-    // Approval flow
+    // Approval flow (verify allow_always role/scope mapping and busy guard)
     const rApp = collectCallbacks();
     const hApp = p.start({ prompt: "approval", threadId: "t-app", turnId: "a1", workspace: grant }, rApp.cb);
     await waitFor(() => rApp.c.approvals.length > 0);
     expect(rApp.c.approvals[0]!.headline).toBe("ZCode requests command approval");
-    hApp.resume(true, "allow_once");
+    expect(rApp.c.approvals[0]!.options.map((o) => [o.id, o.role, o.scope])).toEqual([
+      ["allow_once", "approve", "once"],
+      ["allow_always", "approve", "session"],
+      ["reject_once", "deny", "once"],
+    ]);
+    expect(() =>
+      p.start({ prompt: "overlapping", threadId: "t-app", turnId: "a-busy", workspace: grant }, collectCallbacks().cb),
+    ).toThrow(ZCodeProviderError);
+    hApp.resume(true, "allow_always");
     await waitFor(() => rApp.c.done || rApp.c.errors.length > 0);
     expect(rApp.c.done).toBe(true);
     expect(rApp.c.approvedWritten.length).toBe(1);
+
+    // Empty-options approval request must fail RPC with -32602 without emitting an approval card
+    const rEmpty = collectCallbacks();
+    p.start({ prompt: "empty-approval", threadId: "t-empty", turnId: "e1", workspace: grant }, rEmpty.cb);
+    await waitFor(() => rEmpty.c.done || rEmpty.c.errors.length > 0);
+    expect(rEmpty.c.done).toBe(true);
+    expect(rEmpty.c.approvals).toEqual([]);
+    expect(rEmpty.c.chunks.join("")).toContain("empty-approval-err=-32602");
+
+    // Decline sends deny response and cancels the turn cleanly
+    const rDec = collectCallbacks();
+    const hDec = p.start({ prompt: "approval", threadId: "t-dec", turnId: "d1", workspace: grant }, rDec.cb);
+    await waitFor(() => rDec.c.approvals.length > 0);
+    hDec.decline?.("reject_once");
+    await waitFor(() => rDec.c.interrupted || rDec.c.done || rDec.c.errors.length > 0);
+    expect(rDec.c.interrupted).toBe(true);
 
     // Question flow
     const rQ = collectCallbacks();
@@ -613,7 +648,19 @@ describe("ZCodeProvider (fixture)", () => {
     expect(rQ.c.questionAnswered.length).toBe(1);
     expect(rQ.c.chunks.join("")).toContain("Global (recommended)");
 
-    // Cancel flow
+    // Cancel while a permission ticket is pending withdraws the ticket cleanly and settles interrupted
+    const rPendCancel = collectCallbacks();
+    const hPendCancel = p.start(
+      { prompt: "approval", threadId: "t-pc", turnId: "pc1", workspace: grant },
+      rPendCancel.cb,
+    );
+    await waitFor(() => rPendCancel.c.approvals.length > 0);
+    hPendCancel.cancel();
+    await waitFor(() => rPendCancel.c.interrupted || rPendCancel.c.done || rPendCancel.c.errors.length > 0);
+    expect(rPendCancel.c.interrupted).toBe(true);
+    expect(rPendCancel.c.approvalsWithdrawn.length).toBe(1);
+
+    // Cancel flow on slow/sleeping turn
     const rStop = collectCallbacks();
     const hStop = p.start({ prompt: "sleep", threadId: "t-s", turnId: "s1", workspace: grant }, rStop.cb);
     await new Promise((r) => setTimeout(r, 150));
@@ -622,6 +669,32 @@ describe("ZCodeProvider (fixture)", () => {
     expect(rStop.c.interrupted).toBe(true);
 
     await p.dispose();
+  });
+
+  it("disposes spawned child transport cleanly if post-spawn handshake fails", async () => {
+    const ws = tmp("zc-ws-failconn-");
+    const cfg = fixtureConfig();
+    const p = new ZCodeProvider({
+      config: cfg,
+      apiKey: () => "sk-synthetic-fixture",
+      lookupBinding: () => undefined,
+      bindThread: async () => {},
+      makeSpec: (cwd) => ({
+        executable: NODE,
+        args: [FIXTURE],
+        cwd,
+        env: {
+          ...process.env,
+          TIVANO_ZCODE_FIXTURE_FAIL_CONNECT: "1",
+        },
+      }),
+    });
+    const r = collectCallbacks();
+    p.start({ prompt: "hello", threadId: "t-fc", turnId: "fc1", workspace: { projectId: "p1", directory: ws } }, r.cb);
+    await waitFor(() => r.c.errors.length > 0 || r.c.done);
+    expect(r.c.errors.length).toBeGreaterThan(0);
+    const disposed = await p.dispose();
+    expect(disposed.children.every((c) => c.confirmed)).toBe(true);
   });
 
   it("fails cleanly with ZCODE_NOT_INSTALLED when unconfigured", () => {
@@ -685,6 +758,17 @@ describe("ZCode registration, Engine, IPC, and i18n", () => {
     expect(translate("zh-Hans", "Providers")).toBe("服务商");
     expect(translate("zh-Hans", "GLM Coding Plan key")).toBe("GLM Coding Plan 密钥");
     expect(translate("zh-Hans", "China")).toBe("中国区");
+    for (const key of [
+      "Offline fixture",
+      "ZCode (offline fixture)",
+      "ZCode (unconfigured)",
+      "ZCode is not installed. Install the ZCode app, then refresh in Settings › Providers.",
+      "ZCode models are unavailable — ensure ZCode is installed",
+      "OS credential encryption is unavailable on this host",
+    ]) {
+      expect(translate("zh-Hans", key)).not.toBe(key);
+    }
+    expect(translateError((k) => translate("zh-Hans", k), "ZCODE_BUSY: busy")).toBe("ZCode 会话忙: busy");
   });
 
   it("drives a full Engine turn with ZCodeProvider, model catalog, and persistence", async () => {

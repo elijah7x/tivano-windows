@@ -1351,9 +1351,27 @@ const zhHans: Record<string, string> = {
   // ZCode provider & Settings › Providers
   "ZCode": "ZCode",
   "ZCode fixture": "ZCode 离线夹具",
+  "ZCode (offline fixture)": "ZCode（离线夹具）",
+  "ZCode (unconfigured)": "ZCode（未配置）",
+  "Offline fixture": "离线夹具",
   "Offline ZCode protocol fixture — deterministic, no real CLI or model":
     "离线 ZCode 协议夹具 —— 确定性回放，无真实 CLI 或模型",
   "ZCode is not installed": "ZCode 未安装",
+  "ZCode is not installed. Install the ZCode app, then refresh in Settings › Providers.":
+    "未安装 ZCode。请安装 ZCode 应用，然后在“设置 › 服务商配置”中刷新。",
+  "ZCode models are unavailable — ensure ZCode is installed":
+    "ZCode 模型不可用 —— 请确认已安装 ZCode",
+  "OS credential encryption is unavailable on this host":
+    "此主机上的系统凭据加密不可用",
+  "ZCODE_NOT_INSTALLED": "未安装 ZCode",
+  "ZCODE_NOT_CONFIGURED": "ZCode 未配置",
+  "ZCODE_ENTRY_INVALID": "ZCode 入口无效",
+  "ZCODE_FIXTURE_INVALID": "ZCode 夹具无效",
+  "ZCODE_BUILTIN_INVALID": "ZCode 内置配置无效",
+  "ZCODE_BUILTIN_UNREADABLE": "无法读取 ZCode 内置配置",
+  "ZCODE_PROTOCOL_ERROR": "ZCode 协议错误",
+  "ZCODE_BUSY": "ZCode 会话忙",
+  "ZCODE_WORKSPACE_REQUIRED": "ZCode 需要已授权的工作区",
   "ZCode app-server": "ZCode app-server",
   "ZCode asks a question": "ZCode 向你提问",
   "Sent — waiting for ZCode": "已发送 —— 等待 ZCode",
