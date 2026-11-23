@@ -286,9 +286,11 @@ export function ChatView(props: {
   }, [threadId]);
 
   const wt = thread?.turn;
+  // Frozen fetches a paged-back reader only for a question row — an
+  // approval appearing at the end never re-pins on its own.
   const waitKey =
-    wt?.status === "waiting-approval"
-      ? (wt.approval?.id ?? wt.question?.providerKey ?? wt.id)
+    wt?.status === "waiting-approval" && wt.question !== undefined
+      ? (wt.question.providerKey ?? wt.id)
       : null;
   useEffect(() => {
     // P2-30 (frozen pinned-follow): growth keeps the end in view only
@@ -301,19 +303,22 @@ export function ChatView(props: {
     // composer arms the pin itself (onSent below). Engine-injected user
     // messages (queued drains, head briefs, auto-continues) never reach
     // this branch: a starting turn must not yank a paged-back reader.
-    // Frozen fetches any reader for a question row — a newly-outstanding
-    // approval/question re-pins once (the id guard keeps an answered or
-    // lingering row from holding the pin while the reader reviews).
+    // Frozen fetches the reader for a question row only — a newly-
+    // outstanding question re-pins once (the id guard keeps an answered
+    // or lingering row from holding the pin while the reader reviews).
     if (waitKey !== null && waitKey !== timelineWaitRef.current) {
       timelineFollowingRef.current = true;
     }
     timelineWaitRef.current = waitKey;
-    // Frozen revives a stale pin: a released reader already sitting at
-    // the end follows new growth again.
+    // Frozen revives a stale pin: a released reader sitting at the end
+    // (within 1pt) and NOT mid-gesture follows new growth again — a
+    // wheel-up that started inside the band is never pulled back down.
     if (
       el &&
       !timelineFollowingRef.current &&
-      el.scrollHeight - el.scrollTop - el.clientHeight <= 8
+      el.scrollHeight - el.scrollTop - el.clientHeight <= 1 &&
+      !timelineInteractRef.current &&
+      Date.now() > timelineWheelUntilRef.current
     ) {
       timelineFollowingRef.current = true;
     }
@@ -643,10 +648,12 @@ export function ChatView(props: {
           }
         }}
         onWheel={() => {
-          timelineWheelUntilRef.current = Date.now() + 600;
+          // Frozen 150ms recency — long enough for the deferred geometry
+          // pass, never long enough to credit stale input.
+          timelineWheelUntilRef.current = Date.now() + 150;
         }}
         onTouchMove={() => {
-          timelineWheelUntilRef.current = Date.now() + 600;
+          timelineWheelUntilRef.current = Date.now() + 150;
         }}
         onPointerDown={() => {
           timelineInteractRef.current = true;

@@ -40,6 +40,7 @@ import { runCodexQuestionChecks } from "./codexQuestionChecks.mjs";
 import { runFollowUpChecks } from "./followUpChecks.mjs";
 import { runArchiveChecks } from "./archiveChecks.mjs";
 import { runMinimapChecks } from "./minimapChecks.mjs";
+import { runScrollFollowChecks } from "./scrollFollowChecks.mjs";
 import { runThemeChecks } from "./themeChecks.mjs";
 import { runTokenChecks } from "./tokenChecks.mjs";
 import { runRuntimeModeChecks } from "./runtimeModeChecks.mjs";
@@ -1731,6 +1732,16 @@ try {
 
   // ---- A44: F03 conversation-outline minimap (local state) --------------
   await runMinimapChecks({
+    launch,
+    instances,
+    snap,
+    check,
+    boundedClose,
+    dataRoot,
+  });
+
+  // ---- P2-30: frozen pinned-follow on a synthetic long chat ----------
+  await runScrollFollowChecks({
     launch,
     instances,
     snap,
