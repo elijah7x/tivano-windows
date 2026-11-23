@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { selectionIntersects } from "../src/renderer/selectionRepaint";
 
-const css = readFileSync(join(__dirname, "../src/renderer/styles.css"), "utf8");
+const css = readFileSync(join(__dirname, "../src/renderer/styles.css"), "utf8").replace(/\r\n/g, "\n");
 
 describe("P2-45 selection intersects", () => {
   const el = { contains: (n: Node | null) => n === INSIDE };
@@ -31,10 +31,14 @@ describe("P2-45 selection intersects", () => {
 });
 
 describe("P2-45 cursor rules", () => {
-  it("scopes the text cursor to words inside message bodies", () => {
+  it("resolves reply text per hit: I-beam over glyphs, arrow over space", () => {
     expect(css).toContain(".timeline { cursor: default; }");
-    expect(css).toContain("cursor: text;");
+    expect(css).toContain(".timeline .msg-body,\n.timeline .notice-text,\n.timeline .status-line { cursor: auto; }");
     expect(css).toContain(".timeline a[href] { cursor: pointer; }");
+  });
+  it("gives text controls the I-beam inside cursor:default containers", () => {
+    expect(css).toContain('input[type="text"],');
+    expect(css).toContain("textarea,\n[contenteditable=\"true\"] {\n  cursor: text;");
   });
   it("keeps the arrow on chrome surfaces named by the frozen fix", () => {
     // buttons, cards, menus, popovers, diff, panels, top bar

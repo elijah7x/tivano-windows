@@ -127,6 +127,21 @@ textarea {
   border-radius: 8px;
   padding: 6px 10px;
 }
+/* Text controls keep the I-beam even inside cursor:default containers —
+ * cursor inherits, so without this every field under a restyled panel
+ * would show the arrow. */
+input:not([type]),
+input[type="text"],
+input[type="search"],
+input[type="url"],
+input[type="number"],
+input[type="password"],
+input[type="email"],
+input[type="tel"],
+textarea,
+[contenteditable="true"] {
+  cursor: text;
+}
 
 button.primary {
   background: var(--accent);
@@ -4897,16 +4912,14 @@ html[data-performance] .sweep-dots { display: none; }
  * only — links keep the hand; empty space, buttons, cards, menus,
  * popovers, panels, the diff and the top bar keep the arrow. */
 .timeline { cursor: default; }
-/* The text containers themselves carry the I-beam — user replies render
- * as raw text directly in .msg-body, and .notice-text/.status-line rows
- * are words too — with buttons and links carved back out. */
+/* The text containers resolve the cursor per hit — cursor:auto lets
+ * Chromium show the I-beam over glyphs and the arrow over empty space
+ * beside short lines, exactly like the frozen per-hit-test cursor. A
+ * blanket cursor:text would paint the I-beam over whole boxes. */
 .timeline .msg-body,
 .timeline .notice-text,
-.timeline .status-line { cursor: text; }
+.timeline .status-line { cursor: auto; }
 .timeline .msg-body :where(button) { cursor: default; }
-.timeline .msg-body :where(
-  p, h1, h2, h3, h4, li, blockquote, pre, code, td, th, .md-task
-) { cursor: text; }
 .timeline a[href] { cursor: pointer; }
 .timeline button,
 .timeline .turn-steps > summary,
@@ -4927,11 +4940,8 @@ html[data-performance] .sweep-dots { display: none; }
 .modal,
 .helper-panel,
 .hydra-panel { cursor: default; }
-/* The helper timeline's message text keeps the I-beam it had before the
- * panel-level arrow grant; its buttons carve back out. */
+/* The helper timeline's message text resolves per hit the same way;
+ * its buttons carve back out. */
 .helper-timeline .md,
-.helper-timeline .msg { cursor: text; }
+.helper-timeline .msg { cursor: auto; }
 .helper-timeline button { cursor: default; }
-/* The copy/expand affordances on a card stay clickable-looking on their
- * glyph; text inside them keeps the card's arrow. */
-.md-copy, .msg-copy, .ckpt-diff-btn { cursor: pointer; }
