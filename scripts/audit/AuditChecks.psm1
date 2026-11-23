@@ -716,6 +716,22 @@ function Invoke-AuditGit {
   }
 }
 
+function Get-AuditTreeFingerprint {
+  # HEAD, the index tree, worktree and staged diffs and untracked files, so a change to an already modified or staged file is still detected.
+  param([string]$GitPath, [string]$WorkDir, [string]$RunDir)
+  $parts = New-Object Collections.Generic.List[string]
+  foreach ($gitArgs in @('rev-parse HEAD', 'write-tree', 'diff --binary', 'diff --cached --binary', 'status --porcelain --untracked-files=all')) {
+    $res = Invoke-AuditGit -GitPath $GitPath -WorkDir $WorkDir -Arguments $gitArgs -RunDir $RunDir
+    if ($res.exitCode -ne 0) { return @{ exitCode = $res.exitCode; text = ''; error = $res.error } }
+    $text = ''
+    if ($null -ne $res.text) { $text = [string]$res.text }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text))) } finally { $sha.Dispose() }
+    $null = $parts.Add($gitArgs + '=' + $hash)
+  }
+  return @{ exitCode = 0; text = ($parts.ToArray() -join ';'); error = '' }
+}
+
 function Resolve-AuditAgyExecutable {
   param([string]$RequestedPath = '')
   if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
@@ -824,6 +840,14 @@ function Test-AuditModelOutput {
   }
 
   $verdict = ([string]$verdictRaw).Trim().ToLowerInvariant()
+  if ($verdict -ne 'pass' -and $verdict -ne 'block') {
+    return @{
+      ok = $false
+      kind = 'invalid-verdict'
+      error = ('Model JSON verdict is not pass or block: ' + $verdict)
+      parsed = $null
+    }
+  }
   if ($verdict -eq 'block') {
     $hasBlockingFinding = $false
     $findingsRaw = Get-AuditProp $parsed 'findings'
@@ -912,6 +936,7 @@ function Get-AuditFallbackReason {
   if ($Kind -eq 'empty-stdout') { return 'empty output' }
   if ($Kind -eq 'unparseable-json') { return 'unparseable output' }
   if ($Kind -eq 'missing-verdict') { return 'missing verdict' }
+  if ($Kind -eq 'invalid-verdict') { return 'invalid verdict' }
   if ($Kind -eq 'invalid-block') { return 'invalid block verdict' }
   if ($Kind -eq 'nonzero-exit') {
     if ($combined -match '\[([0-9]{3,5})\]') {
@@ -1181,16 +1206,19 @@ function Invoke-AuditNeonFallback {
     }
     $shortPrompt += ' This is a read-only review; do not edit files or run mutating or network commands. Answer with the final JSON object on the last line.'
 
+    # Plan mode, the terminal sandbox and a read-only command allow-list keep the fallback from writing or running other commands; a denied tool ends the run without a result, which is reported as unavailable.
+    $readOnlySettingsPath = Join-Path $cleanRunDir 'fallback-settings.json'
+    [IO.File]::WriteAllText($readOnlySettingsPath, '{"permissions":{"allow":["command(git diff*)","command(git log*)","command(git show*)","command(git status*)","command(git grep*)","command(git ls-files*)","command(rg *)","command(findstr *)","command(type *)","command(dir *)","command(Get-Content *)","command(Get-ChildItem *)","command(Select-String *)"]}}', (New-Object Text.UTF8Encoding($false)))
     $agyArgs = '-p ' + (Quote-AuditArg $shortPrompt) +
       ' --model ' + (Quote-AuditArg $fallbackModel) +
-      ' --dangerously-skip-permissions' +
+      ' --mode plan --sandbox --settings ' + (Quote-AuditArg $readOnlySettingsPath) +
       ' --print-timeout ' + ([string]$TimeoutMinutes + 'm')
     foreach ($addDir in $addDirs.ToArray()) {
       $agyArgs += ' --add-dir ' + (Quote-AuditArg $addDir)
     }
 
     $gitExe = Resolve-AuditGitPath
-    $statusBeforeRes = Invoke-AuditGit -GitPath $gitExe -WorkDir $cleanWorkDir -Arguments 'status --porcelain' -RunDir $cleanRunDir
+    $statusBeforeRes = Get-AuditTreeFingerprint -GitPath $gitExe -WorkDir $cleanWorkDir -RunDir $cleanRunDir
     if ($statusBeforeRes.exitCode -ne 0) {
       return @{
         ok = $false
@@ -1232,7 +1260,7 @@ function Invoke-AuditNeonFallback {
       Stop-AuditTreeProcesses $cleanWorkDir
     }
 
-    $statusAfterRes = Invoke-AuditGit -GitPath $gitExe -WorkDir $cleanWorkDir -Arguments 'status --porcelain' -RunDir $cleanRunDir
+    $statusAfterRes = Get-AuditTreeFingerprint -GitPath $gitExe -WorkDir $cleanWorkDir -RunDir $cleanRunDir
     if ($statusAfterRes.exitCode -ne 0 -or $statusAfterRes.text -cne $statusBeforeRes.text) {
       $null = Invoke-AuditGit -GitPath $gitExe -WorkDir $cleanWorkDir -Arguments 'checkout -- .' -RunDir $cleanRunDir
       $null = Invoke-AuditGit -GitPath $gitExe -WorkDir $cleanWorkDir -Arguments 'clean -fd' -RunDir $cleanRunDir

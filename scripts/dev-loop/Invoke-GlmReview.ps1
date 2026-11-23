@@ -243,6 +243,22 @@ function Invoke-Git {
   }
 }
 
+function Get-TreeFingerprint {
+  # HEAD, the index tree, worktree and staged diffs and untracked files, so a change to an already modified or staged file is still detected.
+  param([string]$Directory)
+  $parts = New-Object Collections.Generic.List[string]
+  foreach ($gitArgs in @('rev-parse HEAD', 'write-tree', 'diff --binary', 'diff --cached --binary', 'status --porcelain --untracked-files=all')) {
+    $res = Invoke-Git $Directory $gitArgs
+    if ($res.exitCode -ne 0) { return [pscustomobject]@{ exitCode = $res.exitCode; text = ''; error = $res.error } }
+    $text = ''
+    if ($null -ne $res.text) { $text = [string]$res.text }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text))) } finally { $sha.Dispose() }
+    $null = $parts.Add($gitArgs + '=' + $hash)
+  }
+  return [pscustomobject]@{ exitCode = 0; text = ($parts.ToArray() -join ';'); error = '' }
+}
+
 function Stop-TreeProcesses {
   param([string]$Worktree)
   if ([string]::IsNullOrWhiteSpace($Worktree)) { return }
@@ -696,7 +712,7 @@ function Invoke-NeonFallback {
   Write-Text $fallbackPromptPath ($neonHeader + $PromptText)
   Assert-CmdSafePath 'fallbackPromptPath' $fallbackPromptPath
 
-  $statusBeforeRes = Invoke-Git $TreeDir 'status --porcelain'
+  $statusBeforeRes = Get-TreeFingerprint $TreeDir
   if ($statusBeforeRes.exitCode -ne 0) {
     throw ('git status --porcelain before Gemini 4 Neon fallback failed: ' + (Get-ErrorSummary $statusBeforeRes))
   }
@@ -711,9 +727,12 @@ function Invoke-NeonFallback {
   $fallbackOutPath = Join-Path $script:RunDir 'fallback.out.log'
   $fallbackErrPath = Join-Path $script:RunDir 'fallback.err.log'
   $shortPrompt = 'Read ' + $fallbackPromptPath + ' and follow every instruction in it. Inspect the repository tree at ' + $TreeDir + ' in strictly read-only mode, and output the single compact final JSON object on the last line with no text after it.'
+  # Plan mode, the terminal sandbox and a read-only command allow-list keep the fallback from writing or running other commands; a denied tool ends the run without a result, which is reported as unavailable.
+  $readOnlySettingsPath = Join-Path $script:RunDir 'fallback-settings.json'
+  [IO.File]::WriteAllText($readOnlySettingsPath, '{"permissions":{"allow":["command(git diff*)","command(git log*)","command(git show*)","command(git status*)","command(git grep*)","command(git ls-files*)","command(rg *)","command(findstr *)","command(type *)","command(dir *)","command(Get-Content *)","command(Get-ChildItem *)","command(Select-String *)"]}}', (New-Object Text.UTF8Encoding($false)))
   $agyArgs = '-p ' + (Quote-Argument $shortPrompt) +
     ' --model ' + (Quote-Argument $FallbackModel) +
-    ' --dangerously-skip-permissions' +
+    ' --mode plan --sandbox --settings ' + (Quote-Argument $readOnlySettingsPath) +
     ' --print-timeout ' + ([string]$TimeoutMin + 'm') +
     ' --add-dir ' + (Quote-Argument $script:RunDir)
 
@@ -754,7 +773,7 @@ function Invoke-NeonFallback {
       $null = Invoke-Git $TreeDir ('reset --hard ' + $headBefore)
     }
   }
-  $statusAfterRes = Invoke-Git $TreeDir 'status --porcelain'
+  $statusAfterRes = Get-TreeFingerprint $TreeDir
   $statusAfter = ''
   if ($null -ne $statusAfterRes.text) { $statusAfter = $statusAfterRes.text }
   if ($statusAfterRes.exitCode -ne 0 -or $statusAfter -cne $statusBefore) {
