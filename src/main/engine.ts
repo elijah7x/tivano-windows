@@ -6039,7 +6039,7 @@ export class Engine {
         lead.messages.push({
           id: `hydranote-${randomUUID()}`,
           role: "system",
-          content: `Hydra routed a head into ${canonical}, which joined the sidebar as project ${project.name}.`,
+          content: `Hydra: routed a head into ${canonical}, which joined the sidebar as project ${project.name}.`,
           status: "done",
           ts: Date.now(),
           kind: "notice",
