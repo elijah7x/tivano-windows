@@ -4766,8 +4766,9 @@ export class Engine {
       }
     }
     // Frozen: the latest delegation's files replace the head's owned
-    // list — the backup below copies only the ones it does not hold yet.
-    info.files = d.files ?? [];
+    // list when the entry carried a "files" array at all — a continue
+    // that omits it keeps the head's existing list (filesGiven).
+    if (d.filesGiven === true) info.files = d.files ?? [];
     // Frozen v2ContinuePrompt's workplace: an isolated head keeps its
     // own copy; a shared one gets the full workplace rules (the
     // filesBase line, then the shared-folder rule when it is in place).
@@ -4789,6 +4790,7 @@ export class Engine {
       info.stalledNote = undefined;
       info.summary = undefined;
       info.landing = undefined;
+      info.reportNotes = undefined;
       info.batchId = batchId;
       this.store.update(() => {});
       void this.prepareHydraBackup(target.id, checkout).then(() => {
@@ -4816,9 +4818,12 @@ export class Engine {
             hydraBrief: true,
           });
         } catch (err) {
-          this.refuseDelegation(
-            lead,
-            `the rework of ${name} could not start: ${(err as Error)?.message ?? String(err)}`,
+          // The head was re-armed to running — a failed send holds a
+          // concurrency slot forever unless the head ends honestly.
+          this.failHydraStart(
+            cur,
+            `Hydra: the rework of ${name} could not start: ${(err as Error)?.message ?? String(err)}`,
+            { note: true },
           );
           return;
         }
@@ -4826,6 +4831,18 @@ export class Engine {
         this.armHydraWatchdog(cur);
         this.store.update(() => {});
         this.emit({ type: "thread-updated", thread: cur });
+      }).catch((e) => {
+        // A rejected backup leaves the re-armed head running with no
+        // turn, no brief and no report — fail it like a start failure.
+        const cur = this.store.state.threads.find((t) => t.id === target.id);
+        if (cur?.hydraHead?.status === "running")
+          this.failHydraStart(
+            cur,
+            `Hydra: the rework of ${name} could not start because its backup could not finish (${
+              e instanceof Error ? e.message : "unknown error"
+            }).`,
+            { note: true },
+          );
       });
       return;
     }
@@ -4929,7 +4946,11 @@ export class Engine {
           );
         }
         const earlierName = earlierInfo.name;
-        const earlierTarget = earlierInfo.targetCheckout;
+        // The inherited files are relative to the earlier head's
+        // filesBase — a home-narrowed head's base is a subdirectory of
+        // its targetCheckout, so routing on targetCheckout would double
+        // the narrowed path.
+        const earlierTarget = earlierInfo.filesBase ?? earlierInfo.targetCheckout;
         const leadCheckout = this.threadDirectory(lead.id) ?? undefined;
         d = {
           ...d,
@@ -5177,6 +5198,7 @@ export class Engine {
         head.id,
         d,
         persona,
+        batchId,
         identityPrompt,
       ).catch((e) => {
         // A backup/backup-diff throw outside the caught sendTurn would
@@ -5345,7 +5367,7 @@ export class Engine {
     const canonOr = (p: string) => {
       let resolved = p;
       try {
-        resolved = realpathSync(p);
+        resolved = realpathSync.native(p);
       } catch {
         /* keep the raw form */
       }
@@ -5387,7 +5409,7 @@ export class Engine {
   private hydraDataRootCanonical(): string {
     let dr = this.dataRoot;
     try {
-      dr = realpathSync(dr);
+      dr = realpathSync.native(dr);
     } catch {
       /* keep the configured form */
     }
@@ -5403,7 +5425,7 @@ export class Engine {
   private hydraHomeCanonical(): string {
     let home = homedir();
     try {
-      home = realpathSync(home);
+      home = realpathSync.native(home);
     } catch {
       /* keep the env form */
     }
@@ -5673,9 +5695,15 @@ export class Engine {
       if (cur?.hydraHead) {
         // Parse the head's own notes before the diff joins its summary —
         // a diff line shaped like a label must never replace its flags.
-        cur.hydraHead.reportNotes = parseHydraReportNotes(
-          cur.hydraHead.summary ?? "",
-        );
+        // Clamp to the storeDoc 2000-char field cap so a huge note can
+        // never quarantine the store on the next load.
+        const notes = parseHydraReportNotes(cur.hydraHead.summary ?? "");
+        if (notes)
+          cur.hydraHead.reportNotes = {
+            deviations: notes.deviations?.slice(0, 2000),
+            unfinished: notes.unfinished?.slice(0, 2000),
+            uncertain: notes.uncertain?.slice(0, 2000),
+          };
       }
       if (cur?.hydraHead && diff !== undefined) {
         // Frozen: `[spoken, diff].joined(separator: "\n\n")` — the head's
@@ -6209,6 +6237,7 @@ export class Engine {
     headId: string,
     d: HydraDelegation,
     persona: HydraPersona,
+    batchId: string,
     identityPrompt?: string | undefined,
   ): Promise<void> {
     const head = this.store.state.threads.find((t) => t.id === headId);
@@ -6232,15 +6261,29 @@ export class Engine {
       await this.prepareHydraBackup(head.id, checkout);
     }
     const cur = this.store.state.threads.find((t) => t.id === headId);
-    if (!cur?.hydraHead || cur.hydraHead.status !== "running") return;
+    const ci = cur?.hydraHead;
+    // Stopped or re-armed while the backup ran — the minted brief is
+    // stale for a different batch's work and must never go out (frozen
+    // hydraHeadCanStart between the copy and the send).
+    if (!cur || !ci || ci.status !== "running" || ci.batchId !== batchId)
+      return;
+    // A head already turning (its row was messaged or steered while the
+    // backup ran) owns its in-flight work — queueing the start brief
+    // behind it would restart it on the old words later.
+    if (
+      cur.turn &&
+      (cur.turn.status === "running" ||
+        cur.turn.status === "waiting-approval")
+    )
+      return;
     const dir = this.threadDirectory(cur.id);
     const brief = delegatedHeadPrompt(
       persona,
       d,
       dir ?? "(no project checkout)",
       identityPrompt,
-      cur.hydraHead.isNonGitCheckout === true,
-      cur.worktreeDir === undefined ? cur.hydraHead.filesBase : undefined,
+      ci.isNonGitCheckout === true,
+      cur.worktreeDir === undefined ? ci.filesBase : undefined,
     );
     try {
       this.sendTurn(cur.id, brief, {
@@ -6248,26 +6291,6 @@ export class Engine {
         hydraBrief: true,
       });
     } catch (err) {
-      // 2.2.12 parity: a head already turning (its row was messaged while
-      // the backup ran) keeps its brief queued at the front until that
-      // turn ends — being busy is not a start failure.
-      const busy =
-        cur.turn &&
-        (cur.turn.status === "running" || cur.turn.status === "waiting-approval");
-      if (busy && (cur.followUps?.length ?? 0) < Engine.FOLLOWUP_MAX) {
-        this.store.update(() => {
-          this.queueOf(cur).unshift({
-            id: randomUUID(),
-            text: brief,
-            createdAt: Date.now(),
-          });
-          cur.updatedAt = Date.now();
-        });
-        this.emitQueue(cur);
-        this.armHydraWatchdog(cur);
-        this.emit({ type: "thread-updated", thread: cur });
-        return;
-      }
       return this.failHydraStart(
         cur,
         `The head could not start: ${(err as Error)?.message ?? String(err)}`,
@@ -6617,6 +6640,11 @@ export class Engine {
       ...(startupFailure ? { startupFailure: true } : {}),
       ...(info.stopReason !== undefined ? { stopReason: info.stopReason } : {}),
       ...(info.landing !== undefined ? { landing: info.landing } : {}),
+      ...(info.targetCheckout !== undefined &&
+      sepFold(info.targetCheckout) !==
+        sepFold(this.threadDirectory(info.leadId) ?? "")
+        ? { routed: info.targetCheckout }
+        : {}),
       ...(info.copyKept === true && head.worktreeDir !== undefined
         ? { copyPath: head.worktreeDir }
         : {}),

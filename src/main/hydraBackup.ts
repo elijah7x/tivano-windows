@@ -50,8 +50,8 @@ export function hydraCanonical(path: string): string {
   for (;;) {
     try {
       out = tail.length
-        ? join(realpathSync(cur), ...tail)
-        : realpathSync(cur);
+        ? join(realpathSync.native(cur), ...tail)
+        : realpathSync.native(cur);
       break;
     } catch {
       const parent = dirname(cur);
@@ -360,9 +360,13 @@ export async function hydraBackupReport(
     // out, like the skipped list does (frozen keeps one unbounded loop
     // only because its diffs share a single process).
     if (length >= REPORT_CAP) {
-      append(
+      // append() would slice this to length 0 — the cap notice itself is
+      // what tells the reader the diff list is incomplete, so push it
+      // whole and mark the report truncated.
+      parts.push(
         `Diff budget reached before ${paths.length - idx + 1} more file(s): ${hydraFileListing(paths.slice(idx - 1), LISTING_LIMIT, 4000)}`,
       );
+      truncated = true;
       break;
     }
     if (!hydraOwnedPathIsSafe(path, base)) {

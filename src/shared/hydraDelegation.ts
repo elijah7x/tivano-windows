@@ -547,6 +547,10 @@ export interface HydraReport {
   /** Frozen HydraReport.startupFailure — the head failed with a
    *  non-transient error before it said anything or ran a tool. */
   startupFailure?: boolean | undefined;
+  /** The checkout the head was routed into when it differs from the
+   *  lead's — a routed-only batch must not close claiming its changes
+   *  are in the lead's checkout. */
+  routed?: string | undefined;
   /** Frozen HydraHeadInfo.stopReason — set when the quiet watchdog
    *  stopped the head, so the report says Tivano stopped it, not the
    *  user, and tells the lead it can be continued. */
@@ -685,7 +689,14 @@ export function reportMessage(
       "The changes listed above are in your checkout already; nothing needs applying.",
     );
   }
-  if (reports.some((r) => r.copyPath === undefined && r.status === "completed")) {
+  if (
+    reports.some(
+      (r) =>
+        r.copyPath === undefined &&
+        r.status === "completed" &&
+        r.routed === undefined,
+    )
+  ) {
     closing.push(
       "The heads worked in your checkout, so their changes are there already.",
     );

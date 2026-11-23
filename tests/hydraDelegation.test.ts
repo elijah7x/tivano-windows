@@ -234,6 +234,31 @@ describe("delegatedHeadPrompt + reportMessage — frozen text", () => {
     expect(msg).toContain("Nova is still at work");
   });
 
+  it("a routed-only batch never closes claiming the lead's checkout (#127)", () => {
+    const msg = reportMessage([
+      {
+        headIndex: 0,
+        task: "A",
+        status: "completed",
+        text: "Done.",
+        routed: "D:\\elsewhere\\proj",
+      },
+    ]);
+    expect(msg).not.toContain("worked in your checkout");
+    // A mixed batch still claims it — the unrouted head's work is there.
+    const mixed = reportMessage([
+      {
+        headIndex: 0,
+        task: "A",
+        status: "completed",
+        text: "Done.",
+        routed: "D:\\elsewhere\\proj",
+      },
+      { headIndex: 1, task: "B", status: "completed", text: "Also done." },
+    ]);
+    expect(mixed).toContain("worked in your checkout");
+  });
+
   // P1-21 (2.0.22/2.2.12 parity): heads that failed before doing work
   // give one cause per provider, not one failure per head.
   it("one cause per provider when no head on it completed", () => {

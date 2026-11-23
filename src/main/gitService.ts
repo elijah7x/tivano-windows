@@ -1398,6 +1398,10 @@ export class GitService {
           maxBytes: 80_000,
         }),
       );
+      // A capped >80 KB diff kills the process mid-stream (code null);
+      // the captured stdout is still a valid truncated diff — honor it.
+      if (r.overflowed && !r.timedOut && !r.cancelled && !r.spawnError)
+        return { kind: "ok", output: r.stdout, hitCap: true };
       if (r.code === 0 || r.code === 1)
         return {
           kind: "ok",

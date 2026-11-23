@@ -2,7 +2,7 @@
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P1-38/P1-09: the independent Hydra review — synthetic only (mock
 // provider + a recording diff stub; no real model, Git or network).
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -106,6 +106,27 @@ describe("P1-38 independent review", () => {
     expect(review).toContain("Finding 1:");
     expect(review).toContain("Finding N: accepted - <what you changed>");
     await waitFor(() => idle(r.engine, lead.id));
+  });
+
+  it("a routed head's touched files review under its routed checkout, not the lead's (#127)", async () => {
+    const r = rig();
+    const routedDir = tmp("hydra-review-routed-");
+    mkdirSync(join(routedDir, "sub"), { recursive: true });
+    writeFileSync(join(routedDir, "sub", "a.txt"), "before\n");
+    const lead = r.engine.createThread(r.projectId, "lead");
+    r.engine.sendTurn(
+      lead.id,
+      `do it [mock:hydra-path-files]${routedDir}|sub|sub/b.txt [mock:review-findings]`,
+    );
+    await waitFor(
+      () => (thread(r.engine, lead.id).hydraReviews?.[0]?.accepted ?? -1) >= 0,
+    );
+    // The routed head's diff is rooted at its routed checkout — the
+    // lead's empty root contributes no call at all.
+    const real = (p: string) => realpathSync.native(p);
+    expect(r.calls).toHaveLength(1);
+    expect(real(r.calls[0]!.cwd)).toBe(real(routedDir));
+    expect(r.calls[0]!.paths).toEqual(["sub/b.txt"]);
   });
 
   it("NO FINDINGS keeps a card with zero findings and sends the lead nothing", async () => {

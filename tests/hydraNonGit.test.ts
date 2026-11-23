@@ -151,6 +151,29 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(head.hydraHead!.summary).toContain("is a system folder");
   });
 
+  it.skipIf(process.platform !== "win32")(
+    "an 8.3 short-name alias of a protected root is refused",
+    async () => {
+      const { engine } = rig();
+      // 8.3 names exist only where the volume keeps them — probe the
+      // canonical expansion before asserting a refusal.
+      let probe: string | null = null;
+      try {
+        probe = realpathSync.native("C:\\PROGRA~1");
+      } catch {
+        probe = null;
+      }
+      if (!probe || !/program files/i.test(probe)) return;
+      const lead = engine.createThread(null, "lead");
+      engine.sendTurn(lead.id, "do it [mock:hydra-path]C:\\PROGRA~1");
+      await waitFor(() => heads(engine, lead.id).length === 1);
+      const head = heads(engine, lead.id)[0]!;
+      await waitFor(() => head.hydraHead!.status !== "running");
+      expect(head.hydraHead!.status).toBe("failed");
+      expect(head.hydraHead!.summary).toContain("is a system folder");
+    },
+  );
+
   it("a leading ~ expands to the home folder before routing", async () => {
     const { engine } = rig();
     // The expanded route must behave exactly like spelling the home
@@ -511,6 +534,37 @@ describe("P2-05 owned-files contract (frozen v2)", () => {
     expect(stub.diffs.length).toBeGreaterThan(0);
     // The real write landed in the owned folder, not anywhere else.
     expect(existsSync(join(folder, "sub", "b.txt"))).toBe(true);
+  }, 20_000);
+
+  it("a head stopped while its backup runs never hears its brief", async () => {
+    const { engine } = rig();
+    const folder = tmp("tivano-stopbackup-");
+    mkdirSync(join(folder, "sub"), { recursive: true });
+    // A wide backup window — hundreds of owned files keep the async
+    // copy in flight long after the head row exists, so the stop lands
+    // between the spawn and the post-backup brief send.
+    for (let i = 0; i < 300; i += 1)
+      writeFileSync(join(folder, "sub", `f${i}.txt`), "x");
+    engine.attachWorktrees(fakeWorktreesStub() as never);
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path-files]${folder}|sub|sub/f299.txt`);
+    const start = Date.now();
+    let head = heads(engine, lead.id)[0];
+    while (!head && Date.now() - start < 10_000) {
+      await new Promise((res) => setTimeout(res, 0));
+      head = heads(engine, lead.id)[0];
+    }
+    expect(head).toBeDefined();
+    // Stopped mid-backup: the guard after the copy must see it and never
+    // send the brief — no turn, no assistant reply, status stopped.
+    engine.stopHydraHead(head!.id);
+    await waitFor(() => head!.hydraHead!.status !== "running");
+    await new Promise((res) => setTimeout(res, 300));
+    expect(head!.hydraHead!.status).toBe("stopped");
+    const msgs = engine
+      .snapshot()
+      .threads.find((t) => t.id === head!.id)!.messages;
+    expect(msgs.filter((m) => m.role === "assistant")).toHaveLength(0);
   }, 20_000);
 
   it("an unrouted in-place head's report also carries the diff and backup path", async () => {
