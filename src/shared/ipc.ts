@@ -77,7 +77,7 @@ const vHydraReviewChoice = vObject({
 // F17 model-list slices — same persisted shape as storeDoc; pins only
 // organize the picker, the catalog stays provider-owned.
 const vModelPin = vObject({
-  provider: vEnum(["codex"] as const),
+  provider: vEnum(["codex", "zcode"] as const),
   modelID: vNonEmptyString(200),
 });
 const vModelSection = vObject({
@@ -258,6 +258,13 @@ export const REQUEST_CHANNELS = [
   "codex:choose",
   "codex:save",
   "codex:clear",
+  "providers:list",
+  "zcode:setup-state",
+  "zcode:choose",
+  "zcode:save",
+  "zcode:clear",
+  "zcode:refresh",
+  "zcode:set-api-key",
   "control:status",
   "control:retry",
   "cli:status",
@@ -490,6 +497,7 @@ export const requestValidators = {
     taskSleepMode: vOptional(vEnum(["off", "system", "display"] as const)),
     textGeneration: vOptional(vEnum(["automatic", "off"] as const)),
     threadTitles: vOptional(vEnum(["once", "updated"] as const)),
+    zaiRegion: vOptional(vEnum(["global", "china"] as const)),
     autoShelveDays: vOptional(vInt(0, 14)),
     quickChatEnabled: vOptional(vBoolean),
     shelvedGroupName: vOptional(vNullable(vNonEmptyString(60))),
@@ -680,6 +688,14 @@ export const requestValidators = {
   "codex:choose": vObject({}),
   "codex:save": vObject({}),
   "codex:clear": vObject({}),
+  // ZCode provider registration, setup, and write-only Z.ai API key slot.
+  "providers:list": vObject({}),
+  "zcode:setup-state": vObject({}),
+  "zcode:choose": vObject({}),
+  "zcode:save": vObject({}),
+  "zcode:clear": vObject({}),
+  "zcode:refresh": vObject({}),
+  "zcode:set-api-key": vObject({ apiKey: vNullable(vMaxString(500)) }),
   // Per-thread model/effort overrides (F17). Deliberately EMPTY for the
   // catalog read — the list is provider-owned state, never callable with
   // renderer-supplied filters. set-model carries bounded string-or-null

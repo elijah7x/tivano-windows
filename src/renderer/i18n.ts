@@ -1347,6 +1347,50 @@ const zhHans: Record<string, string> = {
   "key": "密钥",
   "value": "值",
   "Choose a file or folder": "选择文件或文件夹",
+
+  // ZCode provider & Settings › Providers
+  "ZCode": "ZCode",
+  "ZCode fixture": "ZCode 离线夹具",
+  "Offline ZCode protocol fixture — deterministic, no real CLI or model":
+    "离线 ZCode 协议夹具 —— 确定性回放，无真实 CLI 或模型",
+  "ZCode is not installed": "ZCode 未安装",
+  "ZCode app-server": "ZCode app-server",
+  "ZCode asks a question": "ZCode 向你提问",
+  "Sent — waiting for ZCode": "已发送 —— 等待 ZCode",
+  "ZCode requests command approval": "ZCode 请求命令批准",
+  "ZCode requests file approval": "ZCode 请求文件批准",
+  "ZCode requests permissions": "ZCode 请求权限",
+  "Providers": "服务商",
+  "Active": "已启用",
+  "Signed in": "已登录",
+  "Not signed in": "未登录",
+  "Sign-in status": "登录状态",
+  "Notice": "提示",
+  "Region": "区域",
+  "Global": "国际站",
+  "China": "中国区",
+  "Where your key was issued. Global uses api.z.ai, China uses open.bigmodel.cn.":
+    "密钥签发所在的站点。国际站使用 api.z.ai，中国区使用 open.bigmodel.cn。",
+  "GLM Coding Plan key": "GLM Coding Plan 密钥",
+  "Get ZCode": "获取 ZCode",
+  "ZCode signs in with your GLM Coding Plan key. Add it in Settings › Providers › Z.ai.":
+    "ZCode 使用你的 GLM Coding Plan 密钥登录。请在“设置 › 服务商配置 › Z.ai”中添加。",
+  "ZCode entry": "ZCode 入口",
+  "ZCode status": "ZCode 状态",
+  "Entry in use": "当前使用的入口",
+  "default location": "默认位置",
+  "not a ZCode launch": "非 ZCode 启动",
+  "ready": "就绪",
+  "API key saved": "API 密钥已保存",
+  "API key cleared": "API 密钥已清除",
+  "Save key": "保存密钥",
+  "Clear key": "清除密钥",
+  "Show": "显示",
+  "Hide": "隐藏",
+  "A GLM Coding Plan key is stored in OS credential encryption.":
+    "GLM Coding Plan 密钥已加密保存在系统凭据存储中。",
+  "Using ZAI_API_KEY from your environment.":
+    "正在使用环境变量中的 ZAI_API_KEY。",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {

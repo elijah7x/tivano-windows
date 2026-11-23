@@ -116,6 +116,7 @@ import type {
   TodoStep,
   Turn,
   WorktreeResult,
+  ZCodeInfo,
 } from "../shared/types";
 
 const RUNTIME_MODES: readonly RuntimeMode[] = [
@@ -604,6 +605,30 @@ export class Engine {
    *  because it owns the resolved CodexRuntimeConfig. */
   codexInfo?: CodexInfo;
 
+  /** ZCode runtime status for AppInfo — supplied by bootstrap (index.ts)
+   *  when ZCode is active or probed. */
+  zcodeInfo?: ZCodeInfo;
+
+  private extraCatalogProviders?: () => {
+    id: string;
+    label: string;
+    ready: boolean;
+    models: { id: string; name: string; efforts: string[] }[];
+    defaultModel?: string;
+  }[];
+
+  attachExtraCatalogProviders(
+    fn: () => {
+      id: string;
+      label: string;
+      ready: boolean;
+      models: { id: string; name: string; efforts: string[] }[];
+      defaultModel?: string;
+    }[],
+  ): void {
+    this.extraCatalogProviders = fn;
+  }
+
   /** Read-only descriptor for external surfaces (local control). */
   get providerDescriptor() {
     return this.provider.descriptor;
@@ -626,6 +651,7 @@ export class Engine {
       realCli: { status: "not-configured" },
       ...(desc.runtimeInfo ? { syntheticRuntime: desc.runtimeInfo } : {}),
       ...(this.codexInfo ? { codex: this.codexInfo } : {}),
+      ...(this.zcodeInfo ? { zcode: this.zcodeInfo } : {}),
       ...(this.recoveredFrom ? { recoveredFrom: this.recoveredFrom } : {}),
       ...(typeof TIVANO_TERMINAL_CANDIDATE !== "undefined" &&
           TIVANO_TERMINAL_CANDIDATE === true
@@ -2117,11 +2143,12 @@ export class Engine {
           // defaultRuntimeMode, frozen default fullAccess).
           runtimeMode: live.runtimeMode ?? "supervised",
           interactionMode: live.interactionMode ?? "build",
-          ...(this.provider.descriptor.mode === "codex"
+          ...(this.provider.descriptor.mode === "codex" ||
+          this.provider.descriptor.mode === "zcode"
             ? {
                 ...(live.codexModel ? { model: live.codexModel } : {}),
                 ...(live.codexEffort ? { effort: live.codexEffort } : {}),
-                ...(live.codexServiceTier
+                ...(this.provider.descriptor.mode === "codex" && live.codexServiceTier
                   ? { serviceTier: live.codexServiceTier }
                   : {}),
               }
@@ -2817,8 +2844,10 @@ export class Engine {
     if (!option) throw new EngineError("unknown approval option");
 
     const approved = option.role === "approve";
-    const isCodex = this.provider.descriptor.mode === "codex";
-    if (isCodex && approved) {
+    const isCodexLike =
+      this.provider.descriptor.mode === "codex" ||
+      this.provider.descriptor.mode === "zcode";
+    if (isCodexLike && approved) {
       // Write-acknowledged approval: the answer commits ONLY when the
       // provider confirms the response bytes hit the wire. Until then the
       // approval stays pending and the turn keeps waiting — a second
@@ -2887,6 +2916,7 @@ export class Engine {
     taskSleepMode?: "off" | "system" | "display" | undefined;
     textGeneration?: "automatic" | "off" | undefined;
     threadTitles?: "once" | "updated" | undefined;
+    zaiRegion?: "global" | "china" | undefined;
     autoShelveDays?: number | undefined;
     shelvedGroupName?: string | null | undefined;
     commitInstructions?: string | undefined;
@@ -3089,6 +3119,8 @@ export class Engine {
       }
       if (patch.hideOutdatedModels !== undefined)
         d.settings.hideOutdatedModels = patch.hideOutdatedModels;
+      if (patch.zaiRegion !== undefined)
+        d.settings.zaiRegion = patch.zaiRegion;
       // F18: whole-array write; empty clears (frozen absent = none).
       if (patch.mcpServers !== undefined) {
         if (patch.mcpServers.length === 0) delete d.settings.mcpServers;
@@ -3151,6 +3183,28 @@ export class Engine {
       this.store.update((d) => {
         if (prev === undefined) delete d.settings.codexExecutable;
         else d.settings.codexExecutable = prev;
+      });
+      throw err;
+    }
+    this.emit({ type: "settings-changed", settings: this.store.state.settings });
+  }
+
+  /** Durable save/clear of the user-chosen ZCode executable or entry. */
+  setZCodeExecutable(path: string | undefined): void {
+    this.assertMutable();
+    if (!this.store.ownsWrites)
+      throw new EngineError("store is not writable — the saved path cannot be persisted");
+    const prev = this.store.state.settings.zcodeExecutable;
+    this.store.update((d) => {
+      if (path === undefined) delete d.settings.zcodeExecutable;
+      else d.settings.zcodeExecutable = path;
+    });
+    try {
+      this.store.flushNow();
+    } catch (err) {
+      this.store.update((d) => {
+        if (prev === undefined) delete d.settings.zcodeExecutable;
+        else d.settings.zcodeExecutable = prev;
       });
       throw err;
     }
@@ -3824,7 +3878,8 @@ export class Engine {
    * pending; a failed read → unavailable with the real reason.
    */
   async codexModels(): Promise<CodexModelCatalog> {
-    if (this.provider.descriptor.mode !== "codex")
+    const mode = this.provider.descriptor.mode;
+    if (mode !== "codex" && mode !== "zcode")
       return { state: "unsupported", reason: "the active provider has no model catalog" };
     const fetcher = this.provider.modelCatalog;
     if (!fetcher)
@@ -3834,7 +3889,10 @@ export class Engine {
       if (models === null)
         return {
           state: "pending",
-          reason: "no Codex session is bound yet — send a turn, then reopen",
+          reason:
+            mode === "zcode"
+              ? "ZCode models are unavailable — ensure ZCode is installed"
+              : "no Codex session is bound yet — send a turn, then reopen",
         };
       return { state: "ready", models };
     } catch (err) {
@@ -3867,7 +3925,7 @@ export class Engine {
       models: { id: string; name: string; efforts: string[] }[];
       defaultModel?: string | undefined;
     } = { id: desc.mode, label: desc.label, ready: true, models: [] };
-    if (desc.mode === "codex") {
+    if (desc.mode === "codex" || desc.mode === "zcode") {
       const cat = await this.codexModels();
       if (cat.state === "ready") {
         entry.models = cat.models.map((m) => ({
@@ -3878,7 +3936,11 @@ export class Engine {
         entry.defaultModel = cat.models.find((m) => m.isDefault)?.id;
       }
     }
-    return { providers: [entry] };
+    const providers = [entry];
+    for (const extra of this.extraCatalogProviders?.() ?? []) {
+      if (!providers.some((p) => p.id === extra.id)) providers.push(extra);
+    }
+    return { providers };
   }
 
   /**
@@ -6647,7 +6709,8 @@ export class Engine {
     )
       return false;
     if (
-      this.provider.descriptor.mode === "codex" &&
+      (this.provider.descriptor.mode === "codex" ||
+        this.provider.descriptor.mode === "zcode") &&
       thread.providerThread === undefined
     )
       return false;

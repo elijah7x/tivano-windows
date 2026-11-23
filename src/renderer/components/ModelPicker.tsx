@@ -55,9 +55,11 @@ function effortTitle(effort: string): string {
 export function ModelPicker(props: {
   thread: ChatThread;
   readOnly?: boolean;
+  providerId?: "codex" | "zcode";
 }): React.JSX.Element {
   const t = useT();
   const { thread } = props;
+  const providerId = props.providerId ?? "codex";
   const [catalog, setCatalog] = useState<CodexModelCatalog | null>(null);
   const gen = useRef(0);
 
@@ -85,7 +87,9 @@ export function ModelPicker(props: {
   // optgroups — a native select can't fold like the frozen panel, so
   // collapsed sections still list their pins.
   const settings = clientStore.snapshot?.settings;
-  const pinnedList: ModelPin[] = settings?.modelList ?? [];
+  const pinnedList: ModelPin[] = (settings?.modelList ?? []).filter(
+    (p) => p.provider === providerId,
+  );
   const pinnedSections = settings?.modelSections ?? [];
   const pinnedIds = new Set(pinnedList.map(pinId));
   const usePins = pinnedList.length > 0;
@@ -95,7 +99,7 @@ export function ModelPicker(props: {
   // and Hydra pair models always stay (frozen protectedModelIDs).
   const protectedIds = protectedModelIds(
     { modelList: pinnedList, hydraPairs: settings?.hydraPairs },
-    "codex",
+    providerId,
     selected0 === "" ? [] : [selected0],
   );
   const visibleModels =
@@ -155,7 +159,7 @@ export function ModelPicker(props: {
           // F17: a pinned model's stored defaults seed the selection
           // (frozen "how a model starts in new chats").
           const pref = nextModel
-            ? settings?.modelPreferences?.[prefKey("codex", nextModel)]
+            ? settings?.modelPreferences?.[prefKey(providerId, nextModel)]
             : undefined;
           if (pref?.effort !== undefined) nextEffort = pref.effort;
           if (pref?.fastMode === true && nextOption?.fastTier)

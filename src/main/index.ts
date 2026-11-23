@@ -25,6 +25,7 @@ import {
   dialog,
   globalShortcut,
   powerSaveBlocker,
+  safeStorage,
   shell,
 } from "electron";
 import { mkdirSync, mkdtempSync } from "node:fs";
@@ -50,9 +51,32 @@ import {
   validateCodexExecutable,
   type CodexRuntimeConfig,
 } from "./codexRuntimeConfig";
+import { ZCodeProvider } from "./zcodeProvider";
+import {
+  ZCodeApiKeyStore,
+  ZCodeSetup,
+  detectZCodeAuth,
+  detectZCodeLocalCredentials,
+  probeZCodeVersion,
+  readZCodeBuiltinModels,
+  resolveZCodeApiKey,
+  resolveZCodeRuntime,
+  validateZCodeEntry,
+  zcodeInfoFor,
+  zcodeSavedEffect,
+  zcodeTestPick,
+  type ZCodeRuntimeConfig,
+} from "./zcodeRuntimeConfig";
+import { providerMetadata, resolveZaiRegion } from "../shared/providers";
 import type { ProviderAdapter, WorkspaceGrant } from "./provider";
 import type { SpawnSpec } from "./stdioTransport";
-import type { CodexInfo, CodexSetupState } from "../shared/types";
+import type {
+  CodexInfo,
+  CodexSetupState,
+  RegisteredProviderSummary,
+  ZCodeInfo,
+  ZCodeSetupState,
+} from "../shared/types";
 import { ProjectRuntimePaths } from "./projectRuntimePaths";
 import { DirectoryOpener } from "./openProjectDirectory";
 import { AttachmentService } from "./attachmentService";
@@ -108,6 +132,11 @@ app.setPath("userData", chromiumUser);
 app.setPath("sessionData", chromiumSession);
 
 const store = new Store(dataRoot);
+const zcodeKeyStore = new ZCodeApiKeyStore(dataRoot, {
+  isAvailable: () => safeStorage.isEncryptionAvailable(),
+  encryptString: (v) => safeStorage.encryptString(v),
+  decryptString: (b) => safeStorage.decryptString(b),
+});
 
 try {
   store.open();
@@ -165,6 +194,7 @@ const paths = new ProjectRuntimePaths(
 let engine: Engine | null = null;
 let adapter: ProviderAdapter | null = null;
 let codexRuntime: CodexRuntimeConfig | null = null;
+let zcodeRuntime: ZCodeRuntimeConfig | null = null;
 
 // Packaged job-helper attestation is kicked off HERE — at module load, in
 // parallel with Electron startup — and shared by BOTH consumers: the
@@ -282,6 +312,7 @@ async function makeProvider(): Promise<ProviderAdapter> {
   // it can only select the NEXT launch's codex route, never hijack an
   // explicit TIVANO_PROVIDER (synthetic/mock/unknown keep their behavior).
   const savedExe = store.state.settings.codexExecutable?.trim() || undefined;
+  const savedZCodeExe = store.state.settings.zcodeExecutable?.trim() || undefined;
   const explicitProvider = process.env.TIVANO_PROVIDER;
   if (explicitProvider === "codex" || (explicitProvider === undefined && savedExe !== undefined)) {
     // The attested packaged-helper verdict — awaited once here; the probe
@@ -301,6 +332,26 @@ async function makeProvider(): Promise<ProviderAdapter> {
       // F18: the Settings-connected MCP registry rides into each new
       // thread's config.mcp_servers (live-read per bind).
       mcpServers: () => engine!.snapshot().settings.mcpServers ?? [],
+    });
+  }
+  if (
+    explicitProvider === "zcode" ||
+    (explicitProvider === undefined && savedExe === undefined && savedZCodeExe !== undefined)
+  ) {
+    const treeCapability = (await packagedTreeProbe) ?? undefined;
+    const region = resolveZaiRegion(store.state.settings.zaiRegion);
+    zcodeRuntime = resolveZCodeRuntime(process.env, {
+      region,
+      ...(treeCapability ? { treeCapability } : {}),
+      ...(savedZCodeExe ? { savedExecutable: savedZCodeExe } : {}),
+      probeVersion: true,
+    });
+    return new ZCodeProvider({
+      config: zcodeRuntime,
+      apiKey: () => resolveZCodeApiKey(zcodeKeyStore.read(), process.env).apiKey,
+      region: () => resolveZaiRegion(store.state.settings.zaiRegion),
+      lookupBinding: (tid) => engine!.lookupProviderThread(tid),
+      bindThread: (tid, b) => engine!.bindProviderThread(tid, b),
     });
   }
   if (process.env.TIVANO_PROVIDER !== "synthetic-stdio") {
@@ -458,6 +509,91 @@ bootstrap = app.whenReady().then(async () => {
   if (process.env.TIVANO_LIMIT_MARGIN_MS)
     engine.limitMarginMs = Math.max(0, Number(process.env.TIVANO_LIMIT_MARGIN_MS) || 0);
   if (codexRuntime) engine.codexInfo = codexInfoFor(codexRuntime);
+  const currentZaiRegion = () => resolveZaiRegion(store.state.settings.zaiRegion);
+  const currentZCodeApiKey = () => resolveZCodeApiKey(zcodeKeyStore.read(), process.env);
+  const currentZCodeInfo = (cfg: ZCodeRuntimeConfig): ZCodeInfo => {
+    const key = currentZCodeApiKey();
+    return zcodeInfoFor(cfg, key.apiKey, key.source);
+  };
+  if (!zcodeRuntime) {
+    const savedZCode = store.state.settings.zcodeExecutable?.trim() || undefined;
+    const shouldProbe = Boolean(
+      process.env.TIVANO_ZCODE_EXECUTABLE?.trim() ||
+        process.env.TIVANO_ZCODE_FIXTURE?.trim() ||
+        savedZCode,
+    );
+    zcodeRuntime = resolveZCodeRuntime(process.env, {
+      region: currentZaiRegion(),
+      ...(savedZCode ? { savedExecutable: savedZCode } : {}),
+      probeVersion: shouldProbe,
+    });
+  }
+  if (adapter.descriptor.mode === "zcode" || zcodeRuntime.mode !== "unconfigured") {
+    engine.zcodeInfo = currentZCodeInfo(zcodeRuntime);
+  }
+  const buildRegisteredProviders = (): RegisteredProviderSummary[] => {
+    const region = currentZaiRegion();
+    const key = currentZCodeApiKey();
+    const zCfg = zcodeRuntime;
+    const zInstalled = zCfg ? zCfg.mode === "real" || zCfg.mode === "fixture" : false;
+    const zAuth = detectZCodeAuth({
+      mode: zCfg?.mode ?? "unconfigured",
+      apiKey: key.apiKey,
+      apiKeySource: key.source,
+      installed: zInstalled,
+    });
+    const zModels =
+      zCfg?.builtinConfigPath && zInstalled
+        ? readZCodeBuiltinModels(zCfg.builtinConfigPath, region)
+        : [];
+    const codexMeta = providerMetadata("codex");
+    const zcodeMeta = providerMetadata("zcode");
+    const activeMode = adapter?.descriptor.mode ?? "mock";
+    return [
+      {
+        id: codexMeta.id,
+        displayName: codexMeta.displayName,
+        agentName: codexMeta.agentName,
+        group: codexMeta.group,
+        accountLabel: codexMeta.accountLabel,
+        installUrl: codexMeta.installUrl,
+        active: activeMode === "codex",
+        installed: codexRuntime ? codexRuntime.mode !== "unconfigured" : false,
+        version: null,
+        auth: "unknown",
+        models: [],
+      },
+      {
+        id: zcodeMeta.id,
+        displayName: zcodeMeta.displayName,
+        agentName: zcodeMeta.agentName,
+        group: zcodeMeta.group,
+        accountLabel: zcodeMeta.accountLabel,
+        installUrl: zcodeMeta.installUrl,
+        active: activeMode === "zcode",
+        installed: zInstalled,
+        auth: zAuth.auth,
+        ...(zAuth.authDetail ? { authDetail: zAuth.authDetail } : {}),
+        ...(zAuth.authMessage ? { authMessage: zAuth.authMessage } : {}),
+        version: zInstalled ? (zCfg?.version ?? "unknown") : null,
+        region,
+        models: zModels,
+      },
+    ];
+  };
+  engine.attachExtraCatalogProviders(() =>
+    buildRegisteredProviders()
+      .filter((p) => p.installed && p.models.length > 0)
+      .map((p) => ({
+        id: p.id,
+        label: p.displayName,
+        ready: true,
+        models: p.models.map((m) => ({ id: m.id, name: m.name, efforts: m.efforts })),
+        ...(p.models.find((m) => m.isDefault)?.id
+          ? { defaultModel: p.models.find((m) => m.isDefault)!.id }
+          : {}),
+      })),
+  );
   engine.noteStoreRecovery(store.recoveredFrom);
   // Rebuild authorized workspace grants from the persisted file — each
   // entry is revalidated against the live filesystem and the live project
@@ -682,6 +818,120 @@ bootstrap = app.whenReady().then(async () => {
       mutable: codexSetupMutable(),
     };
   };
+  const zcodeSetup = new ZCodeSetup({
+    mutable: codexSetupMutable,
+    savedExecutable: () => store.state.settings.zcodeExecutable,
+    commit: (p) => eng.setZCodeExecutable(p),
+    platform: process.platform,
+  });
+  const zcodeShowOpenDialog = () => {
+    const pick = zcodeTestPick(app.isPackaged, process.env);
+    if (pick !== undefined)
+      return Promise.resolve(
+        pick === ""
+          ? { canceled: true, filePaths: [] as string[] }
+          : { canceled: false, filePaths: [pick] },
+      );
+    if (!win || win.isDestroyed())
+      return Promise.resolve({ canceled: true, filePaths: [] as string[] });
+    return dialog.showOpenDialog(win, {
+      title:
+        eng.snapshot().settings.language === "zh-Hans"
+          ? "选择 ZCode 入口 (zcode.cjs)"
+          : "Choose ZCode entry (zcode.cjs)",
+      properties: ["openFile"],
+      filters: [{ name: "ZCode CLI (zcode.cjs)", extensions: ["cjs", "mjs"] }],
+    });
+  };
+  const ensureZCodeVersion = () => {
+    if (
+      zcodeRuntime &&
+      zcodeRuntime.mode === "real" &&
+      zcodeRuntime.version === "unknown" &&
+      zcodeRuntime.runtimeExecutable &&
+      zcodeRuntime.entry
+    ) {
+      zcodeRuntime = {
+        ...zcodeRuntime,
+        version: probeZCodeVersion(
+          zcodeRuntime.runtimeExecutable,
+          zcodeRuntime.entry,
+          process.env,
+        ),
+      };
+      if (adapter?.descriptor.mode === "zcode" || zcodeRuntime.mode !== "unconfigured") {
+        eng.zcodeInfo = currentZCodeInfo(zcodeRuntime);
+      }
+    }
+  };
+  const buildZCodeSetupState = (): ZCodeSetupState => {
+    ensureZCodeVersion();
+    const saved = store.state.settings.zcodeExecutable ?? null;
+    const region = currentZaiRegion();
+    const key = currentZCodeApiKey();
+    let savedInvalidReason: string | undefined;
+    if (saved) {
+      try {
+        validateZCodeEntry(saved, process.platform);
+      } catch (err) {
+        savedInvalidReason = (err as Error).message;
+      }
+    }
+    const { savedEffect, savedBlockReason } = zcodeSavedEffect(
+      saved,
+      zcodeRuntime,
+      process.env,
+      savedInvalidReason,
+      store.state.settings.codexExecutable,
+    );
+    const runtime = zcodeRuntime ? currentZCodeInfo(zcodeRuntime) : null;
+    const installed = zcodeRuntime
+      ? zcodeRuntime.mode === "real" || zcodeRuntime.mode === "fixture"
+      : false;
+    const auth = detectZCodeAuth({
+      mode: zcodeRuntime?.mode ?? "unconfigured",
+      apiKey: key.apiKey,
+      apiKeySource: key.source,
+      installed,
+    });
+    const localCred = zcodeRuntime
+      ? detectZCodeLocalCredentials(zcodeRuntime.homeDir)
+      : { hasLocalCredentials: false };
+    const models =
+      zcodeRuntime?.builtinConfigPath && installed
+        ? readZCodeBuiltinModels(zcodeRuntime.builtinConfigPath, region)
+        : [];
+    return {
+      installed,
+      savedExecutable: saved,
+      ...(savedInvalidReason ? { savedInvalidReason } : {}),
+      pendingExecutable: zcodeSetup.pendingExecutable,
+      chooserBusy: zcodeSetup.isChooserBusy,
+      providerOverride: process.env.TIVANO_PROVIDER ?? null,
+      launchProvider: adapter?.descriptor.mode ?? "mock",
+      effectiveSource: zcodeRuntime?.configuredFrom ?? null,
+      effectiveEntry:
+        zcodeRuntime?.mode === "real"
+          ? (zcodeRuntime.entry ?? null)
+          : zcodeRuntime?.mode === "fixture"
+            ? (zcodeRuntime.fixtureScript ?? null)
+            : null,
+      runtimeExecutable: zcodeRuntime?.runtimeExecutable ?? null,
+      version: zcodeRuntime?.version ?? "unknown",
+      region,
+      auth: auth.auth,
+      ...(auth.authDetail ? { authDetail: auth.authDetail } : {}),
+      ...(auth.authMessage ? { authMessage: auth.authMessage } : {}),
+      hasApiKey: key.apiKey.length > 0,
+      apiKeySource: key.source,
+      hasLocalCredentials: localCred.hasLocalCredentials,
+      models,
+      savedEffect,
+      ...(savedBlockReason ? { savedBlockReason } : {}),
+      runtime,
+      mutable: codexSetupMutable(),
+    };
+  };
   // Windows terminal gate — a VALIDATION CANDIDATE only: the compile-time
   // flag (--terminal-candidate, a baked esbuild literal — never an env
   // var) AND the SAME shared packaged-helper attestation must report
@@ -787,7 +1037,9 @@ bootstrap = app.whenReady().then(async () => {
   // F33 local control: same-account Unix socket, off by default behind
   // BOTH settings gates. refreshListening on every settings change —
   // closing either gate stops listening and drops live connections.
-  localControl = new LocalControlService(eng, dataRoot);
+  localControl = new LocalControlService(eng, dataRoot, "dev", () =>
+    buildRegisteredProviders(),
+  );
   localControl.refreshListening();
   eng.onEvent((e) => {
     if (e.type === "settings-changed") {
@@ -964,6 +1216,45 @@ bootstrap = app.whenReady().then(async () => {
       choose: () => codexSetup.choose(codexShowOpenDialog),
       save: () => codexSetup.save(),
       clear: () => codexSetup.clear(),
+    },
+    providersList: () => {
+      ensureZCodeVersion();
+      return buildRegisteredProviders();
+    },
+    zcodeSetup: {
+      state: buildZCodeSetupState,
+      choose: () => zcodeSetup.choose(zcodeShowOpenDialog),
+      save: () => zcodeSetup.save(),
+      clear: () => zcodeSetup.clear(),
+      refresh: () => {
+        const savedZCode = store.state.settings.zcodeExecutable?.trim() || undefined;
+        zcodeRuntime = resolveZCodeRuntime(process.env, {
+          region: currentZaiRegion(),
+          ...(savedZCode ? { savedExecutable: savedZCode } : {}),
+          probeVersion: true,
+        });
+        if (adapter?.descriptor.mode === "zcode" || zcodeRuntime.mode !== "unconfigured") {
+          eng.zcodeInfo = currentZCodeInfo(zcodeRuntime);
+        } else {
+          delete eng.zcodeInfo;
+        }
+        return buildZCodeSetupState();
+      },
+      setApiKey: (apiKey: string | null) => {
+        if (!codexSetupMutable()) return { status: "error", error: "read-only" };
+        try {
+          const trimmed = apiKey?.trim() ?? "";
+          const hadKey = zcodeKeyStore.hasKey();
+          zcodeKeyStore.write(trimmed || null);
+          if (zcodeRuntime && (adapter?.descriptor.mode === "zcode" || zcodeRuntime.mode !== "unconfigured")) {
+            eng.zcodeInfo = currentZCodeInfo(zcodeRuntime);
+          }
+          if (!trimmed) return { status: "cleared", changed: hadKey };
+          return { status: "saved", path: "credentials", changed: true };
+        } catch (err) {
+          return { status: "error", error: (err as Error).message };
+        }
+      },
     },
     // F05 draft attachments: the dialog is main-owned; a
     // TIVANO_TEST_ATTACH env value (path-delimited) bypasses it for

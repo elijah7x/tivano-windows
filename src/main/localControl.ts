@@ -29,7 +29,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, rmSync, unlinkSync } from 
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import type { Engine } from "./engine";
-import type { ChatThread } from "../shared/types";
+import type { ChatThread, RegisteredProviderSummary } from "../shared/types";
 import { hydraPairForProvider, type HydraPair } from "../shared/hydra";
 
 const VERSION = 1;
@@ -124,6 +124,7 @@ export class LocalControlService {
     private readonly engine: Engine,
     dataRoot: string,
     private readonly edition: string = "dev",
+    private readonly registeredProviders?: () => RegisteredProviderSummary[],
   ) {
     this.dir = join(dataRoot, "control");
     this.sockPath = join(this.dir, "control.sock");
@@ -371,24 +372,43 @@ export class LocalControlService {
         return { info: this.welcome() };
       case "providers": {
         const d = engine.providerDescriptor;
-        const catalog = d.mode === "codex" ? await engine.codexModels() : null;
-        return {
-          providers: [
-            {
-              id: d.id,
-              enabled: true,
-              installed: d.mode === "mock" ? false : true,
-              // Authentication state is unknown by contract — never a
-              // claim of sign-in (frozen wording).
-              authentication: "unknown",
-              models: catalog && catalog.state === "ready" ? catalog.models.map((m) => m.id) : [],
-              freshSubmission: true,
-              continuation: ["providerSession", "fresh"],
-              interrupt: true,
-              capabilityScope: "provider_model_session_rechecked_on_submission",
-            },
-          ],
-        };
+        const catalog =
+          d.mode === "codex" || d.mode === "zcode"
+            ? await engine.codexModels()
+            : null;
+        const list: Record<string, unknown>[] = [
+          {
+            id: d.id,
+            enabled: true,
+            installed: d.mode === "mock" ? false : true,
+            // Authentication state is unknown by contract — never a
+            // claim of sign-in (frozen wording).
+            authentication: "unknown",
+            models:
+              catalog && catalog.state === "ready"
+                ? catalog.models.map((m) => m.id)
+                : [],
+            freshSubmission: true,
+            continuation: ["providerSession", "fresh"],
+            interrupt: true,
+            capabilityScope: "provider_model_session_rechecked_on_submission",
+          },
+        ];
+        for (const reg of this.registeredProviders?.() ?? []) {
+          if (list.some((p) => p.id === reg.id)) continue;
+          list.push({
+            id: reg.id,
+            enabled: true,
+            installed: reg.installed,
+            authentication: reg.auth,
+            models: reg.models.map((m) => m.id),
+            freshSubmission: reg.installed,
+            continuation: ["providerSession", "fresh"],
+            interrupt: true,
+            capabilityScope: "provider_model_session_rechecked_on_submission",
+          });
+        }
+        return { providers: list };
       }
       case "projects": {
         const limit = pageLimit(params);

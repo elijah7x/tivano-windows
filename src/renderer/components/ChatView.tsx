@@ -156,8 +156,9 @@ export function ChatView(props: {
    *  affiliation switch (frozen NewThreadPrompt). */
   projects?: Project[];
   providerLabel: string;
-  mode: "mock" | "synthetic-stdio" | "codex";
+  mode: "mock" | "synthetic-stdio" | "codex" | "zcode";
   codex?: CodexInfo;
+  zcode?: import("../../shared/types").ZCodeInfo;
   readOnly?: boolean;
   /** F15: the thread's working directory when provably available. */
   directory?: string | null;
@@ -404,17 +405,25 @@ export function ChatView(props: {
       turn.status === "cancelled" ||
       turn.status === "denied" ||
       turn.status === "interrupted") &&
-    (props.mode !== "codex" || thread.providerThread !== undefined);
+    ((props.mode !== "codex" && props.mode !== "zcode") ||
+      thread.providerThread !== undefined);
   const hadInterrupted = thread.messages.some((m) => m.status === "interrupted");
   const syntheticStdio = props.mode === "synthetic-stdio";
   const codex = props.mode === "codex" ? props.codex : undefined;
+  const zcode = props.mode === "zcode" ? props.zcode : undefined;
   const badgeText = syntheticStdio
     ? t("Synthetic stdio")
     : codex
       ? codex.state === "fixture"
         ? t("Codex fixture")
         : t("Codex")
-      : t("Mock Provider");
+      : zcode
+        ? zcode.state === "fixture"
+          ? t("ZCode fixture")
+          : t("ZCode")
+        : props.mode === "zcode"
+          ? t("ZCode")
+          : t("Mock Provider");
   const badgeTitle = syntheticStdio
     ? t("Controlled local child process — no real model, tools or network")
     : codex
@@ -423,7 +432,13 @@ export function ChatView(props: {
         : codex.state === "unconfigured"
           ? t("Codex app-server is not configured")
           : t("Codex app-server — real launch not yet verified")
-      : t("Synthetic provider — no real model, tools or commands");
+      : zcode
+        ? zcode.state === "fixture"
+          ? t("Offline ZCode protocol fixture — deterministic, no real CLI or model")
+          : zcode.state === "unconfigured"
+            ? t("ZCode is not installed")
+            : t("ZCode app-server")
+        : t("Synthetic provider — no real model, tools or commands");
 
   return (
     <main className="chat">
@@ -938,7 +953,13 @@ export function ChatView(props: {
           />
         )}
         {turn?.approval && <ApprovalCard threadId={thread.id} approval={turn.approval} />}
-        {turn?.question && <QuestionCard threadId={thread.id} question={turn.question} />}
+        {turn?.question && (
+          <QuestionCard
+            threadId={thread.id}
+            question={turn.question}
+            providerName={props.mode === "zcode" ? "ZCode" : "Codex"}
+          />
+        )}
         {props.limitResumeAt !== undefined && (
           <LimitWaitRow threadId={thread.id} resumeAt={props.limitResumeAt} />
         )}

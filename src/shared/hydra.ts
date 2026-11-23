@@ -889,6 +889,7 @@ export const HYDRA_PROVIDER_NAMES: Record<string, string> = {
   kimi: "Kimi Code",
   dsh: "DeepSeek Harness",
   minimaxCode: "MiniMax Code",
+  zcode: "ZCode",
 };
 
 export function hydraProviderName(id: string): string {

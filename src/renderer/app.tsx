@@ -579,6 +579,7 @@ export function App(): React.JSX.Element {
             providerLabel={snapshot.info.providerLabel}
             mode={snapshot.info.mode}
             {...(snapshot.info.codex ? { codex: snapshot.info.codex } : {})}
+            {...(snapshot.info.zcode ? { zcode: snapshot.info.zcode } : {})}
             readOnly={!!snapshot.readOnly}
             projects={snapshot.projects}
             dock={dock}

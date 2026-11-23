@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from "react";
 import type {
   CodexModelCatalog,
   CodexModelOption,
+  RegisteredProviderSummary,
 } from "../../shared/types";
 import {
   MODEL_LIST_LIMIT,
@@ -36,6 +37,7 @@ import {
   toggleSectionCollapsed,
   type ModelListItem,
   type ModelPin,
+  type ModelPinProvider,
   type ModelPreference,
   type ModelSection,
 } from "../../shared/modelList";
@@ -90,6 +92,7 @@ export function ModelListSettings(): React.JSX.Element {
   const prefs: Record<string, ModelPreference> = settings?.modelPreferences ?? {};
 
   const [catalog, setCatalog] = useState<CodexModelCatalog | null>(null);
+  const [extraProviders, setExtraProviders] = useState<RegisteredProviderSummary[]>([]);
   const [query, setQuery] = useState("");
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [effortPop, setEffortPop] = useState<EffortState | null>(null);
@@ -100,6 +103,9 @@ export function ModelListSettings(): React.JSX.Element {
   const [draft, setDraft] = useState("");
   const [dropHint, setDropHint] = useState<string | null>(null);
   const dragRef = useRef<string | null>(null);
+
+  const activeProvider: ModelPinProvider =
+    clientStore.snapshot?.info.mode === "zcode" ? "zcode" : "codex";
 
   useEffect(() => {
     let live = true;
@@ -112,6 +118,14 @@ export function ModelListSettings(): React.JSX.Element {
         if (live)
           setCatalog({ state: "unavailable", reason: (e as Error)?.message ?? String(e) });
       });
+    api()
+      .invoke("providers:list", {})
+      .then((list) => {
+        if (live && Array.isArray(list)) {
+          setExtraProviders(list as RegisteredProviderSummary[]);
+        }
+      })
+      .catch(() => {});
     return () => {
       live = false;
     };
@@ -180,12 +194,18 @@ export function ModelListSettings(): React.JSX.Element {
 
   const items = modelListItems(pins, sections);
   const trimmed = query.trim().toLowerCase();
-  const optionById = new Map(
-    (catalog?.state === "ready" ? catalog.models : []).map((m) => [m.id, m]),
-  );
+  const optionByKey = new Map<string, CodexModelOption>();
+  for (const m of catalog?.state === "ready" ? catalog.models : []) {
+    optionByKey.set(`${activeProvider}/${m.id}`, m);
+  }
+  for (const p of extraProviders) {
+    for (const m of p.models) {
+      if (!optionByKey.has(`${p.id}/${m.id}`)) optionByKey.set(`${p.id}/${m.id}`, m);
+    }
+  }
   const pinMatches = (pin: ModelPin) => {
     if (trimmed === "") return true;
-    const opt = optionById.get(pin.modelID);
+    const opt = optionByKey.get(pinId(pin));
     const name = opt?.name ?? pin.modelID;
     return (
       name.toLowerCase().includes(trimmed) ||
@@ -216,7 +236,7 @@ export function ModelListSettings(): React.JSX.Element {
   const hideOutdated = settings?.hideOutdatedModels ?? true;
   const catalogProtected = protectedModelIds(
     { modelList: pins, hydraPairs: settings?.hydraPairs },
-    "codex",
+    activeProvider,
   );
   const visibleCatalog =
     hideOutdated && trimmed === ""
@@ -297,9 +317,9 @@ export function ModelListSettings(): React.JSX.Element {
   };
 
   const summary = (pin: ModelPin): string => {
-    const opt = optionById.get(pin.modelID);
+    const opt = optionByKey.get(pinId(pin));
     const pref = prefs[prefKey(pin.provider, pin.modelID)];
-    const parts = [t("Codex")];
+    const parts = [pin.provider === "zcode" ? t("ZCode") : t("Codex")];
     if (opt && opt.efforts.length > 0) {
       const eff = pref?.effort ?? opt.defaultEffort;
       if (eff) parts.push(`${effortTitle(eff)} ${t("effort")}`);
@@ -309,7 +329,7 @@ export function ModelListSettings(): React.JSX.Element {
   };
 
   const pinRow = (pin: ModelPin, sectionId: string | null, first: boolean) => {
-    const opt = optionById.get(pin.modelID);
+    const opt = optionByKey.get(pinId(pin));
     const name = opt?.name ?? pin.modelID;
     const id = pinId(pin);
     return (
@@ -594,7 +614,9 @@ export function ModelListSettings(): React.JSX.Element {
       )}
 
       <div className="ml-head">
-        <span className="ml-head-title">{t("Codex")}</span>
+        <span className="ml-head-title">
+          {t(activeProvider === "zcode" ? "ZCode" : "Codex")}
+        </span>
       </div>
       <div className="ml-card">
         {catalog === null ? (
@@ -609,7 +631,7 @@ export function ModelListSettings(): React.JSX.Element {
           </div>
         ) : (
           catalogMatches.map((m) => {
-            const pid = `codex/${m.id}`;
+            const pid = `${activeProvider}/${m.id}`;
             const isPinned = pinnedIds.has(pid);
             const full = pins.length >= MODEL_LIST_LIMIT;
             return (
@@ -637,7 +659,7 @@ export function ModelListSettings(): React.JSX.Element {
                   onClick={() =>
                     write({
                       modelList: addPin(freshLists().pins, {
-                        provider: "codex",
+                        provider: activeProvider,
                         modelID: m.id,
                       }),
                     })
@@ -650,6 +672,68 @@ export function ModelListSettings(): React.JSX.Element {
           })
         )}
       </div>
+
+      {extraProviders
+        .filter((p) => p.id !== activeProvider && p.installed && p.models.length > 0 && (p.id === "codex" || p.id === "zcode"))
+        .map((p) => {
+          const provId = p.id as ModelPinProvider;
+          const matches = p.models.filter(
+            (m) =>
+              trimmed === "" ||
+              m.name.toLowerCase().includes(trimmed) ||
+              m.id.toLowerCase().includes(trimmed),
+          );
+          if (trimmed !== "" && matches.length === 0) return null;
+          return (
+            <div key={p.id}>
+              <div className="ml-head">
+                <span className="ml-head-title">{t(p.displayName)}</span>
+              </div>
+              <div className="ml-card">
+                {matches.map((m) => {
+                  const pid = `${provId}/${m.id}`;
+                  const isPinned = pinnedIds.has(pid);
+                  const full = pins.length >= MODEL_LIST_LIMIT;
+                  return (
+                    <div key={m.id} className="ml-pin static">
+                      <span className="ml-provider" aria-hidden="true">◆</span>
+                      <span className="ml-name">
+                        {m.name}
+                        {m.isDefault ? " ★" : ""}
+                      </span>
+                      <span className="ml-summary">
+                        {m.detail ?? ""}
+                        {m.efforts.length > 0 ? ` · ${m.efforts.length} ${t("efforts")}` : ""}
+                      </span>
+                      <button
+                        className={`ml-add${isPinned ? " pinned" : ""}`}
+                        disabled={isPinned || full}
+                        title={
+                          isPinned
+                            ? t("In the picker")
+                            : full
+                              ? t("The picker is full (30 models)")
+                              : t("Add to the picker")
+                        }
+                        aria-label={isPinned ? t("In the picker") : t("Add to the picker")}
+                        onClick={() =>
+                          write({
+                            modelList: addPin(freshLists().pins, {
+                              provider: provId,
+                              modelID: m.id,
+                            }),
+                          })
+                        }
+                      >
+                        {isPinned ? "✓" : "+"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
 
       {menu !== null && (
         <div
@@ -776,7 +860,7 @@ export function ModelListSettings(): React.JSX.Element {
       {effortPop !== null && (
         <EffortCard
           pin={effortPop.pin}
-          option={optionById.get(effortPop.pin.modelID)}
+          option={optionByKey.get(pinId(effortPop.pin))}
           x={Math.max(8, effortPop.x)}
           y={effortPop.y}
           pref={prefs[prefKey(effortPop.pin.provider, effortPop.pin.modelID)]}

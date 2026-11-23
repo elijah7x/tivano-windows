@@ -17,6 +17,7 @@ const RECOMMENDED = /recommend/i;
 export function QuestionCard(props: {
   threadId: string;
   question: CodexQuestionRequest;
+  providerName?: "Codex" | "ZCode";
 }): React.JSX.Element {
   const t = useT();
   const { question } = props;
@@ -69,10 +70,19 @@ export function QuestionCard(props: {
 
   if (!current) return <></>;
 
+  const askHeadline =
+    props.providerName === "ZCode"
+      ? t("ZCode asks a question")
+      : t("Codex asks a question");
+  const sentLine =
+    props.providerName === "ZCode"
+      ? t("Sent — waiting for ZCode")
+      : t("Sent — waiting for Codex");
+
   return (
-    <section className="approval question" role="group" aria-label={t("Codex asks a question")}>
+    <section className="approval question" role="group" aria-label={askHeadline}>
       <div className="headline">
-        {t("Codex asks a question")}
+        {askHeadline}
         {total > 1 && (
           <span className="qcount">
             {" · "}
@@ -138,7 +148,7 @@ export function QuestionCard(props: {
         <p className="resolved">
           {question.status === "expired" && !sent
             ? t("Interrupted")
-            : t("Sent — waiting for Codex")}
+            : sentLine}
         </p>
       )}
     </section>
