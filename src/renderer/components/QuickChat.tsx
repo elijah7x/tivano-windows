@@ -29,7 +29,10 @@ function QuickChatInner() {
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const [models, setModels] = useState<string[]>([]);
   const [pick, setPick] = useState<QuickPick | null>(null);
-  const [presets, setPresets] = useState<{ id: string; label: string }[]>([]);
+  // Raw pairs, not pre-rendered labels: the visibility-refresh closure
+  // captures the language at mount, so localizing in render is the only
+  // way preset labels follow a zh-Hans switch.
+  const [presets, setPresets] = useState<HydraPair[]>([]);
   const [busy, setBusy] = useState(false);
   const defaultModelRef = useRef("");
 
@@ -53,12 +56,7 @@ function QuickChatInner() {
       .invoke("state:get", {})
       .then((r) => {
         const s = (r as Snapshot).settings;
-        setPresets(
-          (s.hydraPairs ?? []).map((p) => ({
-            id: p.id,
-            label: pairCustomName(p) ?? modelsTitle(t, p, []),
-          })),
-        );
+        setPresets(s.hydraPairs ?? []);
         // Every open reseeds the pick — a preset created since the last
         // show resolves here, and a cycled pick never carries over. With
         // no saved default the chip opens on the catalog default.
@@ -152,8 +150,12 @@ function QuickChatInner() {
             onClick={cycleModel}
           >
             {pick.kind === "pair"
-              ? (presets.find((p) => p.id === pick.id)?.label ??
-                t("%@ (unavailable)").replace("%@", t("Preset")))
+              ? (() => {
+                  const pair = presets.find((p) => p.id === pick.id);
+                  return pair
+                    ? (pairCustomName(pair) ?? modelsTitle(t, pair, []))
+                    : t("%@ (unavailable)").replace("%@", t("Preset"));
+                })()
               : pick.id}
           </button>
         )}
