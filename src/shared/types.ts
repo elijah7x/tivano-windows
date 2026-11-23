@@ -782,6 +782,16 @@ export interface ChatThread {
      *  they were before it started — only set for a head that changed
      *  a non-Git checkout in place. */
     backupPath?: string | undefined;
+    /** P2-05 (audit fix): the head's own report notes parsed BEFORE the
+     *  backup diff joined its summary — a diff line shaped like a note
+     *  label must never replace the head's real flags. */
+    reportNotes?:
+      | {
+          deviations?: string | undefined;
+          unfinished?: string | undefined;
+          uncertain?: string | undefined;
+        }
+      | undefined;
     /** P2-05 (frozen HydraHeadInfo.backupOwnedPaths): every owned path
      *  the backup has covered so far — a "continue" listing new files
      *  extends it, so the report diffs the new files like the first. */

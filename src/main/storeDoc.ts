@@ -755,6 +755,13 @@ const vThreadHead = vObject({
       files: vOptional(vArray(vMaxString(2000), 10_000)),
       filesBase: vOptional(vMaxString(2000)),
       backupPath: vOptional(vMaxString(2000)),
+      reportNotes: vOptional(
+        vObject({
+          deviations: vOptional(vMaxString(2000)),
+          unfinished: vOptional(vMaxString(2000)),
+          uncertain: vOptional(vMaxString(2000)),
+        }),
+      ),
       backupOwnedPaths: vOptional(vArray(vMaxString(2000), 10_000)),
       backedUpFiles: vOptional(vArray(vMaxString(2000), 10_000)),
       newFiles: vOptional(vArray(vMaxString(2000), 10_000)),

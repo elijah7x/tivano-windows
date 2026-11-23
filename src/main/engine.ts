@@ -5670,6 +5670,13 @@ export class Engine {
               empty,
             );
       const cur = this.store.state.threads.find((t) => t.id === headId);
+      if (cur?.hydraHead) {
+        // Parse the head's own notes before the diff joins its summary —
+        // a diff line shaped like a label must never replace its flags.
+        cur.hydraHead.reportNotes = parseHydraReportNotes(
+          cur.hydraHead.summary ?? "",
+        );
+      }
       if (cur?.hydraHead && diff !== undefined) {
         // Frozen: `[spoken, diff].joined(separator: "\n\n")` — the head's
         // own text first, the backup diff after it. The summary field is
@@ -6582,7 +6589,7 @@ export class Engine {
     const status = info.status === "running" ? "stopped" : info.status;
     const notes =
       status === "completed"
-        ? parseHydraReportNotes(info.summary ?? "")
+        ? (info.reportNotes ?? parseHydraReportNotes(info.summary ?? ""))
         : undefined;
     // Frozen names where a routed head worked in its report — the
     // in-place footer's "worked in place in <dir>" already carries it;

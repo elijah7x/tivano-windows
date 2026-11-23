@@ -342,7 +342,9 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(report.content).toContain(`Worked in ${realpathSync(repo)}`);
   });
 
-  it("routing to a sidebar project's other letter case reuses that project", async () => {
+  // Win32-only: the drive-letter casing the finding turns on.
+  it.skipIf(process.platform !== "win32")(
+    "routing to a sidebar project's other letter case reuses that project", async () => {
     // Audit follow-up #124: realpathSync keeps the typed drive-letter
     // case, so a lower-cased spelling must still bind the same project
     // and grant — not re-register a mismatched one.
