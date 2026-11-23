@@ -27,6 +27,8 @@ This directory holds an independent auditor for Devin's autopilot pull requests 
    - Post-merge: if the audit model is unavailable, the PR is **never** marked done in `workRoot\state\post-<n>.json` and is retried on the next run.
 4. **Three-vendor separation**: The primary auditor runs GLM via `zcode.cjs` in read-only mode against a detached trial-merge worktree, alongside deterministic checks in `AuditChecks.psm1`. When a post-rebuttal dispute requires arbitration, `Invoke-ArbiterModel` runs a separate vendor model (`arbiterModel`, default `claude-opus-5-5-xhigh`) via the headless Devin CLI (`devinCli`) against the same trial-merge worktree.
 
+**Model fallback**: If GLM-5.4 fails to return a usable verdict in `Invoke-AuditModel` (for example, overload `[1305]`, timeout, nonzero exit, empty stdout, or unparseable JSON), the auditor immediately runs the same prompt once with Gemini 4 Neon (`fallbackModel`, default `gemini-4-neon-high`) through the Antigravity CLI (`agyPath`, default `C:\Users\elijah\AppData\Local\agy\bin\agy.exe`) in the same trial-merge worktree and logs `model fallback: <reason>`. Because `agy` runs with `--dangerously-skip-permissions`, `Invoke-AuditModel` prepends a strict read-only review instruction block and snapshots `git status --porcelain` before and after the run; if anything in the worktree changed, it discards the fallback result as unavailable and resets the worktree with `git checkout -- .` and `git clean -fd`. The returned result tags `model` (`GLM-5.4` or `Gemini 4 Neon (fallback)`) and `fallbackReason`, while the Claude Opus arbiter and all fail-closed/retry/verdict rules remain unchanged.
+
 ## Rebuttal and automatic arbitration protocol
 
 When `nyx/audit` fails on a PR head:

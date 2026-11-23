@@ -1,4 +1,4 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-21.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-23.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 # Usage: .\Invoke-PostMergeAudit.ps1 [-ConfigPath <path>] [-SinceHours 26] [-PrNumbers 94,95,...] [-DryRun]
 # Audits merged nyx/* PRs on main after merge, opens/reopens issues for blocking findings, and self-heals main ruleset integrity.
@@ -116,7 +116,7 @@ function ConvertTo-SingleLine {
 function Initialize-Redactions {
   param($Config, [string[]]$ExtraPaths)
   $candidates = @()
-  foreach ($key in @('workRoot', 'referenceRoot', 'keyPath', 'zcode')) {
+  foreach ($key in @('workRoot', 'referenceRoot', 'keyPath', 'zcode', 'agyPath')) {
     $val = [string](Get-Prop $Config $key)
     if ($val) { $candidates += $val }
   }
@@ -400,9 +400,13 @@ function Select-TargetPullRequests {
 }
 
 function Build-IssueBlockComment {
-  param([int]$PrNumber, [string]$ShortSha, $BlockingFindings, $FailedAcceptance, $FalseClaims, [string]$Marker)
+  param([int]$PrNumber, [string]$ShortSha, $BlockingFindings, $FailedAcceptance, $FalseClaims, [string]$Marker, [string]$ModelName = '')
   $lines = New-Object Collections.Generic.List[string]
-  $null = $lines.Add('> Automated post-merge audit (`nyx/audit`) for merged PR #' + $PrNumber + ' (`' + $ShortSha + '`). Independent audit; not a maintainer decision.')
+  $modelSuffix = ''
+  if (-not [string]::IsNullOrWhiteSpace($ModelName)) {
+    $modelSuffix = ' Model: ' + (Protect-PublicText $ModelName) + '.'
+  }
+  $null = $lines.Add('> Automated post-merge audit (`nyx/audit`) for merged PR #' + $PrNumber + ' (`' + $ShortSha + '`).' + $modelSuffix + ' Independent audit; not a maintainer decision.')
   $null = $lines.Add('')
   $null = $lines.Add('Post-merge audit verdict: **block**.')
   $null = $lines.Add('')
@@ -983,6 +987,12 @@ try {
       $modelStatus = ([string](Get-Prop $modelRes 'status')).ToLowerInvariant()
       $modelResult = Get-Prop $modelRes 'result'
       $modelError = [string](Get-Prop $modelRes 'error')
+      $modelName = [string](Get-Prop $modelRes 'model')
+      $modelFallbackReason = [string](Get-Prop $modelRes 'fallbackReason')
+
+      if (-not [string]::IsNullOrWhiteSpace($modelFallbackReason)) {
+        Write-AuditLog ('PR #' + $prNum + ' model fallback: ' + $modelFallbackReason)
+      }
 
       if ($modelStatus -ne 'ok' -or $null -eq $modelResult) {
         Write-AuditLog ('PR #' + $prNum + ' audit unavailable (will retry next run): ' + (ConvertTo-SingleLine $modelError 200))
@@ -1037,6 +1047,8 @@ try {
         linkedIssue = $issueNumber
         verdict = $effectiveVerdict
         rawVerdict = $rawVerdict
+        model = $modelName
+        fallbackReason = $modelFallbackReason
         deterministicFindings = $detFindings.ToArray()
         modelResult = $modelResult
         auditedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
@@ -1045,9 +1057,13 @@ try {
 
       $createdFollowupNumbers = New-Object Collections.Generic.List[int]
       $writeFailed = $false
+      $modelLogPart = ''
+      if (-not [string]::IsNullOrWhiteSpace($modelName)) {
+        $modelLogPart = ' model=' + $modelName
+      }
 
       if ($effectiveVerdict -eq 'block') {
-        Write-AuditLog ('PR #' + $prNum + ' verdict=block blockingFindings=' + $blockingFindings.Count + ' followups=' + $followups.Count)
+        Write-AuditLog ('PR #' + $prNum + ' verdict=block blockingFindings=' + $blockingFindings.Count + ' followups=' + $followups.Count + $modelLogPart)
         $summary.blocked += $prNum
 
         # Reopen closed linked issue or comment on open linked issue.
@@ -1068,7 +1084,7 @@ try {
           }
 
           $issueState = ([string](Get-Prop $issueObj 'state')).ToLowerInvariant()
-          $commentBody = Build-IssueBlockComment -PrNumber $prNum -ShortSha $shortSha -BlockingFindings $blockingFindings -FailedAcceptance $failedAcceptance -FalseClaims $falseClaims -Marker $issueMarker
+          $commentBody = Build-IssueBlockComment -PrNumber $prNum -ShortSha $shortSha -BlockingFindings $blockingFindings -FailedAcceptance $failedAcceptance -FalseClaims $falseClaims -Marker $issueMarker -ModelName $modelName
           Write-TextUtf8 (Join-Path $runDir ('issue-' + $issueNumber + '-comment.md')) $commentBody
 
           if ($DryRun) {
@@ -1115,6 +1131,9 @@ try {
           } else {
             $null = $fuLines.Add('- Source PR: #' + $prNum)
           }
+          if (-not [string]::IsNullOrWhiteSpace($modelName)) {
+            $null = $fuLines.Add('- Audit model: ' + (Protect-PublicText $modelName))
+          }
           $null = $fuLines.Add('- Severity: ' + $(if ($fuBlocking -eq $false) { 'advisory' } else { 'blocking' }))
           $null = $fuLines.Add('')
           $null = $fuLines.Add($(if ($fuBodyRaw) { $fuBodyRaw } else { $fuTitleRaw }))
@@ -1149,7 +1168,7 @@ try {
           }
         }
       } else {
-        Write-AuditLog ('PR #' + $prNum + ' verdict=pass')
+        Write-AuditLog ('PR #' + $prNum + ' verdict=pass' + $modelLogPart)
       }
 
       if (-not $DryRun -and -not $writeFailed) {
@@ -1158,6 +1177,7 @@ try {
           pr = $prNum
           mergeCommit = $mergeSha
           verdict = $effectiveVerdict
+          model = $modelName
           linkedIssue = $issueNumber
           followupsCreated = @($createdFollowupNumbers.ToArray())
           runDir = $runDir

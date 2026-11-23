@@ -1781,7 +1781,8 @@ function Build-AuditCommentBody {
     $Findings,
     $Claims,
     $Withdrawn,
-    [bool]$ArbiterFollows = $false
+    [bool]$ArbiterFollows = $false,
+    [string]$ModelName = ''
   )
   $sha7 = if ($HeadSha.Length -ge 7) { $HeadSha.Substring(0, 7) } else { $HeadSha }
   $verdictLabel = if ($Verdict -eq 'pass') { 'PASS' } else { 'BLOCK' }
@@ -1790,7 +1791,11 @@ function Build-AuditCommentBody {
   $null = $lines.Add('## Nyx audit - ' + $sha7 + ' - ' + $verdictLabel)
   $null = $lines.Add('')
   $issueLabel = if ($IssueNumber -gt 0) { '#' + $IssueNumber } else { 'none' }
-  $null = $lines.Add('Round: ' + $Round + ' | Linked issue: ' + $issueLabel)
+  $metaLine = 'Round: ' + $Round + ' | Linked issue: ' + $issueLabel
+  if (-not [string]::IsNullOrWhiteSpace($ModelName)) {
+    $metaLine += ' | Model: ' + (Protect-PublicText $ModelName)
+  }
+  $null = $lines.Add($metaLine)
   if ($ArbiterFollows) {
     $null = $lines.Add('')
     $null = $lines.Add('> Still blocking after rebuttal round ' + $Round + '; invoking automatic arbitration.')
@@ -2808,6 +2813,8 @@ function Invoke-SinglePrAudit {
     $withdrawn = @()
     $allFindings = New-Object Collections.Generic.List[object]
     $modelVerdict = ''
+    $auditModel = ''
+    $auditFallbackReason = ''
     $finalVerdict = 'block'
     $diffStat = '(merge conflict with origin/main)'
 
@@ -2882,6 +2889,10 @@ function Invoke-SinglePrAudit {
       $modelRes = $null
       for ($modelTry = 1; $modelTry -le 2; $modelTry++) {
         $modelRes = Invoke-AuditModel -Config $Config -PromptText $filledPrompt -WorkDir $worktreeDir -ExtraReadDirs $extraReadDirs -RunDir $runDir
+        $tryFallbackReason = [string](Get-JsonProp $modelRes 'fallbackReason')
+        if (-not [string]::IsNullOrWhiteSpace($tryFallbackReason)) {
+          Write-Log ('PR #' + $num + ' head ' + $sha7 + ' model fallback: ' + $tryFallbackReason)
+        }
         if ($modelRes.status -eq 'ok') {
           $mv = ([string](Get-JsonProp $modelRes.result 'verdict')).Trim().ToLowerInvariant()
           if ($mv -ne 'pass' -and $mv -ne 'block') {
@@ -2890,6 +2901,8 @@ function Invoke-SinglePrAudit {
               result = $null
               raw = $modelRes.raw
               error = ('Unexpected PR audit verdict from model: ' + $mv)
+              model = [string](Get-JsonProp $modelRes 'model')
+              fallbackReason = $tryFallbackReason
             }
           }
         }
@@ -2900,8 +2913,12 @@ function Invoke-SinglePrAudit {
 
       if ($null -eq $modelRes -or $modelRes.status -ne 'ok') {
         $errReason = 'audit model unavailable'
-        if ($null -ne $modelRes -and -not [string]::IsNullOrWhiteSpace([string]$modelRes.error)) {
-          $errReason = [string]$modelRes.error
+        $unavailFallbackReason = ''
+        if ($null -ne $modelRes) {
+          if (-not [string]::IsNullOrWhiteSpace([string]$modelRes.error)) {
+            $errReason = [string]$modelRes.error
+          }
+          $unavailFallbackReason = [string](Get-JsonProp $modelRes 'fallbackReason')
         }
         $newAttempts = [int]$state.attempts + 1
         $attemptAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
@@ -2937,6 +2954,7 @@ function Invoke-SinglePrAudit {
           lastAttemptAt = $attemptAt
           backoffMinutes = $(if ($inBackoff) { 60 } else { 0 })
           commitStatus = $unavailCommitStatus
+          fallbackReason = $unavailFallbackReason
           error = $errReason
           runDir = $runDir
         }
@@ -2946,6 +2964,8 @@ function Invoke-SinglePrAudit {
         return
       }
 
+      $auditModel = [string](Get-JsonProp $modelRes 'model')
+      $auditFallbackReason = [string](Get-JsonProp $modelRes 'fallbackReason')
       $parsed = $modelRes.result
       $modelVerdict = ([string](Get-JsonProp $parsed 'verdict')).Trim().ToLowerInvariant()
       $accRaw = Get-JsonProp $parsed 'acceptance'
@@ -3000,7 +3020,8 @@ function Invoke-SinglePrAudit {
       -Findings $findingsArray `
       -Claims $claims `
       -Withdrawn $withdrawn `
-      -ArbiterFollows ($needsArbitration -and -not [bool]$state.arbiterDone)
+      -ArbiterFollows ($needsArbitration -and -not [bool]$state.arbiterDone) `
+      -ModelName $auditModel
     Write-Text (Join-Path $runDir 'comment.md') $commentBody
 
     $blockingCount = $blockingFindings.Count
@@ -3178,6 +3199,8 @@ function Invoke-SinglePrAudit {
       round = $nextRound
       status = 'ok'
       verdict = $finalVerdict
+      model = $auditModel
+      fallbackReason = $auditFallbackReason
       commitStatus = $ghStatus
       description = $statusDesc
       commentId = $commentId
@@ -3191,7 +3214,11 @@ function Invoke-SinglePrAudit {
     }
     Write-Text (Join-Path $runDir 'result.json') ((ConvertTo-Json -InputObject $prRecord -Depth 8) + "`n")
     $null = $ResultsOut.Add($prRecord)
-    Write-Log ('PR #' + $num + ' head ' + $sha7 + ' round ' + $nextRound + ' verdict=' + $finalVerdict + ' status=' + $ghStatus)
+    $modelLogPart = ''
+    if (-not [string]::IsNullOrWhiteSpace($auditModel)) {
+      $modelLogPart = ' model=' + $auditModel
+    }
+    Write-Log ('PR #' + $num + ' head ' + $sha7 + ' round ' + $nextRound + ' verdict=' + $finalVerdict + ' status=' + $ghStatus + $modelLogPart)
   } catch {
     $caughtException = $_.Exception
     $errMsg = ConvertTo-SingleLine (Protect-LogText $caughtException.Message) 300
@@ -3479,7 +3506,7 @@ try {
     $script:LogPath = Join-Path $logsDir ('audit-' + [DateTime]::Now.ToString('yyyyMMdd') + '.log')
     $script:LogPrefix = ''
   }
-  Initialize-Redactions @($script:WorkRoot, [string]$config.referenceRoot, [string]$config.keyPath, [string](Get-JsonProp $config 'devinCli'))
+  Initialize-Redactions @($script:WorkRoot, [string]$config.referenceRoot, [string]$config.keyPath, [string](Get-JsonProp $config 'devinCli'), [string](Get-JsonProp $config 'agyPath'))
 
   $canRun = $true
   if (-not $isChildMode) {

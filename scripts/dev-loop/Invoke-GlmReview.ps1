@@ -1,7 +1,7 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-16.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-23.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Invoke-GlmReview.ps1 -Mode <review|consult> -PrNumber <n> [-Repo <owner/name>] [-Root <state root>] [-FailuresFile <file>] [-TimeoutMin <min>] [-NoPost]
-# Runs GLM-5.4 via ZCode CLI in read-only plan mode against a detached worktree of one PR head, optionally posts a review comment (review) or writes consult.md (consult), and emits one compact JSON summary line to stdout.
+# Usage: .\Invoke-GlmReview.ps1 -Mode <review|consult> -PrNumber <n> [-Repo <owner/name>] [-Root <state root>] [-FailuresFile <file>] [-TimeoutMin <min>] [-FallbackModel <model>] [-AgyPath <exe>] [-NoPost]
+# Runs GLM-5.4 via ZCode CLI in read-only plan mode against a detached worktree of one PR head (falling back once to Gemini 4 Neon via Antigravity CLI if GLM-5.4 fails), optionally posts a review comment (review) or writes consult.md (consult), and emits one compact JSON summary line to stdout.
 
 param(
   [string]$Mode = '',
@@ -18,7 +18,9 @@ param(
   [string]$ZCodeDataBaseDir = 'C:\tivano\zcode\home',
   [string]$ZCodeSourcePath = 'C:\Program Files\ZCode\resources\glm\zcode.cjs',
   [string]$ZCodeBuiltinSourcePath = 'C:\Program Files\ZCode\resources\config\provider\zcode-builtin.json',
-  [string]$ZCodeProviderDir = 'C:\tivano\zcode\provider'
+  [string]$ZCodeProviderDir = 'C:\tivano\zcode\provider',
+  [ValidatePattern('^[A-Za-z0-9._:/-]+$')][string]$FallbackModel = 'gemini-4-neon-high',
+  [string]$AgyPath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -32,6 +34,8 @@ $script:GitPath = $null
 $script:GhPath = $null
 $script:NodeExePath = $null
 $script:ZCodeScriptPath = $null
+$script:AgyExePath = $null
+$script:FailuresSourcePath = ''
 $script:WorkRoot = $null
 $script:GlmRoot = $null
 $script:CheckoutPath = $null
@@ -165,9 +169,9 @@ function ConvertTo-StringList {
 function Initialize-Redactions {
   param([string[]]$ExtraPaths)
   $candidates = @($script:WorkRoot, $script:GlmRoot, $script:CheckoutPath, $script:RunDir,
-    $script:NodeExePath, $script:ZCodeScriptPath, $ZCodeDataBaseDir, $ZCodeSourcePath,
-    $ZCodeBuiltinSourcePath, $ZCodeProviderDir, $env:USERPROFILE, $script:AcceptanceRepo,
-    'C:\tivano') + @($ExtraPaths)
+    $NodePath, $ZCodePath, $script:NodeExePath, $script:ZCodeScriptPath, $ZCodeDataBaseDir,
+    $ZCodeSourcePath, $ZCodeBuiltinSourcePath, $ZCodeProviderDir, $AgyPath, $script:AgyExePath,
+    $env:USERPROFILE, $script:AcceptanceRepo, 'C:\tivano') + @($ExtraPaths)
   $all = @()
   foreach ($item in $candidates) {
     if ([string]::IsNullOrWhiteSpace($item) -or $item.Length -lt 4) { continue }
@@ -539,10 +543,259 @@ function Parse-GlmJsonOutput {
   return $null
 }
 
+function Resolve-AgyExecutable {
+  param([string]$RequestedPath)
+  if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+    $resolved = Get-AcceptancePath $RequestedPath
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+      throw ('agy.exe not found at ' + $resolved)
+    }
+    return $resolved
+  }
+  if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    $defaultExe = Join-Path $env:LOCALAPPDATA 'agy\bin\agy.exe'
+    if (Test-Path -LiteralPath $defaultExe -PathType Leaf) {
+      return (Get-AcceptancePath $defaultExe)
+    }
+  }
+  $cmd = Get-Command -Name 'agy' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($cmd -and $cmd.Source -and (Test-Path -LiteralPath $cmd.Source -PathType Leaf)) {
+    return (Get-AcceptancePath $cmd.Source)
+  }
+  throw 'agy.exe not found at %LOCALAPPDATA%\agy\bin\agy.exe or on PATH.'
+}
+
+function Parse-AgyError {
+  param(
+    [AllowEmptyString()][string]$StderrText,
+    [AllowEmptyString()][string]$StdoutText = ''
+  )
+  $sources = @($StderrText, $StdoutText)
+  $matchedJson = $null
+  foreach ($src in $sources) {
+    if ([string]::IsNullOrWhiteSpace($src)) { continue }
+    $lines = @($src -split "`r?`n")
+    foreach ($line in $lines) {
+      $cleanLine = [regex]::Replace($line, '\x1b\[[0-9;]*[A-Za-z]', '')
+      if ($cleanLine -match '^\s*AGY_ERROR:\s*(\{.*\})\s*$') {
+        $matchedJson = $Matches[1]
+      }
+    }
+    if ($null -ne $matchedJson) { break }
+  }
+  if ($null -eq $matchedJson) { return $null }
+
+  $parsed = $null
+  try {
+    $parsed = $matchedJson | ConvertFrom-Json
+  } catch {
+    return [pscustomobject]@{
+      message = (ConvertTo-SingleLine ('AGY_ERROR: ' + $matchedJson) 300)
+      errorCode = ''
+    }
+  }
+
+  $shortErr = ConvertTo-SingleLine ([string](Get-JsonProp $parsed 'short_error')) 260
+  $errCode = ConvertTo-SingleLine ([string](Get-JsonProp $parsed 'error_code')) 80
+  $msg = $shortErr
+  if (-not [string]::IsNullOrWhiteSpace($errCode)) {
+    if ([string]::IsNullOrWhiteSpace($msg)) {
+      $msg = $errCode
+    } elseif ($msg.IndexOf($errCode, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+      $msg = $errCode + ': ' + $msg
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($msg)) {
+    $msg = ConvertTo-SingleLine ('AGY_ERROR: ' + $matchedJson) 300
+  }
+
+  return [pscustomobject]@{
+    message = (ConvertTo-SingleLine $msg 300)
+    errorCode = $errCode
+  }
+}
+
+function ConvertFrom-ReviewerOutput {
+  param(
+    [AllowEmptyString()][string]$StdoutText,
+    [string]$RunMode,
+    [string]$ModelLabel
+  )
+  if ([string]::IsNullOrWhiteSpace($StdoutText)) {
+    throw ($ModelLabel + ' produced empty stdout.')
+  }
+  $parsed = Parse-GlmJsonOutput $StdoutText
+  if ($null -eq $parsed) {
+    throw ('Failed to parse final JSON object from ' + $ModelLabel + ' stdout.')
+  }
+  if ($RunMode -eq 'review') {
+    $rawVerdict = ([string](Get-JsonProp $parsed 'verdict')).Trim().ToLowerInvariant()
+    if ($rawVerdict -ne 'pass' -and $rawVerdict -ne 'changes') {
+      throw ('Invalid ' + $ModelLabel + ' review verdict: ' + $rawVerdict)
+    }
+    $blockingList = New-Object Collections.Generic.List[string]
+    foreach ($item in @(ConvertTo-StringList (Get-JsonProp $parsed 'blocking'))) {
+      $null = $blockingList.Add((Protect-PublicText $item))
+    }
+    $advisoryList = New-Object Collections.Generic.List[string]
+    foreach ($item in @(ConvertTo-StringList (Get-JsonProp $parsed 'advisory'))) {
+      $null = $advisoryList.Add((Protect-PublicText $item))
+    }
+    $verdict = 'pass'
+    if ($blockingList.Count -gt 0) {
+      $verdict = 'changes'
+    }
+    if ($rawVerdict -eq 'changes' -and $blockingList.Count -eq 0) {
+      Write-Log ($ModelLabel + ' returned verdict=changes with empty blocking list; normalizing verdict to pass.')
+    }
+    return [pscustomobject]@{
+      verdict = $verdict
+      blocking = [string[]]$blockingList.ToArray()
+      advisory = [string[]]$advisoryList.ToArray()
+      diagnosis = ''
+      plan = [string[]]@()
+      stdoutText = $StdoutText
+    }
+  }
+
+  $diagProp = Get-JsonProp $parsed 'diagnosis'
+  $planProp = Get-JsonProp $parsed 'plan'
+  if ($null -eq $diagProp -or $null -eq $planProp) {
+    throw ($ModelLabel + ' consult JSON is missing diagnosis or plan.')
+  }
+  $planList = New-Object Collections.Generic.List[string]
+  foreach ($step in @(ConvertTo-StringList $planProp)) {
+    $null = $planList.Add($step)
+  }
+  return [pscustomobject]@{
+    verdict = ''
+    blocking = [string[]]@()
+    advisory = [string[]]@()
+    diagnosis = ([string]$diagProp).Trim()
+    plan = [string[]]$planList.ToArray()
+    stdoutText = $StdoutText
+  }
+}
+
+function Invoke-NeonFallback {
+  param(
+    [string]$TreeDir,
+    [string]$PromptText,
+    [string]$RunMode
+  )
+  $agyExePath = Resolve-AgyExecutable -RequestedPath $AgyPath
+  Assert-CmdSafePath 'agy.exe' $agyExePath
+  $script:AgyExePath = $agyExePath
+  Initialize-Redactions @($script:FailuresSourcePath, $agyExePath)
+
+  $neonHeader = @(
+    'IMPORTANT: Read-only review; never edit files, never run git commit/push, gh or network commands.'
+    ''
+  ) -join "`n"
+  $fallbackPromptPath = Join-Path $script:RunDir 'fallback-prompt.md'
+  Write-Text $fallbackPromptPath ($neonHeader + $PromptText)
+  Assert-CmdSafePath 'fallbackPromptPath' $fallbackPromptPath
+
+  $statusBeforeRes = Invoke-Git $TreeDir 'status --porcelain'
+  if ($statusBeforeRes.exitCode -ne 0) {
+    throw ('git status --porcelain before Gemini 4 Neon fallback failed: ' + (Get-ErrorSummary $statusBeforeRes))
+  }
+  $statusBefore = ''
+  if ($null -ne $statusBeforeRes.text) { $statusBefore = $statusBeforeRes.text }
+  $headBeforeRes = Invoke-Git $TreeDir 'rev-parse HEAD'
+  $headBefore = ''
+  if ($headBeforeRes.exitCode -eq 0 -and $null -ne $headBeforeRes.text) {
+    $headBefore = $headBeforeRes.text.Trim()
+  }
+
+  $fallbackOutPath = Join-Path $script:RunDir 'fallback.out.log'
+  $fallbackErrPath = Join-Path $script:RunDir 'fallback.err.log'
+  $shortPrompt = 'Read ' + $fallbackPromptPath + ' and follow every instruction in it. Inspect the repository tree at ' + $TreeDir + ' in strictly read-only mode, and output the single compact final JSON object on the last line with no text after it.'
+  $agyArgs = '-p ' + (Quote-Argument $shortPrompt) +
+    ' --model ' + (Quote-Argument $FallbackModel) +
+    ' --dangerously-skip-permissions' +
+    ' --print-timeout ' + ([string]$TimeoutMin + 'm') +
+    ' --add-dir ' + (Quote-Argument $script:RunDir)
+
+  Write-Log ('invoking Gemini 4 Neon fallback: model=' + $FallbackModel)
+  $fbProcess = Start-Process -FilePath $agyExePath -ArgumentList $agyArgs `
+    -RedirectStandardOutput $fallbackOutPath -RedirectStandardError $fallbackErrPath `
+    -WorkingDirectory $TreeDir -WindowStyle Hidden -PassThru
+  if (-not $fbProcess) { throw 'Could not start agy.exe for Gemini 4 Neon fallback.' }
+  # Windows PowerShell only fills ExitCode for a -PassThru process whose handle was opened before it exited.
+  $null = $fbProcess.Handle
+
+  $fbTimedOut = -not $fbProcess.WaitForExit($TimeoutMin * 60000)
+  if ($fbTimedOut) {
+    Write-Log ('Gemini 4 Neon fallback timed out after ' + $TimeoutMin + ' minutes; killing process tree pid=' + $fbProcess.Id)
+    $null = Invoke-Tool $script:TaskkillExe ('/T /F /PID ' + $fbProcess.Id) (Join-Path $script:RunDir 'fallback-kill.out.log') (Join-Path $script:RunDir 'fallback-kill.err.log') $script:WorkRoot
+    $null = $fbProcess.WaitForExit(5000)
+    Stop-TreeProcesses $TreeDir
+  } else {
+    $fbProcess.WaitForExit()
+    Stop-TreeProcesses $TreeDir
+  }
+
+  $fbExitCode = $null
+  if (-not $fbTimedOut) {
+    $fbExitCode = $fbProcess.ExitCode
+  }
+
+  $treeChanged = $false
+  if (-not [string]::IsNullOrWhiteSpace($headBefore)) {
+    $headAfterRes = Invoke-Git $TreeDir 'rev-parse HEAD'
+    $headAfter = ''
+    if ($headAfterRes.exitCode -eq 0 -and $null -ne $headAfterRes.text) {
+      $headAfter = $headAfterRes.text.Trim()
+    }
+    if ($headAfter -ne $headBefore) {
+      $treeChanged = $true
+      Write-Log ('Gemini 4 Neon fallback moved HEAD from ' + $headBefore + ' to ' + $headAfter + '; resetting tree')
+      $null = Invoke-Git $TreeDir ('reset --hard ' + $headBefore)
+    }
+  }
+  $statusAfterRes = Invoke-Git $TreeDir 'status --porcelain'
+  $statusAfter = ''
+  if ($null -ne $statusAfterRes.text) { $statusAfter = $statusAfterRes.text }
+  if ($statusAfterRes.exitCode -ne 0 -or $statusAfter -cne $statusBefore) {
+    $treeChanged = $true
+    Write-Log 'Gemini 4 Neon fallback modified the read-only worktree; resetting tree and discarding result'
+    $null = Invoke-Git $TreeDir 'checkout -- .'
+    $null = Invoke-Git $TreeDir 'clean -fd'
+  }
+  if ($treeChanged) {
+    throw 'Gemini 4 Neon fallback modified the read-only worktree; result discarded.'
+  }
+
+  if ($fbTimedOut) {
+    throw ('Gemini 4 Neon fallback timed out after ' + $TimeoutMin + ' minutes.')
+  }
+
+  $fbStdoutText = Read-Text $fallbackOutPath
+  $fbStderrText = Read-Text $fallbackErrPath
+  $agyErrInfo = Parse-AgyError -StderrText ([string]$fbStderrText) -StdoutText ([string]$fbStdoutText)
+  if ($null -ne $agyErrInfo) {
+    throw ('Gemini 4 Neon fallback AGY_ERROR: ' + $agyErrInfo.message)
+  }
+
+  if ($null -ne $fbExitCode -and $fbExitCode -ne 0) {
+    $fbErrTail = ConvertTo-SingleLine ([string](Get-Tail $fallbackErrPath 10)) 240
+    $fbErrMsg = 'Gemini 4 Neon fallback exited with code ' + $fbExitCode
+    if ($fbErrTail) { $fbErrMsg = $fbErrMsg + ': ' + $fbErrTail }
+    throw $fbErrMsg
+  }
+
+  return (ConvertFrom-ReviewerOutput -StdoutText ([string]$fbStdoutText) -RunMode $RunMode -ModelLabel 'Gemini 4 Neon (fallback)')
+}
+
 function Build-ReviewCommentBody {
-  param([string]$Sha7, [string]$Verdict, [string[]]$Blocking, [string[]]$Advisory)
+  param([string]$Sha7, [string]$Verdict, [string[]]$Blocking, [string[]]$Advisory, [string]$ModelName = 'GLM-5.4')
+  $runner = 'ZCode CLI'
+  if ($ModelName -ne 'GLM-5.4') {
+    $runner = 'Antigravity CLI'
+  }
   $lines = New-Object Collections.Generic.List[string]
-  $null = $lines.Add('> Automated second review by GLM-5.4 (ZCode CLI) on a Windows test machine, for head ' + $Sha7 + '. Agent review; not a maintainer approval.')
+  $null = $lines.Add('> Automated second review by ' + $ModelName + ' (' + $runner + ') on a Windows test machine, for head ' + $Sha7 + '. Agent review; not a maintainer approval.')
   $null = $lines.Add('')
   $null = $lines.Add('Verdict: **' + $Verdict + '**')
   $null = $lines.Add('')
@@ -567,6 +820,8 @@ function Build-ReviewCommentBody {
 }
 
 $statusOut = 'unavailable'
+$modelOut = 'GLM-5.4'
+$fallbackReasonOut = ''
 $headShaOut = ''
 $verdictOut = ''
 $blockingOut = New-Object Collections.Generic.List[string]
@@ -608,6 +863,7 @@ try {
     $failuresText = Read-Text $failuresSourcePath
     if ([string]::IsNullOrWhiteSpace($failuresText)) { throw ('-FailuresFile is empty: ' + $failuresSourcePath) }
   }
+  $script:FailuresSourcePath = $failuresSourcePath
 
   if ([string]::IsNullOrWhiteSpace($Checkout)) {
     $Checkout = Join-Path $WorkRoot 'repo'
@@ -617,20 +873,6 @@ try {
   if (-not (Test-Path -LiteralPath (Join-Path $script:CheckoutPath '.git'))) {
     throw ('Repository clone not found at ' + $script:CheckoutPath)
   }
-
-  $script:NodeExePath = Get-AcceptancePath $NodePath
-  Assert-CmdSafePath '-NodePath' $script:NodeExePath
-  if (-not (Test-Path -LiteralPath $script:NodeExePath -PathType Leaf)) {
-    throw ('Node.exe not found at ' + $script:NodeExePath)
-  }
-
-  $script:ZCodeScriptPath = Get-AcceptancePath $ZCodePath
-  Assert-CmdSafePath '-ZCodePath' $script:ZCodeScriptPath
-  $zcodeDataPath = Get-AcceptancePath $ZCodeDataBaseDir
-  Assert-CmdSafePath '-ZCodeDataBaseDir' $zcodeDataPath
-  $zcodeProviderPath = Get-AcceptancePath $ZCodeProviderDir
-  Assert-CmdSafePath '-ZCodeProviderDir' $zcodeProviderPath
-  Sync-ZCodeBundle -SourceBundle $ZCodeSourcePath -TargetBundle $script:ZCodeScriptPath -SourceBuiltin $ZCodeBuiltinSourcePath -TargetProviderDir $zcodeProviderPath
 
   $env:GH_PROMPT_DISABLED = '1'
   $env:GH_NO_UPDATE_NOTIFIER = '1'
@@ -726,66 +968,94 @@ try {
   }
   Write-Text $promptPath $promptText
 
-  $glmOutPath = Join-Path $script:RunDir 'glm.out.log'
-  $glmErrPath = Join-Path $script:RunDir 'glm.err.log'
-  $shortPrompt = 'Read the instructions in ' + $promptPath + ' and inspect the repository tree at ' + $treeDir + '. Follow every instruction in that prompt file.'
-  $glmArgs = (Quote-Argument $script:ZCodeScriptPath) +
-    ' -p ' + (Quote-Argument $shortPrompt) +
-    ' --mode plan' +
-    ' --disallowed-tools ' + (Quote-Argument 'Bash Edit Write') +
-    ' --cwd ' + (Quote-Argument $treeDir)
+  $reviewOutput = $null
+  $glmFailure = ''
+  try {
+    $script:NodeExePath = Get-AcceptancePath $NodePath
+    Assert-CmdSafePath '-NodePath' $script:NodeExePath
+    if (-not (Test-Path -LiteralPath $script:NodeExePath -PathType Leaf)) {
+      throw ('Node.exe not found at ' + $script:NodeExePath)
+    }
 
-  $env:ZCODE_DATA_BASE_DIR = $zcodeDataPath
-  $process = Start-Process -FilePath $script:NodeExePath -ArgumentList $glmArgs `
-    -RedirectStandardOutput $glmOutPath -RedirectStandardError $glmErrPath `
-    -WorkingDirectory $treeDir -WindowStyle Hidden -PassThru
-  if (-not $process) { throw 'Could not start ZCode CLI (node.exe).' }
-  # Windows PowerShell only fills ExitCode for a -PassThru process whose handle was opened before it exited.
-  $null = $process.Handle
+    $script:ZCodeScriptPath = Get-AcceptancePath $ZCodePath
+    Assert-CmdSafePath '-ZCodePath' $script:ZCodeScriptPath
+    $zcodeDataPath = Get-AcceptancePath $ZCodeDataBaseDir
+    Assert-CmdSafePath '-ZCodeDataBaseDir' $zcodeDataPath
+    $zcodeProviderPath = Get-AcceptancePath $ZCodeProviderDir
+    Assert-CmdSafePath '-ZCodeProviderDir' $zcodeProviderPath
+    Sync-ZCodeBundle -SourceBundle $ZCodeSourcePath -TargetBundle $script:ZCodeScriptPath -SourceBuiltin $ZCodeBuiltinSourcePath -TargetProviderDir $zcodeProviderPath
+    Initialize-Redactions @($failuresSourcePath)
 
-  $timedOut = -not $process.WaitForExit($TimeoutMin * 60000)
-  if ($timedOut) {
-    $null = Invoke-Tool $script:TaskkillExe ('/T /F /PID ' + $process.Id) (Join-Path $script:RunDir 'glm-kill.out.log') (Join-Path $script:RunDir 'glm-kill.err.log') $script:WorkRoot
-    $null = $process.WaitForExit(5000)
+    $glmOutPath = Join-Path $script:RunDir 'glm.out.log'
+    $glmErrPath = Join-Path $script:RunDir 'glm.err.log'
+    $shortPrompt = 'Read the instructions in ' + $promptPath + ' and inspect the repository tree at ' + $treeDir + '. Follow every instruction in that prompt file.'
+    $glmArgs = (Quote-Argument $script:ZCodeScriptPath) +
+      ' -p ' + (Quote-Argument $shortPrompt) +
+      ' --mode plan' +
+      ' --disallowed-tools ' + (Quote-Argument 'Bash Edit Write') +
+      ' --cwd ' + (Quote-Argument $treeDir)
+
+    $env:ZCODE_DATA_BASE_DIR = $zcodeDataPath
+    $process = Start-Process -FilePath $script:NodeExePath -ArgumentList $glmArgs `
+      -RedirectStandardOutput $glmOutPath -RedirectStandardError $glmErrPath `
+      -WorkingDirectory $treeDir -WindowStyle Hidden -PassThru
+    if (-not $process) { throw 'Could not start ZCode CLI (node.exe).' }
+    # Windows PowerShell only fills ExitCode for a -PassThru process whose handle was opened before it exited.
+    $null = $process.Handle
+
+    $timedOut = -not $process.WaitForExit($TimeoutMin * 60000)
+    if ($timedOut) {
+      $null = Invoke-Tool $script:TaskkillExe ('/T /F /PID ' + $process.Id) (Join-Path $script:RunDir 'glm-kill.out.log') (Join-Path $script:RunDir 'glm-kill.err.log') $script:WorkRoot
+      $null = $process.WaitForExit(5000)
+      Stop-TreeProcesses $treeDir
+      throw ('GLM-5.4 timed out after ' + $TimeoutMin + ' minutes.')
+    }
+    $process.WaitForExit()
     Stop-TreeProcesses $treeDir
-    throw ('GLM-5.4 timed out after ' + $TimeoutMin + ' minutes.')
-  }
-  $process.WaitForExit()
-  Stop-TreeProcesses $treeDir
 
-  # A missing exit code is not a failure; the parsed answer below decides.
-  if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
-    $errTail = ConvertTo-SingleLine ([string](Get-Tail $glmErrPath 10)) 240
-    throw ('GLM-5.4 exited with code ' + $process.ExitCode + $(if ($errTail) { ': ' + $errTail } else { '' }))
+    # A missing exit code is not a failure; the parsed answer below decides.
+    if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
+      $errTail = ConvertTo-SingleLine ([string](Get-Tail $glmErrPath 10)) 240
+      $glmErrMsg = 'GLM-5.4 exited with code ' + $process.ExitCode
+      if ($errTail) { $glmErrMsg = $glmErrMsg + ': ' + $errTail }
+      throw $glmErrMsg
+    }
+
+    $stdoutText = Read-Text $glmOutPath
+    $reviewOutput = ConvertFrom-ReviewerOutput -StdoutText ([string]$stdoutText) -RunMode $Mode -ModelLabel 'GLM-5.4'
+    $modelOut = 'GLM-5.4'
+  } catch {
+    $glmFailure = ConvertTo-SingleLine $_.Exception.Message 300
+    $fallbackReasonOut = $glmFailure
+    Write-Log ('GLM-5.4 failed (' + $glmFailure + '); falling back to Gemini 4 Neon (' + $FallbackModel + ')')
+  } finally {
+    if ($hadZCodeDataEnv) {
+      $env:ZCODE_DATA_BASE_DIR = $prevZCodeDataEnv
+    } else {
+      Remove-Item Env:\ZCODE_DATA_BASE_DIR -ErrorAction SilentlyContinue
+    }
   }
 
-  $stdoutText = Read-Text $glmOutPath
-  if ([string]::IsNullOrWhiteSpace($stdoutText)) {
-    throw 'GLM-5.4 produced empty stdout.'
-  }
-
-  $parsed = Parse-GlmJsonOutput $stdoutText
-  if ($null -eq $parsed) {
-    throw 'Failed to parse final JSON object from GLM-5.4 stdout.'
+  if ($null -eq $reviewOutput) {
+    $modelOut = 'Gemini 4 Neon (fallback)'
+    try {
+      $reviewOutput = Invoke-NeonFallback -TreeDir $treeDir -PromptText $promptText -RunMode $Mode
+    } catch {
+      $fallbackFailure = ConvertTo-SingleLine $_.Exception.Message 300
+      throw ('GLM-5.4 failed (' + $glmFailure + '); Gemini 4 Neon fallback failed (' + $fallbackFailure + ')')
+    }
   }
 
   if ($Mode -eq 'review') {
-    $rawVerdict = ([string](Get-JsonProp $parsed 'verdict')).Trim().ToLowerInvariant()
-    if ($rawVerdict -ne 'pass' -and $rawVerdict -ne 'changes') {
-      throw ('Invalid GLM-5.4 review verdict: ' + $rawVerdict)
+    foreach ($item in @($reviewOutput.blocking)) {
+      $null = $blockingOut.Add($item)
     }
-    foreach ($item in (ConvertTo-StringList (Get-JsonProp $parsed 'blocking'))) {
-      $null = $blockingOut.Add((Protect-PublicText $item))
+    foreach ($item in @($reviewOutput.advisory)) {
+      $null = $advisoryOut.Add($item)
     }
-    foreach ($item in (ConvertTo-StringList (Get-JsonProp $parsed 'advisory'))) {
-      $null = $advisoryOut.Add((Protect-PublicText $item))
-    }
-    $verdictOut = if ($blockingOut.Count -gt 0) { 'changes' } else { 'pass' }
-    if ($rawVerdict -eq 'changes' -and $blockingOut.Count -eq 0) {
-      Write-Log 'GLM-5.4 returned verdict=changes with empty blocking list; normalizing verdict to pass.'
-    }
+    $verdictOut = [string]$reviewOutput.verdict
 
-    $commentBody = Build-ReviewCommentBody -Sha7 $sha7 -Verdict $verdictOut -Blocking $blockingOut.ToArray() -Advisory $advisoryOut.ToArray()
+    $commentBody = Build-ReviewCommentBody -Sha7 $sha7 -Verdict $verdictOut -Blocking $blockingOut.ToArray() -Advisory $advisoryOut.ToArray() -ModelName $modelOut
     $commentPath = Join-Path $script:RunDir 'comment.md'
     Write-Text $commentPath $commentBody
     if (-not $NoPost) {
@@ -795,27 +1065,22 @@ try {
         Write-Log ('gh pr comment failed: ' + $postErr)
         $messageOut = 'comment post failed: ' + $postErr
       } else {
-        Write-Log ('posted GLM-5.4 review comment to PR #' + $PrNumber)
+        Write-Log ('posted ' + $modelOut + ' review comment to PR #' + $PrNumber)
       }
     }
   } else {
-    $diagProp = Get-JsonProp $parsed 'diagnosis'
-    $planProp = Get-JsonProp $parsed 'plan'
-    if ($null -eq $diagProp -or $null -eq $planProp) {
-      throw 'GLM-5.4 consult JSON is missing diagnosis or plan.'
-    }
-    $diagnosisOut = ([string]$diagProp).Trim()
-    foreach ($step in (ConvertTo-StringList $planProp)) {
+    $diagnosisOut = [string]$reviewOutput.diagnosis
+    foreach ($step in @($reviewOutput.plan)) {
       $null = $planOut.Add($step)
     }
     $consultMdPath = Join-Path $script:RunDir 'consult.md'
-    Write-Text $consultMdPath ($stdoutText.TrimEnd() + "`n")
+    Write-Text $consultMdPath ($reviewOutput.stdoutText.TrimEnd() + "`n")
     $consultPathOut = $consultMdPath
   }
 
   $statusOut = 'ok'
   $exitCode = 0
-  Write-Log ('completed mode=' + $Mode + ' status=ok')
+  Write-Log ('completed mode=' + $Mode + ' status=ok model=' + $modelOut)
 } catch {
   $statusOut = 'unavailable'
   $exitCode = 2
@@ -849,6 +1114,8 @@ if ($Mode -eq 'consult') {
     mode = 'consult'
     pr = $PrNumber
     status = $statusOut
+    model = $modelOut
+    fallbackReason = $fallbackReasonOut
     consultPath = $consultPathOut
     diagnosis = $diagnosisOut
     plan = [string[]]$planOut.ToArray()
@@ -860,6 +1127,8 @@ if ($Mode -eq 'consult') {
     pr = $PrNumber
     headSha = $headShaOut
     status = $statusOut
+    model = $modelOut
+    fallbackReason = $fallbackReasonOut
     verdict = $verdictOut
     blocking = [string[]]$blockingOut.ToArray()
     advisory = [string[]]$advisoryOut.ToArray()
