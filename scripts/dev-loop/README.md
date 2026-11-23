@@ -21,7 +21,7 @@ The owner does **not** participate during development, review, or audit, and ent
 | Role | Model | Responsibility |
 | --- | --- | --- |
 | Author & first-fix | Devin | Implements issues, runs `npm run verify`, makes the first fix commit on gate or `nyx/audit` failure, reviews/commits/pushes Neon fixes, and manages PRs/merges. |
-| Auditor & gate second reviewer | GLM-5.3 | Runs the independent `nyx/audit` checks and serves as the read-only second reviewer inside `Invoke-AutopilotGate.ps1`. Never edits code or fixes. |
+| Auditor & gate second reviewer | GLM-5.4 | Runs the independent `nyx/audit` checks and serves as the read-only second reviewer inside `Invoke-AutopilotGate.ps1`. Never edits code or fixes. |
 | Escalation fixer | Gemini 4 Neon (`agy`) | Fixes escalations via `Invoke-NeonFix.ps1` inside the PR worktree when an audit block survives Devin's fix round, when the gate fails after Devin's first fix round, or at the start of a parked-issue revisit. Never commits or pushes. |
 | Arbiter | Claude Sonnet | Settles post-rebuttal `nyx/audit` disputes inside the independent auditor. |
 
@@ -79,11 +79,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Invoke-
 - Prints one compact JSON line to stdout (`{"pr":n,"headSha":"...","verdict":"pass|fail|unavailable","failures":["..."],"gatePath":"...","glm":{"status":"ok|unavailable|skipped","verdict":"pass|changes","blocking":<count>,"runDir":"..."},"notes":[...]}`) and exits `0` on `pass`, `1` on `fail`, or `2` on `unavailable`.
 - Never merges, labels, or comments itself beyond the review comments from `Invoke-PrReview.ps1` and `Invoke-GlmReview.ps1`.
 
-### GLM-5.3 second reviewer
+### GLM-5.4 second reviewer
 
-- **What it checks and what blocks:** `Invoke-AutopilotGate.ps1` runs `scripts/dev-loop/Invoke-GlmReview.ps1` (GLM-5.3) as an independent read-only second reviewer on the same PR head and posts its own PR comment. Blocking findings appear in `failures` prefixed with `GLM-5.3: ` and fail the gate; non-blocking, out-of-scope, or style-only points are advisory. If the two reviewers contradict each other, autopilot follows the issue text and `AGENTS.md`, takes the safer option, and explains why in the commit message and a short PR comment. If GLM-5.3 is `unavailable`, it never blocks the gate by itself.
-- **Credentials and isolation:** GLM-5.3 runs through the ZCode CLI with an isolated `ZCODE_DATA_BASE_DIR` (`C:\tivano\zcode\home`) whose `provider_config` holds a BigModel Coding Plan API key. That directory sits outside the repository (never committed) and must be readable only by the runner account.
-- **Audit and review only:** GLM-5.3 never edits repository files or commits, and autopilot no longer runs GLM-5.3 consult for stuck gates; escalations go to Gemini 4 Neon (`Invoke-NeonFix.ps1`). Pass `-SkipGlm` to `Invoke-AutopilotGate.ps1` to skip the gate's GLM review (`glm.status` becomes `"skipped"`).
+- **What it checks and what blocks:** `Invoke-AutopilotGate.ps1` runs `scripts/dev-loop/Invoke-GlmReview.ps1` (GLM-5.4) as an independent read-only second reviewer on the same PR head and posts its own PR comment. Blocking findings appear in `failures` prefixed with `GLM-5.4: ` and fail the gate; non-blocking, out-of-scope, or style-only points are advisory. If the two reviewers contradict each other, autopilot follows the issue text and `AGENTS.md`, takes the safer option, and explains why in the commit message and a short PR comment. If GLM-5.4 is `unavailable`, it never blocks the gate by itself.
+- **Credentials and isolation:** GLM-5.4 runs through the ZCode CLI with an isolated `ZCODE_DATA_BASE_DIR` (`C:\tivano\zcode\home`) whose `provider_config` holds a BigModel Coding Plan API key. That directory sits outside the repository (never committed) and must be readable only by the runner account.
+- **Audit and review only:** GLM-5.4 never edits repository files or commits, and autopilot no longer runs GLM-5.4 consult for stuck gates; escalations go to Gemini 4 Neon (`Invoke-NeonFix.ps1`). Pass `-SkipGlm` to `Invoke-AutopilotGate.ps1` to skip the gate's GLM review (`glm.status` becomes `"skipped"`).
 
 ### Gemini 4 Neon escalation fixer (`Invoke-NeonFix.ps1`)
 

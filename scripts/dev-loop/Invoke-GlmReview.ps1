@@ -1,7 +1,7 @@
 # Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-16.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 # Usage: .\Invoke-GlmReview.ps1 -Mode <review|consult> -PrNumber <n> [-Repo <owner/name>] [-Root <state root>] [-FailuresFile <file>] [-TimeoutMin <min>] [-NoPost]
-# Runs GLM-5.3 via ZCode CLI in read-only plan mode against a detached worktree of one PR head, optionally posts a review comment (review) or writes consult.md (consult), and emits one compact JSON summary line to stdout.
+# Runs GLM-5.4 via ZCode CLI in read-only plan mode against a detached worktree of one PR head, optionally posts a review comment (review) or writes consult.md (consult), and emits one compact JSON summary line to stdout.
 
 param(
   [string]$Mode = '',
@@ -425,7 +425,7 @@ function Format-LinkedIssuesMarkdown {
 function Build-ReviewPrompt {
   param([int]$Pr, [string]$Sha7, [string]$TreeDir, [string]$PrFile, [string]$IssueFile, [string]$DiffFile)
   return (@(
-    "You are an independent second reviewer (GLM-5.3) of a change written by another coding model for PR #$Pr ($Repo, head $Sha7), a Windows port of an Electron + React + TypeScript application."
+    "You are an independent second reviewer (GLM-5.4) of a change written by another coding model for PR #$Pr ($Repo, head $Sha7), a Windows port of an Electron + React + TypeScript application."
     ''
     '## Rules'
     '- You are running in read-only plan mode with Bash, Edit and Write disabled. Do not attempt to edit files, run commands or post anything.'
@@ -469,7 +469,7 @@ function Build-ConsultPrompt {
     $truncatedNote = "`n(Truncated above at 32KB; read full file at $FailuresPath.)"
   }
   return (@(
-    "You are an independent senior engineer (GLM-5.3) consulted because an automated coding agent is stuck trying to fix PR #$Pr ($Repo, head $Sha7) for Tivano Windows (Electron + React + TypeScript)."
+    "You are an independent senior engineer (GLM-5.4) consulted because an automated coding agent is stuck trying to fix PR #$Pr ($Repo, head $Sha7) for Tivano Windows (Electron + React + TypeScript)."
     ''
     '## Rules'
     '- You are running in read-only plan mode with Bash, Edit and Write disabled. Do not attempt to edit files or run commands.'
@@ -542,7 +542,7 @@ function Parse-GlmJsonOutput {
 function Build-ReviewCommentBody {
   param([string]$Sha7, [string]$Verdict, [string[]]$Blocking, [string[]]$Advisory)
   $lines = New-Object Collections.Generic.List[string]
-  $null = $lines.Add('> Automated second review by GLM-5.3 (ZCode CLI) on a Windows test machine, for head ' + $Sha7 + '. Agent review; not a maintainer approval.')
+  $null = $lines.Add('> Automated second review by GLM-5.4 (ZCode CLI) on a Windows test machine, for head ' + $Sha7 + '. Agent review; not a maintainer approval.')
   $null = $lines.Add('')
   $null = $lines.Add('Verdict: **' + $Verdict + '**')
   $null = $lines.Add('')
@@ -748,7 +748,7 @@ try {
     $null = Invoke-Tool $script:TaskkillExe ('/T /F /PID ' + $process.Id) (Join-Path $script:RunDir 'glm-kill.out.log') (Join-Path $script:RunDir 'glm-kill.err.log') $script:WorkRoot
     $null = $process.WaitForExit(5000)
     Stop-TreeProcesses $treeDir
-    throw ('GLM-5.3 timed out after ' + $TimeoutMin + ' minutes.')
+    throw ('GLM-5.4 timed out after ' + $TimeoutMin + ' minutes.')
   }
   $process.WaitForExit()
   Stop-TreeProcesses $treeDir
@@ -756,23 +756,23 @@ try {
   # A missing exit code is not a failure; the parsed answer below decides.
   if ($null -ne $process.ExitCode -and $process.ExitCode -ne 0) {
     $errTail = ConvertTo-SingleLine ([string](Get-Tail $glmErrPath 10)) 240
-    throw ('GLM-5.3 exited with code ' + $process.ExitCode + $(if ($errTail) { ': ' + $errTail } else { '' }))
+    throw ('GLM-5.4 exited with code ' + $process.ExitCode + $(if ($errTail) { ': ' + $errTail } else { '' }))
   }
 
   $stdoutText = Read-Text $glmOutPath
   if ([string]::IsNullOrWhiteSpace($stdoutText)) {
-    throw 'GLM-5.3 produced empty stdout.'
+    throw 'GLM-5.4 produced empty stdout.'
   }
 
   $parsed = Parse-GlmJsonOutput $stdoutText
   if ($null -eq $parsed) {
-    throw 'Failed to parse final JSON object from GLM-5.3 stdout.'
+    throw 'Failed to parse final JSON object from GLM-5.4 stdout.'
   }
 
   if ($Mode -eq 'review') {
     $rawVerdict = ([string](Get-JsonProp $parsed 'verdict')).Trim().ToLowerInvariant()
     if ($rawVerdict -ne 'pass' -and $rawVerdict -ne 'changes') {
-      throw ('Invalid GLM-5.3 review verdict: ' + $rawVerdict)
+      throw ('Invalid GLM-5.4 review verdict: ' + $rawVerdict)
     }
     foreach ($item in (ConvertTo-StringList (Get-JsonProp $parsed 'blocking'))) {
       $null = $blockingOut.Add((Protect-PublicText $item))
@@ -782,7 +782,7 @@ try {
     }
     $verdictOut = if ($blockingOut.Count -gt 0) { 'changes' } else { 'pass' }
     if ($rawVerdict -eq 'changes' -and $blockingOut.Count -eq 0) {
-      Write-Log 'GLM-5.3 returned verdict=changes with empty blocking list; normalizing verdict to pass.'
+      Write-Log 'GLM-5.4 returned verdict=changes with empty blocking list; normalizing verdict to pass.'
     }
 
     $commentBody = Build-ReviewCommentBody -Sha7 $sha7 -Verdict $verdictOut -Blocking $blockingOut.ToArray() -Advisory $advisoryOut.ToArray()
@@ -795,14 +795,14 @@ try {
         Write-Log ('gh pr comment failed: ' + $postErr)
         $messageOut = 'comment post failed: ' + $postErr
       } else {
-        Write-Log ('posted GLM-5.3 review comment to PR #' + $PrNumber)
+        Write-Log ('posted GLM-5.4 review comment to PR #' + $PrNumber)
       }
     }
   } else {
     $diagProp = Get-JsonProp $parsed 'diagnosis'
     $planProp = Get-JsonProp $parsed 'plan'
     if ($null -eq $diagProp -or $null -eq $planProp) {
-      throw 'GLM-5.3 consult JSON is missing diagnosis or plan.'
+      throw 'GLM-5.4 consult JSON is missing diagnosis or plan.'
     }
     $diagnosisOut = ([string]$diagProp).Trim()
     foreach ($step in (ConvertTo-StringList $planProp)) {

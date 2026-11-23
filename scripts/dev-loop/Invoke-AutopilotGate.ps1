@@ -1096,7 +1096,7 @@ function Write-GateFailures {
   $null = $lines.Add('These conditions failed for head ' + $shortSha + '. Fix every one of them.')
   $null = $lines.Add('')
   foreach ($item in @($Extra) + @($Evaluation.content)) { if ($item) { $null = $lines.Add('- ' + $item) } }
-  foreach ($item in @($GlmBlocking)) { if ($item) { $null = $lines.Add('- GLM-5.3: ' + $item) } }
+  foreach ($item in @($GlmBlocking)) { if ($item) { $null = $lines.Add('- GLM-5.4: ' + $item) } }
   if ($Evaluation.newFailures.Count -gt 0) {
     $null = $lines.Add('')
     $null = $lines.Add('## New failing unit tests')
@@ -1142,23 +1142,23 @@ function Invoke-GlmSecondReview {
   $tail = Get-Tail $glmOutLog 1
   if ([string]::IsNullOrWhiteSpace($tail)) {
     $errTail = ConvertTo-SingleLine ([string](Get-Tail $glmErrLog 5)) 200
-    $msg = if ($errTail) { 'GLM-5.3 produced no summary: ' + $errTail } else { 'GLM-5.3 produced no summary' }
+    $msg = if ($errTail) { 'GLM-5.4 produced no summary: ' + $errTail } else { 'GLM-5.4 produced no summary' }
     return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = ''; message = $msg }
   }
   $glmData = $null
   try { $glmData = $tail | ConvertFrom-Json } catch { }
   if ($glmData -isnot [pscustomobject]) {
-    return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = ''; message = 'GLM-5.3 summary was not valid JSON' }
+    return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = ''; message = 'GLM-5.4 summary was not valid JSON' }
   }
   $glmRunDir = [string](Get-JsonProp $glmData 'runDir')
   $glmHead = [string](Get-JsonProp $glmData 'headSha')
   if ($glmHead -and $glmHead -ne $Sha) {
-    return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = $glmRunDir; message = 'PR head moved before GLM-5.3 review completed' }
+    return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = $glmRunDir; message = 'PR head moved before GLM-5.4 review completed' }
   }
   $glmStatus = [string](Get-JsonProp $glmData 'status')
   if ($glmStatus -ne 'ok') {
     $msg = [string](Get-JsonProp $glmData 'message')
-    if ([string]::IsNullOrWhiteSpace($msg)) { $msg = 'GLM-5.3 review unavailable' }
+    if ([string]::IsNullOrWhiteSpace($msg)) { $msg = 'GLM-5.4 review unavailable' }
     return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = $glmRunDir; message = $msg }
   }
   $glmVerdict = [string](Get-JsonProp $glmData 'verdict')
@@ -1361,12 +1361,12 @@ try {
               $verdictOut = 'fail'
               $exitCode = 1
               foreach ($item in $glmBlocking) {
-                if ($item) { $null = $failuresOut.Add('GLM-5.3: ' + $item) }
+                if ($item) { $null = $failuresOut.Add('GLM-5.4: ' + $item) }
               }
             }
             Write-Log ('glm second review ok: verdict=' + $glmResult.verdict + ' blocking=' + $glmBlocking.Count)
           } else {
-            $glmMsg = if ($glmResult -and $glmResult.message) { [string]$glmResult.message } else { 'GLM-5.3 review unavailable' }
+            $glmMsg = if ($glmResult -and $glmResult.message) { [string]$glmResult.message } else { 'GLM-5.4 review unavailable' }
             $glmRunDir = if ($glmResult -and $glmResult.runDir) { [string]$glmResult.runDir } else { '' }
             $glmOut = [ordered]@{
               status = 'unavailable'
@@ -1374,7 +1374,7 @@ try {
               blocking = 0
               runDir = $glmRunDir
             }
-            $note = 'GLM-5.3 review unavailable: ' + $glmMsg
+            $note = 'GLM-5.4 review unavailable: ' + $glmMsg
             $null = $notesOut.Add($note)
             Write-Log $note
           }

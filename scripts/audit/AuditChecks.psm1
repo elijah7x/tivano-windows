@@ -1,6 +1,6 @@
 # Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-21.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Shared configuration, GitHub App token, GitHub REST API, and ZCode GLM-5.3 model helpers for Nyx PR and post-merge audits.
+# Shared configuration, GitHub App token, GitHub REST API, and ZCode GLM-5.4 model helpers for Nyx PR and post-merge audits.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
