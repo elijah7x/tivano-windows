@@ -7,26 +7,15 @@
 // like the frozen editor, Save stays disabled while any row lacks a
 // command.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ChatThread, Project, ProjectScript } from "../../shared/types";
 import { callApi } from "../client";
 import { useT } from "../locale";
-
-interface Draft {
-  id?: string;
-  name: string;
-  command: string;
-  icon: string;
-  runOnWorktreeCreate: boolean;
-}
-
-const toDraft = (s: ProjectScript): Draft => ({
-  id: s.id,
-  name: s.name,
-  command: s.command,
-  icon: s.icon,
-  runOnWorktreeCreate: s.runOnWorktreeCreate,
-});
+import {
+  makeScriptDraftKeyGen,
+  toScriptDraft,
+  type ScriptDraft as Draft,
+} from "../scriptDrafts";
 
 const incomplete = (s: Draft): boolean => s.command.trim().length === 0;
 
@@ -41,9 +30,10 @@ export function ScriptsDialog(props: {
   const { thread, project } = props;
   const scripts = project.scripts ?? [];
   const [editing, setEditing] = useState(scripts.length === 0);
-  const [drafts, setDrafts] = useState<Draft[]>(scripts.map(toDraft));
+  const [drafts, setDrafts] = useState<Draft[]>(scripts.map(toScriptDraft));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const keyGen = useRef(makeScriptDraftKeyGen());
 
   const run = (script: ProjectScript) => {
     setBusy(true);
@@ -130,7 +120,7 @@ export function ScriptsDialog(props: {
         ) : (
           <div className="scripts-list">
             {drafts.map((d, i) => (
-              <div key={d.id ?? `new-${i}`} className="script-card">
+              <div key={d.key} className="script-card">
                 <div className="script-card-head">
                   <input
                     className="wt-input"
@@ -175,7 +165,13 @@ export function ScriptsDialog(props: {
               onClick={() =>
                 setDrafts((cur) => [
                   ...cur,
-                  { name: t("New script"), command: "", icon: "play", runOnWorktreeCreate: false },
+                  {
+                    key: keyGen.current(),
+                    name: t("New script"),
+                    command: "",
+                    icon: "play",
+                    runOnWorktreeCreate: false,
+                  },
                 ])
               }
             >
@@ -194,7 +190,7 @@ export function ScriptsDialog(props: {
               className="primary"
               disabled={busy}
               onClick={() => {
-                setDrafts(scripts.map(toDraft));
+                setDrafts(scripts.map(toScriptDraft));
                 setEditing(true);
               }}
             >
