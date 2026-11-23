@@ -669,7 +669,19 @@ function Focus-DevinChatInput {
   }
   [DevLoopWindows]::ShowWindow($Window, 3) | Out-Null
   Start-Sleep -Milliseconds 800
-  if (-not (Test-DevinForeground $Window)) { return $false }
+  # A briefly flashing console from another scheduled task can take the foreground; log who holds it and retry the click focus.
+  for ($focusTry = 1; -not (Test-DevinForeground $Window); $focusTry++) {
+    $holder = [DevLoopWindows]::GetForegroundInfo()
+    if ($null -ne $holder) {
+      Write-Log ('chat input focus lost (try ' + $focusTry + '/3) to class=' + [string]$holder.ClassName + ' process=' + [string]$holder.ProcessName)
+    } else {
+      Write-Log ('chat input focus lost (try ' + $focusTry + '/3) to an unknown window')
+    }
+    if ($focusTry -ge 3) { return $false }
+    Start-Sleep -Seconds 3
+    if (-not (Set-DevinForeground $Window)) { continue }
+    Start-Sleep -Milliseconds 500
+  }
   try {
     [DevLoopWindows]::SetTopmost($Window, $true) | Out-Null
     Start-Sleep -Milliseconds 300
