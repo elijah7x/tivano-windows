@@ -44,6 +44,7 @@ module.exports = {
     // missing file is a build failure, never a silently absent check.
     "dist/job-helper-manifest.json",
     "package.json",
+    "CHANGELOG.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "TRADEMARK.md",

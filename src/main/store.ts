@@ -334,6 +334,7 @@ export class Store {
   /** True only after open() fully succeeded — the only state that may write. */
   private opened = false;
   private closed = false;
+  private existedOnOpen = false;
   recoveredFrom?: string;
   /** F30: the last open()'s segment hydration report — missing/corrupt
    *  turn files are surfaced honestly, never silently rewritten. */
@@ -361,6 +362,7 @@ export class Store {
       if (!isPathInsideRoot(this.root, STORE_FILENAME))
         throw new Error(`refusing to read store through a link: ${this.file}`);
       if (!existsSync(this.file)) {
+        this.existedOnOpen = false;
         this.data = emptyStore();
         this.opened = true;
         return { data: this.data };
@@ -416,6 +418,7 @@ export class Store {
       }
       this.data = head as StoreFile;
       this.segmentReport = segments;
+      this.existedOnOpen = true;
       this.opened = true;
       return {
         data: this.data,
@@ -466,6 +469,11 @@ export class Store {
   /** Whether this instance currently owns the file (lock held + opened). */
   get ownsWrites(): boolean {
     return this.opened && !this.closed && this.lock.isHeld();
+  }
+
+  /** Whether an existing valid store file was loaded on open() (false on fresh install or corrupt recovery). */
+  get hadStoreFileOnOpen(): boolean {
+    return this.existedOnOpen;
   }
 
   /** Mutate in memory and schedule an atomic flush — no-ops once closed. */

@@ -27,7 +27,7 @@ import {
   powerSaveBlocker,
   shell,
 } from "electron";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
@@ -452,7 +452,14 @@ bootstrap = app.whenReady().then(async () => {
   // helper attestation (started at module load) — everything downstream
   // (store recovery, grants restore, IPC) only exists after this.
   adapter = await makeProvider();
-  engine = new Engine(store, adapter, store.root, app.getVersion(), paths);
+  const changelogMarkdown = (() => {
+    try {
+      return readFileSync(join(app.getAppPath(), "CHANGELOG.md"), "utf8");
+    } catch {
+      return undefined;
+    }
+  })();
+  engine = new Engine(store, adapter, store.root, app.getVersion(), paths, changelogMarkdown);
   // F20 test hook: shrink the post-reset margin so e2e/vitest can watch a
   // real auto-resume inside seconds — the frozen 5s floor never moves.
   if (process.env.TIVANO_LIMIT_MARGIN_MS)

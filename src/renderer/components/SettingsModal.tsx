@@ -29,6 +29,7 @@ import { ForgeSection } from "./ForgeSection";
 import { WallpaperSection } from "./WallpaperSection";
 import { ModelListSettings } from "./ModelListSettings";
 import { ArchiveSection } from "./ArchiveSection";
+import { VersionSection } from "./WhatsNewViews";
 import {
   RUNTIME_MODES,
   RUNTIME_MODE_TITLE,
@@ -943,6 +944,12 @@ export function SettingsModal(props: {
           threads={props.threads}
           projects={props.projects}
           settings={settings}
+        />
+
+        <VersionSection
+          appVersion={info.appVersion}
+          settings={settings}
+          whatsNew={info.whatsNew}
         />
 
         <h3>{t("About")}</h3>
