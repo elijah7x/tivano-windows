@@ -5963,6 +5963,13 @@ export class Engine {
       canonical = probe.root;
     }
     const info = head.hydraHead!;
+    // A route matching an existing project only by letter case takes
+    // the project's stored spelling everywhere — grant, checkout and
+    // reports must not split over `c:` vs `C:`.
+    const matchedProject = this.projectForDirectory(canonical);
+    if (matchedProject?.directory !== undefined) {
+      canonical = matchedProject.directory;
+    }
     info.targetCheckout = canonical;
     info.isNonGitCheckout = probe.state === "none";
     // Frozen applyHydraRoute + the slice's sidebar rule: an exact-dir

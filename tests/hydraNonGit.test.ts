@@ -342,6 +342,33 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(report.content).toContain(`Worked in ${realpathSync(repo)}`);
   });
 
+  it("routing to a sidebar project's other letter case reuses that project", async () => {
+    // Audit follow-up #124: realpathSync keeps the typed drive-letter
+    // case, so a lower-cased spelling must still bind the same project
+    // and grant — not re-register a mismatched one.
+    const { engine, projectId } = rig();
+    const dir = engine
+      .snapshot()
+      .projects.find((p) => p.id === projectId)!.directory!;
+    const lowered = dir.replace(/^([A-Za-z]):/, (m) => m.toLowerCase());
+    expect(lowered).not.toBe(dir);
+    const lead = engine.createThread(projectId, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]${lowered}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe("completed");
+    expect(head.projectId).toBe(projectId);
+    const norm = (p: string) => p.replace(/[\\/]+$/, "").toLowerCase();
+    const matches = engine
+      .snapshot()
+      .projects.filter(
+        (p) => p.directory !== undefined && norm(p.directory) === norm(dir),
+      );
+    expect(matches.length).toBe(1);
+    expect(engine.threadDirectory(head.id)).toBe(dir);
+  }, 20_000);
+
   it("a routed folder whose repo top is protected is still refused", async () => {
     const { engine, dataRoot } = rig();
     // The named folder sits inside the exempt task-workspaces tree, but

@@ -271,11 +271,14 @@ export class ProjectRuntimePaths {
    *  grant kinds count: selecting a dir another project owns re-opens
    *  THAT project instead of minting a second binding. Grants written
    *  before the NT-prefix strip may hold the resolved form — both
-   *  sides compare stripped. */
+   *  sides compare stripped; Windows spellings compare case-folded so
+   *  a letter-case difference (a lower-cased drive letter, which the
+   *  runtime realpath keeps) still binds to the same project. */
   findProjectByDirectory(canonicalDir: string): string | undefined {
-    const want = stripNsPrefix(canonicalDir);
+    const fold = (p: string) => stripNsPrefix(p).toLowerCase();
+    const want = fold(canonicalDir);
     for (const [id, g] of this.grants)
-      if (stripNsPrefix(g.directory) === want) return id;
+      if (fold(g.directory) === want) return id;
     return undefined;
   }
 
