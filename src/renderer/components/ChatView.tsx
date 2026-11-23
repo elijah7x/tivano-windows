@@ -23,6 +23,7 @@ import { WorktreeDialog } from "./WorktreeDialog";
 import { BranchMenu } from "./BranchMenu";
 import { HydraMark } from "./HydraMark";
 import { HydraPanel } from "./HydraPanel";
+import { HelperPanel } from "./HelperPanel";
 import { OpenInMenu } from "./OpenInMenu";
 import { ScriptsDialog } from "./ScriptsDialog";
 import { Composer } from "./Composer";
@@ -37,6 +38,7 @@ import { MessagePopover } from "./MessagePopover";
 import { NewThreadPrompt } from "./NewThreadPrompt";
 import type { MessagePopoverState } from "./MessagePopover";
 import { peelQuotes, quoteExcerpt } from "../../shared/replyQuote";
+import { hydraPanelLayout } from "../../shared/hydra";
 import {
   groupMessages,
   partitionGroup,
@@ -132,8 +134,11 @@ function statusLabel(t: (k: string) => string, m: Message): string | null {
 
 /** F22: the delegation card rendered in place of a fenced hydra block
  *  (frozen HydraDelegationBlock) — injected so markdown stays pure. */
-const delegationCard = (body: string, sent: boolean): React.ReactNode =>
-  createElement(HydraDelegationCard, { body, sent });
+const delegationCard = (body: string, sent: boolean): React.ReactNode =>  createElement(HydraDelegationCard, { body, sent });
+
+/** P2-40 "One per sub-agent": auto-popped panels spread over the
+ *  pane's corners (frozen corner fill order). */
+const POP_CORNERS = ["tr", "tl", "br", "bl"] as const;
 
 export function ChatView(props: {
   thread: ChatThread | null;
@@ -275,7 +280,10 @@ export function ChatView(props: {
   // auto-shows it (frozen AppModel+Hydra spawn parity).
   const heads = useMemo(
     () =>
-      (props.threads ?? []).filter((x) => x.hydraHead?.leadId === threadId),
+      (props.threads ?? [])
+        .filter((x) => x.hydraHead?.leadId === threadId)
+        .slice()
+        .sort((a, b) => a.hydraHead!.spawnedAt - b.hydraHead!.spawnedAt),
     [props.threads, threadId],
   );
   // Frozen ThreadRuntime init: isHydraPanelHidden = !hydraAutoOpensPanels
@@ -317,6 +325,7 @@ export function ChatView(props: {
   useEffect(() => {
     setHydraPanelHidden(props.settings?.hydraAutoOpensPanels === false);
     headCount.current = 0;
+    setPopHeld(new Set());
     veilRef.current.clear();
     mdCoordRef.current.forEach((c) => c.dispose());
     mdCoordRef.current.clear();
@@ -330,11 +339,21 @@ export function ChatView(props: {
   }, [props.settings?.hydraAutoOpensPanels]);
   // P2-40: panels open on their own only under the Single/Independent
   // layouts (frozen hydraAutoOpensPanels); Off shows the working pill.
+  // Only a new head count may auto-open — the layout flip alone never
+  // re-opens a dismissed panel (frozen ThreadRuntime parity).
   useEffect(() => {
     if (heads.length > headCount.current && props.settings?.hydraAutoOpensPanels !== false)
       setHydraPanelHidden(false);
     headCount.current = heads.length;
-  }, [heads.length, props.settings?.hydraAutoOpensPanels]);
+  }, [heads.length]);
+
+  // P2-40 "One per sub-agent" (frozen hydraAutoPopsHeads +
+  // hydraAutoPopHeld): under Independent with the panels allowed to
+  // open, every head after the first pops its own floating panel.
+  // Dismissing one holds it closed until the lead is re-opened; the
+  // head stays reachable in the team panel.
+  const [popHeld, setPopHeld] = useState<ReadonlySet<string>>(new Set());
+  const popsOn = hydraPanelLayout(props.settings ?? {}) === "independent";
 
   if (!thread) {
     return (
@@ -484,6 +503,27 @@ export function ChatView(props: {
           onDismiss={() => setHydraPanelHidden(true)}
         />
       )}
+      {thread &&
+        !thread.hydraHead &&
+        popsOn &&
+        heads.length > 1 &&
+        heads
+          .slice(1)
+          .filter((h) => !h.isArchived && !popHeld.has(h.id))
+          .map((h, i) => (
+            <HelperPanel
+              key={h.id}
+              thread={h}
+              parentTitle={thread.title}
+              readOnly={!!props.readOnly}
+              settings={props.settings}
+              initialCorner={POP_CORNERS[i % POP_CORNERS.length]}
+              cascadeIndex={Math.floor(i / POP_CORNERS.length)}
+              overlay
+              onDock={() => {}}
+              onClose={() => setPopHeld((s) => new Set(s).add(h.id))}
+            />
+          ))}
       {props.readOnly && (
         <div className="banner error" role="alert">
           {t(

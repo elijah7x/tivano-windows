@@ -101,7 +101,7 @@ describe("F25 helper chat (frozen spawnSubagent/closeSubagent)", () => {
     expect(users[1]!.content).toBe("second brief");
   });
 
-  it("close interrupts a running turn and drops the helper to the sidebar", async () => {
+  it("close folds a running helper to the sidebar without cancelling its turn", async () => {
     const { engine } = make();
     const parent = engine.createThread(null, "parent");
     const helper = engine.spawnHelper(
@@ -110,14 +110,17 @@ describe("F25 helper chat (frozen spawnSubagent/closeSubagent)", () => {
       "merge it [mock:approval]",
     );
     await waitFor(() => turn(engine, helper.id)?.status === "waiting-approval");
+    const approvalId = turn(engine, helper.id)!.approval!.id;
 
     engine.closeHelper(helper.id);
     const h = thread(engine, helper.id)!;
     expect(h.isInPanel).toBe(false);
-    // Frozen: the running turn is interrupted — not completed.
-    await waitFor(() =>
-      ["interrupted", "stopped", "cancelled"].includes(turn(engine, helper.id)?.status ?? ""),
-    );
+    // Frozen closeSubagent: folding the panel never stops the turn —
+    // it keeps waiting on the approval it was already blocked on.
+    expect(turn(engine, helper.id)?.status).toBe("waiting-approval");
+    // Approving the still-live turn lets it run to done.
+    engine.resolveApproval(helper.id, approvalId, "once");
+    await waitFor(() => turn(engine, helper.id)?.status === "done");
 
     // The binding survives closing — a later merge hands its brief to
     // the SAME helper (now sidebar-resident, not reopened).
@@ -125,6 +128,20 @@ describe("F25 helper chat (frozen spawnSubagent/closeSubagent)", () => {
     expect(again.id).toBe(helper.id);
     expect(thread(engine, helper.id)!.isInPanel).toBe(false);
     await waitFor(() => turn(engine, helper.id)?.status === "done");
+  });
+
+  it("P2-40 Off layout: spawn leaves the helper in the sidebar, still working", async () => {
+    const { engine } = make();
+    engine.setSettings({ hydraAutoOpensPanels: false });
+    const parent = engine.createThread(null, "parent");
+    const helper = engine.spawnHelper(parent.id, GITHUB_BRIEF.title, GITHUB_BRIEF.prompt);
+
+    const h = thread(engine, helper.id)!;
+    // Frozen AppModel.swift:1999 — isInPanel follows the setting; Off
+    // keeps the helper reachable in the sidebar, never panel-bound.
+    expect(h.isInPanel).toBe(false);
+    await waitFor(() => turn(engine, helper.id)?.status === "done");
+    expect(thread(engine, helper.id)!.messages[0]!.content).toBe(GITHUB_BRIEF.prompt);
   });
 
   it("spawn rejects an empty brief; helper of an unknown parent fails", () => {

@@ -6674,7 +6674,10 @@ export class Engine {
         ? { interactionMode: parent.interactionMode }
         : {}),
       parentThreadId: parentId,
-      isInPanel: true,
+      // P2-40: helpers are sub-agents too — the Off layout keeps them
+      // out of floating panels the same as Hydra heads (frozen
+      // AppModel.swift:1999 sets isInPanel from the setting).
+      isInPanel: this.store.state.settings.hydraAutoOpensPanels !== false,
     };
     this.store.update((d) => {
       d.threads.push(thread);
@@ -6685,16 +6688,14 @@ export class Engine {
   }
 
   /**
-   * F25 frozen `closeSubagent`: the panel closes — a running turn is
-   * interrupted (frozen releases the session once it finishes; ours ends
-   * the turn the same way through cancelTurn) and the helper drops into
-   * the sidebar under its parent as a smaller row.
+   * F25 frozen `closeSubagent`: the panel only folds — a working helper
+   * keeps its turn running (frozen AppModel.swift:2012-2021) and drops
+   * into the sidebar under its parent as a smaller row. Closing never
+   * stops work.
    */
   closeHelper(threadId: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
-    if (thread.turn?.status === "running" || thread.turn?.status === "waiting-approval")
-      this.cancelTurn(threadId);
     if (thread.isInPanel !== true) return;
     thread.isInPanel = false;
     thread.updatedAt = Date.now();

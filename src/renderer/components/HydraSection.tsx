@@ -676,31 +676,14 @@ function PairEditor(props: {
         </label>
 
         <span className="hydra-editor-side">{t("Heads")}</span>
-        <label className="wt-field">
-          <span>{t("Provider")}</span>
-          <select
-            className="model-select"
-            aria-label={t("Heads provider")}
-            value={draft.workerProvider ?? ""}
-            onChange={(e) =>
-              upd((d) => {
-                const v = e.target.value;
-                if (v === "") delete d.workerProvider;
-                else d.workerProvider = v;
-                delete d.workerModel;
-                delete d.workerEffort;
-              })
-            }
-          >
-            <option value="">{t("Same as the lead")}</option>
-            {headsOptions.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="wt-field">
+        {/* P2-40: frozen sub-agent pickers show just model + effort —
+         *  the provider rides the model field's hover. A saved
+         *  workerProvider keeps its draft value; the picker stops
+         *  offering the swap (this build binds one provider anyway). */}
+        <label
+          className="wt-field"
+          title={`${t("Provider")}: ${providerLabel(providers, headsProvider)}`}
+        >
           <span>{t("Model")}</span>
           {modelSelect(
             draft.workerModel,
@@ -1293,11 +1276,11 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
                 ["off", "Off"],
               ]}
               value={hydraPanelLayout(settings)}
-              onPick={(v) => {
-                const patch = hydraPanelLayoutPatch(v as HydraPanelLayout);
-                toggle("hydraAutoOpensPanels", patch.hydraAutoOpensPanels);
-                toggle("hydraAutoPopsHeads", patch.hydraAutoPopsHeads);
-              }}
+              onPick={(v) =>
+                // One atomic write: two toggles would briefly persist a
+                // mixed layout (Off→Independent reads as plain Single).
+                tryCall("settings:set", hydraPanelLayoutPatch(v as HydraPanelLayout))
+              }
             />
           </span>
         </div>
