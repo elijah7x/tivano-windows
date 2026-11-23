@@ -110,14 +110,14 @@ function resolveLocalPath(
 }
 
 /** `\\host\share` (also `//host/x` after resolve, and `file://host/x`
- *  via fileUrlPath). `\\?\C:\x` and `\\.\…` are the local device
- *  namespace, not the network — they keep the regular stat path. */
+ *  via fileUrlPath). Only drive-form device spellings (`\\?\C:\x`,
+ *  `\\.\C:\x`) are the local namespace — every other `\\` path,
+ *  including the UNC spellings `\\?\UNC\host\…` and
+ *  `\\?\GLOBALROOT\Device\Mup\host\…`, is network-shaped and keeps the
+ *  no-stat rule: one click must not block main on SMB or leak NTLM. */
 function isUncPath(path: string): boolean {
-  return (
-    path.startsWith("\\\\") &&
-    !path.startsWith("\\\\?\\") &&
-    !path.startsWith("\\\\.\\")
-  );
+  if (!path.startsWith("\\\\")) return false;
+  return !/^\\\\[.?]\\[a-zA-Z]:[\\/]/.test(path);
 }
 
 function expandTilde(path: string): string {

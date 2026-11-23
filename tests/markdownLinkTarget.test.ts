@@ -5,7 +5,7 @@
 // file: URLs, the pseudo-scheme (Foo.ts:12) file-first rule, and the
 // :line[:column] strip that only lands on an existing file.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { homedir } from "node:os";
 import { win32 } from "node:path";
 import {
@@ -135,6 +135,29 @@ describe("resolveMarkdownLinkTarget (P2-31, frozen MarkdownLinkTarget)", () => {
     expect(
       resolveMarkdownLinkTarget("D:\\docs\\gone.txt", BASE, statWith([])),
     ).toEqual({ kind: "missing" });
+  });
+
+  it("device-namespace UNC spellings skip stat; drive forms still stat", () => {
+    const stat = vi.fn((_p: string): MarkdownLinkStat => "none");
+    // \\?\UNC\… and \\?\GLOBALROOT\… spell SMB paths in the device
+    // namespace — a synchronous stat there is the same block/NTLM leak
+    // the unc kind exists to avoid, so they must reach it unstatted.
+    for (const p of [
+      "\\\\?\\UNC\\nas\\share\\x.txt",
+      "\\\\?\\GLOBALROOT\\Device\\Mup\\nas\\share\\x.txt",
+    ]) {
+      expect(resolveMarkdownLinkTarget(p, BASE, stat)).toEqual({
+        kind: "unc",
+        path: win32.resolve(p),
+      });
+    }
+    expect(stat).not.toHaveBeenCalled();
+    // Drive-form device spellings stay local: they take the stat path
+    // under their verbatim \\?\ name.
+    const device = "\\\\?\\C:\\work\\proj\\a.txt";
+    expect(
+      resolveMarkdownLinkTarget(device, BASE, statWith([device])),
+    ).toEqual({ kind: "file", path: device });
   });
 
   it("expands ~ and refuses a relative path with no base", () => {

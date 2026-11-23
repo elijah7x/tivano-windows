@@ -450,7 +450,15 @@ export function registerIpc(opts: IpcOptions): () => void {
       if (failed !== "") shell.beep();
       return;
     }
-    if (!isHttpUrl(target.url)) throw new ValidationError("only http/https links may open externally");
+    // A resolved target that is neither a local path nor an http(s) URL
+    // (a missing bare name like `Foo.ts:12` lands here as kind "web")
+    // gets the same quiet beep as a missing file — frozen reports no
+    // error dialog, and a thrown ValidationError would raise the global
+    // banner instead.
+    if (!isHttpUrl(target.url)) {
+      shell.beep();
+      return;
+    }
     // Test seams (main-owned env, never renderer input): the unified
     // external-open recorder first, then the legacy URL line log — E2E
     // asserts the requested URL either way without a real browser.
