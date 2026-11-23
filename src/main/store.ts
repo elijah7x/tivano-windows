@@ -527,8 +527,10 @@ export class Store {
     if (this.releasedSegments.has(id) || this.protectedSegments.has(id)) return false;
     const t = this.data.threads.find((x) => x.id === id);
     if (!t || !/^[A-Za-z0-9_-]{1,120}$/.test(t.id)) return false;
+    const rel = join(TURNS_DIRNAME, `${t.id}.json`);
+    if (!isPathInsideRoot(this.root, rel)) return false;
     const turnsDir = join(this.root, TURNS_DIRNAME);
-    const segPath = join(turnsDir, `${t.id}.json`);
+    const segPath = join(this.root, rel);
     const body = JSON.stringify(
       {
         schemaVersion: SCHEMA_VERSION,

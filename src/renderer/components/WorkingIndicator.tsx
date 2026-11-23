@@ -70,7 +70,7 @@ export function workGroupLabel(msgs: Message[], t: (k: string, ...v: string[]) =
  * or `HydraStaveBar`. Rotates only at the 7-second word boundary and pauses
  * while inactive, minimized or out of view.
  */
-function WorkingTitleLeaf({
+export function WorkingTitleLeaf({
   threadId,
   startedAt,
   quietMinutes,
@@ -124,7 +124,7 @@ function WorkingTitleLeaf({
  * duration text. Pauses when inactive, minimized or out of view, and
  * catches up immediately upon return.
  */
-function WorkingElapsedTime({
+export function WorkingElapsedTime({
   startedAt,
   paused,
 }: {

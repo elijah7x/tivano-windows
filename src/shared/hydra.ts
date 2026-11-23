@@ -427,9 +427,12 @@ export function canSkipHydraMergeRecovery(
     isArchived?: boolean | undefined;
     hydraHead?: {
       leadId: string;
+      status?: HydraHeadStatus | undefined;
+      landingPending?: boolean | undefined;
       mergedAt?: number | undefined;
       landing?: {
         files: ReadonlyArray<unknown>;
+        conflicts?: ReadonlyArray<unknown> | undefined;
         patchPath?: string | undefined;
         error?: string | undefined;
       } | undefined;
@@ -449,8 +452,23 @@ export function canSkipHydraMergeRecovery(
   for (const h of heads) {
     if (h.isArchived === true || h.hydraHead?.leadId !== lead.id) continue;
     const info = h.hydraHead;
-    if (info.mergedAt === undefined && info.landing && hydraLandingLanded(info.landing)) {
+    if (info.status !== undefined && info.status !== "completed") {
       return false;
+    }
+    if (info.landingPending === true) {
+      return false;
+    }
+    if (info.landing) {
+      if (
+        info.landing.patchPath !== undefined ||
+        info.landing.error !== undefined ||
+        (info.landing.conflicts?.length ?? 0) > 0
+      ) {
+        return false;
+      }
+      if (info.mergedAt === undefined && hydraLandingLanded(info.landing)) {
+        return false;
+      }
     }
   }
   return true;

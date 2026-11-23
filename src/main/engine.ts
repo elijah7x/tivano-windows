@@ -810,6 +810,7 @@ export class Engine {
       ) {
         return true;
       }
+      if (this.hydraReviewRunning.has(t.id)) return true;
       if (runningLeadIds.has(t.id)) return true;
       if (this.pendingChunks.has(t.id)) return true;
       try {
@@ -1694,7 +1695,10 @@ export class Engine {
       );
       info.summary = undefined;
       info.landing = undefined;
+      info.mergedAt = undefined;
       info.finishedAt = undefined;
+      const lead = this.store.state.threads.find((t) => t.id === info.leadId);
+      if (lead) this.recordHydraJobOpen(lead, info.batchId);
       // A kept copy stays bound — a stopped head's half-done edits are
       // where it carries on. Its base tree stays too, so the next
       // landing still diffs everything that never left the copy.
@@ -5224,7 +5228,6 @@ export class Engine {
         continueThreadId: target.id,
       });
       this.hydraWaiting.set(lead.id, queue);
-      this.recordHydraJobOpen(lead, batchId);
       this.spawnWaitingHeads(lead.id);
       return;
     }

@@ -16,14 +16,18 @@ import { MockProvider } from "../src/main/mockProvider";
 import type { ProviderAdapter, ProviderCallbacks, TurnContext } from "../src/main/provider";
 import type { AppEvent } from "../src/shared/ipc";
 import { canSkipHydraMergeRecovery } from "../src/shared/hydra";
-import { formatElapsed, WORKING_WORDS, workingWordIndex } from "../src/shared/workingWords";
 import { ClientStore } from "../src/renderer/client";
 import { appActivity, setModalCovered, setWindowActive } from "../src/renderer/appActivity";
 import { clearMarkdownCache, prewarmMarkdown, renderMarkdown } from "../src/renderer/markdown";
-import { WorkingIndicator, WorkingLabel } from "../src/renderer/components/WorkingIndicator";
+import {
+  WorkingElapsedTime,
+  WorkingIndicator,
+  WorkingLabel,
+  WorkingTitleLeaf,
+} from "../src/renderer/components/WorkingIndicator";
 import { MiniSpinner } from "../src/renderer/components/SpinnerCells";
 import { Skylight } from "../src/renderer/components/Skylight";
-import type { ChatThread, Snapshot } from "../src/shared/types";
+import type { ChatThread, Message, Snapshot } from "../src/shared/types";
 
 const dirs: string[] = [];
 function freshRoot(): string {
@@ -269,6 +273,120 @@ describe("P2-63 Hydra recovery check skips chats whose work is all merged", () =
         ],
       ),
     ).toBe(false);
+
+    // Running/failed head, landingPending, patchPath, error, or conflicts -> cannot skip.
+    expect(
+      canSkipHydraMergeRecovery(
+        {
+          id: leadId,
+          hydraJobs: [{ id: "j1", isOpen: false, ending: "completed", merge: "merged" }],
+        },
+        [{ hydraHead: { leadId, status: "running", mergedAt: 1234 } }],
+      ),
+    ).toBe(false);
+    expect(
+      canSkipHydraMergeRecovery(
+        {
+          id: leadId,
+          hydraJobs: [{ id: "j1", isOpen: false, ending: "completed", merge: "merged" }],
+        },
+        [{ hydraHead: { leadId, status: "completed", landingPending: true, mergedAt: 1234 } }],
+      ),
+    ).toBe(false);
+    expect(
+      canSkipHydraMergeRecovery(
+        {
+          id: leadId,
+          hydraJobs: [{ id: "j1", isOpen: false, ending: "completed", merge: "merged" }],
+        },
+        [{ hydraHead: { leadId, status: "completed", landing: { files: [], patchPath: "/tmp/p.patch" } } }],
+      ),
+    ).toBe(false);
+    expect(
+      canSkipHydraMergeRecovery(
+        {
+          id: leadId,
+          hydraJobs: [{ id: "j1", isOpen: false, ending: "completed", merge: "merged" }],
+        },
+        [{ hydraHead: { leadId, status: "completed", landing: { files: [], error: "merge failed" } } }],
+      ),
+    ).toBe(false);
+    expect(
+      canSkipHydraMergeRecovery(
+        {
+          id: leadId,
+          hydraJobs: [{ id: "j1", isOpen: false, ending: "completed", merge: "merged" }],
+        },
+        [{ hydraHead: { leadId, status: "completed", landing: { files: [{ path: "a.ts" }], conflicts: ["a.ts"] } } }],
+      ),
+    ).toBe(false);
+  });
+
+  it("steering/continuing a merged Hydra head clears mergedAt and settles steer-<turnId> without orphan jobs", () => {
+    const root = freshRoot();
+    const store = new Store(root);
+    store.open();
+    const callbacks = new Map<string, ProviderCallbacks>();
+    const provider: ProviderAdapter = {
+      descriptor: { id: "mock", label: "Mock", mode: "mock", synthetic: true },
+      start(ctx: TurnContext, cb: ProviderCallbacks) {
+        callbacks.set(ctx.threadId, cb);
+        return { cancel: () => {}, resume: () => {} };
+      },
+      async dispose() {
+        return { children: [], orphanedPending: 0 };
+      },
+    };
+    const engine = new Engine(store, provider, root, "0.0.0-test");
+    const lead = engine.createThread(null, "steer-lead");
+    lead.hydraEnabled = true;
+
+    // Round 1: lead spawns a head, head completes and lands cleanly.
+    engine.sendTurn(lead.id, "initial task");
+    const leadCb1 = callbacks.get(lead.id)!;
+    leadCb1.onChunk(
+      1,
+      'Delegating:\n```hydra\n{"task":"part 1","prompt":"implement part 1"}\n```\n',
+    );
+    leadCb1.onDone();
+
+    const head = engine.snapshot().threads.find((t) => t.hydraHead?.leadId === lead.id)!;
+    expect(head).toBeDefined();
+    const headCb1 = callbacks.get(head.id)!;
+    headCb1.onChunk(1, "Part 1 done.\nDeviations: none\nUnfinished: none\nUncertain: none");
+    headCb1.onDone();
+
+    // Simulate clean auto-merge stamp on the finished head before the lead continues it.
+    store.update(() => {
+      head.worktreeDir = root;
+      head.hydraHead!.mergedAt = 5000;
+      head.hydraHead!.landing = { files: [{ path: "a.ts", additions: 1, deletions: 0 }], conflicts: [] };
+    });
+    expect(engine.canSkipHydraRecovery(lead.id)).toBe(true);
+
+    // Round 2: lead's report turn sends the head back via d.continue (same job generation).
+    const leadCb2 = callbacks.get(lead.id)!;
+    leadCb2.onChunk(
+      1,
+      `Reworking:\n\`\`\`hydra\n{"continue":${JSON.stringify(head.hydraHead!.name)},"prompt":"finish part 2"}\n\`\`\`\n`,
+    );
+    leadCb2.onDone();
+
+    expect(head.hydraHead?.mergedAt).toBeUndefined();
+    expect(head.hydraHead?.batchId).toMatch(/^steer-/);
+    expect(lead.hydraJobs?.some((j) => j.id === head.hydraHead?.batchId && j.isOpen)).toBe(true);
+    expect(lead.hydraJobs?.filter((j) => j.isOpen)).toHaveLength(1);
+    expect(engine.canSkipHydraRecovery(lead.id)).toBe(false);
+
+    // Completing the steered head flushes its report and settles the steer job.
+    const headCb2 = callbacks.get(head.id)!;
+    headCb2.onChunk(1, "Steered result.\nDeviations: none\nUnfinished: none\nUncertain: none");
+    headCb2.onDone();
+    expect(lead.hydraJobs?.every((j) => !j.isOpen && j.ending === "completed")).toBe(true);
+    expect(engine.canSkipHydraRecovery(lead.id)).toBe(true);
+
+    engine.shutdown();
+    store.close();
   });
 
   it("recoverHydraWork skips all-merged leads without reloading their released history", () => {
@@ -611,6 +729,7 @@ describe("P2-63 archive switch, activity pause, and working-indicator isolation"
   });
 
   it("records reproducible P2-63 before/after synthetic measurements", () => {
+    vi.useFakeTimers();
     const msgs = Array.from({ length: 12 }, (_, i) =>
       `# Section ${i}\n\nSummary with **bold**, \`code_${i}\`, and [link](https://example.com/${i}).\n\n\`\`\`ts\nexport const x${i} = ${i};\n\`\`\``
     );
@@ -631,37 +750,185 @@ describe("P2-63 archive switch, activity pause, and working-indicator isolation"
     const warmSwitchMs = (performance.now() - warmStart) / 10;
     expect(warmSwitchMs).toBeLessThan(coldSwitchMs);
 
-    const fakeMsgs = Array.from({ length: 200 }, (_, i) => ({
+    // Measure actual shipped React components across 600 1s ticks (10 minutes):
+    // Before: full WorkingIndicator re-evaluated every 1s tick across 200 messages.
+    // After: 1 initial WorkingIndicator + 600 isolated WorkingElapsedTime ticks + 85 7s WorkingTitleLeaf ticks.
+    const turnId = "t-live";
+    const startedAt = Date.now() - 5000;
+    const threadMsgs: Message[] = Array.from({ length: 200 }, (_, i) => ({
       id: `m-${i}`,
       role: i % 2 === 0 ? "user" : "assistant",
-      kind: i % 5 === 0 ? "tool" : undefined,
-      turnId: i > 190 ? "t-live" : "t-old",
-      content: `msg ${i}`,
+      turnId: i >= 190 ? turnId : "t-old",
+      content: `step message ${i}`,
       status: "done",
       ts: 1000 + i,
+      ...(i >= 190 && i % 2 === 1
+        ? {
+            kind: "tool" as const,
+            tool: { kind: "read" as const, title: `file_${i}.ts`, state: "completed" as const },
+          }
+        : {}),
     }));
+    const workThread: ChatThread = {
+      id: "thread-bench",
+      projectId: null,
+      title: "bench",
+      createdAt: 1,
+      updatedAt: 1,
+      messages: threadMsgs,
+      turn: {
+        id: turnId,
+        threadId: "thread-bench",
+        status: "running",
+        seq: 0,
+        startedAt,
+        assistantMessageId: "m-199",
+      },
+      sessionGrants: [],
+    };
+    const ticks = 600;
     const tBefore0 = performance.now();
-    let s1 = "";
-    for (let i = 0; i < 5000; i++) {
-      const liveWork = fakeMsgs.filter((m) => m.turnId === "t-live" && m.kind === "tool");
-      s1 = `${WORKING_WORDS[workingWordIndex("thread-1", i)]}:${liveWork.length}:${formatElapsed(i * 1000)}`;
+    let fullHtml = "";
+    for (let i = 0; i < ticks; i++) {
+      fullHtml = renderToStaticMarkup(
+        createElement(WorkingIndicator, {
+          thread: workThread,
+          turn: workThread.turn!,
+          showsCard: true,
+          showReasoning: true,
+        }),
+      );
     }
     const idleBeforeMs = performance.now() - tBefore0;
+
     const tAfter0 = performance.now();
-    let s2 = "";
-    for (let i = 0; i < 5000; i++) {
-      s2 = formatElapsed(i * 1000);
+    const initHtml = renderToStaticMarkup(
+      createElement(WorkingIndicator, {
+        thread: workThread,
+        turn: workThread.turn!,
+        showsCard: true,
+        showReasoning: true,
+      }),
+    );
+    let elapsedHtml = "";
+    for (let i = 0; i < ticks; i++) {
+      elapsedHtml = renderToStaticMarkup(
+        createElement(WorkingElapsedTime, { startedAt, paused: false }),
+      );
+    }
+    let titleHtml = "";
+    const boundaryTicks = Math.floor(ticks / 7);
+    for (let i = 0; i < boundaryTicks; i++) {
+      titleHtml = renderToStaticMarkup(
+        createElement(WorkingTitleLeaf, {
+          threadId: workThread.id,
+          startedAt,
+          quietMinutes: undefined,
+          workSummary: null,
+          paused: false,
+        }),
+      );
     }
     const idleAfterMs = performance.now() - tAfter0;
-    expect(s1.length > 0 && s2.length > 0).toBe(true);
+    expect(fullHtml).toContain("work-card");
+    expect(initHtml).toContain("work-card");
+    expect(elapsedHtml).toContain("work-elapsed");
+    expect(titleHtml).toContain("work-label");
     expect(idleAfterMs).toBeLessThan(idleBeforeMs);
+
+    // Reproducible 200 offscreen chunks -> 0 immediate notifies (1 flushed after 1000ms).
+    const root = freshRoot();
+    const store = new Store(root);
+    store.open();
+    const callbacks = new Map<string, ProviderCallbacks>();
+    const provider: ProviderAdapter = {
+      descriptor: { id: "mock", label: "Mock", mode: "mock", synthetic: true },
+      start(ctx: TurnContext, cb: ProviderCallbacks) {
+        callbacks.set(ctx.threadId, cb);
+        return { cancel: () => {}, resume: () => {} };
+      },
+      async dispose() {
+        return { children: [], orphanedPending: 0 };
+      },
+    };
+    const engine = new Engine(store, provider, root, "0.0.0-test");
+    const active = engine.createThread(null, "active");
+    const offscreen = engine.createThread(null, "offscreen");
+    engine.selectThread(active.id);
+
+    const client = new ClientStore(async () => ({}));
+    let rev = 1;
+    client.hydrate(
+      makeSnap(rev, structuredClone(engine.snapshot().threads), active.id),
+      client.beginHydration(),
+    );
+    let offscreenEngineChunks = 0;
+    let clientNotifies = 0;
+    client.subscribe(() => {
+      clientNotifies += 1;
+    });
+    const unsub = engine.onEvent((e) => {
+      rev += 1;
+      if (e.type === "turn-chunk" && e.threadId === offscreen.id) offscreenEngineChunks += 1;
+      client.onBridgeEvent(structuredClone({ ...e, rev }) as AppEvent);
+    });
+    engine.sendTurn(offscreen.id, "go");
+    clientNotifies = 0;
+    const offCb = callbacks.get(offscreen.id)!;
+    for (let i = 1; i <= 200; i++) offCb.onChunk(i, "x");
+    const immediateChunks = offscreenEngineChunks;
+    const immediateClientNotifies = clientNotifies;
+    expect(immediateChunks).toBe(0);
+    expect(immediateClientNotifies).toBe(0);
+
+    vi.advanceTimersByTime(1000);
+    expect(offscreenEngineChunks).toBe(1);
+    vi.advanceTimersByTime(1000);
+    expect(clientNotifies).toBe(1);
+    const assembled = client.thread(offscreen.id)!.messages.find((m) => m.role === "assistant")!;
+    expect(assembled.content).toHaveLength(200);
+    unsub();
+
+    // Reproducible 10/10 all-merged Hydra leads skipped without disk reload.
+    const mergedLeadIds: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const lead = engine.createThread(null, `merged-lead-${i}`);
+      mergedLeadIds.push(lead.id);
+      store.update(() => {
+        lead.messages.push({
+          id: `ml-${i}`,
+          role: "user",
+          content: `merged ${i}`,
+          status: "done",
+          ts: 100 + i,
+        });
+        lead.hydraJobs = [{ id: `mj-${i}`, isOpen: false, ending: "completed", merge: "merged" }];
+      });
+    }
+    store.flushNow();
+    for (const id of mergedLeadIds) expect(store.releaseThreadHistory(id)).toBe(true);
+    const rec = engine.recoverHydraWork();
+    const skippedMergedCount = mergedLeadIds.filter(
+      (id) => rec.skipped.includes(id) && store.isThreadHistoryReleased(id),
+    ).length;
+    expect(skippedMergedCount).toBe(10);
+
+    engine.shutdown();
+    store.close();
 
     console.info(
       `P2-63_METRICS=${JSON.stringify({
         archiveSwitchColdMs: Number(coldSwitchMs.toFixed(3)),
         archiveSwitchWarmMs: Number(warmSwitchMs.toFixed(3)),
-        idleTick5000BeforeMs: Number(idleBeforeMs.toFixed(3)),
-        idleTick5000AfterMs: Number(idleAfterMs.toFixed(3)),
+        idleTick600BeforeMs: Number(idleBeforeMs.toFixed(3)),
+        idleTick600AfterMs: Number(idleAfterMs.toFixed(3)),
+        offscreenChunksTotal: 200,
+        offscreenImmediateChunks: immediateChunks,
+        offscreenImmediateNotifies: immediateClientNotifies,
+        offscreenFlushedChunks: offscreenEngineChunks,
+        offscreenFlushedNotifies: clientNotifies,
+        hydraRecoverySkipped: skippedMergedCount,
+        hydraRecoveryTotal: mergedLeadIds.length,
       })}`,
     );
   });
