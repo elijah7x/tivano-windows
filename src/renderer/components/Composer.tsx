@@ -104,6 +104,10 @@ export function Composer(props: {
   thread: ChatThread;
   mode?: "mock" | "synthetic-stdio" | "codex";
   readOnly?: boolean;
+  /** P2-30: fired when the user issues a send from this composer — the
+   *  timeline treats it as the frozen attended send and re-pins even
+   *  from a released scroll position. */
+  onSent?: () => void;
 }): React.JSX.Element {
   const t = useT();
   const { thread } = props;
@@ -275,6 +279,7 @@ export function Composer(props: {
     // rewind; the engine refuses resend while busy with a clear error.
     if (running && !editTarget) void clientStore.interruptSendDraft(thread.id);
     else void clientStore.sendDraft(thread.id);
+    props.onSent?.();
   };
   const queue = () => {
     if (readOnly) return;

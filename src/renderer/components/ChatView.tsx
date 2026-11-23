@@ -213,7 +213,6 @@ export function ChatView(props: {
   // growth effect spot the two frozen re-pin events: the reader's own
   // send (attended — always back to the end) and a newly-appeared
   // approval/question row (frozen "fetches any reader").
-  const timelineLastMsgRef = useRef<string | null>(null);
   const timelineWaitRef = useRef<string | null>(null);
   // The port's own scroll writes (follow snap, anchor shift, minimap
   // jump) suppress the unexplained-motion release/re-pin for a beat —
@@ -297,19 +296,11 @@ export function ChatView(props: {
     // released the pin in onScroll, so a starting turn or a flush never
     // yanks a paged-back reader down.
     const el = timelineRef.current;
-    const last = thread?.messages[thread.messages.length - 1];
-    const lastId = last?.id ?? null;
     // Frozen: "Sending a message always brings the reader back to the
-    // conversation's end" — an attended send re-pins even when the
-    // reader had released the tail.
-    if (
-      lastId !== null &&
-      lastId !== timelineLastMsgRef.current &&
-      last?.role === "user"
-    ) {
-      timelineFollowingRef.current = true;
-    }
-    timelineLastMsgRef.current = lastId;
+    // conversation's end" — but only an attended send does, so the
+    // composer arms the pin itself (onSent below). Engine-injected user
+    // messages (queued drains, head briefs, auto-continues) never reach
+    // this branch: a starting turn must not yank a paged-back reader.
     // Frozen fetches any reader for a question row — a newly-outstanding
     // approval/question re-pins once (the id guard keeps an answered or
     // lingering row from holding the pin while the reader reviews).
@@ -1107,6 +1098,12 @@ export function ChatView(props: {
         thread={thread}
         mode={props.mode}
         readOnly={!!props.readOnly}
+        onSent={() => {
+          // Frozen attended send: re-pin even from a released scroll
+          // position. The growth effect lands it once the user row
+          // mounts.
+          timelineFollowingRef.current = true;
+        }}
       />
       {msgMenu && (
         <MessagePopover state={msgMenu} onClose={() => setMsgMenu(null)} />
