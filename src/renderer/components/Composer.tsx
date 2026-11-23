@@ -6,7 +6,7 @@
 // draft lives in the client store keyed by thread id — switching
 // threads, remounts and failed sends never lose text.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ChatThread, DownloadItem } from "../../shared/types";
 import {
   builtinSlashCommands,
@@ -15,6 +15,14 @@ import {
   type SlashCommand,
 } from "../../shared/slashCommands";
 import { mentionQueryAt } from "../../shared/fileMention";
+import {
+  chipBeforeCaret,
+  chipToken,
+  chipsAfterEdit,
+  chipsFromText,
+  renderableChips,
+  type MentionChip,
+} from "../../shared/mentionChips";
 import { quoteExcerpt } from "../../shared/replyQuote";
 import { useT } from "../locale";
 import { api, clientStore, tryCall } from "../client";
@@ -190,6 +198,84 @@ export function Composer(props: {
   // menu until the text changes.
   const taRef = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState(0);
+  // P2-44 (frozen FileMentionText chips): the @path tokens the picker or
+  // a validated paste minted. The textarea keeps the real "@path " text
+  // (copy/send stay verbatim); the mirror overlay renders the chip.
+  const [chips, setChips] = useState<MentionChip[]>([]);
+  const [chipRects, setChipRects] = useState<
+    { x: number; y: number; w: number; h: number }[]
+  >([]);
+  const mirrorRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // Frozen ComposerTextView re-chips a reloaded draft from the file
+    // index — the port re-mints syntactically after exact-match
+    // resolution (drafts persist across thread switches).
+    setChips([]);
+    const draft = clientStore.draft(thread.id);
+    const candidates = [
+      ...new Set(
+        Array.from(draft.matchAll(/@([^\s@]+)(?=\s|$)/g)).map((m) => m[1]!),
+      ),
+    ];
+    if (candidates.length === 0) return;
+    let alive = true;
+    void Promise.all(
+      candidates.map((path) =>
+        api()
+          .invoke("mention:search", { threadId: thread.id, query: path })
+          .then((r) =>
+            ((r as { paths: string[] }).paths ?? []).includes(path)
+              ? path
+              : null,
+          )
+          .catch(() => null),
+      ),
+    ).then((resolved) => {
+      if (!alive) return;
+      const ok = new Set(resolved.filter((x): x is string => x !== null));
+      if (ok.size > 0)
+        setChips((c) => {
+          // Mint against the live draft — keystrokes during the search
+          // round trip must not leave chips at stale offsets.
+          const live = clientStore.draft(thread.id);
+          const taken = new Set(c.map((x) => x.start));
+          return [
+            ...c,
+            ...chipsFromText(live, ok).filter((m) => !taken.has(m.start)),
+          ];
+        });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [thread.id]);
+  // Measure each token's box in a hidden mirror so the overlay chips sit
+  // exactly over the textarea's real text (wrap + scroll included).
+  useLayoutEffect(() => {
+    const mirror = mirrorRef.current;
+    const ta = taRef.current;
+    if (!mirror || !ta) return;
+    const rects = Array.from(
+      mirror.querySelectorAll<HTMLElement>(".mention-mk"),
+    ).map((mk) => ({
+      x: mk.offsetLeft,
+      y: mk.offsetTop - ta.scrollTop,
+      w: mk.offsetWidth,
+      h: mk.offsetHeight,
+    }));
+    setChipRects((prev) =>
+      prev.length === rects.length &&
+      prev.every(
+        (p, i) =>
+          Math.abs(p.x - rects[i]!.x) < 0.5 &&
+          Math.abs(p.y - rects[i]!.y) < 0.5 &&
+          Math.abs(p.w - rects[i]!.w) < 0.5 &&
+          Math.abs(p.h - rects[i]!.h) < 0.5,
+      )
+        ? prev
+        : rects,
+    );
+  });
   const [selIdx, setSelIdx] = useState(0);
   const [dismissedText, setDismissedText] = useState<string | null>(null);
   const slash = readOnly ? null : slashQueryAt(text, caret);
@@ -247,8 +333,11 @@ export function Composer(props: {
   };
   const pickFile = (path: string) => {
     if (!mention) return;
-    // Frozen pick(): replace the typed "@query" word with "@path ".
+    // Frozen pick(): replace the typed "@query" word with "@path " and
+    // mint the chip token at the insertion point.
     const next = `${text.slice(0, mention.start)}@${path} ${text.slice(caret)}`;
+    const { chip } = chipToken(path, mention.start);
+    setChips((c) => [...chipsAfterEdit(c, text, next), chip]);
     clientStore.setDraft(thread.id, next);
     setSelIdx(0);
     const pos = mention.start + path.length + 2;
@@ -261,6 +350,9 @@ export function Composer(props: {
       }
     });
   };
+  // Mirror and overlay index this ONE list — rects never misalign with
+  // tokens even when a chip is minted before an existing one.
+  const renderable = renderableChips(chips, text);
   const providerName =
     props.mode === "synthetic-stdio"
       ? t("Synthetic stdio")
@@ -443,6 +535,7 @@ export function Composer(props: {
           )}
         </div>
       )}
+      <div className="composer-edit">
       <textarea
         ref={taRef}
         aria-label={t("Message")}
@@ -457,6 +550,7 @@ export function Composer(props: {
         rows={2}
         disabled={readOnly}
         onChange={(e) => {
+          setChips((c) => chipsAfterEdit(c, text, e.target.value));
           clientStore.setDraft(thread.id, e.target.value);
           setCaret(e.target.selectionStart);
           if (dismissedText !== null && e.target.value !== dismissedText)
@@ -464,12 +558,70 @@ export function Composer(props: {
           setSelIdx(0);
         }}
         onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
+        // Scrolling moves the mirror's spans without a render — force one
+        // so the layout effect re-measures the chip rects.
+        onScroll={() => setChipRects((r) => [...r])}
         onPaste={(e) => {
           if (readOnly) return;
           const fl = e.clipboardData?.files;
           if (fl && fl.length > 0) {
             e.preventDefault();
             void attachFileList(fl);
+            return;
+          }
+          // P2-44: pasted "@path " tokens that name project files land as
+          // chips — resolve them once the text is in.
+          const pasted = e.clipboardData?.getData("text");
+          if (pasted?.includes("@")) {
+            const prior = text;
+            // The paste lands at the caret — anchor there, never at the
+            // pasted text's first occurrence in the draft (that text may
+            // already exist earlier).
+            const selStart = (e.target as HTMLTextAreaElement).selectionStart;
+            requestAnimationFrame(() => {
+              const cur = taRef.current?.value;
+              if (cur === undefined) return;
+              let at = cur.indexOf(pasted, selStart);
+              if (at === -1) at = cur.indexOf(pasted);
+              if (at === -1) return;
+              const candidates = [
+                ...new Set(
+                  Array.from(pasted.matchAll(/@([^\s@]+)(?=\s|$)/g)).map(
+                    (m) => m[1]!,
+                  ),
+                ),
+              ];
+              void Promise.all(
+                candidates.map((path) =>
+                  api()
+                    .invoke("mention:search", { threadId: thread.id, query: path })
+                    .then(
+                      (r) =>
+                        ((r as { paths: string[] }).paths ?? []).includes(path)
+                          ? path
+                          : null,
+                    )
+                    .catch(() => null),
+                ),
+              ).then((resolved) => {
+                const ok = new Set(resolved.filter((x): x is string => x !== null));
+                if (!ok.size) return;
+                setChips((c) => {
+                  // Re-anchor and mint against the live draft — typing
+                  // during the search must not strand chips at offsets
+                  // the paste text no longer sits at. `ok` only names
+                  // pasted paths, so every minted span is a real token.
+                  const live = clientStore.draft(thread.id);
+                  const reanchored = chipsAfterEdit(c, prior, live);
+                  const minted = chipsFromText(live, ok);
+                  const taken = new Set(reanchored.map((x) => x.start));
+                  return [
+                    ...reanchored,
+                    ...minted.filter((m) => !taken.has(m.start)),
+                  ];
+                });
+              });
+            });
           }
           // No files → the default text paste proceeds untouched.
         }}
@@ -521,6 +673,32 @@ export function Composer(props: {
             if (last) void clientStore.removeDraftAttachment(thread.id, last.id);
             return;
           }
+          // P2-44: a chip token deletes whole — collapsed caret at a
+          // token's end peels the entire "@path " in one backspace.
+          if (
+            e.key === "Backspace" &&
+            e.target instanceof HTMLTextAreaElement &&
+            e.target.selectionStart === e.target.selectionEnd
+          ) {
+            const hit = chipBeforeCaret(renderable, e.target.selectionStart);
+            if (hit) {
+              e.preventDefault();
+              const next = text.slice(0, hit.start) + text.slice(hit.end);
+              setChips((c) =>
+                chipsAfterEdit(
+                  c.filter((x) => x !== hit),
+                  text,
+                  next,
+                ),
+              );
+              clientStore.setDraft(thread.id, next);
+              setCaret(hit.start);
+              requestAnimationFrame(() =>
+                taRef.current?.setSelectionRange(hit.start, hit.start),
+              );
+              return;
+            }
+          }
           if (e.key !== "Enter") return;
           if (e.shiftKey) return; // newline
           // ⌘↵/Ctrl+↵ is the queueChat command — the app-level shortcut
@@ -530,6 +708,65 @@ export function Composer(props: {
           send();
         }}
       />
+      {chips.length > 0 && (
+        <>
+          {/* P2-44 mirror: same box/font as the textarea; each chip token
+              is a .mention-mk span whose box the overlay copies. */}
+          <div ref={mirrorRef} className="mention-mirror" aria-hidden="true">
+            {(() => {
+              const parts: React.ReactNode[] = [];
+              let at = 0;
+              for (const c of renderable) {
+                parts.push(text.slice(at, c.start));
+                parts.push(
+                  <span key={c.start} className="mention-mk">
+                    {text.slice(c.start, c.end)}
+                  </span>,
+                );
+                at = c.end;
+              }
+              parts.push(text.slice(at));
+              return parts;
+            })()}
+          </div>
+          <div className="mention-overlay" aria-hidden="true">
+            {renderable.map(
+              (c, i) =>
+                chipRects[i] && (
+                  <span
+                    key={`${c.start}:${c.path}`}
+                    className="mention-chip"
+                    title={c.path}
+                    onMouseDown={(e) => {
+                      // The chip needs pointer-events for its title tooltip;
+                      // forward the click so the caret lands at the token
+                      // edge the click was nearest, like plain text.
+                      e.preventDefault();
+                      const ta = taRef.current;
+                      if (!ta) return;
+                      ta.focus();
+                      const r = e.currentTarget.getBoundingClientRect();
+                      const at =
+                        e.clientX - r.left < r.width / 2 ? c.start : c.end;
+                      ta.setSelectionRange(at, at);
+                    }}
+                    style={{
+                      left: chipRects[i]!.x,
+                      top: chipRects[i]!.y,
+                      width: chipRects[i]!.w,
+                      height: chipRects[i]!.h,
+                    }}
+                  >
+                    <span className="mention-chip-name">
+                      📄 {c.path.slice(c.path.lastIndexOf("/") + 1)}
+                    </span>
+                  </span>
+                ),
+            )}
+          </div>
+        </>
+      )}
+      </div>
       {dlPicker ? (
         <span className="dl-anchor">
           <button
