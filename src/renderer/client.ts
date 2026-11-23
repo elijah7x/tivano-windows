@@ -13,6 +13,8 @@ import { makeQuote, serializeOutgoing } from "../shared/replyQuote";
 import type { ReplyQuote } from "../shared/replyQuote";
 import { translate } from "./i18n";
 import { playFinishChime } from "./finishChime";
+import { emitMemoryPressure, setWindowActive } from "./appActivity";
+import { clearMarkdownCache } from "./markdown";
 
 /** F28: OS notification on a turn's completion — only for an UNSEEN
  *  result: the finished thread isn't the one on screen, or the window
@@ -118,6 +120,8 @@ export class ClientStore {
   private sentVersions = new Map<string, number>();
   /** F20: threads waiting for a usage-limit reset (ephemeral mirror). */
   limitResumes: Record<string, number> = {};
+  /** P2-63: paced notification timers for non-visible streaming panels/threads. */
+  private pacedNotifyTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly invoke: InvokeFn;
 
   constructor(invoke?: InvokeFn) {
@@ -147,6 +151,17 @@ export class ClientStore {
 
   /** Entry point for the preload event subscription. */
   onBridgeEvent(e: AppEvent): void {
+    // P2-63: main-originated window/memory signals do not carry a store rev.
+    if (e.type === "window-activity") {
+      setWindowActive(e.active);
+      if (e.active) this.flushStreamPacing();
+      return;
+    }
+    if (e.type === "memory-pressure") {
+      clearMarkdownCache();
+      emitMemoryPressure(e.critical);
+      return;
+    }
     if (this.snapshotRev < 0) {
       this.buffered.push(e);
       return;
@@ -157,6 +172,8 @@ export class ClientStore {
   /** Land the snapshot for cycle `gen`, then replay only newer events. */
   hydrate(s: Snapshot, gen: number): void {
     if (gen !== this.hydrateGen) return; // superseded cycle (StrictMode replay)
+    for (const id of this.pacedNotifyTimers.values()) clearTimeout(id);
+    this.pacedNotifyTimers.clear();
     this.snapshot = s;
     this.snapshotRev = s.rev;
     this.limitResumes = { ...(s.limitResumesAt ?? {}) };
@@ -488,6 +505,7 @@ export class ClientStore {
   }
 
   private dropThreadState(threadId: string): void {
+    this.clearPacedTimer(threadId);
     this.drafts.delete(threadId);
     this.editTargets.delete(threadId);
     this.pendingSends.delete(threadId);
@@ -535,6 +553,7 @@ export class ClientStore {
         break;
       case "thread-selected":
         s.selectedThreadId = event.threadId;
+        if (event.threadId) this.clearPacedTimer(event.threadId);
         break;
       case "settings-changed":
         s.settings = event.settings;
@@ -546,6 +565,13 @@ export class ClientStore {
       case "slash-recorded":
         s.recentCommands = event.recentCommands;
         break;
+      case "memory-pressure":
+        clearMarkdownCache();
+        emitMemoryPressure(event.critical);
+        return;
+      case "window-activity":
+        setWindowActive(event.active);
+        return;
       case "turn-chunk": {
         const t = this.thread(event.threadId);
         const turn = t?.turn;
@@ -557,9 +583,27 @@ export class ClientStore {
           if (event.content !== undefined) m.content = event.content;
           else if (event.delta !== undefined) m.content += event.delta;
         }
+        // P2-63: non-visible panels/threads coalesce renderer notifications
+        // (90ms for an open panel beside the chat, 1000ms for offscreen threads).
+        if (s.selectedThreadId !== t.id) {
+          const isOpenPanel =
+            (t.isInPanel === true && t.parentThreadId === s.selectedThreadId) ||
+            (t.hydraHead !== undefined && t.hydraHead.leadId === s.selectedThreadId);
+          const delayMs = isOpenPanel ? 90 : 1000;
+          this.snapshot = { ...s, rev: this.snapshotRev };
+          if (!this.pacedNotifyTimers.has(t.id)) {
+            const id = setTimeout(() => {
+              this.pacedNotifyTimers.delete(t.id);
+              this.notify();
+            }, delayMs);
+            this.pacedNotifyTimers.set(t.id, id);
+          }
+          return;
+        }
         break;
       }
       case "turn-status": {
+        this.clearPacedTimer(event.threadId);
         const t = this.thread(event.threadId);
         const turn = t?.turn;
         if (!t || !turn || turn.id !== event.turnId) return;
@@ -675,6 +719,21 @@ export class ClientStore {
       }
     }
     this.snapshot = { ...s, rev: this.snapshotRev };
+    this.notify();
+  }
+
+  private clearPacedTimer(threadId: string): void {
+    const id = this.pacedNotifyTimers.get(threadId);
+    if (id !== undefined) {
+      clearTimeout(id);
+      this.pacedNotifyTimers.delete(threadId);
+    }
+  }
+
+  flushStreamPacing(): void {
+    if (this.pacedNotifyTimers.size === 0) return;
+    for (const id of this.pacedNotifyTimers.values()) clearTimeout(id);
+    this.pacedNotifyTimers.clear();
     this.notify();
   }
 

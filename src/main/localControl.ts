@@ -447,7 +447,7 @@ export class LocalControlService {
         const limit = pageLimit(params);
         // Persisted-only projection: entries from the stored messages —
         // no runtime is created and no bytes are fabricated.
-        const all = t.messages.map((m) => ({
+        const all = this.engine.readThreadMessages(id).map((m) => ({
           id: m.id,
           turnId: m.turnId ?? null,
           turnStatus: t.turn?.id === m.turnId ? (t.turn?.status ?? null) : null,
@@ -643,7 +643,8 @@ export class LocalControlService {
     if (this.engine.hydraLeadBusy(threadId)) fail("busy");
     // Frozen rejection surface: slash commands ride no ordinary prompt.
     if (text.trimStart().startsWith("/")) fail("invalidRequest", "slash-command");
-    const hasStarted = t.messages.length > 0;
+    const hasStarted =
+      t.hasStartedTurn === true || this.engine.readThreadMessages(threadId).length > 0;
     if (continuation === "fresh" && hasStarted) fail("continuationUnavailable");
     if (continuation === "transcript") fail("continuationUnavailable", "no native-API provider");
     const ticket = this.ticketParam(params);

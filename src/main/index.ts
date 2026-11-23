@@ -28,6 +28,7 @@ import {
   shell,
 } from "electron";
 import { mkdirSync, mkdtempSync } from "node:fs";
+import { getHeapStatistics } from "node:v8";
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -563,6 +564,46 @@ bootstrap = app.whenReady().then(async () => {
   });
 
   const broadcast = forwardEvents(win.webContents);
+
+  // P2-63: track window focus/visible/minimized state so renderer animations,
+  // timers and background streaming pace down while inactive/minimized/hidden.
+  const syncWindowActivity = () => {
+    const active =
+      !!win &&
+      !win.isDestroyed() &&
+      win.isVisible() &&
+      !win.isMinimized() &&
+      win.isFocused();
+    eng.setWindowActive(active);
+    broadcast({ type: "window-activity", active });
+  };
+  win.on("focus", syncWindowActivity);
+  win.on("blur", syncWindowActivity);
+  win.on("minimize", syncWindowActivity);
+  win.on("restore", syncWindowActivity);
+  win.on("hide", syncWindowActivity);
+  win.on("show", syncWindowActivity);
+  win.webContents.once("did-finish-load", syncWindowActivity);
+
+  // P2-63: memory-pressure monitor — independent of autoShelveDays (works even
+  // when automatic shelving is off). Releases hidden chats and caches if heap
+  // or RSS crosses warning/critical thresholds.
+  let lastMemPressureAt = 0;
+  const memTimer = setInterval(() => {
+    if (eng.readOnly) return;
+    const now = Date.now();
+    if (now - lastMemPressureAt < 25_000) return;
+    const heap = getHeapStatistics();
+    const rssMb = process.memoryUsage().rss / (1024 * 1024);
+    const heapRatio = heap.heap_size_limit > 0 ? heap.used_heap_size / heap.heap_size_limit : 0;
+    const critical = heapRatio >= 0.85 || rssMb >= 1200;
+    const warning = critical || heapRatio >= 0.7 || rssMb >= 768;
+    if (!warning) return;
+    lastMemPressureAt = now;
+    eng.handleMemoryPressure(critical);
+  }, 30_000);
+  memTimer.unref?.();
+  win.once("closed", () => clearInterval(memTimer));
 
   // Codex setup (P2N): main-owned chooser + pending choice; the renderer
   // only ever receives the validated physical path that came back from
