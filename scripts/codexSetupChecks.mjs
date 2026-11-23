@@ -62,7 +62,19 @@ export async function runCodexSetupChecks({
     await page.locator(".sidebar-foot button.row").click();
     await page.waitForSelector(".modal", { timeout: 10000 });
     await page.waitForSelector(".codex-setup", { timeout: 10000 });
+    // The chooser rows sit behind the card-top executable-path switch
+    // (default off); turn it on so the editing UI renders in sessions
+    // that have no saved path yet.
+    await page.evaluate(() =>
+      window.tivano.invoke("settings:set", { providersShowExecutablePath: true }),
+    );
     await waitIdle(page);
+    // The choose button is the first editing control; match the leading
+    // localized word rather than the full en string (zh sessions too).
+    await page
+      .locator(".codex-setup .choice-row button", { hasText: /Choose|选择/ })
+      .first()
+      .waitFor({ timeout: 10000 });
   };
   const closeSettings = async (page) => {
     await page.locator(".modal-actions .primary").click();

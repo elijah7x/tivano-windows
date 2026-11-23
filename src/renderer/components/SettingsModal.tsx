@@ -900,7 +900,7 @@ export function SettingsModal(props: {
               </>
             )}
           </div>
-          {executablePath && (
+          {(executablePath || codex?.savedExecutable || codex?.pendingExecutable) && (
             <p>
               {t(
                 "Choosing only selects a candidate. Saving or clearing changes the saved setting, not this launch, and never starts the program. On restart, explicit provider and environment settings take priority. A saved path is not installed or verified.",
@@ -913,6 +913,7 @@ export function SettingsModal(props: {
             </p>
           )}
           {loadErr && <p className="codex-setup-error" role="alert">{loadErr}</p>}
+          {(executablePath || codex?.savedExecutable || codex?.pendingExecutable) && (
           <div className="choice-row">
             <button
               className="choice"
@@ -938,6 +939,7 @@ export function SettingsModal(props: {
               {busy === "clear" ? t("Clearing…") : t("Clear")}
             </button>
           </div>
+          )}
           <div className="choice-row">
             <button className="choice" disabled={busy !== null} onClick={() => void run("load")}>
               {busy === "load" ? t("Loading") : t(loadErr ? "Retry" : "Refresh status")}
