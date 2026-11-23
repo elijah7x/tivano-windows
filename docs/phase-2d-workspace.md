@@ -34,9 +34,13 @@ Grants stay in app-private `workspace-grants.json`, now with two
 sections: `grants` (managed fixture roots — marker file + authorized-root
 containment, unchanged rules) and `userGrants` (user-selected canonical
 paths — no marker, no root requirement; a user dir may live anywhere and
-does not depend on fixture roots). `project.directory` in the store is
-DISPLAY metadata only: a forged value can never mint a grant — spawn
-authorization consults the grants map keyed by projectId exclusively.
+does not depend on fixture roots). Besides the directory chooser, Hydra
+routing registers `userGrants` too: a delegation-block absolute path that
+main creates or binds grants the spawned head exec rights on that folder
+(main-only decision, never renderer-named). `project.directory` in the
+store is DISPLAY metadata only: a forged value can never mint a grant —
+spawn authorization consults the grants map keyed by projectId
+exclusively.
 
 Ordering is explicit: canonicalize → dedupe → durable grant write →
 persisted project (+`flushNow`). A failed grant write activates no

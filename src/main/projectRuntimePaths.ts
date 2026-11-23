@@ -4,6 +4,10 @@
 // directory. Only the main bootstrap and test harness may register; the
 // renderer can name nothing here. A project name, message text or any
 // stored string is NOT a cwd grant — authorization is this map alone.
+// The single deliberate exception is Hydra routing: a delegation block's
+// absolute-path entry that main creates or binds registers a user grant
+// for that folder (the same class as a directory-chooser grant) so the
+// head it spawns may exec there — the renderer never names it.
 //
 // Persistence rules (repair-2):
 //  - register() builds a candidate map and persists it BEFORE committing —

@@ -5424,7 +5424,7 @@ export class Engine {
     // junction or alias must not slip a protected root past the gate.
     let pp = p;
     try {
-      pp = realpathSync(pp)
+      pp = realpathSync.native(pp)
         .replace(/^\\\\\?\\UNC\\/i, "\\\\")
         .replace(/^\\\\[?.]\\/i, "");
     } catch {
@@ -5826,8 +5826,8 @@ export class Engine {
       for (;;) {
         try {
           canonical = tail.length
-            ? join(realpathSync(cur), ...tail)
-            : realpathSync(cur);
+            ? join(realpathSync.native(cur), ...tail)
+            : realpathSync.native(cur);
           break;
         } catch {
           const parent = dirname(cur);
@@ -5932,7 +5932,7 @@ export class Engine {
       }
       // The folder was born this instant — its canonical form is itself.
       try {
-        canonical = realpathSync(canonical)
+        canonical = realpathSync.native(canonical)
           .replace(/^\\\\\?\\UNC\\/i, "\\\\")
           .replace(/^\\\\[?.]\\/i, "");
       } catch {
@@ -6026,6 +6026,19 @@ export class Engine {
         // routed folder persists the same way.
         this.store.flushNow();
         this.emit({ type: "project-added", project });
+        // The routed folder joined the sidebar — the lead's timeline
+        // names it so the bound grant is visible where the heads were
+        // dispatched (frozen surfaces created/bound folders).
+        lead.messages.push({
+          id: `hydranote-${randomUUID()}`,
+          role: "system",
+          content: `Hydra routed a head into ${canonical}, which joined the sidebar as project ${project.name}.`,
+          status: "done",
+          ts: Date.now(),
+          kind: "notice",
+        });
+        this.store.update(() => {});
+        this.emit({ type: "thread-updated", thread: lead });
       } catch {
         // A throw after the grant leaves an orphan — take it back and
         // drop the pushed row so the next route starts clean, then
