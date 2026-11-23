@@ -20,12 +20,21 @@ The owner does **not** participate during development, review, or audit, and ent
 
 | Role | Model | Responsibility |
 | --- | --- | --- |
-| Author & first-fix | Devin | Implements issues, runs `npm run verify`, makes the first fix commit on gate or `nyx/audit` failure, reviews/commits/pushes Neon fixes, and manages PRs/merges. |
-| Auditor & gate second reviewer | GLM-5.4 | Runs the independent `nyx/audit` checks and serves as the read-only second reviewer inside `Invoke-AutopilotGate.ps1`. Never edits code or fixes. |
-| Escalation fixer | Gemini 4 Neon (`agy`) | Fixes escalations via `Invoke-NeonFix.ps1` inside the PR worktree when an audit block survives Devin's fix round, when the gate fails after Devin's first fix round, or at the start of a parked-issue revisit. Never commits or pushes. |
-| Arbiter | Claude Sonnet | Settles post-rebuttal `nyx/audit` disputes inside the independent auditor. |
+| Implementer (Devin lane) | Devin (SWE) | Claims `nyx-auto` issues with `lane-devin` (skipping `lane-hydrogen` issues and `nyx/h-` PRs), implements issues on `nyx/<n>-<slug>`, runs `npm run verify`, makes the first fix commit on gate or `nyx/audit` failure, reviews/commits/pushes Neon fixes, and manages its own PRs (never runs `gh pr merge`; the watchdog is the only merger). |
+| Implementer (Hydrogen lane) | Gemini 4 Hydrogen (`agy`) | Runs in parallel via `Start-HydrogenWorker.ps1` and `hydrogen.md`, claims non-`audit-followup` `nyx-auto` issues from the highest issue number down with `lane-hydrogen`, and uses `nyx/h-<n>-<slug>` branches (never runs `gh pr merge`; the watchdog is the only merger). |
+| Quality gate: auditor & second reviewer | GLM-5.4 | Runs the independent `nyx/audit` checks and serves as the read-only second reviewer inside `Invoke-AutopilotGate.ps1`. Never edits code or fixes. |
+| Quality gate: escalation fixer | Gemini 4 Neon (`agy`) | Fixes escalations via `Invoke-NeonFix.ps1` inside the PR worktree when an audit block survives Devin's fix round, when the gate fails after Devin's first fix round, or at the start of a parked-issue revisit. Never commits or pushes. |
+| Final arbiter | Claude Opus | Settles post-rebuttal `nyx/audit` disputes inside the independent auditor. |
 
-The author, fixer, auditor, and arbiter are always different vendors.
+The watchdog remains the only merger. Implementers are Devin (SWE) and Gemini 4 Hydrogen; quality gates are GLM-5.4 and Gemini 4 Neon; Claude Opus is the final arbiter for `nyx/audit` disputes.
+
+## Hydrogen lane
+
+A second implementer lane powered by **Gemini 4 Hydrogen** via the Antigravity CLI (`Start-HydrogenWorker.ps1`, prompt `hydrogen.md`, scheduled task `\TivanoDevLoop\hydrogen` registered by `Register-HydrogenTask.ps1`) works `nyx-auto` issues in parallel with Devin:
+
+- **Lane contract:** Hydrogen claims issues with label `lane-hydrogen`, works from the highest issue number down, and never takes `audit-followup` issues. Devin claims issues with `lane-devin` when starting them and skips `lane-hydrogen` issues and `nyx/h-` PRs.
+- **Branches and per-lane WIP cap:** Hydrogen uses `nyx/h-<issue>-<slug>` branches while Devin uses `nyx/<issue>-<slug>`. Devin's 3-PR hard WIP cap counts only Devin's own open non-parked `nyx/` PRs (branches not starting with `nyx/h-`), and Devin never works, fixes, or gates `nyx/h-` PRs.
+- **Merging:** the watchdog remains the only merger once both the gate and `nyx/audit` pass on the exact head SHA.
 
 ## Parking and revisits
 

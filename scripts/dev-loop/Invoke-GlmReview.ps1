@@ -214,8 +214,8 @@ function Test-NetworkFailure {
 function Invoke-Gh {
   param([string]$Arguments)
   $tmpBase = if ($script:RunDir) { $script:RunDir } elseif ($script:GlmRoot) { $script:GlmRoot } else { $script:WorkRoot }
-  $out = Join-Path $tmpBase '.gh.out.tmp'
-  $err = Join-Path $tmpBase '.gh.err.tmp'
+  $out = Join-Path $tmpBase ('.gh.out.' + $PID + '.tmp')
+  $err = Join-Path $tmpBase ('.gh.err.' + $PID + '.tmp')
   for ($try = 1; ; $try++) {
     $code = Invoke-Tool $script:GhPath $Arguments $out $err $script:WorkRoot
     $result = [pscustomobject]@{ exitCode = $code; text = (Read-Text $out); error = (Read-Text $err) }
@@ -228,8 +228,8 @@ function Invoke-Gh {
 function Invoke-Git {
   param([string]$Directory, [string]$Arguments)
   $tmpBase = if ($script:RunDir) { $script:RunDir } elseif ($script:GlmRoot) { $script:GlmRoot } else { $script:WorkRoot }
-  $out = Join-Path $tmpBase '.git.out.tmp'
-  $err = Join-Path $tmpBase '.git.err.tmp'
+  $out = Join-Path $tmpBase ('.git.out.' + $PID + '.tmp')
+  $err = Join-Path $tmpBase ('.git.err.' + $PID + '.tmp')
   for ($try = 1; ; $try++) {
     $code = Invoke-Tool $script:GitPath ('-C ' + (Quote-Argument $Directory) + ' ' + $Arguments) $out $err $script:WorkRoot
     $result = [pscustomobject]@{ exitCode = $code; text = (Read-Text $out); error = (Read-Text $err) }

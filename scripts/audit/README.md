@@ -6,8 +6,16 @@ This directory holds an independent auditor for Devin's autopilot pull requests 
 
 ## Purpose
 
-- **Pre-merge audit (`Invoke-Audit.ps1`)**: polls open `nyx/*` pull requests every 10 minutes, runs deterministic checks plus an independent read-only model audit against the exact head SHA, posts structured findings, resolves post-rebuttal blocks through automatic arbitration, and sets the commit status context `nyx/audit` (`success`, `failure`, `error`, or `pending`).
+- **Pre-merge audit (`Invoke-Audit.ps1`)**: polls open `nyx/*` pull requests every 10 minutes, runs deterministic checks plus an independent read-only model audit against the exact head SHA (up to `-MaxParallel` PRs concurrently, default `3`; pass `-MaxParallel 1` for in-process serial execution), posts structured findings, resolves post-rebuttal blocks through automatic arbitration, and sets the commit status context `nyx/audit` (`success`, `failure`, `error`, or `pending`).
 - **Post-merge audit (`Invoke-PostMergeAudit.ps1`)**: runs daily at 03:00 (or in backlog mode via `-PrNumbers`), checks merged `nyx/*` PRs on `main` for default-settings Codex-path acceptance, Windows-skipped tests, PR-body claims, and cross-PR wiring seams. On `block`, it reopens or comments on the linked issue and creates deduplicated `nyx-auto` + `audit-followup` issues. On every run it also verifies and self-heals `main` ruleset integrity.
+
+## Concurrent PR auditing
+
+`Invoke-Audit.ps1` audits up to 3 open `nyx/*` PRs concurrently without changing audit semantics:
+
+- **Parent/child orchestration**: The scheduled `\TivanoAudit\pr` parent pass acquires `workRoot\audit.lock` (matching Task Scheduler's `-MultipleInstances IgnoreNew` in `Register-AuditTasks.ps1`), fetches `origin/main`, lists open `nyx/*` PRs, runs skip/backoff/rebuttal/arbitration triage, and spawns up to `-MaxParallel` (default `3`) child processes (`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File Invoke-Audit.ps1 -SinglePr <n> ...`) for PRs needing an audit or arbitration. As each child exits, the parent collects its JSON summary, starts the next queued PR, waits for all children to finish, and then prunes old run directories. Passing `-MaxParallel 1` runs serially in-process, and passing `-SinglePr <n>` runs child mode directly for one PR.
+- **Per-PR claim locks**: Each child (and serial in-process audit) claims `workRoot\claims\pr-<n>.lock` with its PID and process start time before auditing and releases it in `finally`. If another live process already holds the claim (including a surviving child from a timed-out previous pass), the PR is skipped; locks whose PID is gone or reused are treated as stale and reclaimed.
+- **State, repo, and log isolation**: Every read-modify-write of `workRoot\state\pr-<n>.json`, `workRoot\state\arbiter-<yyyy-MM-dd>.json`, and per-PR claim files runs under the named mutex `Global\TivanoAuditState` (reloading inside the lock and preserving per-PR restore-on-error and `$finalStateSaved` semantics). Short shared-mirror git operations (`fetch`, `worktree add/remove/prune`) are serialized under `Global\TivanoAuditRepo`, while each PR uses its own run directory, unique worktree directory (`worktree-pr-<n>-<pid>`), and dedicated child log file (`workRoot\logs\audit-<yyyyMMdd>-pr-<n>-pid-<pid>.log` with `[pr#<n> pid=<pid>]` line prefixes).
 
 ## Independence model
 
@@ -17,7 +25,7 @@ This directory holds an independent auditor for Devin's autopilot pull requests 
    - Pre-merge primary audit: if the audit model is unavailable, times out, or crashes, the auditor never sets `nyx/audit` to `success`. After 3 failed attempts on a head SHA, it keeps status `error` or `failure` and retries at most once every 60 minutes (tracked via `lastAttemptAt` in per-PR state) indefinitely until a real audit runs.
    - Pre-merge arbitration: if the arbiter is unavailable or the daily cap is reached, `nyx/audit` stays `failure` with description `arbitration pending` and retries on a later run. The auditor never passes a PR without an `ok` arbiter result.
    - Post-merge: if the audit model is unavailable, the PR is **never** marked done in `workRoot\state\post-<n>.json` and is retried on the next run.
-4. **Three-vendor separation**: The primary auditor runs GLM via `zcode.cjs` in read-only mode against a detached trial-merge worktree, alongside deterministic checks in `AuditChecks.psm1`. When a post-rebuttal dispute requires arbitration, `Invoke-ArbiterModel` runs a separate vendor model (`arbiterModel`, default `claude-sonnet-5-5-xhigh`) via the headless Devin CLI (`devinCli`) against the same trial-merge worktree.
+4. **Three-vendor separation**: The primary auditor runs GLM via `zcode.cjs` in read-only mode against a detached trial-merge worktree, alongside deterministic checks in `AuditChecks.psm1`. When a post-rebuttal dispute requires arbitration, `Invoke-ArbiterModel` runs a separate vendor model (`arbiterModel`, default `claude-opus-5-5-xhigh`) via the headless Devin CLI (`devinCli`) against the same trial-merge worktree.
 
 ## Rebuttal and automatic arbitration protocol
 
