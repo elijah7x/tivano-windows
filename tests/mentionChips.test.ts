@@ -50,6 +50,23 @@ describe("P2-44 mention chips", () => {
     ]);
   });
 
+  it("end-of-text tokens survive edits in front of them", () => {
+    // Paste "see @b.md" (EOT token, no trailing space), then type a
+    // prefix — the shifted span check must accept the no-space form.
+    const eot = [{ path: "b.md", start: 4, end: 9 }];
+    const next = chipsAfterEdit(eot, "see @b.md", "see! @b.md");
+    expect(next).toEqual([{ path: "b.md", start: 5, end: 10 }]);
+    // Removing a trailing space from "@path " shrinks the chip to the
+    // EOT form rather than dropping it.
+    const spaced = [{ path: "b.md", start: 4, end: 10 }];
+    const shrunk = chipsAfterEdit(spaced, "see @b.md ", "see @b.md");
+    expect(shrunk).toEqual([{ path: "b.md", start: 4, end: 9 }]);
+    // "@pathology" never re-anchors a dropped token as a mid-word hit.
+    expect(
+      chipsAfterEdit(eot, "see @b.md", "see @b.mdology"),
+    ).toEqual([]);
+  });
+
   it("backspace peels the whole chip only at its end", () => {
     const chips = [{ path: "a/x", start: 4, end: 9 }];
     expect(chipBeforeCaret(chips, 9)).toEqual(chips[0]);
@@ -82,24 +99,26 @@ describe("P2-44 mention chips", () => {
   it("renderableChips returns mirror order and drops stale spans", () => {
     const text = "@a.md hi @b.md ";
     const unsorted = [
-      { path: "b.md", start: 10, end: 15 },
-      { path: "a.md", start: 0, end: 5 },
+      { path: "b.md", start: 9, end: 15 },
+      { path: "a.md", start: 0, end: 6 },
     ];
     // Overlay rects index this list — order must follow the mirror.
     expect(renderableChips(unsorted, text)).toEqual([
-      { path: "a.md", start: 0, end: 5 },
-      { path: "b.md", start: 10, end: 15 },
+      { path: "a.md", start: 0, end: 6 },
+      { path: "b.md", start: 9, end: 15 },
     ]);
-    // A span past the text or overlapping the prior token drops out.
+    // A span past the text, overlapping the prior token, or sitting over
+    // text that is not its token drops out.
     expect(
       renderableChips(
         [
-          { path: "a.md", start: 0, end: 5 },
+          { path: "a.md", start: 0, end: 6 },
           { path: "gone", start: 3, end: 9 },
           { path: "tail", start: 40, end: 45 },
+          { path: "hi", start: 6, end: 8 },
         ],
         text,
       ),
-    ).toEqual([{ path: "a.md", start: 0, end: 5 }]);
+    ).toEqual([{ path: "a.md", start: 0, end: 6 }]);
   });
 });

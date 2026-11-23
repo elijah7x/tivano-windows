@@ -235,10 +235,13 @@ export function Composer(props: {
       const ok = new Set(resolved.filter((x): x is string => x !== null));
       if (ok.size > 0)
         setChips((c) => {
+          // Mint against the live draft — keystrokes during the search
+          // round trip must not leave chips at stale offsets.
+          const live = clientStore.draft(thread.id);
           const taken = new Set(c.map((x) => x.start));
           return [
             ...c,
-            ...chipsFromText(draft, ok).filter((m) => !taken.has(m.start)),
+            ...chipsFromText(live, ok).filter((m) => !taken.has(m.start)),
           ];
         });
     });
@@ -604,12 +607,13 @@ export function Composer(props: {
                 const ok = new Set(resolved.filter((x): x is string => x !== null));
                 if (!ok.size) return;
                 setChips((c) => {
-                  const reanchored = chipsAfterEdit(c, prior, cur);
-                  const minted = chipsFromText(cur.slice(at), ok).map((ch) => ({
-                    ...ch,
-                    start: ch.start + at,
-                    end: ch.end + at,
-                  }));
+                  // Re-anchor and mint against the live draft — typing
+                  // during the search must not strand chips at offsets
+                  // the paste text no longer sits at. `ok` only names
+                  // pasted paths, so every minted span is a real token.
+                  const live = clientStore.draft(thread.id);
+                  const reanchored = chipsAfterEdit(c, prior, live);
+                  const minted = chipsFromText(live, ok);
                   const taken = new Set(reanchored.map((x) => x.start));
                   return [
                     ...reanchored,
@@ -676,7 +680,7 @@ export function Composer(props: {
             e.target instanceof HTMLTextAreaElement &&
             e.target.selectionStart === e.target.selectionEnd
           ) {
-            const hit = chipBeforeCaret(chips, e.target.selectionStart);
+            const hit = chipBeforeCaret(renderable, e.target.selectionStart);
             if (hit) {
               e.preventDefault();
               const next = text.slice(0, hit.start) + text.slice(hit.end);

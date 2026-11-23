@@ -58,37 +58,50 @@ export function chipsAfterEdit(
     } else {
       // The edit touched the token — re-anchor to a surviving identical
       // occurrence of its path (undo of a chip delete restores it).
-      const at = unclaimedToken(next, c.path, claimed);
-      if (at === null) continue;
-      out.push({ path: c.path, start: at, end: at + c.path.length + 2 });
+      const tok = unclaimedToken(next, c.path, claimed);
+      if (tok === null) continue;
+      out.push({ path: c.path, start: tok.at, end: tok.end });
       continue;
     }
-    if (next.slice(start, end) === `@${c.path} `) {
+    if (tokenEndAt(next, start, c.path) === end) {
       claimed.add(start);
       out.push({ path: c.path, start, end });
       continue;
     }
-    const at = unclaimedToken(next, c.path, claimed);
-    if (at !== null)
-      out.push({ path: c.path, start: at, end: at + c.path.length + 2 });
+    const tok = unclaimedToken(next, c.path, claimed);
+    if (tok !== null)
+      out.push({ path: c.path, start: tok.at, end: tok.end });
   }
   return out;
 }
 
-/** The first `@path ` occurrence not already claimed by another chip. */
+/** The span end of a `@path` token starting at `at` — `@path ` when the
+ *  trailing space is present, `@path` at end-of-text; null when no
+ *  token sits there (mid-word "@pathology" never matches: the next char
+ *  must be whitespace or the end). */
+function tokenEndAt(text: string, at: number, path: string): number | null {
+  const bare = `@${path}`;
+  if (!text.startsWith(bare, at)) return null;
+  const end = at + bare.length;
+  if (end < text.length && !/\s/.test(text[end]!)) return null;
+  return text[end] === " " ? end + 1 : end;
+}
+
+/** The first unclaimed `@path`/`@path ` occurrence's span. */
 function unclaimedToken(
   text: string,
   path: string,
   claimed: Set<number>,
-): number | null {
-  const tok = `@${path} `;
-  let i = text.indexOf(tok);
+): { at: number; end: number } | null {
+  const bare = `@${path}`;
+  let i = text.indexOf(bare);
   while (i !== -1) {
-    if (!claimed.has(i)) {
+    const end = tokenEndAt(text, i, path);
+    if (end !== null && !claimed.has(i)) {
       claimed.add(i);
-      return i;
+      return { at: i, end };
     }
-    i = text.indexOf(tok, i + 1);
+    i = text.indexOf(bare, i + 1);
   }
   return null;
 }
@@ -136,6 +149,9 @@ export function renderableChips(
   let at = 0;
   for (const c of [...chips].sort((a, b) => a.start - b.start)) {
     if (c.start < at || c.end > text.length) continue;
+    // A stale span (programmatic draft replacement, undo) must never
+    // draw a chip — or backspace-delete — over unrelated text.
+    if (tokenEndAt(text, c.start, c.path) !== c.end) continue;
     out.push(c);
     at = c.end;
   }
