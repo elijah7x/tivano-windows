@@ -20,12 +20,21 @@ The owner does **not** participate during development, review, or audit, and ent
 
 | Role | Model | Responsibility |
 | --- | --- | --- |
-| Author & first-fix | Devin | Implements issues, runs `npm run verify`, makes the first fix commit on gate or `nyx/audit` failure, reviews/commits/pushes Neon fixes, and manages PRs/merges. |
-| Auditor & gate second reviewer | GLM-5.3 | Runs the independent `nyx/audit` checks and serves as the read-only second reviewer inside `Invoke-AutopilotGate.ps1`. Never edits code or fixes. |
-| Escalation fixer | Gemini 4 Neon (`agy`) | Fixes escalations via `Invoke-NeonFix.ps1` inside the PR worktree when an audit block survives Devin's fix round, when the gate fails after Devin's first fix round, or at the start of a parked-issue revisit. Never commits or pushes. |
-| Arbiter | Claude Sonnet | Settles post-rebuttal `nyx/audit` disputes inside the independent auditor. |
+| Implementer (Devin lane) | Devin (SWE) | Claims `nyx-auto` issues with `lane-devin` (skipping `lane-hydrogen` issues and `nyx/h-` PRs), implements issues on `nyx/<n>-<slug>`, runs `npm run verify`, makes the first fix commit on gate or `nyx/audit` failure, reviews/commits/pushes Neon fixes, and manages its own PRs (never runs `gh pr merge`; the watchdog is the only merger). |
+| Implementer (Hydrogen lane) | Gemini 4 Hydrogen (`agy`) | Runs in parallel via `Start-HydrogenWorker.ps1` and `hydrogen.md`, claims non-`audit-followup` `nyx-auto` issues from the highest issue number down with `lane-hydrogen`, and uses `nyx/h-<n>-<slug>` branches (never runs `gh pr merge`; the watchdog is the only merger). |
+| Quality gate: auditor & second reviewer | GLM-5.4 | Runs the independent `nyx/audit` checks and serves as the read-only second reviewer inside `Invoke-AutopilotGate.ps1`. Never edits code or fixes. |
+| Quality gate: escalation fixer | Gemini 4 Neon (`agy`) | Fixes escalations via `Invoke-NeonFix.ps1` inside the PR worktree when an audit block survives Devin's fix round, when the gate fails after Devin's first fix round, or at the start of a parked-issue revisit. Never commits or pushes. |
+| Final arbiter | Claude Opus | Settles post-rebuttal `nyx/audit` disputes inside the independent auditor. |
 
-The author, fixer, auditor, and arbiter are always different vendors.
+The watchdog remains the only merger. Implementers are Devin (SWE) and Gemini 4 Hydrogen; quality gates are GLM-5.4 and Gemini 4 Neon; Claude Opus is the final arbiter for `nyx/audit` disputes.
+
+## Hydrogen lane
+
+A second implementer lane powered by **Gemini 4 Hydrogen** via the Antigravity CLI (`Start-HydrogenWorker.ps1`, prompt `hydrogen.md`, scheduled task `\TivanoDevLoop\hydrogen` registered by `Register-HydrogenTask.ps1`) works `nyx-auto` issues in parallel with Devin:
+
+- **Lane contract:** Hydrogen claims issues with label `lane-hydrogen`, works from the highest issue number down, and never takes `audit-followup` issues. Devin claims issues with `lane-devin` when starting them and skips `lane-hydrogen` issues and `nyx/h-` PRs.
+- **Branches and per-lane WIP cap:** Hydrogen uses `nyx/h-<issue>-<slug>` branches while Devin uses `nyx/<issue>-<slug>`. Devin's 3-PR hard WIP cap counts only Devin's own open non-parked `nyx/` PRs (branches not starting with `nyx/h-`), and Devin never works, fixes, or gates `nyx/h-` PRs.
+- **Merging:** the watchdog remains the only merger once both the gate and `nyx/audit` pass on the exact head SHA.
 
 ## Parking and revisits
 
@@ -79,11 +88,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Invoke-
 - Prints one compact JSON line to stdout (`{"pr":n,"headSha":"...","verdict":"pass|fail|unavailable","failures":["..."],"gatePath":"...","glm":{"status":"ok|unavailable|skipped","verdict":"pass|changes","blocking":<count>,"runDir":"..."},"notes":[...]}`) and exits `0` on `pass`, `1` on `fail`, or `2` on `unavailable`.
 - Never merges, labels, or comments itself beyond the review comments from `Invoke-PrReview.ps1` and `Invoke-GlmReview.ps1`.
 
-### GLM-5.3 second reviewer
+### GLM-5.4 second reviewer
 
-- **What it checks and what blocks:** `Invoke-AutopilotGate.ps1` runs `scripts/dev-loop/Invoke-GlmReview.ps1` (GLM-5.3) as an independent read-only second reviewer on the same PR head and posts its own PR comment. Blocking findings appear in `failures` prefixed with `GLM-5.3: ` and fail the gate; non-blocking, out-of-scope, or style-only points are advisory. If the two reviewers contradict each other, autopilot follows the issue text and `AGENTS.md`, takes the safer option, and explains why in the commit message and a short PR comment. If GLM-5.3 is `unavailable`, it never blocks the gate by itself.
-- **Credentials and isolation:** GLM-5.3 runs through the ZCode CLI with an isolated `ZCODE_DATA_BASE_DIR` (`C:\tivano\zcode\home`) whose `provider_config` holds a BigModel Coding Plan API key. That directory sits outside the repository (never committed) and must be readable only by the runner account.
-- **Audit and review only:** GLM-5.3 never edits repository files or commits, and autopilot no longer runs GLM-5.3 consult for stuck gates; escalations go to Gemini 4 Neon (`Invoke-NeonFix.ps1`). Pass `-SkipGlm` to `Invoke-AutopilotGate.ps1` to skip the gate's GLM review (`glm.status` becomes `"skipped"`).
+- **What it checks and what blocks:** `Invoke-AutopilotGate.ps1` runs `scripts/dev-loop/Invoke-GlmReview.ps1` (GLM-5.4) as an independent read-only second reviewer on the same PR head and posts its own PR comment. Blocking findings appear in `failures` prefixed with `GLM-5.4: ` and fail the gate; non-blocking, out-of-scope, or style-only points are advisory. If the two reviewers contradict each other, autopilot follows the issue text and `AGENTS.md`, takes the safer option, and explains why in the commit message and a short PR comment. If GLM-5.4 is `unavailable`, it never blocks the gate by itself. If GLM-5.4 fails, the gate falls back once to Gemini 4 Neon for that review, and its blocking items are prefixed with `Gemini 4 Neon (fallback): ` and handled exactly like `GLM-5.4: ` (including the second-reviewer advisory carve-out rule).
+- **Credentials and isolation:** GLM-5.4 runs through the ZCode CLI with an isolated `ZCODE_DATA_BASE_DIR` (`C:\tivano\zcode\home`) whose `provider_config` holds a BigModel Coding Plan API key. That directory sits outside the repository (never committed) and must be readable only by the runner account.
+- **Audit and review only:** GLM-5.4 never edits repository files or commits, and autopilot no longer runs GLM-5.4 consult for stuck gates; escalations go to Gemini 4 Neon (`Invoke-NeonFix.ps1`). Pass `-SkipGlm` to `Invoke-AutopilotGate.ps1` to skip the gate's GLM review (`glm.status` becomes `"skipped"`).
 
 ### Gemini 4 Neon escalation fixer (`Invoke-NeonFix.ps1`)
 

@@ -12,6 +12,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Engine } from "../src/main/engine";
+import type {
+  GitRunHandle,
+  GitRunResult,
+  GitRunner,
+} from "../src/main/gitExec";
 import { GitService } from "../src/main/gitService";
 import type { ProviderAdapter, TurnContext } from "../src/main/provider";
 import { ProjectRuntimePaths } from "../src/main/projectRuntimePaths";
@@ -51,13 +56,22 @@ const UNAVAILABLE_NOTE =
   "Another chat is active in this repository, and a separate Git worktree isn't available right now. Wait for it to finish, then send again.";
 
 /** A NON-mock adapter: records the TurnContext each turn starts with and
- *  finishes instantly, so tests can assert WHERE the turn ran. */
-function execProvider(seen: TurnContext[], opts?: { hold?: boolean }): ProviderAdapter {
+ *  finishes instantly, so tests can assert WHERE the turn ran.
+ *  `errorOnce` fails the FIRST start with that message — the engine's
+ *  own error path parses a limit signal out of it like any provider's. */
+function execProvider(
+  seen: TurnContext[],
+  opts?: { hold?: boolean; errorOnce?: string },
+): ProviderAdapter {
+  let failed = false;
   return {
     descriptor: { id: "exec-stub", label: "Exec Stub", mode: "codex", synthetic: true },
     start(ctx, cb) {
       seen.push(ctx);
-      if (!opts?.hold) setTimeout(() => cb.onDone(), 1);
+      if (opts?.errorOnce !== undefined && !failed) {
+        failed = true;
+        setTimeout(() => cb.onError(opts.errorOnce!), 1);
+      } else if (!opts?.hold) setTimeout(() => cb.onDone(), 1);
       return { cancel() {}, resume() {} };
     },
     dispose: () => Promise.resolve({ children: [], orphanedPending: 0 }),
@@ -115,7 +129,7 @@ function fakeWorktrees(
 function rig(
   eligibility: "eligible" | "nonGit" | "unavailable",
   seen: TurnContext[],
-  providerOpts?: { hold?: boolean },
+  providerOpts?: { hold?: boolean; errorOnce?: string },
 ) {
   const repoDir = tmp("wtauto-repo-");
   // A plain folder suffices — the eligibility answer is stubbed; git is
@@ -249,6 +263,47 @@ describe("P1-39 workspace auto mode", () => {
     expect(bound.startsWith(join(r.dataRoot, "worktrees"))).toBe(true);
     // The second turn executes in the worktree, never the shared checkout.
     expect(seen[1]!.workspace?.directory).toBe(bound);
+    expect(seen[0]!.workspace?.directory).toBe(r.repoDir);
+  });
+
+  // #103 (audit follow-up on #98): the busy check also counts the
+  // parked states the frozen isUsingWorkspace lists — a limit wait that
+  // auto-continues and a queued follow-up both still own the folder.
+  it("a limit-waiting chat still holds the checkout", async () => {
+    const seen: TurnContext[] = [];
+    const r = rig("eligible", seen, {
+      errorOnce: `usage limit reached|${Math.floor(Date.now() / 1000) + 600}`,
+    });
+    r.engine.setSettings({ autoContinueAfterLimit: true });
+    const a = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(a.id, "hit the usage limit");
+    await waitFor(() => turnStatus(r.engine, a.id) === "error");
+    // A parks in limitWaits — no running turn, yet the checkout is not free.
+    const b = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(b.id, "second chat, same repo");
+    await waitFor(() => thread(r.engine, b.id).worktreeDir !== undefined);
+    await waitFor(() => seen.length === 2);
+    expect(seen[1]!.workspace?.directory).toBe(thread(r.engine, b.id).worktreeDir);
+    expect(seen[0]!.workspace?.directory).toBe(r.repoDir);
+  });
+
+  it("a queued follow-up still holds the checkout", async () => {
+    const seen: TurnContext[] = [];
+    const r = rig("eligible", seen, { hold: true });
+    const a = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(a.id, "running work");
+    await waitFor(() => turnStatus(r.engine, a.id) === "running");
+    r.engine.enqueueFollowUp(a.id, "queued behind");
+    r.engine.cancelTurn(a.id);
+    await waitFor(() => turnStatus(r.engine, a.id) === "cancelled");
+    // A stopped turn never drains the queue — the parked send still
+    // belongs to this folder.
+    expect(thread(r.engine, a.id).followUps?.length ?? 0).toBeGreaterThan(0);
+    const b = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(b.id, "second chat, same repo");
+    await waitFor(() => thread(r.engine, b.id).worktreeDir !== undefined);
+    await waitFor(() => seen.length === 2);
+    expect(seen[1]!.workspace?.directory).toBe(thread(r.engine, b.id).worktreeDir);
     expect(seen[0]!.workspace?.directory).toBe(r.repoDir);
   });
 
@@ -413,5 +468,97 @@ describe.skipIf(!haveDirectGit)("autoWorktreeEligibility — real git probe", ()
     writeFileSync(join(repo, ".git", "MERGE_HEAD"), realGit(repo, ["rev-parse", "HEAD"]));
     const r = realGitService(repo);
     expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("unavailable");
+  });
+});
+
+// #104 (audit follow-up on #98): the win32 eligibility path never ran in
+// any test — the POSIX-gated probe above skips this suite's host. A
+// simulated containment refusal plus an injected-runner run of the
+// probe's real git sequence cover it instead.
+describe("autoWorktreeEligibility — win32 simulation", () => {
+  const gitResult = (over: Partial<GitRunResult>): GitRunResult => ({
+    code: 0,
+    signal: null,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    overflowed: false,
+    cancelled: false,
+    ...over,
+  });
+
+  function winRig(repoDir: string, runner?: GitRunner) {
+    const dataRoot = tmp("wtauto-wdata-");
+    const store = new Store(dataRoot);
+    store.open();
+    stores.push(store);
+    const paths = new ProjectRuntimePaths([], join(dataRoot, "grants.json"), dataRoot);
+    const engine = new Engine(
+      store,
+      {
+        descriptor: { id: "m", label: "M", mode: "mock", synthetic: true },
+        start() {
+          throw new Error("never");
+        },
+        dispose: () => Promise.resolve({ children: [], orphanedPending: 0 }),
+      } as ProviderAdapter,
+      dataRoot,
+      "0.0.0-test",
+      paths,
+    );
+    const { project } = engine.openUserDirectory(repoDir);
+    const git = new GitService({
+      paths,
+      projects: () => engine.snapshot().projects,
+      mutable: () => true,
+      emit: () => {},
+      dataRoot,
+      platform: "win32",
+      ...(runner ? { runner } : {}),
+    });
+    services.push(git);
+    return { git, projectId: project.id };
+  }
+
+  it("win32 without the attested runner answers git-containment's unavailable", async () => {
+    const dir = tmp("wtauto-wplain-");
+    const r = winRig(dir);
+    // platform win32 + no deps.runner pins unavailableReason =
+    // git-containment — the probe refuses before any spawn.
+    expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("unavailable");
+  });
+
+  it("win32 with an injected runner runs the probe's real git sequence", async () => {
+    const dir = tmp("wtauto-wrepo-");
+    // A real .git dir: operationInProgress checks its markers on disk.
+    mkdirSync(join(dir, ".git"));
+    const calls: string[][] = [];
+    const runner: GitRunner = {
+      run: (args) => {
+        calls.push([...args]);
+        const cmd = args.join(" ");
+        const result = cmd.includes("--is-inside-work-tree")
+          ? gitResult({ stdout: "true\n" })
+          : cmd.includes("--show-toplevel")
+            ? gitResult({ stdout: dir + "\n" })
+            : cmd.includes("--git-dir")
+              ? gitResult({ stdout: join(dir, ".git") + "\n" })
+              : gitResult({});
+        return {
+          done: Promise.resolve(result),
+          cancel() {},
+          pid: 1,
+        } as GitRunHandle;
+      },
+      active: () => new Set(),
+    };
+    const r = winRig(dir, runner);
+    expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("eligible");
+    // The frozen probe order: inside-work-tree → toplevel → HEAD → git-dir.
+    const flat = calls.map((c) => c.join(" "));
+    expect(flat.some((c) => c.includes("--is-inside-work-tree"))).toBe(true);
+    expect(flat.some((c) => c.includes("--show-toplevel"))).toBe(true);
+    expect(flat.some((c) => c.includes("--verify") && c.includes("HEAD"))).toBe(true);
+    expect(flat.some((c) => c.includes("--git-dir"))).toBe(true);
   });
 });

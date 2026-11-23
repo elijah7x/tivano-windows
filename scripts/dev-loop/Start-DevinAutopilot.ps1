@@ -669,7 +669,19 @@ function Focus-DevinChatInput {
   }
   [DevLoopWindows]::ShowWindow($Window, 3) | Out-Null
   Start-Sleep -Milliseconds 800
-  if (-not (Test-DevinForeground $Window)) { return $false }
+  # A briefly flashing console from another scheduled task can take the foreground; log who holds it and retry the click focus.
+  for ($focusTry = 1; -not (Test-DevinForeground $Window); $focusTry++) {
+    $holder = [DevLoopWindows]::GetForegroundInfo()
+    if ($null -ne $holder) {
+      Write-Log ('chat input focus lost (try ' + $focusTry + '/3) to class=' + [string]$holder.ClassName + ' process=' + [string]$holder.ProcessName)
+    } else {
+      Write-Log ('chat input focus lost (try ' + $focusTry + '/3) to an unknown window')
+    }
+    if ($focusTry -ge 3) { return $false }
+    Start-Sleep -Seconds 3
+    if (-not (Set-DevinForeground $Window)) { continue }
+    Start-Sleep -Milliseconds 500
+  }
   try {
     [DevLoopWindows]::SetTopmost($Window, $true) | Out-Null
     Start-Sleep -Milliseconds 300
@@ -1103,12 +1115,12 @@ function Invoke-Kickoff {
     return 'failed'
   }
 
-  $message = 'First re-read ' + $script:PromptPath + ' and carry it out exactly as written. Then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any open nyx/ PR whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Work through the whole queue, parked revisits, hands-on milestone, and 30-minute polling loop without asking questions or waiting for a person. Re-read ' + $script:PromptPath + ' after every issue. Use these values wherever the file names its defaults: repository ' + $Repo + ', label ' + $Label + ', root folder ' + $script:WorkRoot + ' (progress.json and parked.json in its autopilot subfolder, STOP in its state subfolder).'
+  $message = 'First re-read ' + $script:PromptPath + ' and carry it out exactly as written. Then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Work through the whole queue, parked revisits, hands-on milestone, and 30-minute polling loop without asking questions or waiting for a person. Re-read ' + $script:PromptPath + ' after every issue. Use these values wherever the file names its defaults: repository ' + $Repo + ', label ' + $Label + ', root folder ' + $script:WorkRoot + ' (progress.json and parked.json in its autopilot subfolder, STOP in its state subfolder). With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
   $soloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
   $soloStatePath = Join-Path $script:AutopilotDir 'solo-v3.json'
   $soloState = Read-JsonFile $soloStatePath
   if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and [string](Get-JsonProp $soloState 'phase') -ne 'done') {
-    $message = 'Continue the mission: first re-read ' + $soloPlan + ' and ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub, ' + $script:ProgressPath + ', and ' + $soloStatePath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any open nyx/ PR whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains.'
+    $message = 'Continue the mission: first re-read ' + $soloPlan + ' and ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub, ' + $script:ProgressPath + ', and ' + $soloStatePath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains. With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
   }
   $sent = $false
   for ($try = 0; $try -lt 3 -and -not $sent; $try++) {
@@ -1397,7 +1409,7 @@ function Invoke-AutoMerge {
       }
 
       # (c) PR body contains a closing keyword for the issue number parsed from nyx/<n>-...
-      $branchMatch = [regex]::Match($headRef, '^nyx/([0-9]+)-')
+      $branchMatch = [regex]::Match($headRef, '^nyx/(?:h-)?([0-9]+)-')
       if (-not $branchMatch.Success) {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (branch ' + $headRef + ' does not match nyx/<issue>-...)')
         continue
@@ -1848,10 +1860,10 @@ function Invoke-WatchTick {
       Write-Log 'idle nudge aborted: focus changed before clear'
       return
     }
-    $nudgeMessage = 'Continue the autopilot task: first re-read ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any open nyx/ PR whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep going (queue, parked revisits, hands-on milestone, and 30-minute polling).'
+    $nudgeMessage = 'Continue the autopilot task: first re-read ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep going (queue, parked revisits, hands-on milestone, and 30-minute polling). With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
     # The v3 solo mission supersedes the per-issue loop while its state file says it is not finished.
     if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and $soloPhase -ne 'done') {
-      $nudgeMessage = 'Continue the mission: first re-read ' + $soloPlan + ' and ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub, ' + $script:ProgressPath + ', and ' + $soloStatePath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any open nyx/ PR whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains.'
+      $nudgeMessage = 'Continue the mission: first re-read ' + $soloPlan + ' and ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub, ' + $script:ProgressPath + ', and ' + $soloStatePath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains. With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
     }
     if (-not (Send-DevinTextSafe $window $nudgeMessage)) {
       Write-Log 'idle nudge aborted: focus changed before paste'

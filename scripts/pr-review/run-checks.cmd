@@ -47,8 +47,8 @@ set "STEP_UNIT=%ERRORLEVEL%"
 rem e2e is capped at 15 minutes; exit code 124 means it was stopped at the cap.
 powershell.exe -NoProfile -NonInteractive -Command "$p = Start-Process -FilePath node.exe -ArgumentList 'scripts\e2e.mjs' -NoNewWindow -PassThru -RedirectStandardOutput '%RES%\e2e.log' -RedirectStandardError '%RES%\e2e.err.log'; if ($p.WaitForExit(900000)) { exit $p.ExitCode } else { taskkill.exe /T /F /PID $p.Id | Out-Null; exit 124 }"
 set "STEP_E2E=%ERRORLEVEL%"
-rem Electron instances left behind by a failed e2e would otherwise outlive the run.
-taskkill.exe /F /FI "USERNAME eq %USERDOMAIN%\%USERNAME%" /IM electron.exe > nul 2>&1
+rem Electron instances left behind by a failed e2e would otherwise outlive the run. Only this worktree's Electron is stopped, so a concurrent gate's e2e keeps running.
+powershell.exe -NoProfile -NonInteractive -Command "$w = '%WT%'.TrimEnd('\\'); Get-CimInstance Win32_Process -Filter \"Name='electron.exe'\" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($w, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" > nul 2>&1
 
 :finish
 popd
