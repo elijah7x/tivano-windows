@@ -850,4 +850,6 @@ type AppEventPayload =
   | {
       type: "slash-recorded";
       recentCommands: Record<string, string[]>;
-    };
+    }
+  | { type: "window-activity"; active: boolean }
+  | { type: "memory-pressure"; critical: boolean };

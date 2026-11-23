@@ -9,6 +9,7 @@
 // F26 performanceMode freeze the wave at t=0 instead of animating.
 
 import type { CSSProperties } from "react";
+import { useAppPaused } from "../appActivity";
 
 /** Frozen GradientSpin.opacity(phase): full → ease to 0.1 by 45%, hold to
  *  92%, rise to full by 100%. Used for the still frame at t=0. */
@@ -78,7 +79,8 @@ function SpinnerGrid({
   cellSize: number;
   labelled: boolean;
 }): React.JSX.Element {
-  const still = prefersStill();
+  const appPaused = useAppPaused();
+  const still = prefersStill() || appPaused;
   const gap = cellSize * 0.8;
   const style: CSSProperties = {
     display: "inline-grid",

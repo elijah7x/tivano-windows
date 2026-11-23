@@ -20,6 +20,7 @@ import { antiSlopInstructions } from "./antiSlop";
 import { builtinSlashCommands } from "../shared/slashCommands";
 import { clampFontSize } from "../shared/typeScale";
 import {
+  canSkipHydraMergeRecovery,
   clampedHydraCap,
   headProfileMatches,
   hydraPairForLead,
@@ -32,6 +33,7 @@ import {
   type HydraPersona,
   type ResolvedHydraLaunch,
 } from "../shared/hydra";
+import { visibleThreads } from "../shared/threadOrder";
 import {
   HydraDelegationStreamParser,
   MAX_DELEGATED_TASKS,
@@ -329,6 +331,32 @@ export class Engine {
    *  charged — frozen seedBaseline parity). */
   private readonly freshSessionKeys = new Set<string>();
 
+  /** P2-63: paced streaming for non-visible panels/threads + memory-pressure
+   *  LRU + window visibility state. */
+  private windowActive = true;
+  private readonly panelFlushMs =
+    Number(process.env.TIVANO_PANEL_FLUSH_MS) > 0
+      ? Number(process.env.TIVANO_PANEL_FLUSH_MS)
+      : 90;
+  private readonly offscreenFlushMs =
+    Number(process.env.TIVANO_OFFSCREEN_FLUSH_MS) > 0
+      ? Number(process.env.TIVANO_OFFSCREEN_FLUSH_MS)
+      : 1000;
+  private readonly pendingChunks = new Map<
+    string,
+    {
+      threadId: string;
+      turnId: string;
+      seq: number;
+      delta?: string;
+      content?: string;
+      delayMs: number;
+      timer: NodeJS.Timeout | null;
+    }
+  >();
+  private readonly threadAccessOrder = new Map<string, number>();
+  private accessTick = 0;
+
   constructor(
     private readonly store: Store,
     private readonly provider: ProviderAdapter = new MockProvider(),
@@ -338,6 +366,155 @@ export class Engine {
   ) {
     this.tokenLedger = new TokenLedger(this.dataRoot);
     this.armShelveSweep();
+  }
+
+  private touchThreadAccess(threadId: string): void {
+    const ts = Math.max(Date.now(), this.accessTick + 1);
+    this.accessTick = ts;
+    this.threadAccessOrder.set(threadId, ts);
+  }
+
+  /** P2-63: read a thread's persisted messages without reloading a released
+   *  thread into RAM (used by read-only local-control projections). */
+  readThreadMessages(id: string): Message[] {
+    return this.store.readThreadMessages(id);
+  }
+
+  private ensureThreadLoaded(threadId: string): void {
+    this.touchThreadAccess(threadId);
+    if (this.store.reloadThreadHistory(threadId)) {
+      const t = this.store.state.threads.find((x) => x.id === threadId);
+      if (t) this.emit({ type: "thread-updated", thread: t });
+    }
+  }
+
+  private dropPendingChunk(threadId: string): void {
+    const buf = this.pendingChunks.get(threadId);
+    if (!buf) return;
+    if (buf.timer) clearTimeout(buf.timer);
+    this.pendingChunks.delete(threadId);
+  }
+
+  /** P2-63: update main-window visible state and flush or speed up buffered
+   *  streams when the window returns to view. */
+  setWindowActive(active: boolean): void {
+    if (this.windowActive === active) return;
+    this.windowActive = active;
+    if (active) {
+      for (const threadId of [...this.pendingChunks.keys()]) {
+        const t = this.store.state.threads.find((x) => x.id === threadId);
+        if (!t) continue;
+        const nextDelay = this.threadStreamDelayMs(t);
+        if (nextDelay === 0) {
+          this.flushPendingChunk(threadId);
+        } else {
+          const buf = this.pendingChunks.get(threadId);
+          if (buf && nextDelay < buf.delayMs) {
+            if (buf.timer) clearTimeout(buf.timer);
+            buf.delayMs = nextDelay;
+            buf.timer = setTimeout(() => this.flushPendingChunk(threadId), nextDelay);
+            buf.timer.unref?.();
+          }
+        }
+      }
+    }
+  }
+
+  private threadStreamDelayMs(thread: ChatThread): number {
+    if (!this.windowActive) return this.offscreenFlushMs;
+    const selectedId = this.store.state.ui.selectedThreadId;
+    if (thread.id === selectedId) return 0;
+    if (
+      (thread.isInPanel === true && thread.parentThreadId === selectedId) ||
+      (thread.hydraHead !== undefined && thread.hydraHead.leadId === selectedId)
+    ) {
+      return this.panelFlushMs;
+    }
+    return this.offscreenFlushMs;
+  }
+
+  private flushPendingChunk(threadId: string): void {
+    const buf = this.pendingChunks.get(threadId);
+    if (!buf) return;
+    if (buf.timer) clearTimeout(buf.timer);
+    this.pendingChunks.delete(threadId);
+    const thread = this.store.state.threads.find((t) => t.id === buf.threadId);
+    const turn = thread?.turn;
+    const msg =
+      turn && turn.id === buf.turnId
+        ? thread.messages.find((m) => m.id === turn.assistantMessageId)
+        : undefined;
+    this.emit({
+      type: "turn-chunk",
+      threadId: buf.threadId,
+      turnId: buf.turnId,
+      seq: buf.seq,
+      ...(msg !== undefined
+        ? { content: msg.content }
+        : buf.content !== undefined
+          ? { content: buf.content }
+          : { delta: buf.delta ?? "" }),
+    });
+  }
+
+  private queueOrEmitChunk(
+    thread: ChatThread,
+    turnId: string,
+    seq: number,
+    payload: { delta?: string; content?: string },
+  ): void {
+    const delayMs = this.threadStreamDelayMs(thread);
+    const existing = this.pendingChunks.get(thread.id);
+    if (delayMs === 0 && !existing) {
+      this.emit({
+        type: "turn-chunk",
+        threadId: thread.id,
+        turnId,
+        seq,
+        ...payload,
+      });
+      return;
+    }
+    if (existing && existing.turnId === turnId) {
+      existing.seq = seq;
+      if (payload.content !== undefined) {
+        existing.content = payload.content;
+        delete existing.delta;
+      } else if (payload.delta !== undefined) {
+        if (existing.content !== undefined) existing.content += payload.delta;
+        else existing.delta = (existing.delta ?? "") + payload.delta;
+      }
+      if (delayMs === 0) {
+        this.flushPendingChunk(thread.id);
+      } else if (delayMs < existing.delayMs && existing.timer) {
+        clearTimeout(existing.timer);
+        existing.delayMs = delayMs;
+        existing.timer = setTimeout(() => this.flushPendingChunk(thread.id), delayMs);
+        existing.timer.unref?.();
+      }
+      return;
+    }
+    if (existing) this.flushPendingChunk(thread.id);
+    if (delayMs === 0) {
+      this.emit({
+        type: "turn-chunk",
+        threadId: thread.id,
+        turnId,
+        seq,
+        ...payload,
+      });
+      return;
+    }
+    const timer = setTimeout(() => this.flushPendingChunk(thread.id), delayMs);
+    timer.unref?.();
+    this.pendingChunks.set(thread.id, {
+      threadId: thread.id,
+      turnId,
+      seq,
+      ...payload,
+      delayMs,
+      timer,
+    });
   }
 
   onEvent(fn: (e: AppEvent) => void): () => void {
@@ -376,7 +553,8 @@ export class Engine {
   private terminals?: Pick<
     import("./terminalService").TerminalService,
     "create"
-  >;
+  > &
+    Partial<Pick<import("./terminalService").TerminalService, "list">>;
   attachTerminals(t: NonNullable<Engine["terminals"]>): void {
     this.terminals = t;
   }
@@ -478,6 +656,7 @@ export class Engine {
     }
     this.turnLastEvent.clear();
     this.limitResumes.clear();
+    for (const tid of [...this.pendingChunks.keys()]) this.flushPendingChunk(tid);
     for (const h of this.handles.values()) h.cancel();
     this.handles.clear();
     try {
@@ -535,9 +714,46 @@ export class Engine {
   }
 
   /**
+   * P2-63 (frozen hydraRecoveryCanSkipHistoryLoad): true when a lead's
+   * Hydra jobs are all settled (merged or nothing) and no non-archived head
+   * carries unmerged landed work.
+   */
+  canSkipHydraRecovery(threadId: string): boolean {
+    const lead = this.store.state.threads.find((t) => t.id === threadId);
+    if (!lead) return true;
+    return canSkipHydraMergeRecovery(lead, this.store.state.threads);
+  }
+
+  /**
+   * P2-63: Hydra recovery scan — evaluates lead chats and skips any whose
+   * work is already completely merged without touching or reloading their
+   * history.
+   */
+  recoverHydraWork(): { checked: string[]; skipped: string[] } {
+    const checked: string[] = [];
+    const skipped: string[] = [];
+    const threads = this.store.state.threads;
+    for (const t of threads) {
+      if (t.hydraHead) continue;
+      const hasHydraData =
+        (t.hydraJobs?.length ?? 0) > 0 ||
+        threads.some((h) => h.hydraHead?.leadId === t.id);
+      if (!hasHydraData) continue;
+      if (canSkipHydraMergeRecovery(t, threads)) {
+        skipped.push(t.id);
+        continue;
+      }
+      this.ensureThreadLoaded(t.id);
+      checked.push(t.id);
+    }
+    return { checked, skipped };
+  }
+
+  /**
    * Recovery: any turn that was mid-flight when the previous run ended is
    * marked interrupted — never auto-approved, never silently continued, and
-   * no replayed side effects.
+   * no replayed side effects. Chats whose Hydra work is all merged are
+   * skipped without reloading history.
    */
   recoverInFlight(): string[] {
     const now = Date.now();
@@ -547,8 +763,113 @@ export class Engine {
         if (this.markInterrupted(t, now)) recovered.push(t.id);
       }
     });
+    this.recoverHydraWork();
     this.interruptedThreads = recovered;
     return recovered;
+  }
+
+  /**
+   * P2-63 (frozen AppModel.handleMemoryPressure + releaseExcessIdleRuntimes):
+   * releases hidden idle chats' in-memory histories and caches under memory
+   * pressure even when automatic shelving (autoShelveDays) is off.
+   */
+  handleMemoryPressure(critical = false): {
+    releasedThreads: number;
+    stoppedSessions: number;
+  } {
+    const keepIdleLimit = critical ? 2 : 4;
+    const threads = this.store.state.threads;
+    const selectedId = this.store.state.ui.selectedThreadId;
+    const selectedThread = selectedId
+      ? threads.find((t) => t.id === selectedId)
+      : undefined;
+    const runningLeadIds = new Set<string>();
+    for (const t of threads) {
+      if (
+        t.hydraHead &&
+        (t.hydraHead.status === "running" ||
+          t.hydraHead.landingPending === true ||
+          this.threadBusy(t))
+      ) {
+        runningLeadIds.add(t.hydraHead.leadId);
+      }
+    }
+
+    const isProtected = (t: ChatThread): boolean => {
+      if (t.id === selectedId) return true;
+      if (selectedThread?.parentThreadId === t.id) return true;
+      if (t.parentThreadId !== undefined && t.parentThreadId === selectedId) return true;
+      if (this.threadBusy(t)) return true;
+      if (this.pendingSends.has(t.id)) return true;
+      if ((t.followUps?.length ?? 0) > 0) return true;
+      if (this.limitWaits.has(t.id)) return true;
+      if (t.isInPanel === true) return true;
+      if (
+        t.hydraHead &&
+        (t.hydraHead.status === "running" || t.hydraHead.landingPending === true)
+      ) {
+        return true;
+      }
+      if (this.hydraReviewRunning.has(t.id)) return true;
+      if (runningLeadIds.has(t.id)) return true;
+      if (this.pendingChunks.has(t.id)) return true;
+      try {
+        if ((this.terminals?.list?.(t.id).length ?? 0) > 0) return true;
+      } catch {
+        /* ignore if thread terminal lookup unavailable */
+      }
+      return false;
+    };
+
+    const candidates = threads
+      .filter((t) => !isProtected(t) && !this.store.isThreadHistoryReleased(t.id))
+      .sort((a, b) => {
+        // Release archived threads first, then least-recently accessed idle threads.
+        if (!!a.isArchived !== !!b.isArchived) return a.isArchived ? -1 : 1;
+        const aa = this.threadAccessOrder.get(a.id) ?? a.updatedAt;
+        const ba = this.threadAccessOrder.get(b.id) ?? b.updatedAt;
+        return aa - ba;
+      });
+
+    const nonArchivedLoaded = threads.filter(
+      (t) => !t.isArchived && !this.store.isThreadHistoryReleased(t.id),
+    ).length;
+    let remainingOverLimit = Math.max(0, nonArchivedLoaded - keepIdleLimit);
+
+    let releasedThreads = 0;
+    let stoppedSessions = 0;
+    for (const t of candidates) {
+      if (!t.isArchived && remainingOverLimit <= 0) continue;
+      let released = false;
+      try {
+        released = this.store.releaseThreadHistory(t.id);
+      } catch {
+        continue;
+      }
+      if (!released) continue;
+      if (!t.isArchived) remainingOverLimit -= 1;
+      releasedThreads += 1;
+      if (this.provider.endSession) {
+        this.provider.endSession(t.id);
+        stoppedSessions += 1;
+      }
+    }
+
+    // Clear stale Hydra parser/touched state for non-busy threads.
+    for (const key of [...this.hydraParsers.keys()]) {
+      const tid = key.split(":")[0]!;
+      const t = threads.find((x) => x.id === tid);
+      if (!t || !this.threadBusy(t)) {
+        this.hydraParsers.delete(key);
+        this.hydraTexts.delete(key);
+        this.hydraSent.delete(key);
+      }
+    }
+
+    if (releasedThreads > 0 || stoppedSessions > 0) {
+      this.emit({ type: "memory-pressure", critical });
+    }
+    return { releasedThreads, stoppedSessions };
   }
 
   /**
@@ -751,6 +1072,8 @@ export class Engine {
         data.ui.selectedThreadId = null;
     });
     for (const tid of removedThreads) {
+      this.dropPendingChunk(tid);
+      this.threadAccessOrder.delete(tid);
       this.handles.get(tid)?.cancel();
       this.provider.endSession?.(tid);
     }
@@ -853,6 +1176,7 @@ export class Engine {
       d.threads.push(thread);
       d.ui.selectedThreadId = thread.id;
     });
+    this.touchThreadAccess(thread.id);
     this.emit({ type: "thread-added", thread });
     this.emit({ type: "thread-selected", threadId: thread.id });
     // F01/F11: frozen newThread — a project-bound thread under
@@ -893,6 +1217,10 @@ export class Engine {
   selectThread(id: string | null): void {
     this.assertMutable();
     const thread = id ? this.mustThread(id) : null;
+    if (id) {
+      this.ensureThreadLoaded(id);
+      this.flushPendingChunk(id);
+    }
     // F28: selecting the thread puts the result on screen — the unread
     // mark is spent exactly once, here (frozen markRead).
     const cleared = thread?.hasUnread === true;
@@ -995,10 +1323,35 @@ export class Engine {
     // Mutations above ride the next store.update like the watchdog's own.
   }
 
+  private pickNeighborThreadId(excludingIds: Set<string>, fromId: string): string | null {
+    const d = this.store.state;
+    const order = visibleThreads(
+      d.projects.filter((p) => !p.isShelved),
+      d.threads.filter((t) => !t.isInPanel || !t.parentThreadId),
+    );
+    const idx = order.findIndex((t) => t.id === fromId);
+    if (idx >= 0) {
+      for (let i = idx + 1; i < order.length; i++) {
+        if (!excludingIds.has(order[i]!.id)) return order[i]!.id;
+      }
+      for (let i = idx - 1; i >= 0; i--) {
+        if (!excludingIds.has(order[i]!.id)) return order[i]!.id;
+      }
+    }
+    return order.find((t) => !excludingIds.has(t.id))?.id ?? null;
+  }
+
   archiveThread(id: string): void {
     this.assertMutable();
     const thread = this.mustThread(id);
     if (thread.isArchived) return;
+    // Compute neighbor BEFORE mutating isArchived so index math preserves
+    // the thread's sidebar slot (frozen AppModel.archive neighbor(of:)).
+    const archivedSet = new Set([id]);
+    const nextId =
+      this.store.state.ui.selectedThreadId === id
+        ? this.pickNeighborThreadId(archivedSet, id)
+        : null;
     thread.isArchived = true;
     // Frozen archive() → runtime.stopSession() + pendingLocalTurnStarts
     // release: a turn still running ends with the archive — its provider
@@ -1025,15 +1378,30 @@ export class Engine {
     thread.isPinned = false;
     thread.updatedAt = Date.now();
     this.clearLimitWait(id);
-    let deselected = false;
+    let selectionChanged = false;
+    let nextThread: ChatThread | undefined;
+    let clearedUnread = false;
     this.store.update((d) => {
       if (d.ui.selectedThreadId === id) {
-        d.ui.selectedThreadId = null;
-        deselected = true;
+        d.ui.selectedThreadId = nextId;
+        selectionChanged = true;
+        if (nextId) {
+          nextThread = d.threads.find((t) => t.id === nextId);
+          if (nextThread?.hasUnread) {
+            nextThread.hasUnread = false;
+            delete nextThread.unreadStatus;
+            clearedUnread = true;
+          }
+        }
       }
     });
+    if (nextId) {
+      this.ensureThreadLoaded(nextId);
+      this.flushPendingChunk(nextId);
+    }
     this.emit({ type: "thread-updated", thread });
-    if (deselected) this.emit({ type: "thread-selected", threadId: null });
+    if (clearedUnread && nextThread) this.emit({ type: "thread-updated", thread: nextThread });
+    if (selectionChanged) this.emit({ type: "thread-selected", threadId: nextId });
   }
 
   /** F02: restore an archived thread back into the main list. */
@@ -1041,6 +1409,7 @@ export class Engine {
     this.assertMutable();
     const thread = this.mustThread(id);
     if (!thread.isArchived) return;
+    this.ensureThreadLoaded(id);
     thread.isArchived = false;
     thread.updatedAt = Date.now();
     this.store.update(() => {});
@@ -1052,6 +1421,8 @@ export class Engine {
     // Latch the queue first — a synchronous cancel→endTurn callback must
     // never fire a pendingSend on a thread being deleted.
     this.pendingSends.delete(id);
+    this.dropPendingChunk(id);
+    this.threadAccessOrder.delete(id);
     this.handles.get(id)?.cancel();
     this.handles.delete(id);
     this.provider.endSession?.(id);
@@ -1174,10 +1545,10 @@ export class Engine {
     threadId: string,
     id: string,
   ): { name: string; size: number; path?: string } | undefined {
-    const t = this.mustThread(threadId);
+    this.mustThread(threadId);
     const pending = this.pendingAttachments.get(threadId)?.find((a) => a.id === id);
     if (pending) return { name: pending.name, size: pending.size, path: pending.path };
-    for (const m of t.messages) {
+    for (const m of this.readThreadMessages(threadId)) {
       const a = m.attachments?.find((x) => x.id === id);
       if (a) return { name: a.name, size: a.size };
     }
@@ -1204,6 +1575,7 @@ export class Engine {
       // starts a fresh `g<n>` bucket by construction — nothing to clear.
     }
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     // Frozen beginThreadTurnAsync save: the library must own writes
     // before anything is consumed — `store.update` silently no-ops when
     // it doesn't, which would either queue a follow-up the library
@@ -1323,7 +1695,10 @@ export class Engine {
       );
       info.summary = undefined;
       info.landing = undefined;
+      info.mergedAt = undefined;
       info.finishedAt = undefined;
+      const lead = this.store.state.threads.find((t) => t.id === info.leadId);
+      if (lead) this.recordHydraJobOpen(lead, info.batchId);
       // A kept copy stays bound — a stopped head's half-done edits are
       // where it carries on. Its base tree stays too, so the next
       // landing still diffs everything that never left the copy.
@@ -1908,6 +2283,7 @@ export class Engine {
   cancelTurn(threadId: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const turn = thread.turn;
     if (!turn || (turn.status !== "running" && turn.status !== "waiting-approval")) return;
     // Latch BEFORE endTurn so a pending before-capture resolving later
@@ -2117,6 +2493,7 @@ export class Engine {
   ): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const trimmed = text.trim();
     if (!trimmed) throw new EngineError("empty follow-up");
     const items = this.queueOf(thread);
@@ -2147,6 +2524,7 @@ export class Engine {
   removeFollowUp(threadId: string, id: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const items = this.queueOf(thread);
     const idx = items.findIndex((i) => i.id === id);
     if (idx < 0) throw new EngineError("no such queued follow-up");
@@ -2160,6 +2538,7 @@ export class Engine {
   updateFollowUp(threadId: string, id: string, text: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const item = this.queueOf(thread).find((i) => i.id === id);
     if (!item) throw new EngineError("no such queued follow-up");
     const trimmed = text.trim();
@@ -2175,6 +2554,7 @@ export class Engine {
   moveFollowUp(threadId: string, id: string, targetId: string, after: boolean): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const items = this.queueOf(thread);
     const from = items.findIndex((i) => i.id === id);
     const to = items.findIndex((i) => i.id === targetId);
@@ -2196,6 +2576,7 @@ export class Engine {
   bundleFollowUp(threadId: string, id: string, ontoId: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const items = this.queueOf(thread);
     const targetIndex = items.findIndex((i) => i.id === ontoId);
     const from = items.findIndex((i) => i.id === id);
@@ -2215,6 +2596,7 @@ export class Engine {
   unbundleFollowUp(threadId: string, id: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const item = this.queueOf(thread).find((i) => i.id === id);
     if (!item?.bundleId) return;
     this.store.update(() => {
@@ -2230,6 +2612,7 @@ export class Engine {
   sendFollowUpNow(threadId: string, id: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const items = this.queueOf(thread);
     const index = items.findIndex((i) => i.id === id);
     if (index < 0) throw new EngineError("no such queued follow-up");
@@ -2277,6 +2660,7 @@ export class Engine {
   interruptAndSend(threadId: string, text: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const trimmed = text.trim();
     if (!trimmed) throw new EngineError("empty message");
     if (!this.threadBusy(thread)) {
@@ -2411,6 +2795,7 @@ export class Engine {
   resolveApproval(threadId: string, approvalId: string, optionId: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const turn = thread.turn;
     const approval = turn?.approval;
     if (!turn || !approval || approval.id !== approvalId)
@@ -2788,6 +3173,7 @@ export class Engine {
   ): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (model !== null && (model.length === 0 || model.length > 200))
       throw new EngineError("invalid model id");
     if (effort !== null && (effort.length === 0 || effort.length > 100))
@@ -2900,6 +3286,7 @@ export class Engine {
   ): Promise<WorktreeResult> {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (!this.worktrees) return { kind: "unavailable", reason: "worktrees-unavailable" };
     if (!thread.projectId) return { kind: "unavailable", reason: "thread-has-no-project" };
     if (thread.worktreeDir) return { kind: "unavailable", reason: "already-bound" };
@@ -2970,6 +3357,7 @@ export class Engine {
   async switchThreadBranch(threadId: string, name: string) {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (thread.turn && (thread.turn.status === "running" || thread.turn.status === "waiting-approval"))
       return { kind: "unavailable" as const, reason: "turn-active" };
     const ctx = this.threadGitContext(threadId);
@@ -2981,6 +3369,7 @@ export class Engine {
   async createThreadBranch(threadId: string, name: string) {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (thread.turn && (thread.turn.status === "running" || thread.turn.status === "waiting-approval"))
       return { kind: "unavailable" as const, reason: "turn-active" };
     const ctx = this.threadGitContext(threadId);
@@ -2993,6 +3382,7 @@ export class Engine {
   async renameThreadBranch(threadId: string, name: string, confirmedPushed: boolean) {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (!thread.worktreeDir) return { kind: "unavailable" as const, reason: "no-worktree" };
     const ctx = this.threadGitContext(threadId);
     if (!ctx || !this.worktrees) return { kind: "unavailable" as const, reason: "no-directory" };
@@ -3005,6 +3395,7 @@ export class Engine {
   async removeThreadWorktree(threadId: string): Promise<WorktreeResult> {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (!this.worktrees) return { kind: "unavailable", reason: "worktrees-unavailable" };
     if (!thread.projectId) return { kind: "unavailable", reason: "thread-has-no-project" };
     if (!thread.worktreeDir) return { kind: "unavailable", reason: "no-worktree" };
@@ -3079,6 +3470,7 @@ export class Engine {
   ): { terminal?: import("../shared/types").TerminalInfo; unavailable?: string } {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (!thread.projectId) return { unavailable: "unbound" };
     if (!this.terminals) return { unavailable: "unavailable" };
     const project = this.store.state.projects.find((p) => p.id === thread.projectId);
@@ -3162,6 +3554,7 @@ export class Engine {
   setInteractionMode(threadId: string, mode: InteractionMode): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (mode !== "build" && mode !== "plan") throw new EngineError("invalid interaction mode");
     if (thread.interactionMode === mode) return;
     this.store.update(() => {
@@ -3179,6 +3572,7 @@ export class Engine {
    */
   forwardThread(sourceId: string): ChatThread {
     this.assertMutable();
+    this.ensureThreadLoaded(sourceId);
     const source = this.mustThread(sourceId);
     const continuation = captureContinuation(
       source.messages,
@@ -3205,6 +3599,7 @@ export class Engine {
       d.threads.push(thread);
       d.ui.selectedThreadId = thread.id;
     });
+    this.touchThreadAccess(thread.id);
     this.emit({ type: "thread-added", thread });
     this.emit({ type: "thread-selected", threadId: thread.id });
     return thread;
@@ -3260,7 +3655,9 @@ export class Engine {
     if (thread.projectId === target) return true;
     // Frozen gate: not archived, no started turn, nothing live.
     const started =
-      thread.turn !== null || thread.messages.some((m) => m.role === "user");
+      thread.turn !== null ||
+      thread.hasStartedTurn === true ||
+      this.readThreadMessages(id).some((m) => m.role === "user");
     if (thread.isArchived || started || this.limitWaits.has(id)) return false;
     // applyThreadAffiliation: stop the session, drop queued sends, clear
     // the provider identity — terminals are closed by the IPC layer
@@ -3315,6 +3712,7 @@ export class Engine {
   setThreadPinned(threadId: string, pinned: boolean): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (!!thread.isPinned === pinned) return;
     this.store.update(() => {
       thread.isPinned = pinned;
@@ -3330,6 +3728,7 @@ export class Engine {
   setRuntimeMode(threadId: string, mode: RuntimeMode): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (!RUNTIME_MODES.includes(mode)) throw new EngineError("invalid runtime mode");
     if (thread.runtimeMode === mode) return;
     this.store.update(() => {
@@ -3349,6 +3748,7 @@ export class Engine {
   setThreadHydra(threadId: string, enabled: boolean): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (thread.hydraEnabled === enabled &&
         this.store.state.settings.hydraDefaultEnabled === enabled) return;
     this.store.update((d) => {
@@ -3366,6 +3766,7 @@ export class Engine {
   setSubagentMode(threadId: string, mode: SubagentMode): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (thread.hydraHead) throw new EngineError("heads have no sub-agent mode");
     // Frozen canSwitchChimeraMode: the adaptive switch is locked in both
     // directions while the chat's sub-agents are at work, delegations
@@ -3510,6 +3911,7 @@ export class Engine {
     const turn = thread?.turn;
     if (!thread || !turn || turn.id !== turnId || turn.status !== "running") return;
     if (seq <= turn.seq) return;
+    this.touchThreadAccess(threadId);
     turn.seq = seq;
     const msg = thread.messages.find((m) => m.id === turn.assistantMessageId);
     const prev = msg?.content ?? "";
@@ -3519,7 +3921,7 @@ export class Engine {
     this.store.update(() => {});
     const appended = next.startsWith(prev) ? next.slice(prev.length) : next;
     if (appended) {
-      this.emit({ type: "turn-chunk", threadId, turnId, seq, delta: appended });
+      this.queueOrEmitChunk(thread, turnId, seq, { delta: appended });
       this.feedHydraAppend(thread, turn, appended);
     }
   }
@@ -3539,13 +3941,14 @@ export class Engine {
     const turn = thread?.turn;
     if (!thread || !turn || turn.id !== turnId || turn.status !== "running") return;
     if (seq <= turn.seq) return;
+    this.touchThreadAccess(threadId);
     turn.seq = seq;
     const content = boundedText(text);
     const msg = thread.messages.find((m) => m.id === turn.assistantMessageId);
     if (msg) msg.content = content;
     thread.updatedAt = Date.now();
     this.store.update(() => {});
-    this.emit({ type: "turn-chunk", threadId, turnId, seq, content });
+    this.queueOrEmitChunk(thread, turnId, seq, { content });
     this.feedHydraWhole(thread, turn, content);
   }
 
@@ -3557,6 +3960,7 @@ export class Engine {
     const thread = this.store.state.threads.find((t) => t.id === threadId);
     const turn = thread?.turn;
     if (!thread || !turn || turn.id !== turnId || turn.status !== "running") return;
+    this.flushPendingChunk(threadId);
     // Frozen startedWaiting: a second pending request in the same wait
     // must not re-note the lead.
     const wasWaiting =
@@ -3625,6 +4029,7 @@ export class Engine {
   answerQuestion(threadId: string, providerKey: string, answers: Record<string, string[]>): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const turn = thread.turn;
     const question = turn?.question;
     if (!turn || !question || question.status !== "pending")
@@ -4083,6 +4488,7 @@ export class Engine {
         if (!title) return;
         const t = this.store.state.threads.find((x) => x.id === threadId);
         if (!t || t.title !== atSend || t.titleUserSet) return;
+        this.ensureThreadLoaded(t.id);
         t.title = title;
         t.titleReviewTurns = countUserTurns(t);
         t.updatedAt = Date.now();
@@ -4170,6 +4576,7 @@ export class Engine {
     level: "info" | "warning" | "error",
     turnId?: string,
   ): void {
+    this.ensureThreadLoaded(thread.id);
     thread.messages.push({
       id: `codexnote-${turnId ?? "thread"}-${randomUUID()}`,
       role: "system",
@@ -4210,6 +4617,7 @@ export class Engine {
     this.assertMutable();
     if (!this.provider.compact) return;
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const turn = thread.turn;
     if (
       turn &&
@@ -4241,6 +4649,7 @@ export class Engine {
    */
   async bindProviderThread(threadId: string, binding: ProviderThreadBinding): Promise<void> {
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const existing = thread.providerThread;
     if (existing) {
       if (existing.codexThreadId !== binding.codexThreadId)
@@ -4273,6 +4682,7 @@ export class Engine {
   }
 
   private endTurn(thread: ChatThread, turn: Turn, status: Turn["status"]): void {
+    this.flushPendingChunk(thread.id);
     turn.status = status;
     turn.endedAt = Date.now();
     this.turnLastEvent.delete(turn.id);
@@ -4833,9 +5243,17 @@ export class Engine {
       const queue = this.hydraWaiting.get(lead.id) ?? [];
       queue.push({ d, batchId, queuedAt: Date.now() });
       this.hydraWaiting.set(lead.id, queue);
+      this.recordHydraJobOpen(lead, batchId);
       return;
     }
     this.spawnHydraHead(lead, d, batchId, launch);
+  }
+
+  private recordHydraJobOpen(lead: ChatThread, batchId: string): void {
+    lead.hydraJobs ??= [];
+    if (lead.hydraJobs.some((j) => j.id === batchId)) return;
+    lead.hydraJobs.push({ id: batchId, isOpen: true });
+    if (lead.hydraJobs.length > 200) lead.hydraJobs = lead.hydraJobs.slice(-200);
   }
 
   /** Actually send one head out (frozen spawnTivanoHead, bounded):
@@ -4848,6 +5266,7 @@ export class Engine {
     batchId: string,
     launch?: ResolvedHydraLaunch | undefined,
   ): void {
+    this.recordHydraJobOpen(lead, batchId);
     const s = this.store.state.settings;
     launch = launch ?? this.hydraLaunchFor(lead);
     const mode = this.provider.descriptor.mode;
@@ -5740,6 +6159,7 @@ export class Engine {
           .catch((e) => ({ kind: "unavailable" as const, reason: String(e) }));
         if (res.kind === "landed") {
           landing = { files: res.files, conflicts: res.conflicts };
+          if (res.conflicts.length === 0) info.mergedAt = Date.now();
         } else if (res.kind === "patch") {
           landing = {
             files: res.files,
@@ -6150,6 +6570,31 @@ export class Engine {
         authored: false,
         hydraReport: flushable.map((r) => r.headIndex),
       });
+      if (lead.hydraJobs?.length) {
+        for (const batchId of byBatch.keys()) {
+          const job = lead.hydraJobs.find((j) => j.id === batchId && j.isOpen);
+          if (!job || runningBatches.has(batchId)) continue;
+          const batchHeads = this.store.state.threads.filter(
+            (t) => t.hydraHead?.leadId === leadId && t.hydraHead.batchId === batchId,
+          );
+          const anyFailed = batchHeads.some((t) => t.hydraHead!.status === "failed");
+          const anyStopped = batchHeads.some((t) => t.hydraHead!.status === "stopped");
+          const anyUnmerged = batchHeads.some((t) => {
+            const l = t.hydraHead!.landing;
+            return (
+              l !== undefined &&
+              (l.patchPath !== undefined || l.error !== undefined || l.conflicts.length > 0)
+            );
+          });
+          const anyLanded = batchHeads.some(
+            (t) => (t.hydraHead!.landing?.files.length ?? 0) > 0,
+          );
+          job.isOpen = false;
+          job.ending = anyFailed ? "failed" : anyStopped ? "stopped" : "completed";
+          job.merge = anyUnmerged ? "failed" : anyLanded ? "merged" : "nothing";
+        }
+        this.store.update(() => {});
+      }
     } catch {
       // Busy/closed raced — reports go back pending; the next endTurn
       // retries the flush.
@@ -6165,6 +6610,7 @@ export class Engine {
   stopHydraHead(threadId: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (!thread.hydraHead) throw new EngineError("not a hydra head");
     if (thread.hydraHead.status !== "running") return;
     const w = this.hydraWatchdogs.get(threadId);
@@ -6228,6 +6674,7 @@ export class Engine {
   continueHydraHead(threadId: string): Turn {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const info = thread.hydraHead;
     if (!info) throw new EngineError("not a hydra head");
     if (info.status !== "stopped" && info.status !== "failed")
@@ -6603,6 +7050,7 @@ export class Engine {
   cancelLimitWait(threadId: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (!this.limitWaits.has(threadId))
       throw new EngineError("no usage-limit wait on this thread");
     this.clearLimitWait(threadId);
@@ -6621,6 +7069,7 @@ export class Engine {
   handoffLimit(threadId: string): { threadId: string; text: string } {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (!this.limitWaits.has(threadId))
       throw new EngineError("no usage-limit wait on this thread");
     const touched =
@@ -6708,6 +7157,7 @@ export class Engine {
   closeHelper(threadId: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     if (thread.turn?.status === "running" || thread.turn?.status === "waiting-approval")
       this.cancelTurn(threadId);
     if (thread.isInPanel !== true) return;
@@ -6743,6 +7193,7 @@ export class Engine {
   revertTurn(threadId: string, turnId: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const live = thread.turn;
     if (live && (live.status === "running" || live.status === "waiting-approval"))
       throw new EngineError("Wait for the running turn to finish first.");
@@ -6803,6 +7254,7 @@ export class Engine {
    */
   revertPreview(threadId: string, turnId: string): { turns: number; files: number } {
     const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
     const removed = this.removedTurnSet(thread, turnId);
     const paths = new Set<string>();
     for (const r of this.listCheckpoints(threadId))

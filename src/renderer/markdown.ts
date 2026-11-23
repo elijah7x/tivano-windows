@@ -418,6 +418,41 @@ export interface MarkdownLabels {
  * block's inline text passes through `streamMend` so unclosed markup shows
  * styled instead of literal markers. Display-only; the source is untouched.
  */
+const MD_CACHE_MAX = 128;
+let plainMdCache = new Map<string, ReactNode[]>();
+let delegationMdCaches = new WeakMap<
+  (body: string, sent: boolean) => ReactNode,
+  Map<string, ReactNode[]>
+>();
+
+function mdCacheFor(
+  delegation: ((body: string, sent: boolean) => ReactNode) | undefined,
+): Map<string, ReactNode[]> {
+  if (!delegation) return plainMdCache;
+  let m = delegationMdCaches.get(delegation);
+  if (!m) {
+    m = new Map<string, ReactNode[]>();
+    delegationMdCaches.set(delegation, m);
+  }
+  return m;
+}
+
+/** P2-63: drop settled markdown caches under memory pressure. */
+export function clearMarkdownCache(): void {
+  plainMdCache = new Map();
+  delegationMdCaches = new WeakMap();
+}
+
+/** P2-63: prewarm settled replies for neighbor chats ahead of archive/switch. */
+export function prewarmMarkdown(
+  sources: readonly string[],
+  labels?: MarkdownLabels,
+): void {
+  for (const s of sources) {
+    if (s && s.length <= 200_000) renderMarkdown(s, labels);
+  }
+}
+
 export function renderMarkdown(
   source: string,
   labels?: MarkdownLabels,
@@ -425,6 +460,24 @@ export function renderMarkdown(
   veil?: StreamVeil | null,
 ): ReactNode[] {
   const v = streaming ? (veil ?? null) : null;
+  if (!streaming) {
+    const cache = mdCacheFor(labels?.renderDelegation);
+    const key = `${labels?.copy ?? ""}\0${labels?.copied ?? ""}\0${source}`;
+    const hit = cache.get(key);
+    if (hit) {
+      // LRU bump
+      cache.delete(key);
+      cache.set(key, hit);
+      return hit;
+    }
+    const nodes = renderBlocks(source.split(LINE_SPLIT), 0, 0, labels, false, null).nodes;
+    if (cache.size >= MD_CACHE_MAX) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(key, nodes);
+    return nodes;
+  }
   const lines = source.split(LINE_SPLIT);
   return renderBlocks(lines, 0, 0, labels, streaming, v).nodes;
 }
