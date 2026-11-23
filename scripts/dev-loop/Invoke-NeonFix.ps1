@@ -1,6 +1,6 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-21.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-23.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Invoke-NeonFix.ps1 -PrNumber <n> -WorktreeDir <worktree> -FailuresFile <file> [-IssueNumber <n>] [-Model <model>] [-TimeoutMinutes <min>] [-RunRoot <dir>] [-ReferenceRoot <dir>] [-AgyPath <exe>]
+# Usage: .\Invoke-NeonFix.ps1 -PrNumber <n> -WorktreeDir <worktree> -FailuresFile <file> [-IssueNumber <n>] [-Model <model>] [-TimeoutMinutes <min>] [-RunRoot <dir>] [-ReferenceRoot <dir>] [-AgyPath <exe>] [-ShortCooldownMinutes <min>]
 # Runs Gemini 4 Neon via Antigravity CLI (agy.exe) inside an existing PR worktree, reverts disallowed edits, and emits one compact JSON summary line to stdout.
 
 param(
@@ -12,7 +12,8 @@ param(
   [ValidateRange(1, 240)][int]$TimeoutMinutes = 45,
   [string]$RunRoot = 'C:\tivano\dev-loop\autopilot\neon',
   [string]$ReferenceRoot = 'C:\tivano\reference\tivano-v3.0.0',
-  [string]$AgyPath = ''
+  [string]$AgyPath = '',
+  [ValidateRange(1, 1440)][int]$ShortCooldownMinutes = 30
 )
 
 Set-StrictMode -Version Latest
@@ -301,6 +302,62 @@ function Stop-TreeProcesses {
   } catch { }
 }
 
+function Parse-TimestampOffset {
+  param([AllowEmptyString()][string]$Value)
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+  $parsed = [DateTimeOffset]::MinValue
+  if ([DateTimeOffset]::TryParse(
+    $Value,
+    [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::RoundtripKind,
+    [ref]$parsed
+  )) {
+    return $parsed
+  }
+  return $null
+}
+
+function Test-AuthQuotaErrorText {
+  param([AllowEmptyString()][string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+  return ($Text -match '(?i)\bauth(?:entication|enticate|enticated)?\b|\blogin\b|log\s+in|logged\s+in|UNAUTHENTICATED|PERMISSION_DENIED|quota|RESOURCE_EXHAUSTED|\b429\b|usage limit|rate limit exceeded|too many requests')
+}
+
+function Test-RegionNetworkErrorText {
+  param([AllowEmptyString()][string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+  return ($Text -match '(?i)location is not supported|FAILED_PRECONDITION|UNAVAILABLE|DEADLINE_EXCEEDED|ECONNRESET|ETIMEDOUT|socket hang up|schannel|TLS|network|(?<![0-9])(502|503|504)(?![0-9])')
+}
+
+function Get-CooldownClassification {
+  param(
+    [AllowEmptyString()][string]$ErrorText = '',
+    [AllowEmptyString()][string]$ErrorCode = '',
+    [bool]$Retryable = $false
+  )
+  $combined = ($ErrorCode + ' ' + $ErrorText).Trim()
+  $isAuthQuota = Test-AuthQuotaErrorText $combined
+  $isRegionNetwork = (Test-RegionNetworkErrorText $combined) -or $Retryable
+  $defaultMinutes = $script:CooldownHours * 60
+
+  if ($isAuthQuota) {
+    return [pscustomobject]@{
+      cooldownClass = 'auth-quota'
+      durationMinutes = $defaultMinutes
+    }
+  }
+  if ($isRegionNetwork) {
+    return [pscustomobject]@{
+      cooldownClass = 'region-network'
+      durationMinutes = $script:ShortCooldownMinutes
+    }
+  }
+  return [pscustomobject]@{
+    cooldownClass = 'unknown'
+    durationMinutes = $script:ShortCooldownMinutes
+  }
+}
+
 function Get-ActiveCooldown {
   param([string]$HealthPath)
   if (-not (Test-Path -LiteralPath $HealthPath -PathType Leaf)) { return $null }
@@ -318,41 +375,66 @@ function Get-ActiveCooldown {
   $retryVal = Get-JsonProp $data 'retryable'
   if ($null -ne $retryVal -and [bool]$retryVal) { return $null }
 
-  $until = [DateTimeOffset]::MinValue
-  $hasUntil = $false
-  $untilRaw = [string](Get-JsonProp $data 'cooldownUntil')
-  if (-not [string]::IsNullOrWhiteSpace($untilRaw)) {
-    $hasUntil = [DateTimeOffset]::TryParse(
-      $untilRaw,
-      [Globalization.CultureInfo]::InvariantCulture,
-      [Globalization.DateTimeStyles]::RoundtripKind,
-      [ref]$until
-    )
+  $storedClass = ([string](Get-JsonProp $data 'cooldownClass')).Trim()
+  $storedErrorRaw = [string](Get-JsonProp $data 'error')
+  $storedErrorCode = [string](Get-JsonProp $data 'errorCode')
+
+  $until = Parse-TimestampOffset ([string](Get-JsonProp $data 'cooldownUntil'))
+  $setAt = Parse-TimestampOffset ([string](Get-JsonProp $data 'cooldownSetAt'))
+  if ($null -eq $setAt) {
+    $setAt = Parse-TimestampOffset ([string](Get-JsonProp $data 'recordedAt'))
   }
-  if (-not $hasUntil) {
-    $recordedRaw = [string](Get-JsonProp $data 'recordedAt')
-    $recorded = [DateTimeOffset]::MinValue
-    if (-not [string]::IsNullOrWhiteSpace($recordedRaw) -and
-        [DateTimeOffset]::TryParse(
-          $recordedRaw,
-          [Globalization.CultureInfo]::InvariantCulture,
-          [Globalization.DateTimeStyles]::RoundtripKind,
-          [ref]$recorded
-        )) {
-      $until = $recorded.AddHours($script:CooldownHours)
-      $hasUntil = $true
+
+  $storedDurationMin = 0
+  $rawDuration = Get-JsonProp $data 'cooldownMinutes'
+  if ($null -ne $rawDuration -and -not [string]::IsNullOrWhiteSpace([string]$rawDuration)) {
+    try { $storedDurationMin = [int]$rawDuration } catch { $storedDurationMin = 0 }
+  }
+
+  if ($null -eq $until -and $null -ne $setAt) {
+    if ($storedDurationMin -gt 0) {
+      $until = $setAt.AddMinutes($storedDurationMin)
+    } elseif (-not [string]::IsNullOrWhiteSpace($storedClass) -and $storedClass -ne 'auth-quota') {
+      $until = $setAt.AddMinutes($script:ShortCooldownMinutes)
+    } else {
+      $until = $setAt.AddHours($script:CooldownHours)
     }
   }
-  if (-not $hasUntil) { return $null }
+  if ($null -eq $until) { return $null }
+
+  if ($null -eq $setAt) {
+    if ($storedDurationMin -gt 0) {
+      $setAt = $until.AddMinutes(-$storedDurationMin)
+    } else {
+      $setAt = $until.AddHours(-$script:CooldownHours)
+    }
+  }
+
+  $effectiveClass = $storedClass
+  if ([string]::IsNullOrWhiteSpace($storedClass)) {
+    $legacyClass = Get-CooldownClassification -ErrorText $storedErrorRaw -ErrorCode $storedErrorCode -Retryable $false
+    $effectiveClass = $legacyClass.cooldownClass
+    if ($legacyClass.cooldownClass -eq 'region-network') {
+      $cappedUntil = $setAt.AddMinutes($script:ShortCooldownMinutes)
+      if ($until -gt $cappedUntil) {
+        $until = $cappedUntil
+      }
+    }
+  }
+
   if ([DateTimeOffset]::UtcNow -ge $until) { return $null }
 
-  $storedError = ConvertTo-SingleLine ([string](Get-JsonProp $data 'error')) 300
+  $durationMinutes = [int][Math]::Round(($until - $setAt).TotalMinutes)
+  $storedError = ConvertTo-SingleLine $storedErrorRaw 300
   if ([string]::IsNullOrWhiteSpace($storedError)) {
     $storedError = 'agy unavailable (cooldown active until ' + $until.UtcDateTime.ToString('o') + ')'
   }
   return [pscustomobject]@{
     error = $storedError
     cooldownUntil = $until.UtcDateTime.ToString('o')
+    cooldownSetAt = $setAt.UtcDateTime.ToString('o')
+    cooldownClass = $effectiveClass
+    durationMinutes = $durationMinutes
   }
 }
 
@@ -361,23 +443,38 @@ function Write-HealthCooldown {
     [string]$HealthPath,
     [string]$ErrorText,
     [string]$ErrorCode,
-    [string]$ModelName
+    [string]$ModelName,
+    [bool]$Retryable = $false
   )
+  $classification = Get-CooldownClassification -ErrorText $ErrorText -ErrorCode $ErrorCode -Retryable $Retryable
+  $durationMinutes = [int]$classification.durationMinutes
   $nowUtc = [DateTimeOffset]::UtcNow
-  $untilUtc = $nowUtc.AddHours($script:CooldownHours)
+  $untilUtc = $nowUtc.AddMinutes($durationMinutes)
+  $setAtIso = $nowUtc.UtcDateTime.ToString('o')
+  $untilIso = $untilUtc.UtcDateTime.ToString('o')
   $payload = [ordered]@{
     status = 'unavailable'
     retryable = $false
     error = (ConvertTo-SingleLine $ErrorText 300)
     errorCode = $ErrorCode
-    recordedAt = $nowUtc.UtcDateTime.ToString('o')
-    cooldownUntil = $untilUtc.UtcDateTime.ToString('o')
+    cooldownClass = $classification.cooldownClass
+    cooldownMinutes = $durationMinutes
+    cooldownSetAt = $setAtIso
+    recordedAt = $setAtIso
+    cooldownUntil = $untilIso
     model = $ModelName
   }
   try {
     Save-JsonAtomic -Path $HealthPath -Object $payload
+    Write-Log ('cooldown set: class=' + $classification.cooldownClass + ' duration=' + $durationMinutes + 'm setAt=' + $setAtIso + ' until=' + $untilIso)
   } catch {
     Write-Log ('failed to write health.json: ' + $_.Exception.Message)
+  }
+  return [pscustomobject]@{
+    cooldownClass = $classification.cooldownClass
+    durationMinutes = $durationMinutes
+    cooldownSetAt = $setAtIso
+    cooldownUntil = $untilIso
   }
 }
 
@@ -393,6 +490,9 @@ function Write-HealthOk {
     retryable = $true
     error = ''
     errorCode = ''
+    cooldownClass = ''
+    cooldownMinutes = 0
+    cooldownSetAt = ''
     recordedAt = $nowUtc.UtcDateTime.ToString('o')
     cooldownUntil = ''
     model = $ModelName
@@ -729,6 +829,7 @@ $revertedOut = New-Object Collections.Generic.List[string]
 $errorOut = ''
 $retryableOut = $false
 $runDirOut = ''
+$cooldownClassOut = ''
 $exitCode = 2
 
 $healthPath = $null
@@ -748,12 +849,13 @@ try {
   [IO.Directory]::CreateDirectory($script:NeonRoot) | Out-Null
   $healthPath = Join-Path $script:NeonRoot 'health.json'
 
-  # Check 6-hour unavailability cooldown before invoking agy.
+  # Check unavailability cooldown before invoking agy.
   $cooldown = Get-ActiveCooldown -HealthPath $healthPath
   if ($null -ne $cooldown) {
     $statusOut = 'unavailable'
     $errorOut = $cooldown.error
     $retryableOut = $false
+    $cooldownClassOut = [string]$cooldown.cooldownClass
     $exitCode = 2
   } else {
     $worktreePath = Get-AcceptancePath $WorktreeDir
@@ -809,7 +911,8 @@ try {
     } catch {
       $missingMsg = ConvertTo-SingleLine $_.Exception.Message 300
       Write-Log ('agy missing: ' + $missingMsg)
-      Write-HealthCooldown -HealthPath $healthPath -ErrorText $missingMsg -ErrorCode 'AGY_NOT_FOUND' -ModelName $Model
+      $cooldownInfo = Write-HealthCooldown -HealthPath $healthPath -ErrorText $missingMsg -ErrorCode 'AGY_NOT_FOUND' -ModelName $Model -Retryable $false
+      $cooldownClassOut = $cooldownInfo.cooldownClass
       $statusOut = 'unavailable'
       $errorOut = $missingMsg
       $retryableOut = $false
@@ -982,8 +1085,10 @@ try {
             $retryableOut = (-not (Test-NonRetryableErrorText $errorOut))
           }
           Write-Log ('agy failed (retryable=' + $retryableOut + '): ' + $errorOut)
-          if (-not $retryableOut) {
-            Write-HealthCooldown -HealthPath $healthPath -ErrorText $errorOut -ErrorCode $errCode -ModelName $Model
+          # Retryable network or quota errors still pause agy (short or long by class) so the next escalation does not hit the same failure at once.
+          if ((-not $retryableOut) -or (Test-AuthQuotaErrorText $errorOut) -or (Test-RegionNetworkErrorText $errorOut)) {
+            $cooldownInfo = Write-HealthCooldown -HealthPath $healthPath -ErrorText $errorOut -ErrorCode $errCode -ModelName $Model -Retryable $retryableOut
+            $cooldownClassOut = $cooldownInfo.cooldownClass
           }
         } elseif ($changedFilesOut.Count -gt 0) {
           $statusOut = 'ok'
@@ -1018,6 +1123,7 @@ $summary = [ordered]@{
   error = $errorOut
   retryable = [bool]$retryableOut
   runDir = $runDirOut
+  cooldownClass = $cooldownClassOut
 }
 
 if (-not [string]::IsNullOrWhiteSpace($runDirOut) -and (Test-Path -LiteralPath $runDirOut -PathType Container)) {

@@ -215,6 +215,13 @@ const vHydraReview = vObject({
   createdAt: vTs,
 });
 
+const vHydraJobSummary = vObject({
+  id: vNonEmptyString(120),
+  isOpen: vBoolean,
+  ending: vOptional(vEnum(["completed", "stopped", "failed"] as const)),
+  merge: vOptional(vEnum(["merged", "nothing", "failed", "skipped"] as const)),
+});
+
 const vThread = vObject({
   id: vNonEmptyString(120),
   projectId: vNullable(vNonEmptyString(120)),
@@ -290,6 +297,8 @@ const vThread = vObject({
   subagentMode: vOptional(vEnum(["same", "preset", "adaptive"] as const)),
   // P1-38: persisted independent-review cards.
   hydraReviews: vOptional(vArray(vHydraReview, 200)),
+  // P2-63: settled Hydra jobs ledger.
+  hydraJobs: vOptional(vArray(vHydraJobSummary, 200)),
   // P1-39: frozen hasStartedTurn — a turn reached a provider.
   hasStartedTurn: vOptional(vBoolean),
   // v2.2.34 keep-updated titles — see ChatThread.
@@ -503,7 +512,7 @@ const vSettings = vObject({
   // frozen default (on).
   recentDownloadsPicker: vOptional(vBoolean),
   // Optional so every pre-A78 store loads verbatim — absent means the
-  // frozen defaults: recent location, fullAccess mode, local workspace,
+  // frozen defaults: recent location, fullAccess mode, auto workspace,
   // thinking hidden, working card on.
   newThreadLocation: vOptional(vEnum(["recent", "standalone"] as const)),
   defaultRuntimeMode: vOptional(
@@ -752,12 +761,15 @@ const vThreadHead = vObject({
       isNonGitCheckout: vOptional(vBoolean),
       copyKept: vOptional(vBoolean),
       landingPending: vOptional(vBoolean),
+      mergedAt: vOptional(vTs),
       spawnedAt: vTs,
       finishedAt: vOptional(vTs),
     }),
   ),
   // P1-38: the lead's independent-review cards.
   hydraReviews: vOptional(vArray(vHydraReview, 200)),
+  // P2-63: settled Hydra jobs ledger.
+  hydraJobs: vOptional(vArray(vHydraJobSummary, 200)),
   // P1-39: frozen hasStartedTurn — a turn reached a provider.
   hasStartedTurn: vOptional(vBoolean),
   // F25: helper-chat binding (frozen parentThreadID / isInPanel).

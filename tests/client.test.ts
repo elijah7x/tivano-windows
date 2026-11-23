@@ -287,6 +287,7 @@ describe("P2-32 off-screen stream coalescing (frozen offscreenFlush)", () => {
 
   it("publishes every chunk immediately while the timeline is shown", () => {
     const store = streamStore();
+    store.apply({ type: "thread-selected", threadId: "t1", rev: 6 });
     store.noteTimelineShown("t1", true);
     const count = notifies(store);
     for (let seq = 3; seq <= 7; seq++) {
@@ -295,6 +296,26 @@ describe("P2-32 off-screen stream coalescing (frozen offscreenFlush)", () => {
       });
     }
     expect(count()).toBe(5);
+  });
+
+  it("paces a shown-but-unselected timeline (open panel) to ~90ms", () => {
+    vi.useFakeTimers();
+    try {
+      const store = streamStore();
+      store.noteTimelineShown("t1", true); // mounted panel, not the selected chat
+      const count = notifies(store);
+      for (let seq = 3; seq <= 7; seq++) {
+        store.apply({
+          type: "turn-chunk", threadId: "t1", turnId: "u1", seq, delta: "x", rev: 100 + seq,
+        });
+      }
+      expect(count()).toBe(0); // coalesced, not per-chunk
+      vi.advanceTimersByTime(90);
+      expect(count()).toBe(1); // a single publish for the window
+      expect(store.thread("t1")!.messages[0]!.content).toBe("old" + "x".repeat(5));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("flushes pending unseen updates the moment the timeline is shown", () => {
@@ -354,14 +375,15 @@ describe("P2-32 off-screen stream coalescing (frozen offscreenFlush)", () => {
         snap(5, [streamingThread("t1", "u1", "m1"), streamingThread("t2", "u2", "m2")]),
         gen,
       );
+      store.apply({ type: "thread-selected", threadId: "t1", rev: 6 });
       store.noteTimelineShown("t1", true);
       const count = notifies(store);
       store.apply({
-        type: "turn-chunk", threadId: "t2", turnId: "u2", seq: 3, delta: "b", rev: 6,
+        type: "turn-chunk", threadId: "t2", turnId: "u2", seq: 3, delta: "b", rev: 7,
       });
       expect(count()).toBe(0);
       store.apply({
-        type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "a", rev: 7,
+        type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "a", rev: 8,
       });
       expect(count()).toBe(1); // the shown chunk lands t2's pending text too
       expect(store.thread("t2")!.messages[0]!.content).toBe("oldb");

@@ -5,6 +5,7 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { api, clientStore, tryCall } from "./client";
+import { setModalCovered } from "./appActivity";
 import type { Snapshot } from "../shared/types";
 import {
   SHORTCUT_COMMANDS,
@@ -139,6 +140,11 @@ export function App(): React.JSX.Element {
     (fn) => store.subscribe(fn),
     () => store.view,
   );
+
+  useEffect(() => {
+    setModalCovered(settingsOpen || paletteOpen);
+    return () => setModalCovered(false);
+  }, [settingsOpen, paletteOpen]);
 
   useEffect(() => {
     // Subscribe FIRST (events buffer), then fetch the snapshot: its rev

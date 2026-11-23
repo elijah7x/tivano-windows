@@ -619,6 +619,13 @@ export interface ProviderThreadBinding {
   savedAt: number;
 }
 
+export interface HydraJobSummary {
+  id: string;
+  isOpen: boolean;
+  ending?: "completed" | "stopped" | "failed";
+  merge?: "merged" | "nothing" | "failed" | "skipped";
+}
+
 export interface ChatThread {
   id: string;
   projectId: string | null;
@@ -774,9 +781,13 @@ export interface ChatThread {
      *  flight — its report queues only after it resolves (a persisted
      *  true on boot means the landing was lost to a restart). */
     landingPending?: boolean | undefined;
+    /** P2-63: when an auto-merge took this head's landed work. */
+    mergedAt?: number | undefined;
     spawnedAt: number;
     finishedAt?: number | undefined;
   };
+  /** P2-63: settled Hydra jobs ledger so recovery skips all-merged chats. */
+  hydraJobs?: HydraJobSummary[];
   /** P1-38: this lead's independent-review cards, newest last (frozen
    *  job.reviewEngine/reviewFindings + verdict counts). */
   hydraReviews?: import("./hydraReview").HydraReview[];

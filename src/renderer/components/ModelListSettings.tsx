@@ -19,6 +19,7 @@ import {
   MODEL_LIST_LIMIT,
   addPin,
   addSection,
+  applyDraftRename,
   itemId,
   modelListItems,
   moveModelListItem,
@@ -31,6 +32,7 @@ import {
   removePin,
   removeSection,
   renameSection,
+  sectionEditTargetAlive,
   toggleSectionCollapsed,
   type ModelListItem,
   type ModelPin,
@@ -92,6 +94,9 @@ export function ModelListSettings(): React.JSX.Element {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [effortPop, setEffortPop] = useState<EffortState | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // A "New group" write echoes asynchronously — the id stays pending
+  // until the snapshot carries it (or the grace lapses on a dead write).
+  const [pendingNewId, setPendingNewId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [dropHint, setDropHint] = useState<string | null>(null);
   const dragRef = useRef<string | null>(null);
@@ -139,6 +144,39 @@ export function ModelListSettings(): React.JSX.Element {
   }, [menu !== null || effortPop !== null]);
 
   const write = (patch: Record<string, unknown>) => tryCall("settings:set", patch);
+
+  // P2-33 (frozen v2.5.21/v2.5.32 edit-then-remove): every mutation
+  // applies on the latest store snapshot, never the render closure —
+  // a blur-commit + remove in one click, or a drop landing mid-rename,
+  // would otherwise write a stale whole list and clobber or resurrect
+  // the row being edited.
+  const freshLists = () => {
+    const s = clientStore.snapshot?.settings;
+    return {
+      pins: s?.modelList ?? pins,
+      sections: s?.modelSections ?? sections,
+      collapsed: s?.collapsedModelSections ?? collapsed,
+    };
+  };
+  /** Fold the in-flight rename into the list about to be written —
+   *  upstream commits the edit before the mutation lands. */
+  const foldRename = (list: ModelSection[]): ModelSection[] =>
+    applyDraftRename(list, editingId, draft);
+
+  // The edit target or effort-popover pin vanished (removed here or
+  // merged elsewhere) — upstream clears editingSectionID / dismisses
+  // the transient popover instead of pointing state at a dead row.
+  useEffect(() => {
+    if (
+      pendingNewId !== null &&
+      sections.some((s) => s.id === pendingNewId)
+    )
+      setPendingNewId(null);
+    if (!sectionEditTargetAlive(sections, editingId, pendingNewId))
+      setEditingId(null);
+    if (effortPop !== null && !pins.some((p) => pinId(p) === pinId(effortPop.pin)))
+      setEffortPop(null);
+  }, [editingId, effortPop, pendingNewId, pins, sections]);
 
   const items = modelListItems(pins, sections);
   const trimmed = query.trim().toLowerCase();
@@ -208,8 +246,10 @@ export function ModelListSettings(): React.JSX.Element {
     if (r) write({ modelList: r.modelList, modelSections: r.modelSections });
   };
 
-  const movePinTo = (pin: ModelPin, target: ModelListItem, after: boolean) =>
-    writeItems(moveModelListItem(pins, sections, { kind: "pin", pin }, target, after));
+  const movePinTo = (pin: ModelPin, target: ModelListItem, after: boolean) => {
+    const f = freshLists();
+    writeItems(moveModelListItem(f.pins, f.sections, { kind: "pin", pin }, target, after));
+  };
 
   // HTML5 drag: a pin row drops before/after another row or onto a group
   // header (joins that group at its end — frozen toSection before:nil).
@@ -219,20 +259,23 @@ export function ModelListSettings(): React.JSX.Element {
     dragRef.current = null;
     setDropHint(null);
     if (!dragged) return;
+    const f = freshLists();
     if (dragged.startsWith("section/")) {
       // Section drag reorders whole groups — only onto another section.
       if (target.kind === "section") {
+        const sec = f.sections.find((s) => `section/${s.id}` === dragged);
+        if (!sec) return; // the dragged heading was removed mid-drag
         writeItems(
           moveModelListItem(
-            pins, sections,
-            { kind: "section", section: sections.find((s) => `section/${s.id}` === dragged)! },
+            f.pins, f.sections,
+            { kind: "section", section: sec },
             target, after,
           ),
         );
       }
       return;
     }
-    const pin = pins.find((p) => pinId(p) === dragged);
+    const pin = f.pins.find((p) => pinId(p) === dragged);
     if (pin) movePinTo(pin, target, after);
   };
   const onGroupDrop = (e: React.DragEvent, sectionId: string | null) => {
@@ -241,13 +284,15 @@ export function ModelListSettings(): React.JSX.Element {
     dragRef.current = null;
     setDropHint(null);
     if (!dragged || dragged.startsWith("section/")) return;
-    const pin = pins.find((p) => pinId(p) === dragged);
-    if (pin) writeItems(movePinToSection(pins, sections, pin, sectionId));
+    const f = freshLists();
+    const pin = f.pins.find((p) => pinId(p) === dragged);
+    if (pin) writeItems(movePinToSection(f.pins, f.sections, pin, sectionId));
   };
 
   const commitRename = (id: string) => {
     const name = draft.trim();
-    if (name !== "") write({ modelSections: renameSection(sections, id, name) });
+    if (name !== "")
+      write({ modelSections: renameSection(freshLists().sections, id, name) });
     setEditingId(null);
   };
 
@@ -327,7 +372,9 @@ export function ModelListSettings(): React.JSX.Element {
           aria-label={t("Remove from the picker")}
           onClick={(e) => {
             e.stopPropagation();
-            writeItems(removePin(pins, sections, pin));
+            const f = freshLists();
+            setEditingId(null);
+            writeItems(removePin(f.pins, foldRename(f.sections), pin));
           }}
         >
           ⊖
@@ -369,10 +416,20 @@ export function ModelListSettings(): React.JSX.Element {
           <button
             className="ml-newgroup"
             onClick={() => {
-              const next = addSection(sections, t("New group"), pins.length);
+              const f = freshLists();
+              const next = addSection(f.sections, t("New group"), f.pins.length);
               write({ modelSections: next });
               const added = next[next.length - 1];
               if (added) {
+                setPendingNewId(added.id);
+                // A rejected write never echoes — release the pending
+                // id so the dead-target cleanup still runs.
+                const id = added.id;
+                window.setTimeout(
+                  () =>
+                    setPendingNewId((p) => (p === id ? null : p)),
+                  3000,
+                );
                 setEditingId(added.id);
                 setDraft(added.name);
               }
@@ -450,7 +507,10 @@ export function ModelListSettings(): React.JSX.Element {
                   onClick={() => {
                     if (editingId === g.section.id) return;
                     write({
-                      collapsedModelSections: toggleSectionCollapsed(collapsed, g.section.id),
+                      collapsedModelSections: toggleSectionCollapsed(
+                        freshLists().collapsed,
+                        g.section.id,
+                      ),
                     });
                   }}
                   onDoubleClick={() => {
@@ -502,7 +562,9 @@ export function ModelListSettings(): React.JSX.Element {
                       aria-label={t("Remove group heading")}
                       onClick={(e) => {
                         e.stopPropagation();
-                        write(removeSection(sections, collapsed, g.section.id));
+                        const f = freshLists();
+                        setEditingId(null);
+                        write(removeSection(foldRename(f.sections), f.collapsed, g.section.id));
                       }}
                     >
                       🗑
@@ -573,7 +635,12 @@ export function ModelListSettings(): React.JSX.Element {
                   }
                   aria-label={isPinned ? t("In the picker") : t("Add to the picker")}
                   onClick={() =>
-                    write({ modelList: addPin(pins, { provider: "codex", modelID: m.id }) })
+                    write({
+                      modelList: addPin(freshLists().pins, {
+                        provider: "codex",
+                        modelID: m.id,
+                      }),
+                    })
                   }
                 >
                   {isPinned ? "✓" : "+"}
@@ -603,7 +670,8 @@ export function ModelListSettings(): React.JSX.Element {
                   className="suggest-row msg-row"
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => {
-                    writeItems(movePinToSection(pins, sections, menu.pin!, null));
+                    const f = freshLists();
+                    writeItems(movePinToSection(f.pins, f.sections, menu.pin!, null));
                     setMenu(null);
                   }}
                 >
@@ -619,7 +687,8 @@ export function ModelListSettings(): React.JSX.Element {
                     className="suggest-row msg-row"
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => {
-                      writeItems(movePinToSection(pins, sections, menu.pin!, s.id));
+                      const f = freshLists();
+                      writeItems(movePinToSection(f.pins, f.sections, menu.pin!, s.id));
                       setMenu(null);
                     }}
                   >
@@ -631,7 +700,9 @@ export function ModelListSettings(): React.JSX.Element {
                 className="suggest-row msg-row group-start"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
-                  writeItems(removePin(pins, sections, menu.pin!));
+                  const f = freshLists();
+                  setEditingId(null);
+                  writeItems(removePin(f.pins, foldRename(f.sections), menu.pin!));
                   setMenu(null);
                 }}
               >
@@ -661,7 +732,8 @@ export function ModelListSettings(): React.JSX.Element {
                 disabled={groups.findIndex((g) => g.section.id === menu.sectionId) <= 0}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
-                  writeItems(moveModelSection(pins, sections, menu.sectionId!, -1));
+                  const f = freshLists();
+                  writeItems(moveModelSection(f.pins, f.sections, menu.sectionId!, -1));
                   setMenu(null);
                 }}
               >
@@ -676,7 +748,8 @@ export function ModelListSettings(): React.JSX.Element {
                 }
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
-                  writeItems(moveModelSection(pins, sections, menu.sectionId!, 1));
+                  const f = freshLists();
+                  writeItems(moveModelSection(f.pins, f.sections, menu.sectionId!, 1));
                   setMenu(null);
                 }}
               >
@@ -687,7 +760,9 @@ export function ModelListSettings(): React.JSX.Element {
                 className="suggest-row msg-row group-start"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
-                  write(removeSection(sections, collapsed, menu.sectionId!));
+                  const f = freshLists();
+                  setEditingId(null);
+                  write(removeSection(foldRename(f.sections), f.collapsed, menu.sectionId!));
                   setMenu(null);
                 }}
               >

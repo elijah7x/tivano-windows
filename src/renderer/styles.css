@@ -2004,31 +2004,29 @@ select.runtime-mode:disabled {
   font-size: calc(11.5px + var(--fs-ui-off));
 }
 
-/* working dots */
+/* working dots — opacity pulse on own layer (no layout-triggering content swaps) */
 
 .dots::after {
-  content: "";
-  animation: dots 1.2s steps(4) infinite;
+  content: "…";
+  display: inline-block;
+  will-change: opacity;
+  animation: dots 1.2s ease-in-out infinite;
 }
 
 @keyframes dots {
-  0% {
-    content: "";
-  }
-  25% {
-    content: ".";
+  0%, 100% {
+    opacity: 0.3;
   }
   50% {
-    content: "..";
-  }
-  75% {
-    content: "...";
+    opacity: 1;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .dots::after {
     animation: none;
+    will-change: auto;
+    opacity: 1;
     content: "…";
   }
 }
@@ -2965,9 +2963,15 @@ select.runtime-mode:disabled {
 }
 .work-more:hover { color: var(--text); }
 /* F03: the label breathes while the turn runs (frozen WorkingTitle —
-   a slow opacity cycle), the elapsed counter stays steady mono-digits. */
+   a slow opacity cycle on its own composited layer), the elapsed counter
+   stays steady mono-digits. */
 .work-label {
+  will-change: opacity;
   animation: work-breathe 3.2s ease-in-out infinite;
+}
+.work-label.paused {
+  animation-play-state: paused;
+  will-change: auto;
 }
 .work-elapsed {
   font-variant-numeric: tabular-nums;
@@ -2981,9 +2985,20 @@ select.runtime-mode:disabled {
 }
 @media (prefers-reduced-motion: reduce) {
   .work-card .stave { animation: none; }
-  .work-label { animation: none; }
+  .work-label { animation: none; will-change: auto; }
 }
-html[data-performance] .work-label { animation: none; }
+html[data-performance] .work-label { animation: none; will-change: auto; }
+
+/* P2-63: pause animations and drop layer hints while inactive, minimized or out of view. */
+html[data-paused="1"] .work-label,
+html[data-paused="1"] .spin-cell,
+html[data-paused="1"] .sky-doll.sway,
+html[data-paused="1"] .dots::after,
+html[data-paused="1"] .work-dots::after,
+html[data-paused="1"] .stave-bar .stave {
+  animation-play-state: paused !important;
+  will-change: auto !important;
+}
 
 /* F03 frozen spinners — cell grids pulsing once per 750ms, each cell
    phase-lagged so the bright edge travels. Row tints follow the frozen
@@ -3025,7 +3040,8 @@ html[data-performance] .spin-cell { animation: none; }
 @media (prefers-reduced-motion: reduce) {
   .md-veil { animation: none; }
 }
-html[data-performance] .md-veil { animation: none; }
+html[data-performance] .md-veil,
+html[data-paused="1"] .md-veil { animation: none !important; }
 
 /* Spinner placement helpers (frozen call sites). */
 .plan-spin { margin-left: 6px; vertical-align: middle; }

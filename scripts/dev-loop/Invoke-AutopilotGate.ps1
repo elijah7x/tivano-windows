@@ -1,4 +1,4 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-22.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-23.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 # Usage: .\Invoke-AutopilotGate.ps1 -PrNumber <n> -ReviewRoot <pr-review state root> -StandardCredentialFile <file> [-ReviewCheckout <clone>] [-ReviewTokenFile <file>] [-Reference <macOS baseline clone>] [-Repo <owner/name>] [-Root <state root>] [-DevinModel <model>] [-ReviewTimeoutMin <min>] [-GlmTimeoutMin <min>] [-SkipGlm]
 # Runs Invoke-PrReview.ps1 (with posting enabled and -Force) for one PR, evaluates gate.json with the dev-loop merge gate rules, optionally runs Invoke-GlmReview.ps1 -Mode review for a second review, and emits one compact JSON summary line to stdout.
@@ -236,7 +236,7 @@ function Get-PrInfo {
   }
 }
 
-function Invoke-Review {
+function Start-ReviewTask {
   param([int]$Pr, [string]$Sha, [string]$RunDir, [bool]$NoPost, [string]$Tag)
   $outLog = Join-Path $RunDir ('review-' + $Tag + '.out.log')
   $errLog = Join-Path $RunDir ('review-' + $Tag + '.err.log')
@@ -255,14 +255,37 @@ function Invoke-Review {
   $cmdFile = Join-Path $RunDir ('review-' + $Tag + '.cmd')
   Remove-Item -LiteralPath $doneFile -Force -ErrorAction SilentlyContinue
   Write-Text $cmdFile ('@echo off' + "`r`n" + 'cd /d ' + (Quote-Argument $script:WorkRoot) + "`r`n" + $inner + "`r`n" + 'echo %ERRORLEVEL%> ' + (Quote-Argument $doneFile) + "`r`n")
-  $taskName = 'gate-pr-' + $Pr + '-' + $Tag
+  $taskName = 'gate-pr-' + $Pr + '-' + $Tag + '-' + $PID
   $action = New-ScheduledTaskAction -Execute $script:CmdExe -Argument ('/d /c "' + $cmdFile + '"') -WorkingDirectory $script:WorkRoot
   $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
   $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes ($ReviewTimeoutMin + 5)) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
   Register-ScheduledTask -TaskPath '\TivanoDevLoop\' -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
   try {
     Start-ScheduledTask -TaskPath '\TivanoDevLoop\' -TaskName $taskName
-    $deadline = [DateTime]::UtcNow.AddMinutes($ReviewTimeoutMin)
+  } catch {
+    Unregister-ScheduledTask -TaskPath '\TivanoDevLoop\' -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    throw
+  }
+  return [pscustomobject]@{
+    pr = $Pr
+    sha = $Sha
+    outLog = $outLog
+    errLog = $errLog
+    doneFile = $doneFile
+    taskName = $taskName
+    deadlineUtc = [DateTime]::UtcNow.AddMinutes($ReviewTimeoutMin)
+  }
+}
+
+function Wait-ReviewTask {
+  param($Handle)
+  $Pr = [int]$Handle.pr
+  $Sha = [string]$Handle.sha
+  $outLog = [string]$Handle.outLog
+  $doneFile = [string]$Handle.doneFile
+  $taskName = [string]$Handle.taskName
+  $deadline = [DateTime]$Handle.deadlineUtc
+  try {
     while (-not (Test-Path -LiteralPath $doneFile) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Seconds 10 }
     if (-not (Test-Path -LiteralPath $doneFile)) {
       Stop-ScheduledTask -TaskPath '\TivanoDevLoop\' -TaskName $taskName -ErrorAction SilentlyContinue
@@ -283,9 +306,12 @@ function Invoke-Review {
   $skippedRaw = Get-JsonProp $summary 'skipped'
   $reviewedRaw = Get-JsonProp $summary 'reviewed'
   $errorsRaw = Get-JsonProp $summary 'errors'
-  $skippedList = if ($null -ne $skippedRaw) { @($skippedRaw | ForEach-Object { $_ }) } else { @() }
-  $reviewedList = if ($null -ne $reviewedRaw) { @($reviewedRaw | ForEach-Object { $_ }) } else { @() }
-  $errorList = if ($null -ne $errorsRaw) { @($errorsRaw | ForEach-Object { $_ }) } else { @() }
+  $skippedList = @()
+  if ($null -ne $skippedRaw) { $skippedList = @($skippedRaw | ForEach-Object { $_ }) }
+  $reviewedList = @()
+  if ($null -ne $reviewedRaw) { $reviewedList = @($reviewedRaw | ForEach-Object { $_ }) }
+  $errorList = @()
+  if ($null -ne $errorsRaw) { $errorList = @($errorsRaw | ForEach-Object { $_ }) }
 
   foreach ($skipped in $skippedList) {
     $skippedPr = Get-JsonProp $skipped 'pr'
@@ -325,6 +351,12 @@ function Invoke-Review {
     return [pscustomobject]@{ status = 'unavailable'; message = 'gate.json is missing or is for another head'; gate = $null; gatePath = $null }
   }
   return [pscustomobject]@{ status = 'ok'; message = $message; gate = $gate; gatePath = $gatePath }
+}
+
+function Invoke-Review {
+  param([int]$Pr, [string]$Sha, [string]$RunDir, [bool]$NoPost, [string]$Tag)
+  $handle = Start-ReviewTask -Pr $Pr -Sha $Sha -RunDir $RunDir -NoPost $NoPost -Tag $Tag
+  return (Wait-ReviewTask -Handle $handle)
 }
 
 function Format-Step {
@@ -604,12 +636,8 @@ function Get-VitestResultKey {
   param([AllowEmptyString()][string]$Path)
   if ([string]::IsNullOrWhiteSpace($Path)) { return '' }
   $norm = $Path.Trim().Replace('\', '/')
-  $prMarker = '/sandbox/pr/'
-  $baseMarker = '/sandbox/base/'
-  $prIdx = $norm.IndexOf($prMarker, [StringComparison]::OrdinalIgnoreCase)
-  if ($prIdx -ge 0) { return $norm.Substring($prIdx + $prMarker.Length).ToLowerInvariant() }
-  $baseIdx = $norm.IndexOf($baseMarker, [StringComparison]::OrdinalIgnoreCase)
-  if ($baseIdx -ge 0) { return $norm.Substring($baseIdx + $baseMarker.Length).ToLowerInvariant() }
+  $match = [regex]::Match($norm, '(?i)/sandbox/(?:pr|base)(?:-[^/]+)?/')
+  if ($match.Success) { return $norm.Substring($match.Index + $match.Length).ToLowerInvariant() }
   return (Split-Path -Leaf $norm).ToLowerInvariant()
 }
 
@@ -807,7 +835,7 @@ function Invoke-FlakeRerun {
   $flakeDir = Join-Path $RunDir 'flake-retry'
   $cmdDir = Join-Path $flakeDir 'bin'
   $sandbox = Join-Path $flakeDir 'sandbox'
-  $prTree = Join-Path $sandbox 'pr'
+  $prTree = Join-Path $sandbox ('flake-pr-' + $PrNumber + '-' + $PID)
   $checksSandbox = Join-Path $sandbox 'checks'
   $resultsSandbox = Join-Path $sandbox 'results'
   $checksDir = Join-Path $flakeDir 'checks'
@@ -920,7 +948,7 @@ function Invoke-FlakeRerun {
 
     $wrapperPath = Join-Path $flakeDir 'standard-flake.ps1'
     $wrapperLines = New-Object Collections.Generic.List[string]
-    $null = $wrapperLines.Add('# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-22.')
+    $null = $wrapperLines.Add('# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-23.')
     $null = $wrapperLines.Add('# Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app')
     $null = $wrapperLines.Add('# Generated for one flake rerun by Invoke-AutopilotGate.ps1.')
     $null = $wrapperLines.Add('$ErrorActionPreference = ''Stop''')
@@ -1074,7 +1102,17 @@ function Invoke-FlakeRetryIfEligible {
     return [pscustomobject]@{ attempted = $false; passed = $false; reason = 'reviewer verdict has non-flake blocking points'; files = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
   }
 
-  $rerun = Invoke-FlakeRerun -PrNumber $PrNumber -HeadSha $HeadSha -FailingFiles @($failureInfo.files) -FailingTests @($failureInfo.tests) -RunDir $RunDir
+  # PR code runs under one shared standard account, so the rerun waits for any other PR's checks (same lock as Invoke-PrReview.ps1).
+  $checksMutex = New-Object System.Threading.Mutex($false, 'Global\TivanoUntrustedChecks')
+  $checksLocked = $false
+  try {
+    try { $checksLocked = $checksMutex.WaitOne(7200000) } catch [System.Threading.AbandonedMutexException] { $checksLocked = $true }
+    if (-not $checksLocked) { throw 'Timed out waiting for the untrusted-checks lock.' }
+    $rerun = Invoke-FlakeRerun -PrNumber $PrNumber -HeadSha $HeadSha -FailingFiles @($failureInfo.files) -FailingTests @($failureInfo.tests) -RunDir $RunDir
+  } finally {
+    if ($checksLocked) { try { $checksMutex.ReleaseMutex() } catch { } }
+    $checksMutex.Dispose()
+  }
   return [pscustomobject]@{
     attempted = $true
     passed = [bool]$rerun.passed
@@ -1088,82 +1126,163 @@ function Invoke-FlakeRetryIfEligible {
 }
 
 function Write-GateFailures {
-  param([string]$Path, $Evaluation, [string[]]$Extra, [string]$Sha, [string[]]$GlmBlocking = @())
+  param([string]$Path, $Evaluation, [string[]]$Extra, [string]$Sha, [string[]]$GlmBlocking = @(), [string]$GlmModel = 'GLM-5.4')
   $lines = New-Object Collections.Generic.List[string]
   $null = $lines.Add('# Merge gate failures')
   $null = $lines.Add('')
-  $shortSha = if ($Sha.Length -ge 7) { $Sha.Substring(0, 7) } else { $Sha }
+  $shortSha = $Sha
+  if ($Sha.Length -ge 7) { $shortSha = $Sha.Substring(0, 7) }
   $null = $lines.Add('These conditions failed for head ' + $shortSha + '. Fix every one of them.')
   $null = $lines.Add('')
   foreach ($item in @($Extra) + @($Evaluation.content)) { if ($item) { $null = $lines.Add('- ' + $item) } }
-  foreach ($item in @($GlmBlocking)) { if ($item) { $null = $lines.Add('- GLM-5.3: ' + $item) } }
+  $reviewerPrefix = 'GLM-5.4'
+  if (-not [string]::IsNullOrWhiteSpace($GlmModel)) { $reviewerPrefix = $GlmModel }
+  foreach ($item in @($GlmBlocking)) { if ($item) { $null = $lines.Add('- ' + $reviewerPrefix + ': ' + $item) } }
   if ($Evaluation.newFailures.Count -gt 0) {
     $null = $lines.Add('')
     $null = $lines.Add('## New failing unit tests')
     $null = $lines.Add('')
     foreach ($name in @($Evaluation.newFailures | Select-Object -First 50)) { $null = $lines.Add('- ' + $name) }
   }
-  Write-Text $Path (($lines -join "`n") + "`n")
+  Write-Text $Path (($lines.ToArray() -join "`n") + "`n")
 }
 
-function Invoke-GlmSecondReview {
+function Start-GlmSecondReview {
   param([int]$Pr, [string]$Sha, [string]$RunDir)
   $glmOutLog = Join-Path $RunDir 'glm-review.out.log'
   $glmErrLog = Join-Path $RunDir 'glm-review.err.log'
-  if (-not (Test-Path -LiteralPath $script:GlmScript -PathType Leaf)) {
-    return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = ''; message = 'Invoke-GlmReview.ps1 is missing' }
-  }
-  $glmScriptPath = Get-AcceptancePath $script:GlmScript
-  Assert-CmdSafePath 'Invoke-GlmReview.ps1' $glmScriptPath
-  $glmArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + (Quote-Argument $glmScriptPath) +
-    ' -Mode review -PrNumber ' + $Pr + ' -Repo ' + $Repo + ' -Root ' + (Quote-Argument $script:WorkRoot) +
-    ' -TimeoutMin ' + $GlmTimeoutMin + ' -HeadSha ' + $Sha
-  $defaultRepo = Join-Path $script:WorkRoot 'repo'
-  if (-not (Test-Path -LiteralPath (Join-Path $defaultRepo '.git'))) {
-    $glmArgs += ' -Checkout ' + (Quote-Argument $script:ReviewCheckoutPath)
-  }
+  try {
+    if (-not (Test-Path -LiteralPath $script:GlmScript -PathType Leaf)) {
+      return [pscustomobject]@{
+        started = $false
+        process = $null
+        deadlineUtc = [DateTime]::UtcNow
+        outLog = $glmOutLog
+        errLog = $glmErrLog
+        runDir = $RunDir
+        sha = $Sha
+        errorResult = [pscustomobject]@{ status = 'unavailable'; model = 'GLM-5.4'; fallbackReason = ''; verdict = ''; blocking = @(); runDir = ''; message = 'Invoke-GlmReview.ps1 is missing' }
+      }
+    }
+    $glmScriptPath = Get-AcceptancePath $script:GlmScript
+    Assert-CmdSafePath 'Invoke-GlmReview.ps1' $glmScriptPath
+    $glmArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' + (Quote-Argument $glmScriptPath) +
+      ' -Mode review -PrNumber ' + $Pr + ' -Repo ' + $Repo + ' -Root ' + (Quote-Argument $script:WorkRoot) +
+      ' -TimeoutMin ' + $GlmTimeoutMin + ' -HeadSha ' + $Sha
+    $defaultRepo = Join-Path $script:WorkRoot 'repo'
+    if (-not (Test-Path -LiteralPath (Join-Path $defaultRepo '.git'))) {
+      $glmArgs += ' -Checkout ' + (Quote-Argument $script:ReviewCheckoutPath)
+    }
 
-  Write-Log ('glm second review pr #' + $Pr + ' head ' + $Sha.Substring(0, 7))
-  $process = Start-Process -FilePath $script:PowerShellExe -ArgumentList $glmArgs `
-    -RedirectStandardOutput $glmOutLog -RedirectStandardError $glmErrLog `
-    -WorkingDirectory $script:WorkRoot -WindowStyle Hidden -PassThru
-  if (-not $process) {
-    return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = ''; message = 'could not start Invoke-GlmReview.ps1' }
+    Write-Log ('glm second review pr #' + $Pr + ' head ' + $Sha.Substring(0, 7))
+    $process = Start-Process -FilePath $script:PowerShellExe -ArgumentList $glmArgs `
+      -RedirectStandardOutput $glmOutLog -RedirectStandardError $glmErrLog `
+      -WorkingDirectory $script:WorkRoot -WindowStyle Hidden -PassThru
+    if (-not $process) {
+      return [pscustomobject]@{
+        started = $false
+        process = $null
+        deadlineUtc = [DateTime]::UtcNow
+        outLog = $glmOutLog
+        errLog = $glmErrLog
+        runDir = $RunDir
+        sha = $Sha
+        errorResult = [pscustomobject]@{ status = 'unavailable'; model = 'GLM-5.4'; fallbackReason = ''; verdict = ''; blocking = @(); runDir = ''; message = 'could not start Invoke-GlmReview.ps1' }
+      }
+    }
+    # Open the handle early so Windows PowerShell populates ExitCode even if the process exits before WaitForExit.
+    $null = $process.Handle
+    return [pscustomobject]@{
+      started = $true
+      process = $process
+      deadlineUtc = [DateTime]::UtcNow.AddMinutes(($GlmTimeoutMin * 2) + 5)
+      outLog = $glmOutLog
+      errLog = $glmErrLog
+      runDir = $RunDir
+      sha = $Sha
+      errorResult = $null
+    }
+  } catch {
+    return [pscustomobject]@{
+      started = $false
+      process = $null
+      deadlineUtc = [DateTime]::UtcNow
+      outLog = $glmOutLog
+      errLog = $glmErrLog
+      runDir = $RunDir
+      sha = $Sha
+      errorResult = [pscustomobject]@{ status = 'unavailable'; model = 'GLM-5.4'; fallbackReason = ''; verdict = ''; blocking = @(); runDir = ''; message = (ConvertTo-SingleLine $_.Exception.Message 200) }
+    }
   }
-  $waitMs = ($GlmTimeoutMin + 5) * 60000
-  if (-not $process.WaitForExit($waitMs)) {
-    $taskkill = Join-Path ([Environment]::GetFolderPath('System')) 'taskkill.exe'
-    $null = Invoke-Tool $taskkill ('/T /F /PID ' + $process.Id) (Join-Path $RunDir 'glm-kill.out.log') (Join-Path $RunDir 'glm-kill.err.log') $script:WorkRoot
-    $null = $process.WaitForExit(5000)
-    return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = ''; message = 'Invoke-GlmReview.ps1 timed out' }
+}
+
+function Wait-GlmSecondReview {
+  param($Handle)
+  if ($null -eq $Handle) {
+    return [pscustomobject]@{ status = 'unavailable'; model = 'GLM-5.4'; fallbackReason = ''; verdict = ''; blocking = @(); runDir = ''; message = 'GLM-5.4 review was not started' }
   }
-  $process.WaitForExit()
+  if (-not $Handle.started) {
+    return $Handle.errorResult
+  }
+  $process = $Handle.process
+  $glmOutLog = [string]$Handle.outLog
+  $glmErrLog = [string]$Handle.errLog
+  $runDir = [string]$Handle.runDir
+  $sha = [string]$Handle.sha
+  try {
+    $exited = $process.HasExited
+    if (-not $exited) {
+      $remaining = ($Handle.deadlineUtc - [DateTime]::UtcNow).TotalMilliseconds
+      $waitMs = 0
+      if ($remaining -gt 0) { $waitMs = [int][Math]::Ceiling($remaining) }
+      $exited = $process.WaitForExit($waitMs)
+    }
+    if (-not $exited) {
+      $taskkill = Join-Path ([Environment]::GetFolderPath('System')) 'taskkill.exe'
+      $null = Invoke-Tool $taskkill ('/T /F /PID ' + $process.Id) (Join-Path $runDir 'glm-kill.out.log') (Join-Path $runDir 'glm-kill.err.log') $script:WorkRoot
+      $null = $process.WaitForExit(5000)
+      return [pscustomobject]@{ status = 'unavailable'; model = 'GLM-5.4'; fallbackReason = ''; verdict = ''; blocking = @(); runDir = ''; message = 'Invoke-GlmReview.ps1 timed out' }
+    }
+    $process.WaitForExit()
+  } finally {
+    try { $process.Dispose() } catch { }
+  }
 
   $tail = Get-Tail $glmOutLog 1
   if ([string]::IsNullOrWhiteSpace($tail)) {
     $errTail = ConvertTo-SingleLine ([string](Get-Tail $glmErrLog 5)) 200
-    $msg = if ($errTail) { 'GLM-5.3 produced no summary: ' + $errTail } else { 'GLM-5.3 produced no summary' }
-    return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = ''; message = $msg }
+    $msg = 'GLM-5.4 produced no summary'
+    if ($errTail) { $msg = 'GLM-5.4 produced no summary: ' + $errTail }
+    return [pscustomobject]@{ status = 'unavailable'; model = 'GLM-5.4'; fallbackReason = ''; verdict = ''; blocking = @(); runDir = ''; message = $msg }
   }
   $glmData = $null
   try { $glmData = $tail | ConvertFrom-Json } catch { }
   if ($glmData -isnot [pscustomobject]) {
-    return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = ''; message = 'GLM-5.3 summary was not valid JSON' }
+    return [pscustomobject]@{ status = 'unavailable'; model = 'GLM-5.4'; fallbackReason = ''; verdict = ''; blocking = @(); runDir = ''; message = 'GLM-5.4 summary was not valid JSON' }
   }
+  $glmModel = [string](Get-JsonProp $glmData 'model')
+  if ([string]::IsNullOrWhiteSpace($glmModel)) { $glmModel = 'GLM-5.4' }
+  $glmFallbackReason = [string](Get-JsonProp $glmData 'fallbackReason')
   $glmRunDir = [string](Get-JsonProp $glmData 'runDir')
   $glmHead = [string](Get-JsonProp $glmData 'headSha')
-  if ($glmHead -and $glmHead -ne $Sha) {
-    return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = $glmRunDir; message = 'PR head moved before GLM-5.3 review completed' }
+  if ($glmHead -and $glmHead -ne $sha) {
+    return [pscustomobject]@{ status = 'unavailable'; model = $glmModel; fallbackReason = $glmFallbackReason; verdict = ''; blocking = @(); runDir = $glmRunDir; message = ('PR head moved before ' + $glmModel + ' review completed') }
   }
   $glmStatus = [string](Get-JsonProp $glmData 'status')
   if ($glmStatus -ne 'ok') {
     $msg = [string](Get-JsonProp $glmData 'message')
-    if ([string]::IsNullOrWhiteSpace($msg)) { $msg = 'GLM-5.3 review unavailable' }
-    return [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = $glmRunDir; message = $msg }
+    if ([string]::IsNullOrWhiteSpace($msg)) { $msg = $glmModel + ' review unavailable' }
+    return [pscustomobject]@{ status = 'unavailable'; model = $glmModel; fallbackReason = $glmFallbackReason; verdict = ''; blocking = @(); runDir = $glmRunDir; message = $msg }
   }
   $glmVerdict = [string](Get-JsonProp $glmData 'verdict')
   $glmBlocking = @(ConvertTo-StringList (Get-JsonProp $glmData 'blocking'))
-  return [pscustomobject]@{ status = 'ok'; verdict = $glmVerdict; blocking = $glmBlocking; runDir = $glmRunDir; message = '' }
+  return [pscustomobject]@{ status = 'ok'; model = $glmModel; fallbackReason = $glmFallbackReason; verdict = $glmVerdict; blocking = $glmBlocking; runDir = $glmRunDir; message = '' }
+}
+
+function Invoke-GlmSecondReview {
+  param([int]$Pr, [string]$Sha, [string]$RunDir)
+  $handle = Start-GlmSecondReview -Pr $Pr -Sha $Sha -RunDir $RunDir
+  return (Wait-GlmSecondReview -Handle $handle)
 }
 
 $headShaOut = ''
@@ -1173,6 +1292,7 @@ $gatePathOut = ''
 $flakeRetriedOut = $null
 $glmOut = [ordered]@{
   status = 'skipped'
+  model = ''
   verdict = ''
   blocking = 0
   runDir = ''
@@ -1196,7 +1316,11 @@ try {
   $script:WorkRoot = $WorkRoot
 
   $stamp = [DateTime]::Now.ToString('yyyyMMddTHHmmss')
-  $script:RunDir = Join-Path $WorkRoot ('autopilot\gate\pr-' + $PrNumber + '-' + $stamp)
+  $runDirCandidate = Join-Path $WorkRoot ('autopilot\gate\pr-' + $PrNumber + '-' + $stamp)
+  if (Test-Path -LiteralPath $runDirCandidate) {
+    $runDirCandidate = $runDirCandidate + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 4)
+  }
+  $script:RunDir = $runDirCandidate
   [IO.Directory]::CreateDirectory($script:RunDir) | Out-Null
   $script:LogPath = Join-Path $script:RunDir 'gate.log'
 
@@ -1261,18 +1385,41 @@ try {
   } else {
     $headShaOut = $info.headSha
     $review = $null
-    for ($lockTry = 0; $lockTry -le 10; $lockTry++) {
-      $tag = if ($lockTry -eq 0) { 'g0' } else { 'g' + $lockTry }
-      $review = Invoke-Review $PrNumber $headShaOut $script:RunDir $false $tag
-      if ($review.status -ne 'busy') { break }
-      if ($lockTry -lt 10) {
-        Write-Log ('reviewer lock busy; waiting 60s before retry ' + ($lockTry + 1) + '/10')
-        Start-Sleep -Seconds 60
+    $glmHandle = $null
+    $glmResult = $null
+    try {
+      for ($lockTry = 0; $lockTry -le 10; $lockTry++) {
+        $tag = 'g0'
+        if ($lockTry -gt 0) { $tag = 'g' + $lockTry }
+        $reviewHandle = Start-ReviewTask -Pr $PrNumber -Sha $headShaOut -RunDir $script:RunDir -NoPost $false -Tag $tag
+        if ($lockTry -eq 0 -and -not $SkipGlm) {
+          $glmHandle = Start-GlmSecondReview -Pr $PrNumber -Sha $headShaOut -RunDir $script:RunDir
+        }
+        $review = Wait-ReviewTask -Handle $reviewHandle
+        if ($review.status -ne 'busy') { break }
+        if ($lockTry -lt 10) {
+          Write-Log ('reviewer lock busy; waiting 60s before retry ' + ($lockTry + 1) + '/10')
+          Start-Sleep -Seconds 60
+        }
+      }
+      if ($null -ne $glmHandle) {
+        try {
+          $glmResult = Wait-GlmSecondReview -Handle $glmHandle
+        } catch {
+          $glmResult = [pscustomobject]@{ status = 'unavailable'; model = 'GLM-5.4'; fallbackReason = ''; verdict = ''; blocking = @(); runDir = ''; message = (ConvertTo-SingleLine $_.Exception.Message 200) }
+        }
+        $glmHandle = $null
+      }
+    } finally {
+      if ($null -ne $glmHandle) {
+        try { $null = Wait-GlmSecondReview -Handle $glmHandle } catch { }
+        $glmHandle = $null
       }
     }
 
     if (-not $review -or $review.status -ne 'ok') {
-      $msg = if ($review -and $review.message) { [string]$review.message } else { 'review unavailable' }
+      $msg = 'review unavailable'
+      if ($review -and $review.message) { $msg = [string]$review.message }
       $null = $failuresOut.Add($msg)
       Write-Log ('review unavailable: ' + $msg)
     } else {
@@ -1342,17 +1489,17 @@ try {
         }
 
         $glmBlocking = @()
+        $glmModel = 'GLM-5.4'
         if (-not $SkipGlm) {
-          $glmResult = $null
-          try {
-            $glmResult = Invoke-GlmSecondReview $PrNumber $headShaOut $script:RunDir
-          } catch {
-            $glmResult = [pscustomobject]@{ status = 'unavailable'; verdict = ''; blocking = @(); runDir = ''; message = (ConvertTo-SingleLine $_.Exception.Message 200) }
+          if ($glmResult) {
+            $rawGlmModel = [string](Get-JsonProp $glmResult 'model')
+            if (-not [string]::IsNullOrWhiteSpace($rawGlmModel)) { $glmModel = $rawGlmModel }
           }
           if ($glmResult -and $glmResult.status -eq 'ok') {
             $glmBlocking = @($glmResult.blocking)
             $glmOut = [ordered]@{
               status = 'ok'
+              model = $glmModel
               verdict = [string]$glmResult.verdict
               blocking = $glmBlocking.Count
               runDir = [string]$glmResult.runDir
@@ -1361,27 +1508,34 @@ try {
               $verdictOut = 'fail'
               $exitCode = 1
               foreach ($item in $glmBlocking) {
-                if ($item) { $null = $failuresOut.Add('GLM-5.3: ' + $item) }
+                if ($item) { $null = $failuresOut.Add($glmModel + ': ' + $item) }
               }
             }
-            Write-Log ('glm second review ok: verdict=' + $glmResult.verdict + ' blocking=' + $glmBlocking.Count)
+            $glmFallbackReason = [string](Get-JsonProp $glmResult 'fallbackReason')
+            if (-not [string]::IsNullOrWhiteSpace($glmFallbackReason)) {
+              Write-Log ('second review fell back to ' + $glmModel + ': ' + $glmFallbackReason)
+            }
+            Write-Log ('second review ok: model=' + $glmModel + ' verdict=' + $glmResult.verdict + ' blocking=' + $glmBlocking.Count)
           } else {
-            $glmMsg = if ($glmResult -and $glmResult.message) { [string]$glmResult.message } else { 'GLM-5.3 review unavailable' }
-            $glmRunDir = if ($glmResult -and $glmResult.runDir) { [string]$glmResult.runDir } else { '' }
+            $glmMsg = $glmModel + ' review unavailable'
+            if ($glmResult -and $glmResult.message) { $glmMsg = [string]$glmResult.message }
+            $glmRunDir = ''
+            if ($glmResult -and $glmResult.runDir) { $glmRunDir = [string]$glmResult.runDir }
             $glmOut = [ordered]@{
               status = 'unavailable'
+              model = $glmModel
               verdict = ''
               blocking = 0
               runDir = $glmRunDir
             }
-            $note = 'GLM-5.3 review unavailable: ' + $glmMsg
+            $note = $glmModel + ' review unavailable: ' + $glmMsg
             $null = $notesOut.Add($note)
             Write-Log $note
           }
         }
 
         if ($verdictOut -eq 'fail') {
-          Write-GateFailures (Join-Path $script:RunDir 'failures.md') $evaluation $extra $headShaOut $glmBlocking
+          Write-GateFailures (Join-Path $script:RunDir 'failures.md') $evaluation $extra $headShaOut $glmBlocking $glmModel
           Write-Log ('gate fail for PR #' + $PrNumber + ' (' + $failuresOut.Count + ' failure items)')
         } else {
           Write-Log ('gate pass for PR #' + $PrNumber + ' head ' + $headShaOut.Substring(0, 7))

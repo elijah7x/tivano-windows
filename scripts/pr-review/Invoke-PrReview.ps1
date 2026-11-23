@@ -1,6 +1,6 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-14.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-23.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Invoke-PrReview.ps1 -Root <state root outside any git checkout> -Checkout <clone used only for worktrees> -StandardCredentialFile <file> [-TokenFile <file>] [-Reference <macOS baseline clone>] [-DryRun] [-PrNumber <n> [-Force]]
+# Usage: .\Invoke-PrReview.ps1 -Root <state root outside any git checkout> -Checkout <clone used only for worktrees> -StandardCredentialFile <file> [-TokenFile <file>] [-Reference <macOS baseline clone>] [-BaseCacheRoot <cache dir>] [-DryRun] [-PrNumber <n> [-Force]]
 # One polling pass. Writes a one-line JSON summary to stdout and <Root>\last-run.json, and <run dir>\gate.json per reviewed PR.
 
 param(
@@ -10,6 +10,7 @@ param(
   [string]$StandardCredentialFile,
   [string]$TokenFile,
   [string]$Reference,
+  [string]$BaseCacheRoot = 'C:\tivano\dev-loop\autopilot\base-cache',
   [string]$DevinModel = 'swe-2-high',
   [ValidateRange(1, 20)][int]$MaxPerRun = 1,
   [switch]$DryRun,
@@ -27,6 +28,7 @@ $script:CmdExe = Join-Path ([Environment]::GetFolderPath('System')) 'cmd.exe'
 $script:StandardScript = Join-Path $PSScriptRoot '..\windows-acceptance\Invoke-AsStandardUser.ps1'
 $script:RunChecks = Join-Path $PSScriptRoot 'run-checks.cmd'
 $script:PromptTemplate = Join-Path $PSScriptRoot 'review-prompt.md'
+$script:RunInstanceId = ([string]$PID) + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
 
 function Write-Text {
   param([string]$Path, [AllowEmptyString()][string]$Text)
@@ -59,10 +61,15 @@ function Invoke-Tool {
 
 function Invoke-Git {
   param([string]$Arguments)
-  $out = Join-Path $script:WorkRoot '.git.out.tmp'
-  $err = Join-Path $script:WorkRoot '.git.err.tmp'
-  $code = Invoke-Tool $script:GitPath ('-C ' + (Quote-Argument $Checkout) + ' ' + $Arguments) $out $err
-  return [pscustomobject]@{ exitCode = $code; text = (Read-Text $out); error = (Read-Text $err) }
+  $out = Join-Path $script:WorkRoot ('.git.' + $script:RunInstanceId + '.out.tmp')
+  $err = Join-Path $script:WorkRoot ('.git.' + $script:RunInstanceId + '.err.tmp')
+  try {
+    $code = Invoke-Tool $script:GitPath ('-C ' + (Quote-Argument $Checkout) + ' ' + $Arguments) $out $err
+    return [pscustomobject]@{ exitCode = $code; text = (Read-Text $out); error = (Read-Text $err) }
+  } finally {
+    Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $err -Force -ErrorAction SilentlyContinue
+  }
 }
 
 function Invoke-Gh {
@@ -103,9 +110,60 @@ function Read-State {
   return $state
 }
 
+function Invoke-WithNamedMutex {
+  param([string]$Name, [int]$TimeoutMs, [scriptblock]$Action)
+  $mutex = New-Object System.Threading.Mutex($false, $Name)
+  $acquired = $false
+  try {
+    try {
+      $acquired = $mutex.WaitOne($TimeoutMs)
+    } catch [System.Threading.AbandonedMutexException] {
+      # Previous holder terminated abnormally; ownership now belongs to this process.
+      $acquired = $true
+    }
+    if (-not $acquired) {
+      throw ('Timed out waiting for mutex ' + $Name + ' after ' + [string]([int]($TimeoutMs / 1000)) + 's.')
+    }
+    return (& $Action)
+  } finally {
+    if ($acquired) {
+      try { $mutex.ReleaseMutex() } catch { }
+    }
+    $mutex.Dispose()
+  }
+}
+
+function Test-BaseStepsReliable {
+  # Only a baseline whose install, build, typecheck and unit steps all passed is reused; a failing or partial base is rerun next time.
+  param($Steps)
+  if ($null -eq $Steps) { return $false }
+  foreach ($name in @('install', 'build', 'typecheck', 'unit')) {
+    $prop = $Steps.PSObject.Properties[$name]
+    if (-not $prop -or $null -eq $prop.Value) { return $false }
+    if ([int]$prop.Value -ne 0) { return $false }
+  }
+  return $true
+}
+
+function Invoke-WithUntrustedChecksLock {
+  # PR code runs under one shared standard account that can modify every active sandbox, so checks of different PRs never overlap.
+  param([scriptblock]$Action)
+  return (Invoke-WithNamedMutex 'Global\TivanoUntrustedChecks' 7200000 $Action)
+}
+
+function Invoke-WithStateLock {
+  param([scriptblock]$Action)
+  return (Invoke-WithNamedMutex 'Global\TivanoPrReviewState' 120000 $Action)
+}
+
+function Invoke-WithGitLock {
+  param([scriptblock]$Action)
+  return (Invoke-WithNamedMutex 'Global\TivanoPrReviewGit' 120000 $Action)
+}
+
 function Save-State {
   param([string]$Path, $State)
-  $temporary = $Path + '.tmp'
+  $temporary = $Path + '.' + $script:RunInstanceId + '.tmp'
   Write-Text $temporary ((ConvertTo-Json -InputObject $State -Depth 8) + "`n")
   for ($attempt = 1; $attempt -le 8; $attempt++) {
     try {
@@ -193,7 +251,15 @@ function Get-VitestReport {
     if (-not $file) { continue }
     # Key by worktree-relative file and full name: the same name can occur in several files.
     $fileName = ([string]$file.name).Replace('\', '/')
-    if ($fileName.ToLowerInvariant().StartsWith($prefix)) { $fileName = $fileName.Substring($prefix.Length) }
+    if ($fileName.ToLowerInvariant().StartsWith($prefix)) {
+      $fileName = $fileName.Substring($prefix.Length)
+    } else {
+      # Cached base results carry the original run's sandbox worktree path; normalize to repo-relative.
+      $sandboxMatch = [regex]::Match($fileName, '(?i)/sandbox/(?:base|pr)(?:-[^/]+)?/')
+      if ($sandboxMatch.Success) {
+        $fileName = $fileName.Substring($sandboxMatch.Index + $sandboxMatch.Length)
+      }
+    }
     foreach ($result in @($file.assertionResults)) {
       if (-not $result) { continue }
       $fullName = [string]$result.fullName
@@ -214,6 +280,120 @@ function Copy-RunOutput {
   [IO.Directory]::CreateDirectory($To) | Out-Null
   if (Test-Path -LiteralPath $From -PathType Container) {
     Copy-Item -Path (Join-Path $From '*') -Destination $To -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Resolve-BaseCacheRoot {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+  try {
+    $resolved = Get-AcceptancePath $Path
+    Assert-OutsideGitCheckout $resolved
+    return $resolved
+  } catch {
+    return $null
+  }
+}
+
+function Prune-BaseCache {
+  param([string]$CacheRoot, [int]$KeepCount = 20)
+  if ([string]::IsNullOrWhiteSpace($CacheRoot) -or -not (Test-Path -LiteralPath $CacheRoot -PathType Container)) { return }
+  try {
+    $entries = @(Get-ChildItem -LiteralPath $CacheRoot -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match '^[0-9a-fA-F]{40}$' } |
+      Sort-Object -Property LastWriteTimeUtc -Descending)
+    if ($entries.Count -le $KeepCount) { return }
+    for ($i = $KeepCount; $i -lt $entries.Count; $i++) {
+      try {
+        Remove-Item -LiteralPath $entries[$i].FullName -Recurse -Force -ErrorAction SilentlyContinue
+      } catch { }
+    }
+  } catch { }
+}
+
+function Restore-BaseCache {
+  param([string]$CacheRoot, [string]$MergeBase, [string]$RunDir)
+  if ([string]::IsNullOrWhiteSpace($CacheRoot)) { return $false }
+  if ([string]::IsNullOrWhiteSpace($MergeBase) -or $MergeBase -notmatch '^[0-9a-fA-F]{40}$') { return $false }
+  $resultsDest = Join-Path $RunDir 'results-base'
+  $checksDest = Join-Path $RunDir 'checks-base'
+  try {
+    $entryDir = Join-Path $CacheRoot $MergeBase
+    $markerPath = Join-Path $entryDir 'complete.json'
+    $cachedResults = Join-Path $entryDir 'results-base'
+    $cachedChecks = Join-Path $entryDir 'checks-base'
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $false }
+    if (-not (Test-Path -LiteralPath $cachedResults -PathType Container)) { return $false }
+    if (-not (Test-Path -LiteralPath $cachedChecks -PathType Container)) { return $false }
+    $cachedSteps = $null
+    try { $cachedSteps = Get-Content -LiteralPath (Join-Path $cachedResults 'steps.json') -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
+    if (-not (Test-BaseStepsReliable $cachedSteps) -or -not (Test-Path -LiteralPath (Join-Path $cachedResults 'vitest.json') -PathType Leaf)) {
+      Remove-Item -LiteralPath $entryDir -Recurse -Force -ErrorAction SilentlyContinue
+      return $false
+    }
+    $markerText = Read-Text $markerPath
+    if ([string]::IsNullOrWhiteSpace($markerText)) { return $false }
+    $marker = $markerText | ConvertFrom-Json
+    if ($null -eq $marker -or -not $marker.PSObject.Properties['sha']) { return $false }
+    if ([string]$marker.sha -ne $MergeBase) { return $false }
+
+    if (Test-Path -LiteralPath $resultsDest) { Remove-Item -LiteralPath $resultsDest -Recurse -Force -ErrorAction Stop }
+    if (Test-Path -LiteralPath $checksDest) { Remove-Item -LiteralPath $checksDest -Recurse -Force -ErrorAction Stop }
+    [IO.Directory]::CreateDirectory($resultsDest) | Out-Null
+    [IO.Directory]::CreateDirectory($checksDest) | Out-Null
+    Copy-Item -Path (Join-Path $cachedResults '*') -Destination $resultsDest -Recurse -Force -ErrorAction Stop
+    Copy-Item -Path (Join-Path $cachedChecks '*') -Destination $checksDest -Recurse -Force -ErrorAction Stop
+    if (-not (Test-Path -LiteralPath (Join-Path $resultsDest 'steps.json') -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path $checksDest 'summary.json') -PathType Leaf)) {
+      throw 'cached base entry is missing steps.json or summary.json'
+    }
+    return $true
+  } catch {
+    try {
+      if (Test-Path -LiteralPath $resultsDest) { Remove-Item -LiteralPath $resultsDest -Recurse -Force -ErrorAction SilentlyContinue }
+      if (Test-Path -LiteralPath $checksDest) { Remove-Item -LiteralPath $checksDest -Recurse -Force -ErrorAction SilentlyContinue }
+    } catch { }
+    return $false
+  }
+}
+
+function Publish-BaseCache {
+  param([string]$CacheRoot, [string]$MergeBase, [string]$ResultsBaseDir, [string]$ChecksBaseDir, [int]$KeepCount = 20)
+  if ([string]::IsNullOrWhiteSpace($CacheRoot)) { return }
+  if ([string]::IsNullOrWhiteSpace($MergeBase) -or $MergeBase -notmatch '^[0-9a-fA-F]{40}$') { return }
+  if (-not (Test-Path -LiteralPath $ResultsBaseDir -PathType Container)) { return }
+  if (-not (Test-Path -LiteralPath $ChecksBaseDir -PathType Container)) { return }
+  $tempDir = $null
+  try {
+    [IO.Directory]::CreateDirectory($CacheRoot) | Out-Null
+    $finalDir = Join-Path $CacheRoot $MergeBase
+    if (-not (Test-Path -LiteralPath $finalDir -PathType Container)) {
+      $tempDir = Join-Path $CacheRoot ('.tmp-' + $MergeBase + '-' + $script:RunInstanceId)
+      $tempResults = Join-Path $tempDir 'results-base'
+      $tempChecks = Join-Path $tempDir 'checks-base'
+      [IO.Directory]::CreateDirectory($tempResults) | Out-Null
+      [IO.Directory]::CreateDirectory($tempChecks) | Out-Null
+      Copy-Item -Path (Join-Path $ResultsBaseDir '*') -Destination $tempResults -Recurse -Force -ErrorAction Stop
+      Copy-Item -Path (Join-Path $ChecksBaseDir '*') -Destination $tempChecks -Recurse -Force -ErrorAction Stop
+      $marker = [ordered]@{
+        sha = $MergeBase
+        createdAt = [DateTime]::UtcNow.ToString('o')
+      }
+      Write-Text (Join-Path $tempDir 'complete.json') ((ConvertTo-Json -InputObject $marker -Depth 3 -Compress) + "`n")
+      try {
+        [IO.Directory]::Move($tempDir, $finalDir)
+        $tempDir = $null
+      } catch {
+        # Another process already published this mergeBase; discard our staging directory.
+      }
+    }
+    Prune-BaseCache $CacheRoot $KeepCount
+  } catch {
+    # Never let a cache error fail the gate.
+  } finally {
+    if ($tempDir -and (Test-Path -LiteralPath $tempDir -PathType Container)) {
+      try { Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    }
   }
 }
 
@@ -785,7 +965,9 @@ function Remove-OldRuns {
   $cutoff = (Get-Date).AddDays(-30)
   foreach ($old in @(Get-ChildItem -LiteralPath $RunsDir -Directory -ErrorAction SilentlyContinue)) {
     if ($old.LastWriteTime -ge $cutoff) { continue }
-    try { Remove-Item -LiteralPath $old.FullName -Recurse -Force -ErrorAction Stop } catch { $failed += ('cannot delete old run ' + $old.Name) }
+    try { Remove-Item -LiteralPath $old.FullName -Recurse -Force -ErrorAction Stop } catch {
+      if (Test-Path -LiteralPath $old.FullName) { $failed += ('cannot delete old run ' + $old.Name) }
+    }
   }
   return $failed
 }
@@ -810,9 +992,12 @@ try {
   [IO.Directory]::CreateDirectory($WorkRoot) | Out-Null
   $script:WorkRoot = $WorkRoot
 
-  # One pass at a time. A second start writes a skipped summary and leaves the first run alone.
+  # One pass at a time per PR (or globally for polling runs without -PrNumber).
+  # A conflicting start writes a skipped summary and leaves the active run alone.
+  $lockName = 'lock'
+  if ($PrNumber -gt 0) { $lockName = 'lock-pr-' + $PrNumber }
   try {
-    $lock = [IO.File]::Open((Join-Path $WorkRoot 'lock'), [IO.FileMode]::OpenOrCreate,
+    $lock = [IO.File]::Open((Join-Path $WorkRoot $lockName), [IO.FileMode]::OpenOrCreate,
       [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
   } catch {
     $skippedOut += [ordered]@{ pr = $null; reason = 'another run holds the lock' }
@@ -820,6 +1005,7 @@ try {
   }
 
   if ($lock) {
+    $resolvedBaseCacheRoot = Resolve-BaseCacheRoot $BaseCacheRoot
     $Checkout = Get-AcceptancePath $Checkout
     if (-not (Test-Path -LiteralPath (Join-Path $Checkout '.git'))) { throw '-Checkout must be the root of a git clone.' }
     $standardPath = Get-AcceptancePath $script:StandardScript
@@ -857,15 +1043,25 @@ try {
     $script:DevinPath = $devin.Source
 
     $statePath = Join-Path $WorkRoot 'state.json'
-    $state = Read-State $statePath
-    Save-State $statePath $state
+    $state = Invoke-WithStateLock {
+      $loaded = Read-State $statePath
+      Save-State $statePath $loaded
+      return $loaded
+    }
 
-    $listPath = Join-Path $WorkRoot '.pr-list.json'
-    $listCode = Invoke-Gh ('pr list -R ' + $Repo + ' --state open --limit 1000 --json number,headRefOid,isDraft,author,title,baseRefName') `
-      $listPath (Join-Path $WorkRoot '.pr-list.err.json')
-    if ($listCode -ne 0) { throw ('gh pr list failed: ' + (Get-Tail (Join-Path $WorkRoot '.pr-list.err.json') 5)) }
-    # Windows PowerShell 5.1 emits a JSON array as one Object[]; unroll it.
-    $pulls = @((Read-Text $listPath) | ConvertFrom-Json | ForEach-Object { $_ })
+    $listPath = Join-Path $WorkRoot ('.pr-list.' + $script:RunInstanceId + '.json')
+    $listErrPath = Join-Path $WorkRoot ('.pr-list.' + $script:RunInstanceId + '.err.json')
+    $pulls = @()
+    try {
+      $listCode = Invoke-Gh ('pr list -R ' + $Repo + ' --state open --limit 1000 --json number,headRefOid,isDraft,author,title,baseRefName') `
+        $listPath $listErrPath
+      if ($listCode -ne 0) { throw ('gh pr list failed: ' + (Get-Tail $listErrPath 5)) }
+      # Windows PowerShell 5.1 emits a JSON array as one Object[]; unroll it.
+      $pulls = @((Read-Text $listPath) | ConvertFrom-Json | ForEach-Object { $_ })
+    } finally {
+      Remove-Item -LiteralPath $listPath -Force -ErrorAction SilentlyContinue
+      Remove-Item -LiteralPath $listErrPath -Force -ErrorAction SilentlyContinue
+    }
 
     $targets = @()
     foreach ($pull in $pulls) {
@@ -905,12 +1101,17 @@ try {
       $sha7 = $sha.Substring(0, 7)
       $stamp = [DateTime]::Now.ToString('yyyyMMddTHHmmss')
       $runDir = Join-Path $runsDir ("pr-$number-$sha7-$stamp")
+      if (Test-Path -LiteralPath $runDir) {
+        $runDir = $runDir + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 4)
+      }
       $gatePath = Join-Path $runDir 'gate.json'
       [IO.Directory]::CreateDirectory($runDir) | Out-Null
       $worktrees = @()
       $prTree = $null
       try {
-        $fetch = Invoke-Git ('fetch origin main +refs/pull/' + $number + '/head:refs/remotes/origin/pr-' + $number)
+        $fetch = Invoke-WithGitLock {
+          Invoke-Git ('fetch origin main +refs/pull/' + $number + '/head:refs/remotes/origin/pr-' + $number)
+        }
         if ($fetch.exitCode -ne 0) { throw ('git fetch failed: ' + $fetch.error) }
         $fetched = (Invoke-Git ('rev-parse refs/remotes/origin/pr-' + $number)).text
         if ($fetched) { $fetched = $fetched.Trim() }
@@ -926,14 +1127,13 @@ try {
         # copied results and the agent's output stay in the operator-only run dir.
         $sandbox = Join-Path $runDir 'sandbox'
         [IO.Directory]::CreateDirectory($sandbox) | Out-Null
-        $prTree = Join-Path $sandbox 'pr'
-        $baseTree = Join-Path $sandbox 'base'
-        $addPr = Invoke-Git ('worktree add --detach ' + (Quote-Argument $prTree) + ' ' + $sha)
+        $prTree = Join-Path $sandbox ('pr-' + $number + '-' + $script:RunInstanceId)
+        $baseTree = Join-Path $sandbox ('base-' + $number + '-' + $script:RunInstanceId)
+        $addPr = Invoke-WithGitLock {
+          Invoke-Git ('worktree add --detach ' + (Quote-Argument $prTree) + ' ' + $sha)
+        }
         if ($addPr.exitCode -ne 0) { throw ('git worktree add (pr) failed: ' + $addPr.error) }
         $worktrees += $prTree
-        $addBase = Invoke-Git ('worktree add --detach ' + (Quote-Argument $baseTree) + ' ' + $mergeBase)
-        if ($addBase.exitCode -ne 0) { throw ('git worktree add (base) failed: ' + $addBase.error) }
-        $worktrees += $baseTree
 
         $diffOut = Join-Path $runDir 'diff.patch'
         $diffErr = Join-Path $runDir 'diff.err.log'
@@ -947,11 +1147,14 @@ try {
         if ($viewCode -ne 0) { throw ('gh pr view failed: ' + (Get-Tail (Join-Path $runDir 'pr-view.err.log') 5)) }
 
         # Record the attempt before any agent work, so a crash still counts against this head.
-        $entry = Get-StateEntry $state ([string]$number)
-        $previousAttempts = 0
-        if ($entry.attempts.ContainsKey($sha)) { $previousAttempts = [int]$entry.attempts[$sha] }
-        $entry.attempts[$sha] = $previousAttempts + 1
-        Save-State $statePath $state
+        $null = Invoke-WithStateLock {
+          $freshState = Read-State $statePath
+          $entry = Get-StateEntry $freshState ([string]$number)
+          $previousAttempts = 0
+          if ($entry.attempts.ContainsKey($sha)) { $previousAttempts = [int]$entry.attempts[$sha] }
+          $entry.attempts[$sha] = $previousAttempts + 1
+          Save-State $statePath $freshState
+        }
 
         if (-not $standardSid) { $standardSid = Resolve-StandardAccountSid $StandardCredentialFile }
         $operatorSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -973,17 +1176,49 @@ try {
         $checksPr = Join-Path $sandbox 'checks-pr'
         $resultsBase = Join-Path $runDir 'results-base'
         $resultsPr = Join-Path $runDir 'results-pr'
-        # Base runs first and its results are copied out before any PR code runs.
-        $standardBase = Invoke-StandardChecks 'base' $checksBase (Join-Path $sandbox 'results-base') $baseTree $runDir
-        Copy-RunOutput (Join-Path $sandbox 'results-base') $resultsBase
-        Copy-RunOutput $checksBase (Join-Path $runDir 'checks-base')
-        $standardPr = Invoke-StandardChecks 'pr' $checksPr (Join-Path $sandbox 'results-pr') $prTree $runDir
-        Copy-RunOutput (Join-Path $sandbox 'results-pr') $resultsPr
-        Copy-RunOutput $checksPr (Join-Path $runDir 'checks-pr')
-        $standardBase.summary = Get-StandardSummary (Join-Path $runDir 'checks-base')
+        $checksBaseOut = Join-Path $runDir 'checks-base'
+
+        $baseCacheHit = Restore-BaseCache $resolvedBaseCacheRoot $mergeBase $runDir
+        if ($baseCacheHit) {
+          $mergeBase7 = $mergeBase
+          if ($mergeBase7.Length -ge 7) { $mergeBase7 = $mergeBase7.Substring(0, 7) }
+          [Console]::Error.WriteLine('base cache hit ' + $mergeBase7)
+          $standardBase = [pscustomobject]@{
+            exitCode = 0
+            summaryLine = $null
+            stdoutPath = (Join-Path $runDir 'standard-base.out.log')
+            stderrPath = (Join-Path $runDir 'standard-base.err.log')
+            summary = $null
+          }
+        } else {
+          $addBase = Invoke-WithGitLock {
+            Invoke-Git ('worktree add --detach ' + (Quote-Argument $baseTree) + ' ' + $mergeBase)
+          }
+          if ($addBase.exitCode -ne 0) { throw ('git worktree add (base) failed: ' + $addBase.error) }
+          $worktrees += $baseTree
+          # Base runs first and its results are copied out before any PR code runs.
+          $standardBase = Invoke-WithUntrustedChecksLock {
+            $r = Invoke-StandardChecks 'base' $checksBase (Join-Path $sandbox 'results-base') $baseTree $runDir
+            Copy-RunOutput (Join-Path $sandbox 'results-base') $resultsBase | Out-Null
+            Copy-RunOutput $checksBase $checksBaseOut | Out-Null
+            $r
+          }
+        }
+        $standardBase.summary = Get-StandardSummary $checksBaseOut
+        $stepsBase = Get-Steps (Join-Path $resultsBase 'steps.json')
+        if (-not $baseCacheHit -and $null -ne $standardBase.summary -and $null -ne $stepsBase -and
+            (Test-BaseStepsReliable $stepsBase) -and (Test-Path -LiteralPath (Join-Path $resultsBase 'vitest.json') -PathType Leaf)) {
+          Publish-BaseCache $resolvedBaseCacheRoot $mergeBase $resultsBase $checksBaseOut 20
+        }
+
+        $standardPr = Invoke-WithUntrustedChecksLock {
+          $r = Invoke-StandardChecks 'pr' $checksPr (Join-Path $sandbox 'results-pr') $prTree $runDir
+          Copy-RunOutput (Join-Path $sandbox 'results-pr') $resultsPr | Out-Null
+          Copy-RunOutput $checksPr (Join-Path $runDir 'checks-pr') | Out-Null
+          $r
+        }
         $standardPr.summary = Get-StandardSummary (Join-Path $runDir 'checks-pr')
 
-        $stepsBase = Get-Steps (Join-Path $resultsBase 'steps.json')
         $stepsPr = Get-Steps (Join-Path $resultsPr 'steps.json')
         $reportBase = Get-VitestReport (Join-Path $resultsBase 'vitest.json') $baseTree
         $reportPr = Get-VitestReport (Join-Path $resultsPr 'vitest.json') $prTree
@@ -1034,17 +1269,36 @@ try {
           $bodyPath = Join-Path $runDir 'post-body.md'
           Build-PostBody $bodyPath $sha7 $reviewText (Read-Text $checksSummaryPath) $verdict
           if (-not $DryRun) {
-            $postCode = Invoke-Gh ('pr review ' + $number + ' -R ' + $Repo + ' --comment --body-file ' + (Quote-Argument $bodyPath)) `
-              (Join-Path $runDir 'post.out.log') (Join-Path $runDir 'post.err.log')
+            $postDelays = @(15, 45, 90)
+            $postMaxAttempts = 4
+            $postCode = -1
+            $postAttempts = 0
+            $postErrPath = Join-Path $runDir 'post.err.log'
+            for ($postAttempt = 1; $postAttempt -le $postMaxAttempts; $postAttempt++) {
+              if ($postAttempt -gt 1) {
+                Start-Sleep -Seconds $postDelays[$postAttempt - 2]
+              }
+              $postSuffix = ''
+              if ($postAttempt -gt 1) { $postSuffix = '-' + [string]$postAttempt }
+              $postOutPath = Join-Path $runDir ('post' + $postSuffix + '.out.log')
+              $postErrPath = Join-Path $runDir ('post' + $postSuffix + '.err.log')
+              $postAttempts = $postAttempt
+              $postCode = Invoke-Gh ('pr review ' + $number + ' -R ' + $Repo + ' --comment --body-file ' + (Quote-Argument $bodyPath)) `
+                $postOutPath $postErrPath
+              if ($postCode -eq 0) { break }
+            }
             if ($postCode -ne 0) {
-              $postProblem = 'gh pr review failed: ' + (Get-Tail (Join-Path $runDir 'post.err.log') 5)
+              $postProblem = 'gh pr review failed after ' + [string]$postAttempts + ' attempts: ' + (Get-Tail $postErrPath 5)
             } else {
               $posted = $true
-              $entry = Get-StateEntry $state ([string]$number)
-              $reviewed = @($entry.reviewed)
-              if ($reviewed -notcontains $sha) { $reviewed += $sha }
-              $entry.reviewed = $reviewed
-              Save-State $statePath $state
+              $null = Invoke-WithStateLock {
+                $freshState = Read-State $statePath
+                $entry = Get-StateEntry $freshState ([string]$number)
+                $reviewed = @($entry.reviewed)
+                if ($reviewed -notcontains $sha) { $reviewed += $sha }
+                $entry.reviewed = $reviewed
+                Save-State $statePath $freshState
+              }
             }
           }
         }
@@ -1079,9 +1333,11 @@ try {
         if (Test-Path -LiteralPath $gatePath -PathType Leaf) { $failure['gatePath'] = $gatePath }
         $errorsOut += $failure
       } finally {
-        if ($script:GitPath) {
-          foreach ($tree in $worktrees) { $null = Invoke-Git ('worktree remove --force ' + (Quote-Argument $tree)) }
-          $null = Invoke-Git 'worktree prune'
+        if ($script:GitPath -and $worktrees.Count -gt 0) {
+          $null = Invoke-WithGitLock {
+            foreach ($tree in $worktrees) { $null = Invoke-Git ('worktree remove --force ' + (Quote-Argument $tree)) }
+            $null = Invoke-Git 'worktree prune'
+          }
         }
       }
     }
@@ -1105,14 +1361,30 @@ $summary = [ordered]@{
   errors = $errorsOut
 }
 $json = ConvertTo-Json -InputObject $summary -Depth 6 -Compress
+$lastRunTarget = $null
 if ($WorkRoot -and (Test-Path -LiteralPath $WorkRoot)) {
-  try { Write-Text (Join-Path $WorkRoot 'last-run.json') ($json + "`n") } catch { }
+  $lastRunTarget = Join-Path $WorkRoot 'last-run.json'
 } elseif ($Root) {
   try {
     $fallback = Get-AcceptancePath $Root
     [IO.Directory]::CreateDirectory($fallback) | Out-Null
-    Write-Text (Join-Path $fallback 'last-run.json') ($json + "`n")
+    $lastRunTarget = Join-Path $fallback 'last-run.json'
   } catch { }
+}
+if ($lastRunTarget) {
+  $lastRunTmp = $lastRunTarget + '.' + $script:RunInstanceId + '.tmp'
+  try {
+    Write-Text $lastRunTmp ($json + "`n")
+    if (Test-Path -LiteralPath $lastRunTarget -PathType Leaf) {
+      [IO.File]::Replace($lastRunTmp, $lastRunTarget, [NullString]::Value)
+    } else {
+      [IO.File]::Move($lastRunTmp, $lastRunTarget)
+    }
+  } catch {
+    try { Write-Text $lastRunTarget ($json + "`n") } catch { }
+  } finally {
+    Remove-Item -LiteralPath $lastRunTmp -Force -ErrorAction SilentlyContinue
+  }
 }
 [Console]::Out.WriteLine($json)
 # Per-PR failures are recorded in errors; only a run-level failure is a nonzero exit.
