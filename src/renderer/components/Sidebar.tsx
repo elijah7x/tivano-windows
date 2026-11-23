@@ -5,6 +5,7 @@
 // and delete uses a two-tap armed confirmation on the row itself.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ChatThread, OpenDirectoryResult, Snapshot } from "../../shared/types";
 import { compareThreads } from "../../shared/threadOrder";
 import { useT } from "../locale";
@@ -955,7 +956,11 @@ export function Sidebar(props: {
             />
           );
         })()}
-      {threadMenu && (
+      {threadMenu &&
+        // The sidebar and chat stack share z-index 1, so a fixed menu inside
+        // nav paints under the chat pane on right-click; portal it to the
+        // app root like the frozen native context menu (always on top).
+        createPortal(
         <div
           ref={threadMenuRef}
           className={`row-menu${threadMenu.alignEnd ? " align-end" : ""}`}
@@ -985,7 +990,8 @@ export function Sidebar(props: {
               {rowMenuLabel(a, threadMenu.th)}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
     </nav>
   );
