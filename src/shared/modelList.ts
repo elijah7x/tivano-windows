@@ -7,9 +7,8 @@
 
 import { pairHeadsProvider } from "./hydra";
 
-/** Frozen ProviderKind — this build ships one provider adapter. The field
- *  rides along so stored pins keep the frozen identity shape. */
-export type ModelPinProvider = "codex";
+/** Frozen ProviderKind — ported provider adapters supported in pins. */
+export type ModelPinProvider = "codex" | "zcode";
 
 /** Frozen ModelPin — `id` is "provider/modelID". */
 export interface ModelPin {

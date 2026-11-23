@@ -25,10 +25,11 @@ export interface ProviderDescriptor {
   readonly label: string;
   /**
    * Provider kind. "mock" runs in-process; "synthetic-stdio" spawns a
-   * controlled local child process; "codex" speaks the pinned app-server
-   * JSON-RPC protocol (fixture or, when gated in, a real CLI).
+   * controlled local child process; "codex" speaks the pinned Codex
+   * app-server JSON-RPC protocol; "zcode" speaks the bundled ZCode
+   * Protocol app-server over stdio.
    */
-  readonly mode: "mock" | "synthetic-stdio" | "codex";
+  readonly mode: "mock" | "synthetic-stdio" | "codex" | "zcode";
   /** Always true in this phase — real providers are not wired. */
   readonly synthetic: true;
   /**

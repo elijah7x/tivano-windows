@@ -186,7 +186,7 @@ const vMessage = vObject({
 });
 
 const vProviderThread = vObject({
-  providerId: vEnum(["codex"] as const),
+  providerId: vEnum(["codex", "zcode"] as const),
   codexThreadId: vNonEmptyString(200),
   cwd: vNonEmptyString(4000),
   codexHomeId: vNonEmptyString(4000),
@@ -422,7 +422,7 @@ const vChimeraPreset = vObject({
 // only reconcile against the live catalog at render time (a pin whose
 // model a provider never reports still loads and shows by id).
 const vModelPin = vObject({
-  provider: vEnum(["codex"] as const),
+  provider: vEnum(["codex", "zcode"] as const),
   modelID: vNonEmptyString(200),
 });
 const vModelSection = vObject({
@@ -528,6 +528,8 @@ const vSettings = vObject({
   // Optional so every pre-P2N store loads verbatim. Structural check only
   // — path validity is re-proven separately at runtime resolution.
   codexExecutable: vOptional(vNonEmptyString(4000)),
+  zcodeExecutable: vOptional(vNonEmptyString(4000)),
+  zaiRegion: vOptional(vEnum(["global", "china"] as const)),
   // Optional so every pre-A21 store loads verbatim — absent means off.
   taskSleepMode: vOptional(vEnum(["off", "system", "display"] as const)),
   textGeneration: vOptional(vEnum(["automatic", "off"] as const)),

@@ -15,6 +15,8 @@ import type {
   CodexSetupState,
   CodexWriteResult,
   OpenDirectoryResult,
+  RegisteredProviderSummary,
+  ZCodeSetupState,
 } from "../shared/types";
 import { isHttpUrl, isTrustedSender } from "./security";
 import { probeMcpServer } from "./mcpService";
@@ -66,6 +68,17 @@ export interface IpcOptions {
     save(): CodexWriteResult;
     clear(): CodexWriteResult;
   };
+  /** ZCode provider setup, region/API-key persistence, and diagnostics. */
+  zcodeSetup?: {
+    state(): ZCodeSetupState;
+    choose(): Promise<CodexChooseResult>;
+    save(): CodexWriteResult;
+    clear(): CodexWriteResult;
+    refresh(): ZCodeSetupState;
+    setApiKey(apiKey: string | null): CodexWriteResult;
+  };
+  /** Registered providers (Codex + ZCode) for Settings › Providers. */
+  providersList?: () => RegisteredProviderSummary[];
   /**
    * F05 draft attachments (main-owned picker + library copies). The
    * renderer requests a pick and receives path-free descriptors only.
@@ -503,6 +516,18 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("codex:choose", () => codexSetup().choose());
   handle("codex:save", () => codexSetup().save());
   handle("codex:clear", () => codexSetup().clear());
+
+  const zcodeSetup = () => {
+    if (!opts.zcodeSetup) throw new ValidationError("zcode setup is not available");
+    return opts.zcodeSetup;
+  };
+  handle("providers:list", () => opts.providersList?.() ?? []);
+  handle("zcode:setup-state", () => zcodeSetup().state());
+  handle("zcode:choose", () => zcodeSetup().choose());
+  handle("zcode:save", () => zcodeSetup().save());
+  handle("zcode:clear", () => zcodeSetup().clear());
+  handle("zcode:refresh", () => zcodeSetup().refresh());
+  handle("zcode:set-api-key", (p) => zcodeSetup().setApiKey(p.apiKey));
 
   // Per-thread model/effort overrides (F17). The catalog read takes no
   // payload — provider-owned state only; set-model resolves ids from the

@@ -154,6 +154,16 @@ export interface Settings {
    */
   codexExecutable?: string;
   /**
+   * User-saved ZCode entry path (zcode.cjs — physical, validated at save
+   * time). Consulted at the next launch's runtime resolution when set.
+   */
+  zcodeExecutable?: string;
+  /**
+   * Z.ai region for Z.ai / ZCode Coding Plan (frozen ZaiRegion).
+   * "global" (api.z.ai) or "china" (open.bigmodel.cn). Absent = "global".
+   */
+  zaiRegion?: "global" | "china";
+  /**
    * F29: while tasks run, optionally keep the machine awake. "system"
    * blocks idle system sleep only (screen may still dim); "display" also
    * keeps the screen lit. Manual sleep and closing the lid still work —
@@ -606,11 +616,11 @@ export interface Turn {
  * first turn ever starts, so a restart can resume it.
  */
 export interface ProviderThreadBinding {
-  providerId: "codex";
+  providerId: "codex" | "zcode";
   codexThreadId: string;
   /** Workspace directory recorded at bind time. */
   cwd: string;
-  /** CODEX_HOME identity the binding is valid for. */
+  /** CODEX_HOME or ZCode account-provider identity the binding is valid for. */
   codexHomeId: string;
   /** Protocol pin the binding was created under. */
   schemaPin: string;
@@ -1027,7 +1037,7 @@ export interface CodexSetupState {
   /** Raw TIVANO_PROVIDER value at bootstrap (null = unset). */
   providerOverride: string | null;
   /** Provider actually launched this run. */
-  launchProvider: "mock" | "synthetic-stdio" | "codex";
+  launchProvider: "mock" | "synthetic-stdio" | "codex" | "zcode";
   /** Which source produced this launch's codex runtime (null = not codex). */
   effectiveSource: "fixture" | "environment" | "saved" | "none" | null;
   /** Executable this launch resolved (real mode only). */
@@ -1047,6 +1057,62 @@ export interface CodexSetupState {
   mutable: boolean;
 }
 
+export interface ZCodeInfo {
+  state: "fixture" | "ready" | "configured-unverified" | "unsupported" | "unconfigured";
+  executable?: string;
+  runtimeExecutable?: string;
+  version: string;
+  region: "global" | "china";
+  auth: "signedIn" | "signedOut" | "unknown";
+  authDetail?: string;
+  authMessage?: string;
+  hasLocalCredentials?: boolean;
+  reason?: string;
+}
+
+export interface ZCodeSetupState {
+  installed: boolean;
+  savedExecutable: string | null;
+  savedInvalidReason?: string;
+  pendingExecutable: string | null;
+  chooserBusy: boolean;
+  providerOverride: string | null;
+  launchProvider: "mock" | "synthetic-stdio" | "codex" | "zcode";
+  effectiveSource: "fixture" | "environment" | "saved" | "default" | "none" | null;
+  effectiveEntry: string | null;
+  runtimeExecutable: string | null;
+  version: string;
+  region: "global" | "china";
+  auth: "signedIn" | "signedOut" | "unknown";
+  authDetail?: string;
+  authMessage?: string;
+  hasApiKey: boolean;
+  apiKeySource: "settings" | "environment" | "none";
+  hasLocalCredentials: boolean;
+  models: CodexModelOption[];
+  savedEffect: "none" | "active" | "pending-restart" | "blocked";
+  savedBlockReason?: string;
+  runtime: ZCodeInfo | null;
+  mutable: boolean;
+}
+
+export interface RegisteredProviderSummary {
+  id: string;
+  displayName: string;
+  agentName: string;
+  group: "agentCLI" | "tivanoCode";
+  accountLabel: string;
+  installUrl: string;
+  installed: boolean;
+  active: boolean;
+  version: string | null;
+  auth: "signedIn" | "signedOut" | "unknown";
+  authDetail?: string;
+  authMessage?: string;
+  region?: "global" | "china";
+  models: CodexModelOption[];
+}
+
 export interface AppInfo {
   appVersion: string;
   baselineTag: string;
@@ -1056,7 +1122,7 @@ export interface AppInfo {
   providerLabel: string;
   mock: true;
   /** Provider kind shown in the UI. */
-  mode: "mock" | "synthetic-stdio" | "codex";
+  mode: "mock" | "synthetic-stdio" | "codex" | "zcode";
   /** F09: present (true) only when the provider runs `/compact` itself —
    *  the composer sends the command as plain text otherwise (frozen
    *  fall-through for unsupported providers). */
@@ -1071,6 +1137,8 @@ export interface AppInfo {
   syntheticRuntime?: { executable: string; version: string };
   /** Codex adapter runtime status — present whenever mode is "codex". */
   codex?: CodexInfo;
+  /** ZCode adapter runtime status — present whenever mode is "zcode". */
+  zcode?: ZCodeInfo;
   /** Set when the previous store file was unreadable and preserved aside. */
   recoveredFrom?: string;
   /** Present (true) ONLY in bundles compiled with --terminal-candidate:

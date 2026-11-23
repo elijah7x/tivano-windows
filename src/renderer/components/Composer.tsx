@@ -102,7 +102,7 @@ function ContextMeter({ thread }: { thread: ChatThread }): React.JSX.Element | n
 
 export function Composer(props: {
   thread: ChatThread;
-  mode?: "mock" | "synthetic-stdio" | "codex";
+  mode?: "mock" | "synthetic-stdio" | "codex" | "zcode";
   readOnly?: boolean;
 }): React.JSX.Element {
   const t = useT();
@@ -266,7 +266,9 @@ export function Composer(props: {
       ? t("Synthetic stdio")
       : props.mode === "codex"
         ? t("Codex")
-        : t("Mock Provider");
+        : props.mode === "zcode"
+          ? t("ZCode")
+          : t("Mock Provider");
 
   const send = () => {
     if (readOnly) return;
@@ -325,7 +327,13 @@ export function Composer(props: {
             </button>
           ))}
         </div>
-        {props.mode === "codex" && <ModelPicker thread={thread} readOnly={readOnly} />}
+        {(props.mode === "codex" || props.mode === "zcode") && (
+          <ModelPicker
+            thread={thread}
+            readOnly={readOnly}
+            providerId={props.mode === "zcode" ? "zcode" : "codex"}
+          />
+        )}
         <span className="composer-modes-end">
           <ContextMeter thread={thread} />
         </span>

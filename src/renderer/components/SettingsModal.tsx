@@ -28,6 +28,7 @@ import { McpSection } from "./McpSection";
 import { ForgeSection } from "./ForgeSection";
 import { WallpaperSection } from "./WallpaperSection";
 import { ModelListSettings } from "./ModelListSettings";
+import { ProvidersSection } from "./ProvidersSection";
 import { ArchiveSection } from "./ArchiveSection";
 import {
   RUNTIME_MODES,
@@ -823,6 +824,11 @@ export function SettingsModal(props: {
           <p className="codex-note" data-testid="cli-error">{cliErr}</p>
         )}
 
+        <ProvidersSection
+          region={settings.zaiRegion ?? "global"}
+          activeLabel={info.providerLabel}
+        />
+
         <h3>{t("Codex CLI")}</h3>
         <div className="about codex-setup" aria-busy={busy !== null}>
           <div className="kv">
@@ -991,6 +997,34 @@ export function SettingsModal(props: {
                   <>
                     <span>{t("Codex status")}</span>
                     <span className="mono">{info.codex.reason}</span>
+                  </>
+                )}
+              </>
+            )}
+            {info.zcode && (
+              <>
+                <span>{t("ZCode")}</span>
+                <span className="mono">
+                  {info.zcode.state === "fixture"
+                    ? t("offline fixture (synthetic)")
+                    : info.zcode.state === "ready"
+                      ? t("ready")
+                      : info.zcode.state === "configured-unverified"
+                        ? t("configured — unverified")
+                        : info.zcode.state === "unsupported"
+                          ? t("unsupported")
+                          : t("unconfigured")}
+                </span>
+                {info.zcode.executable && (
+                  <>
+                    <span>{t("ZCode entry")}</span>
+                    <span className="mono">{info.zcode.executable}</span>
+                  </>
+                )}
+                {info.zcode.reason && (
+                  <>
+                    <span>{t("ZCode status")}</span>
+                    <span className="mono">{info.zcode.reason}</span>
                   </>
                 )}
               </>
