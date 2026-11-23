@@ -61,9 +61,11 @@ describe("P2-44 mention chips", () => {
   it("pasted text re-creates chips only for known project paths", () => {
     const ok = new Set(["src/a.ts", "b.md"]);
     const out = chipsFromText("use @src/a.ts and @nope.txt plus @b.md ", ok);
+    // end includes the token's trailing space (the atomic-backspace hit
+    // test expects the caret-right-after position to land on a chip).
     expect(out).toEqual([
-      { path: "src/a.ts", start: 4, end: 13 },
-      { path: "b.md", start: 33, end: 38 },
+      { path: "src/a.ts", start: 4, end: 14 },
+      { path: "b.md", start: 33, end: 39 },
     ]);
     // @ alone or an unknown path stays plain text.
     expect(chipsFromText("@ @unknown ", ok)).toEqual([]);
@@ -71,6 +73,10 @@ describe("P2-44 mention chips", () => {
     expect(chipsFromText("tail @b.md", ok)).toEqual([
       { path: "b.md", start: 5, end: 10 },
     ]);
+    // Mid-word @ (emails, handles) never mints — the frozen rule needs
+    // whitespace or start-of-text before it.
+    expect(chipsFromText("mail me@b.md please", ok)).toEqual([]);
+    expect(chipsFromText("(x@b.md)", ok)).toEqual([]);
   });
 
   it("renderableChips returns mirror order and drops stale spans", () => {

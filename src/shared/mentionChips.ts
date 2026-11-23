@@ -104,9 +104,9 @@ export function chipBeforeCaret(
 }
 
 /** "@<token>" occurrences in pasted/plain text that should become chips:
- *  whitespace/quote-bounded `@` spans whose inner part matches a known
- *  project path (`paths` is the exact-match set; @ alone or with spaces
- *  is plain text). */
+ *  whitespace- or start-bounded `@` spans whose inner part matches a known
+ *  project path (`paths` is the exact-match set; @ alone, with spaces, or
+ *  mid-word — emails, handles — is plain text). */
 export function chipsFromText(
   text: string,
   paths: ReadonlySet<string>,
@@ -115,9 +115,11 @@ export function chipsFromText(
   const re = /@([^\s@]+)(?=\s|$)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
+    if (m.index > 0 && !/\s/.test(text[m.index - 1]!)) continue;
     const path = m[1]!;
     if (!paths.has(path)) continue;
-    out.push({ path, start: m.index, end: m.index + m[0].length });
+    const end = m.index + m[0].length;
+    out.push({ path, start: m.index, end: text[end] === " " ? end + 1 : end });
   }
   return out;
 }

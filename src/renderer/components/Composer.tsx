@@ -733,6 +733,19 @@ export function Composer(props: {
                     key={`${c.start}:${c.path}`}
                     className="mention-chip"
                     title={c.path}
+                    onMouseDown={(e) => {
+                      // The chip needs pointer-events for its title tooltip;
+                      // forward the click so the caret lands at the token
+                      // edge the click was nearest, like plain text.
+                      e.preventDefault();
+                      const ta = taRef.current;
+                      if (!ta) return;
+                      ta.focus();
+                      const r = e.currentTarget.getBoundingClientRect();
+                      const at =
+                        e.clientX - r.left < r.width / 2 ? c.start : c.end;
+                      ta.setSelectionRange(at, at);
+                    }}
                     style={{
                       left: chipRects[i]!.x,
                       top: chipRects[i]!.y,
