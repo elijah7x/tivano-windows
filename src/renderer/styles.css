@@ -127,6 +127,21 @@ textarea {
   border-radius: 8px;
   padding: 6px 10px;
 }
+/* Text controls keep the I-beam even inside cursor:default containers —
+ * cursor inherits, so without this every field under a restyled panel
+ * would show the arrow. */
+input:not([type]),
+input[type="text"],
+input[type="search"],
+input[type="url"],
+input[type="number"],
+input[type="password"],
+input[type="email"],
+input[type="tel"],
+textarea,
+[contenteditable="true"] {
+  cursor: text;
+}
 
 button.primary {
   background: var(--accent);
@@ -4892,3 +4907,41 @@ html[data-performance] .sweep-dots { display: none; }
   font-size: 10px; opacity: 0.45; text-align: right;
   -webkit-app-region: drag;
 }
+
+/* P2-45 (frozen previews .60/.32/.87): the text cursor shows over words
+ * only — links keep the hand; empty space, buttons, cards, menus,
+ * popovers, panels, the diff and the top bar keep the arrow. */
+.timeline { cursor: default; }
+/* The text containers resolve the cursor per hit — cursor:auto lets
+ * Chromium show the I-beam over glyphs and the arrow over empty space
+ * beside short lines, exactly like the frozen per-hit-test cursor. A
+ * blanket cursor:text would paint the I-beam over whole boxes. */
+.timeline .msg-body,
+.timeline .notice-text,
+.timeline .status-line { cursor: auto; }
+.timeline .msg-body :where(button) { cursor: default; }
+.timeline a[href] { cursor: pointer; }
+.timeline button,
+.timeline .turn-steps > summary,
+.chat-head,
+.stave-bar,
+.approval,
+.approval.question,
+.git-patch,
+.git-diff,
+.ckpt-diff-wrap,
+.suggest-menu,
+.git-menu,
+.row-menu,
+.ctx-pop,
+.cook-pop,
+.hb-pop,
+.attach-pop,
+.modal,
+.helper-panel,
+.hydra-panel { cursor: default; }
+/* The helper timeline's message text resolves per hit the same way;
+ * its buttons carve back out. */
+.helper-timeline .md,
+.helper-timeline .msg { cursor: auto; }
+.helper-timeline button { cursor: default; }

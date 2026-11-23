@@ -16,6 +16,7 @@ import {
   type MarkdownLabels,
 } from "../markdown";
 import { api, callApi, clientStore } from "../client";
+import { watchSelectionResidue } from "../selectionRepaint";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { CheckpointPreviewDialog } from "./CheckpointPreviewDialog";
@@ -205,6 +206,13 @@ export function ChatView(props: {
     () => timelineSlice(timelineItems, timelineVisible),
     [timelineItems, timelineVisible],
   );
+  // P2-45: a selection inside the timeline repaints on every change —
+  // clearing it (or starting a new one) never leaves gray residue behind.
+  useEffect(() => {
+    const el = timelineRef.current;
+    if (el) return watchSelectionResidue(el);
+    return undefined;
+  }, [threadId]);
   useEffect(() => {
     setCkpts([]);
     setPreviewTurn(null);
