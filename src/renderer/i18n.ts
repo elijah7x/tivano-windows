@@ -1002,6 +1002,10 @@ const zhHans: Record<string, string> = {
     "Hydra：%@ 不是这台电脑上的文件夹，因此 %@ 未启动。",
   "Hydra: %@ is not a Git checkout Tivano can read, so %@ did not start.":
     "Hydra：%@ 不是 Tivano 可读取的 Git 检出目录，因此 %@ 未启动。",
+  "Hydra: the rework of %@ could not start: %@":
+    "Hydra：%@ 的返工无法启动：%@",
+  "Hydra: the rework of %@ could not start because its backup could not finish (%@).":
+    "Hydra：%@ 的备份未能完成（%@），因此其返工无法启动。",
   "The turn failed without a recorded error.": "这一轮失败了，但没有记录下错误。",
   "Partial output before the failure:\n\n%@": "失败前的部分输出：\n\n%@",
   " and ": " 和 ",
