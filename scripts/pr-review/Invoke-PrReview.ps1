@@ -1034,10 +1034,26 @@ try {
           $bodyPath = Join-Path $runDir 'post-body.md'
           Build-PostBody $bodyPath $sha7 $reviewText (Read-Text $checksSummaryPath) $verdict
           if (-not $DryRun) {
-            $postCode = Invoke-Gh ('pr review ' + $number + ' -R ' + $Repo + ' --comment --body-file ' + (Quote-Argument $bodyPath)) `
-              (Join-Path $runDir 'post.out.log') (Join-Path $runDir 'post.err.log')
+            $postDelays = @(15, 45, 90)
+            $postMaxAttempts = 4
+            $postCode = -1
+            $postAttempts = 0
+            $postErrPath = Join-Path $runDir 'post.err.log'
+            for ($postAttempt = 1; $postAttempt -le $postMaxAttempts; $postAttempt++) {
+              if ($postAttempt -gt 1) {
+                Start-Sleep -Seconds $postDelays[$postAttempt - 2]
+              }
+              $postSuffix = ''
+              if ($postAttempt -gt 1) { $postSuffix = '-' + [string]$postAttempt }
+              $postOutPath = Join-Path $runDir ('post' + $postSuffix + '.out.log')
+              $postErrPath = Join-Path $runDir ('post' + $postSuffix + '.err.log')
+              $postAttempts = $postAttempt
+              $postCode = Invoke-Gh ('pr review ' + $number + ' -R ' + $Repo + ' --comment --body-file ' + (Quote-Argument $bodyPath)) `
+                $postOutPath $postErrPath
+              if ($postCode -eq 0) { break }
+            }
             if ($postCode -ne 0) {
-              $postProblem = 'gh pr review failed: ' + (Get-Tail (Join-Path $runDir 'post.err.log') 5)
+              $postProblem = 'gh pr review failed after ' + [string]$postAttempts + ' attempts: ' + (Get-Tail $postErrPath 5)
             } else {
               $posted = $true
               $entry = Get-StateEntry $state ([string]$number)
