@@ -602,6 +602,21 @@ export function applyDraftRename(
   return renameSection(sections, editingId, name);
 }
 
+/** P2-33: an edit target is alive while the section list echoes it, or
+ *  while it is a just-written row whose echo has not landed yet — the
+ *  settings write is fire-and-forget, so checking only the echoed list
+ *  clears the inline editor the click just opened (the "New group"
+ *  regression). Once the echo lands, `pendingId` must be released. */
+export function sectionEditTargetAlive(
+  sections: readonly ModelSection[],
+  editingId: string | null,
+  pendingId: string | null,
+): boolean {
+  if (editingId === null) return false;
+  if (sections.some((s) => s.id === editingId)) return true;
+  return editingId === pendingId;
+}
+
 /** Frozen removeModelSection — the heading goes away; its models join the
  *  heading above, or the top of the list. */
 export function removeSection(sections: ModelSection[], collapsed: string[], id: string) {

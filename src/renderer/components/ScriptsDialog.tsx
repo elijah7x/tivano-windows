@@ -11,26 +11,11 @@ import { useRef, useState } from "react";
 import type { ChatThread, Project, ProjectScript } from "../../shared/types";
 import { callApi } from "../client";
 import { useT } from "../locale";
-
-interface Draft {
-  /** Stable row identity while editing — P2-33: removing or reordering
-   *  a sibling mid-edit must not remount this row (frozen row identity). */
-  key: string;
-  id?: string;
-  name: string;
-  command: string;
-  icon: string;
-  runOnWorktreeCreate: boolean;
-}
-
-const toDraft = (s: ProjectScript): Draft => ({
-  key: s.id,
-  id: s.id,
-  name: s.name,
-  command: s.command,
-  icon: s.icon,
-  runOnWorktreeCreate: s.runOnWorktreeCreate,
-});
+import {
+  makeScriptDraftKeyGen,
+  toScriptDraft,
+  type ScriptDraft as Draft,
+} from "../scriptDrafts";
 
 const incomplete = (s: Draft): boolean => s.command.trim().length === 0;
 
@@ -45,10 +30,10 @@ export function ScriptsDialog(props: {
   const { thread, project } = props;
   const scripts = project.scripts ?? [];
   const [editing, setEditing] = useState(scripts.length === 0);
-  const [drafts, setDrafts] = useState<Draft[]>(scripts.map(toDraft));
+  const [drafts, setDrafts] = useState<Draft[]>(scripts.map(toScriptDraft));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const keyGen = useRef(0);
+  const keyGen = useRef(makeScriptDraftKeyGen());
 
   const run = (script: ProjectScript) => {
     setBusy(true);
@@ -181,7 +166,7 @@ export function ScriptsDialog(props: {
                 setDrafts((cur) => [
                   ...cur,
                   {
-                    key: `new-${++keyGen.current}`,
+                    key: keyGen.current(),
                     name: t("New script"),
                     command: "",
                     icon: "play",
@@ -205,7 +190,7 @@ export function ScriptsDialog(props: {
               className="primary"
               disabled={busy}
               onClick={() => {
-                setDrafts(scripts.map(toDraft));
+                setDrafts(scripts.map(toScriptDraft));
                 setEditing(true);
               }}
             >

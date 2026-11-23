@@ -32,6 +32,7 @@ import {
   removePin,
   removeSection,
   renameSection,
+  sectionEditTargetAlive,
   toggleSectionCollapsed,
   type ModelListItem,
   type ModelPin,
@@ -93,6 +94,9 @@ export function ModelListSettings(): React.JSX.Element {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [effortPop, setEffortPop] = useState<EffortState | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // A "New group" write echoes asynchronously — the id stays pending
+  // until the snapshot carries it (or the grace lapses on a dead write).
+  const [pendingNewId, setPendingNewId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [dropHint, setDropHint] = useState<string | null>(null);
   const dragRef = useRef<string | null>(null);
@@ -163,11 +167,16 @@ export function ModelListSettings(): React.JSX.Element {
   // merged elsewhere) — upstream clears editingSectionID / dismisses
   // the transient popover instead of pointing state at a dead row.
   useEffect(() => {
-    if (editingId !== null && !sections.some((s) => s.id === editingId))
+    if (
+      pendingNewId !== null &&
+      sections.some((s) => s.id === pendingNewId)
+    )
+      setPendingNewId(null);
+    if (!sectionEditTargetAlive(sections, editingId, pendingNewId))
       setEditingId(null);
     if (effortPop !== null && !pins.some((p) => pinId(p) === pinId(effortPop.pin)))
       setEffortPop(null);
-  }, [editingId, effortPop, pins, sections]);
+  }, [editingId, effortPop, pendingNewId, pins, sections]);
 
   const items = modelListItems(pins, sections);
   const trimmed = query.trim().toLowerCase();
@@ -412,6 +421,15 @@ export function ModelListSettings(): React.JSX.Element {
               write({ modelSections: next });
               const added = next[next.length - 1];
               if (added) {
+                setPendingNewId(added.id);
+                // A rejected write never echoes — release the pending
+                // id so the dead-target cleanup still runs.
+                const id = added.id;
+                window.setTimeout(
+                  () =>
+                    setPendingNewId((p) => (p === id ? null : p)),
+                  3000,
+                );
                 setEditingId(added.id);
                 setDraft(added.name);
               }

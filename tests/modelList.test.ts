@@ -29,6 +29,7 @@ import {
   removePin,
   removeSection,
   renameSection,
+  sectionEditTargetAlive,
   setModelListItems,
   simplifiedModels,
   toggleSectionCollapsed,
@@ -404,5 +405,27 @@ describe("applyDraftRename (P2-33 edit-then-remove fold)", () => {
     const secs = [S("a", "A", 0)];
     const out = applyDraftRename(secs, "ghost", "G");
     expect(out.map((s) => s.name)).toEqual(["A"]);
+  });
+});
+
+describe("sectionEditTargetAlive (P2-33 un-echoed write grace)", () => {
+  it("keeps a just-added section alive before the store echoes it", () => {
+    const before = [S("a", "A", 0)];
+    const added = addSection(before, "New group", 3);
+    const newId = added[added.length - 1]!.id;
+    // The click sets editingId to the new id but the snapshot still
+    // holds the old list — the target must survive that gap.
+    expect(sectionEditTargetAlive(before, newId, newId)).toBe(true);
+    // Once the echo lands the pending marker is released and the
+    // echoed list alone keeps it alive.
+    expect(sectionEditTargetAlive(added, newId, null)).toBe(true);
+  });
+
+  it("clears a vanished or stale target, and never a null one", () => {
+    const secs = [S("a", "A", 0)];
+    expect(sectionEditTargetAlive(secs, "a", null)).toBe(true);
+    expect(sectionEditTargetAlive(secs, "gone", null)).toBe(false);
+    expect(sectionEditTargetAlive(secs, "other", "pending")).toBe(false);
+    expect(sectionEditTargetAlive(secs, null, "pending")).toBe(false);
   });
 });
