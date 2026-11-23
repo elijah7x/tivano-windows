@@ -239,6 +239,11 @@ export class Engine {
   private sleepBlocker?: SleepBlocker;
   private sleepBlockerId: number | undefined;
   private sleepModeActive: "off" | "system" | "display" = "off";
+  /** P2-42: model ids from the last `codexModels()` call that returned
+   *  `ready`. Lets `createThread` fall a saved default-model pick back to
+   *  Last selection only when a loaded catalog provably lacks it; an
+   *  unloaded catalog never grounds the fallback. */
+  private readyModelIds: string[] | undefined;
   /**
    * F22: Hydra runtime (bounded frozen slice). Parsers/sent watermarks
    * are keyed per lead turn; delegation rounds and pending reports per
@@ -867,6 +872,7 @@ export class Engine {
             // switch (settings.hydraEnabled), not the per-chat default.
             settings.hydraEnabled !== false,
             this.provider.descriptor.mode,
+            this.readyModelIds,
           ) ?? {})),
     };
     this.store.update((d) => {
@@ -3453,6 +3459,7 @@ export class Engine {
           state: "pending",
           reason: "no Codex session is bound yet — send a turn, then reopen",
         };
+      this.readyModelIds = models.map((m) => m.id);
       return { state: "ready", models };
     } catch (err) {
       return { state: "unavailable", reason: (err as Error)?.message ?? String(err) };

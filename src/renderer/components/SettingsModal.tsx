@@ -1036,11 +1036,13 @@ export function SettingsModal(props: {
 function DefaultModelRow({ settings }: { settings: Settings }) {
   const t = useT();
   const [models, setModels] = useState<string[] | null>(null);
+  const [catalogReady, setCatalogReady] = useState(false);
   useEffect(() => {
     void api()
       .invoke("models:list", {})
       .then((r) => {
         const cat = r as import("../../shared/types").CodexModelCatalog;
+        setCatalogReady(cat.state === "ready");
         setModels(cat.state === "ready" ? cat.models.map((m) => m.id) : []);
       })
       .catch(() => setModels([]));
@@ -1053,10 +1055,13 @@ function DefaultModelRow({ settings }: { settings: Settings }) {
       : saved.kind === "pair"
         ? `pair:${saved.pairId}`
         : `model:${saved.model}`;
+  // A saved model is only "unavailable" when a loaded catalog provably
+  // lacks it — a pending/failed list must not condemn the pick.
   const resolved =
     saved === undefined ||
     (saved.kind === "pair" && pairs.some((p) => p.id === saved.pairId)) ||
-    (saved.kind === "model" && (models === null || models.includes(saved.model)));
+    (saved.kind === "model" &&
+      !(catalogReady && !(models ?? []).includes(saved.model)));
   const unavailable = !resolved;
   return (
     <label className="wt-field commit-instructions">
@@ -1097,6 +1102,11 @@ function DefaultModelRow({ settings }: { settings: Settings }) {
                 )}
           </option>
         )}
+        {saved?.kind === "model" &&
+          !unavailable &&
+          !(models ?? []).includes(saved.model) && (
+            <option value={`model:${saved.model}`}>{saved.model}</option>
+          )}
       </select>
       <p className="codex-note">
         {t(

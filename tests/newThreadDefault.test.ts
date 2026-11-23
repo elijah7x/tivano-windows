@@ -58,6 +58,30 @@ describe("P2-42 newThreadDefaultSeed", () => {
     });
     expect(seed).not.toHaveProperty("codexModel");
   });
+  it("a model the loaded catalog lacks falls back; an unloaded catalog keeps it", () => {
+    expect(
+      newThreadDefaultSeed(
+        { kind: "model", model: "gone" },
+        [],
+        true,
+        "mock",
+        ["m1", "m2"],
+      ),
+    ).toBeNull();
+    expect(
+      newThreadDefaultSeed(
+        { kind: "model", model: "m1" },
+        [],
+        true,
+        "mock",
+        ["m1", "m2"],
+      ),
+    ).toEqual({ codexModel: "m1" });
+    // No catalog loaded yet → the verbatim pick stands (F17 semantics).
+    expect(
+      newThreadDefaultSeed({ kind: "model", model: "gone" }, [], true, "mock"),
+    ).toEqual({ codexModel: "gone" });
+  });
   it("deleted preset or Hydra off falls back to Last selection", () => {
     expect(newThreadDefaultSeed({ kind: "pair", pairId: "gone" }, [pair], true, "mock")).toBeNull();
     expect(newThreadDefaultSeed({ kind: "pair", pairId: pair.id }, [pair], false, "mock")).toBeNull();

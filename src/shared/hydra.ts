@@ -125,13 +125,18 @@ export type NewThreadDefault =
  *  `.pair` applies only when Hydra is on for new chats and the pair still
  *  exists on this build's one provider — a deleted/unavailable preset
  *  falls through to Last selection, as frozen does. `.model` is sent
- *  verbatim (F17 codexModel semantics: never locally validated, never
- *  silently substituted). Returns null for Last selection. */
+ *  verbatim unless `availableModels` is supplied by a catalog that already
+ *  loaded and no longer lists it: then the saved pick cannot resolve and
+ *  the seed falls back to Last selection, matching the Settings row's
+ *  "(unavailable)" state. An unloaded catalog is never grounds for
+ *  fallback (F17 codexModel semantics: never silently substituted).
+ *  Returns null for Last selection. */
 export function newThreadDefaultSeed(
   choice: NewThreadDefault | undefined,
   pairs: HydraPair[],
   hydraOn: boolean,
   providerId: string,
+  availableModels?: readonly string[],
 ): {
   codexModel?: string;
   codexEffort?: string;
@@ -141,6 +146,8 @@ export function newThreadDefaultSeed(
 } | null {
   if (!choice) return null;
   if (choice.kind === "model") {
+    if (availableModels !== undefined && !availableModels.includes(choice.model))
+      return null;
     return {
       codexModel: choice.model,
       ...(choice.effort !== undefined ? { codexEffort: choice.effort } : {}),
