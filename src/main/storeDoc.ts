@@ -503,7 +503,7 @@ const vSettings = vObject({
   // frozen default (on).
   recentDownloadsPicker: vOptional(vBoolean),
   // Optional so every pre-A78 store loads verbatim — absent means the
-  // frozen defaults: recent location, fullAccess mode, local workspace,
+  // frozen defaults: recent location, fullAccess mode, auto workspace,
   // thinking hidden, working card on.
   newThreadLocation: vOptional(vEnum(["recent", "standalone"] as const)),
   defaultRuntimeMode: vOptional(
