@@ -4,7 +4,7 @@
 // reaches the recorded openPath seam, a missing path (and a resolved web
 // target that is not http) gets the quiet beep, and nothing else opens.
 
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -40,10 +40,14 @@ const event = {
   senderFrame: { url: ALLOWED },
 };
 
-function register(logDir: string, withLog = true) {
+function register(
+  logDir: string,
+  withLog = true,
+  threadDirectory: (id: string) => string | null = () => null,
+) {
   const externalLog = join(logDir, "external-open.log");
   const engine = {
-    threadDirectory: () => null,
+    threadDirectory,
     onEvent: () => () => {},
   } as unknown as Engine;
   registerIpc({
@@ -54,8 +58,11 @@ function register(logDir: string, withLog = true) {
   });
   return {
     externalLog,
-    invoke: (url: string) =>
-      mocks.handlers.get("links:open-external")!(event, { url }),
+    invoke: (url: string, threadId?: string) =>
+      mocks.handlers.get("links:open-external")!(
+        event,
+        threadId === undefined ? { url } : { url, threadId },
+      ),
   };
 }
 
@@ -106,5 +113,62 @@ describe("links:open-external handler (P2-31)", () => {
     expect(mocks.beep).toHaveBeenCalledTimes(1);
     expect(mocks.openPath).not.toHaveBeenCalled();
     expect(mocks.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("a relative name resolves against the owning thread's directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tivano-links-"));
+    const base = join(dir, "proj");
+    mkdirSync(base, { recursive: true });
+    const target = join(base, "note.txt");
+    writeFileSync(target, "hi");
+    const tid = "11111111-2222-4333-8444-555555555555";
+    const { invoke } = register(dir, false, (id) =>
+      id === tid ? base : null,
+    );
+    await invoke("note.txt", tid);
+    expect(mocks.openPath).toHaveBeenCalledWith(target);
+    expect(mocks.beep).not.toHaveBeenCalled();
+  });
+
+  it("an unknown thread's relative name beeps — the lookup failure is quiet", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tivano-links-"));
+    const { invoke } = register(dir, false, () => {
+      throw new Error("unknown thread");
+    });
+    await expect(
+      invoke("note.txt", "99999999-8888-4777-8666-555555555555"),
+    ).resolves.toBeUndefined();
+    expect(mocks.beep).toHaveBeenCalledTimes(1);
+    expect(mocks.openPath).not.toHaveBeenCalled();
+  });
+
+  it("a UNC share never reaches shell.openPath — it beeps", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tivano-links-"));
+    const { invoke } = register(dir, false);
+    await invoke("\\\\nas\\share\\y.md");
+    expect(mocks.beep).toHaveBeenCalledTimes(1);
+    expect(mocks.openPath).not.toHaveBeenCalled();
+    expect(mocks.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("an executable local target never reaches shell.openPath — it beeps", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tivano-links-"));
+    const target = join(dir, "run.exe");
+    writeFileSync(target, "MZ");
+    const { invoke } = register(dir, false);
+    await invoke(target);
+    expect(mocks.beep).toHaveBeenCalledTimes(1);
+    expect(mocks.openPath).not.toHaveBeenCalled();
+  });
+
+  it("a failed shell.openPath beeps quietly", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tivano-links-"));
+    const target = join(dir, "note.txt");
+    writeFileSync(target, "hi");
+    mocks.openPath.mockResolvedValueOnce("Access denied");
+    const { invoke } = register(dir, false);
+    await invoke(target);
+    expect(mocks.openPath).toHaveBeenCalledWith(target);
+    expect(mocks.beep).toHaveBeenCalledTimes(1);
   });
 });

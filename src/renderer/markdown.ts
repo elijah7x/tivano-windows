@@ -31,8 +31,14 @@ function isSafeLink(url: string): boolean {
 function isLocalLink(url: string): boolean {
   const trimmed = url.trim();
   if (trimmed.length === 0 || trimmed.length > 2048) return false;
+  // ASCII control chars can smuggle a second meaning past the scheme
+  // checks — never local.
+  if (/[\x00-\x1f\x7f]/.test(trimmed)) return false;
   if (/^file:\/\//i.test(trimmed)) return true;
-  // An explicit non-file scheme URL is never a local path.
+  // An explicit non-file scheme URL is never a local path — and neither
+  // is a slash-less http/https form (`https:user@h`, `http:\h`), which
+  // the WHATWG parser still reads as web with host/userinfo semantics.
+  if (/^https?:/i.test(trimmed)) return false;
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) return false;
   if (/^(javascript|data|vbscript|about|blob|chrome|view-source):/i.test(trimmed))
     return false;

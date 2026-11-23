@@ -90,7 +90,10 @@ export async function runMarkdownChecks({
     "MD-07 only the safe image became img; unsafe degraded",
     (await msg.locator('img[src="https://example.com/c.png"]').count()) === 1 &&
       (await msg.locator('img[src^="file:"]').count()) === 0 &&
-      (await msg.locator('a[href^="file:"]').count()) === 0,
+      // A blocked scheme degrades to text; a file: link anchors so the
+      // click can reach main's resolver (P2-31).
+      (await msg.locator('a[href^="javascript:"]').count()) === 0 &&
+      (await msg.locator('a[href^="file:"]').count()) === 1,
   );
 
   // Content ops: per-message copy + code-block copy button.

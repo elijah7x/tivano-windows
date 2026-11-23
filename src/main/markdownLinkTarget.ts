@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-22.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-24.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P2-31 (frozen MarkdownLinkTarget): a chat markdown link resolves to a
 // web URL, an existing local file, or a missing path. Local paths
@@ -7,20 +7,33 @@
 // only when what is left is an existing file.
 
 import { homedir } from "node:os";
-import { win32 as pathWin32 } from "node:path";
+import nodePath from "node:path";
 
 export type MarkdownLinkTarget =
   | { kind: "web"; url: string }
   | { kind: "file"; path: string }
-  // A UNC share is never statted — a synchronous stat on `\\host\…`
-  // blocks the main process on SMB and leaks NTLM credentials to a
-  // link-chosen host. It goes straight to the async shell open, and a
-  // failure beeps like a missing path. The `:line` strip is skipped.
-  | { kind: "unc"; path: string }
   | { kind: "missing" };
 
 /** What the caller's filesystem reports for one absolute path. */
 export type MarkdownLinkStat = "file" | "dir" | "none";
+
+/** The path semantics the resolver runs under — `node:path` in
+ *  production (win32 on this host); tests on other platforms inject
+ *  `node:path.win32` for Windows semantics or `node:path.posix` for
+ *  theirs. */
+export type MarkdownLinkPaths = Pick<
+  typeof nodePath,
+  "isAbsolute" | "resolve"
+>;
+
+/** Windows executables/shortcuts/launchers a disguised markdown link
+ *  must never hand to `shell.openPath` — opening any of these can run
+ *  code or fetch a payload. They beep like a missing path. */
+const EXECUTABLE_EXTS = new Set([
+  ".exe", ".bat", ".cmd", ".com", ".msi", ".msp", ".scr", ".pif",
+  ".vbs", ".vbe", ".wsf", ".wsh", ".hta", ".cpl", ".msc", ".lnk",
+  ".url", ".reg",
+]);
 
 /** Frozen `resolve`: a scheme-bearing URL that is not `file` opens on
  *  the web, EXCEPT a host-less pseudo-scheme (`Foo.swift:12` parses
@@ -33,6 +46,7 @@ export function resolveMarkdownLinkTarget(
   href: string,
   base: string | undefined,
   stat: (path: string) => MarkdownLinkStat,
+  paths: MarkdownLinkPaths = nodePath,
 ): MarkdownLinkTarget {
   const raw = href.trim();
   if (raw === "") return { kind: "missing" };
@@ -41,18 +55,20 @@ export function resolveMarkdownLinkTarget(
     if (url !== null) {
       if (url.protocol === "file:") {
         const path = fileUrlPath(url);
-        return path === null ? { kind: "missing" } : resolveLocalPath(path, base, stat);
+        return path === null
+          ? { kind: "missing" }
+          : resolveLocalPath(path, base, stat, paths);
       }
       // Frozen: `url.host == nil` marks the pseudo-scheme case — the
       // authority check keeps `https://h/x` from ever reading as a path.
       if (url.host === "") {
-        const local = resolveLocalPath(raw, base, stat);
+        const local = resolveLocalPath(raw, base, stat, paths);
         if (local.kind === "file") return local;
       }
       return { kind: "web", url: raw };
     }
   }
-  return resolveLocalPath(raw, base, stat);
+  return resolveLocalPath(raw, base, stat, paths);
 }
 
 function isWindowsAbsoluteLike(raw: string): boolean {
@@ -89,35 +105,59 @@ function fileUrlPath(url: URL): string | null {
 
 /** Frozen path half of `resolve`: `~` expands, a non-absolute path
  *  joins `base`, an existing path (file OR directory) opens, then the
- *  `:line[:column]` strip — each candidate must be an existing file. */
+ *  `:line[:column]` strip — each candidate must be an existing file.
+ *  Windows refusals frozen never needed: a UNC share or non-drive
+ *  device-namespace path is never statted or opened — a synchronous
+ *  stat would block main on SMB and `shell.openPath` on `\\host\…`
+ *  leaks NTLM credentials and can execute a remote share's files —
+ *  and a link that names an executable/shortcut extension never opens. */
 function resolveLocalPath(
   rawPath: string,
   base: string | undefined,
   stat: (path: string) => MarkdownLinkStat,
+  paths: MarkdownLinkPaths,
 ): MarkdownLinkTarget {
   let path = expandTilde(rawPath);
-  if (!pathWin32.isAbsolute(path)) {
+  if (isUncPath(path)) return { kind: "missing" };
+  if (/^[\\/]/.test(path)) {
+    // A rooted but driveless path (`\x`, `/x`) resolves on the BASE's
+    // drive — `isAbsolute` counts it absolute on win32, so without this
+    // branch it would silently anchor to the process cwd's drive.
     if (base === undefined || base === "") return { kind: "missing" };
-    path = pathWin32.resolve(expandTilde(base), path);
+    path = paths.resolve(expandTilde(base), path);
+  } else if (!paths.isAbsolute(path)) {
+    if (base === undefined || base === "") return { kind: "missing" };
+    path = paths.resolve(expandTilde(base), path);
   } else {
-    path = pathWin32.resolve(path);
+    path = paths.resolve(path);
   }
-  if (isUncPath(path)) return { kind: "unc", path };
+  if (isUncPath(path)) return { kind: "missing" };
+  if (isExecutablePath(path)) return { kind: "missing" };
   if (stat(path) !== "none") return { kind: "file", path };
   const stripped = stripLineColumnSuffix(path, stat);
-  if (stripped !== undefined) return { kind: "file", path: stripped };
+  if (stripped !== undefined && !isExecutablePath(stripped))
+    return { kind: "file", path: stripped };
   return { kind: "missing" };
 }
 
 /** `\\host\share` (also `//host/x` after resolve, and `file://host/x`
- *  via fileUrlPath). Only drive-form device spellings (`\\?\C:\x`,
- *  `\\.\C:\x`) are the local namespace — every other `\\` path,
- *  including the UNC spellings `\\?\UNC\host\…` and
- *  `\\?\GLOBALROOT\Device\Mup\host\…`, is network-shaped and keeps the
- *  no-stat rule: one click must not block main on SMB or leak NTLM. */
+ *  via fileUrlPath) is network-shaped and refused outright — one click
+ *  must not block main on SMB, leak NTLM, or launch a remote file.
+ *  Only drive-form device spellings (`\\?\C:\x`, `\\.\C:\x`) are the
+ *  local namespace; `\\?\UNC\host\…` and `\\?\GLOBALROOT\Device\Mup\…`
+ *  are UNC in disguise and refused with the rest. */
 function isUncPath(path: string): boolean {
   if (!path.startsWith("\\\\")) return false;
   return !/^\\\\[.?]\\[a-zA-Z]:[\\/]/.test(path);
+}
+
+/** Lower-case extension check — `.\x\APP.EXE` refuses the same as
+ *  `app.exe`; a directory hit is still opened (the exec check guards
+ *  `shell.openPath`, and opening a directory launches Explorer). */
+function isExecutablePath(path: string): boolean {
+  const dot = path.lastIndexOf(".");
+  if (dot < 0) return false;
+  return EXECUTABLE_EXTS.has(path.slice(dot).toLowerCase());
 }
 
 function expandTilde(path: string): string {

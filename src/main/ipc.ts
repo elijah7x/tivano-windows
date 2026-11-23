@@ -429,7 +429,17 @@ export function registerIpc(opts: IpcOptions): () => void {
     // against the owning chat's working directory — an existing local
     // path opens in its default app, a web URL in the browser, and a
     // path that names nothing just beeps.
-    const base = p.threadId ? engine.threadDirectory(p.threadId) : null;
+    // A deleted or unknown threadId must not surface an engine error —
+    // absolute and web links still resolve baseless, and a relative
+    // name just beeps like a missing path.
+    let base: string | null = null;
+    if (p.threadId) {
+      try {
+        base = engine.threadDirectory(p.threadId);
+      } catch {
+        base = null;
+      }
+    }
     const target = resolveMarkdownLinkTarget(p.url, base ?? undefined, (path) => {
       try {
         const st = statSync(path);
@@ -442,7 +452,7 @@ export function registerIpc(opts: IpcOptions): () => void {
       shell.beep();
       return;
     }
-    if (target.kind === "file" || target.kind === "unc") {
+    if (target.kind === "file") {
       if (openLogged({ action: "openPath", target: target.path })) return;
       const failed = await shell.openPath(target.path);
       // The quiet failure: an unreadable file beeps like a missing one
