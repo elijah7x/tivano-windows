@@ -4484,6 +4484,7 @@ export class Engine {
         if (!title) return;
         const t = this.store.state.threads.find((x) => x.id === threadId);
         if (!t || t.title !== atSend || t.titleUserSet) return;
+        this.ensureThreadLoaded(t.id);
         t.title = title;
         t.titleReviewTurns = countUserTurns(t);
         t.updatedAt = Date.now();

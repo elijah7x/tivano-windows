@@ -16,7 +16,7 @@ import {
   StreamingMarkdownCoordinator,
   type MarkdownLabels,
 } from "../markdown";
-import { subscribeMemoryPressure, useAppPaused, useInView } from "../appActivity";
+import { appActivity, subscribeMemoryPressure, useAppPaused, useInView } from "../appActivity";
 import { visibleThreads } from "../../shared/threadOrder";
 import { api, callApi, clientStore } from "../client";
 import { ApprovalCard } from "./ApprovalCard";
@@ -342,6 +342,7 @@ export function ChatView(props: {
     const projects = projectsRef.current;
     if (!threadId || !threads || !projects) return;
     const timer = window.setTimeout(() => {
+      if (appActivity.paused) return;
       const curThreads = threadsRef.current;
       const curProjects = projectsRef.current;
       if (!curThreads || !curProjects) return;

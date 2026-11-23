@@ -756,6 +756,7 @@ bootstrap = app.whenReady().then(async () => {
       paths,
       projects: () => eng.snapshot().projects,
       threads: () => eng.snapshot().threads,
+      threadMessages: (id) => eng.readThreadMessages(id),
       emit: broadcast,
     });
     eng.attachCheckpoints(checkpoints);

@@ -3,9 +3,10 @@
 // P2-63 idle CPU, background pacing, archive switch, memory-pressure release
 // with auto-shelving off, and Hydra all-merged recovery skip.
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +16,7 @@ import { MockProvider } from "../src/main/mockProvider";
 import type { ProviderAdapter, ProviderCallbacks, TurnContext } from "../src/main/provider";
 import type { AppEvent } from "../src/shared/ipc";
 import { canSkipHydraMergeRecovery } from "../src/shared/hydra";
+import { formatElapsed, WORKING_WORDS, workingWordIndex } from "../src/shared/workingWords";
 import { ClientStore } from "../src/renderer/client";
 import { appActivity, setModalCovered, setWindowActive } from "../src/renderer/appActivity";
 import { clearMarkdownCache, prewarmMarkdown, renderMarkdown } from "../src/renderer/markdown";
@@ -190,10 +192,12 @@ describe("P2-63 memory pressure with automatic shelving off", () => {
     });
     const res = engine.handleMemoryPressure(true);
     spy.mockRestore();
-    expect(res.releasedThreads).toBeGreaterThanOrEqual(1);
+    expect(res.releasedThreads).toBe(3);
     expect(store.isThreadHistoryReleased(bad.id)).toBe(false);
     expect(store.isThreadHistoryReleased(good.id)).toBe(true);
-    expect(keep1.id && keep2.id).toBeTruthy();
+    expect(store.isThreadHistoryReleased(keep1.id)).toBe(true);
+    expect(store.isThreadHistoryReleased(keep2.id)).toBe(true);
+    expect(store.isThreadHistoryReleased(active.id)).toBe(false);
 
     // Corrupt the on-disk segment for `good`, then reload: must clear turn & protect segment.
     writeFileSync(join(root, TURNS_DIRNAME, `${good.id}.json`), "{not-valid-json");
@@ -205,6 +209,11 @@ describe("P2-63 memory pressure with automatic shelving off", () => {
     // Flushing must NOT overwrite or re-create a clean turns/<good>.json over quarantined evidence.
     store.flushNow();
     expect(existsSync(join(root, TURNS_DIRNAME, `${good.id}.json`))).toBe(false);
+
+    // Missing segment on reload also clears turn and returns false.
+    unlinkSync(join(root, TURNS_DIRNAME, `${keep1.id}.json`));
+    expect(store.reloadThreadHistory(keep1.id)).toBe(false);
+    expect(engine.snapshot().threads.find((t) => t.id === keep1.id)!.turn).toBeNull();
 
     engine.shutdown();
     store.close();
@@ -468,6 +477,21 @@ describe("P2-63 non-visible panels stream paced", () => {
     expect(notifications).toBe(1);
     store.onBridgeEvent({ type: "turn-status", threadId: "t-off", turnId: "u1", status: "done", rev: 5 });
     expect(notifications).toBe(2);
+
+    // Content-mode paced chunk flushes immediately on window-activity active: true.
+    offscreen.turn = { id: "u2", threadId: "t-off", status: "running", seq: 0, startedAt: 3, assistantMessageId: "m1" };
+    store.onBridgeEvent({ type: "turn-chunk", threadId: "t-off", turnId: "u2", seq: 1, content: "replaced", rev: 6 });
+    expect(store.thread("t-off")!.messages[0]!.content).toBe("replaced");
+    expect(notifications).toBe(2);
+    store.onBridgeEvent({ type: "window-activity", active: true });
+    expect(notifications).toBe(3);
+
+    // memory-pressure clears markdown cache.
+    clearMarkdownCache();
+    const cachedBefore = renderMarkdown("cache-probe", { copy: "Copy", copied: "Copied" });
+    store.onBridgeEvent({ type: "memory-pressure", critical: false });
+    const afterPressure = renderMarkdown("cache-probe", { copy: "Copy", copied: "Copied" });
+    expect(afterPressure).not.toBe(cachedBefore);
   });
 });
 
@@ -577,5 +601,68 @@ describe("P2-63 archive switch, activity pause, and working-indicator isolation"
 
     engine.shutdown();
     store.close();
+  });
+
+  it("paused CSS settles .md-veil without hiding freshly streamed text", () => {
+    const css = readFileSync(join(process.cwd(), "src/renderer/styles.css"), "utf8");
+    const pausedBlock = css.match(/html\[data-paused="1"\][\s\S]*?animation-play-state:\s*paused\s*!important;/)?.[0] ?? "";
+    expect(pausedBlock).not.toContain(".md-veil");
+    expect(css).toMatch(/html\[data-paused="1"\]\s*\.md-veil\s*\{\s*animation:\s*none\s*!important;\s*\}/);
+  });
+
+  it("records reproducible P2-63 before/after synthetic measurements", () => {
+    const msgs = Array.from({ length: 12 }, (_, i) =>
+      `# Section ${i}\n\nSummary with **bold**, \`code_${i}\`, and [link](https://example.com/${i}).\n\n\`\`\`ts\nexport const x${i} = ${i};\n\`\`\``
+    );
+    const labels = { copy: "Copy", copied: "Copied" };
+    clearMarkdownCache();
+    const coldStart = performance.now();
+    for (let r = 0; r < 10; r++) {
+      clearMarkdownCache();
+      for (const m of msgs) renderMarkdown(m, labels);
+    }
+    const coldSwitchMs = (performance.now() - coldStart) / 10;
+    clearMarkdownCache();
+    prewarmMarkdown(msgs, labels);
+    const warmStart = performance.now();
+    for (let r = 0; r < 10; r++) {
+      for (const m of msgs) renderMarkdown(m, labels);
+    }
+    const warmSwitchMs = (performance.now() - warmStart) / 10;
+    expect(warmSwitchMs).toBeLessThan(coldSwitchMs);
+
+    const fakeMsgs = Array.from({ length: 200 }, (_, i) => ({
+      id: `m-${i}`,
+      role: i % 2 === 0 ? "user" : "assistant",
+      kind: i % 5 === 0 ? "tool" : undefined,
+      turnId: i > 190 ? "t-live" : "t-old",
+      content: `msg ${i}`,
+      status: "done",
+      ts: 1000 + i,
+    }));
+    const tBefore0 = performance.now();
+    let s1 = "";
+    for (let i = 0; i < 5000; i++) {
+      const liveWork = fakeMsgs.filter((m) => m.turnId === "t-live" && m.kind === "tool");
+      s1 = `${WORKING_WORDS[workingWordIndex("thread-1", i)]}:${liveWork.length}:${formatElapsed(i * 1000)}`;
+    }
+    const idleBeforeMs = performance.now() - tBefore0;
+    const tAfter0 = performance.now();
+    let s2 = "";
+    for (let i = 0; i < 5000; i++) {
+      s2 = formatElapsed(i * 1000);
+    }
+    const idleAfterMs = performance.now() - tAfter0;
+    expect(s1.length > 0 && s2.length > 0).toBe(true);
+    expect(idleAfterMs).toBeLessThan(idleBeforeMs);
+
+    console.info(
+      `P2-63_METRICS=${JSON.stringify({
+        archiveSwitchColdMs: Number(coldSwitchMs.toFixed(3)),
+        archiveSwitchWarmMs: Number(warmSwitchMs.toFixed(3)),
+        idleTick5000BeforeMs: Number(idleBeforeMs.toFixed(3)),
+        idleTick5000AfterMs: Number(idleAfterMs.toFixed(3)),
+      })}`,
+    );
   });
 });
