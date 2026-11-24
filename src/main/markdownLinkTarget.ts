@@ -143,7 +143,7 @@ function resolveLocalPath(
   // drive paths — strip the namespace prefix before the rooted check,
   // which would otherwise treat them as driveless.
   const device = path.match(/^\\\\[.?]\\([a-zA-Z]:[\\/].*)$/);
-  if (device !== null) path = device[1];
+  if (device !== null && device[1] !== undefined) path = device[1];
   if (/^[\\/]/.test(path)) {
     // A rooted but driveless path (`\x`, `/x`) resolves on the BASE's
     // drive — `isAbsolute` counts it absolute on win32, so without this
