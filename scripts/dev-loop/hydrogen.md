@@ -64,6 +64,7 @@ Follow `AGENTS.md`, `dev-prompt.md`, and the **Non-interactive discipline**, **N
 
 Follow the **Gate**, **Independent audit**, **Merge on pass**, and **Escalation fixer** sections of `autopilot.md`:
 
+0. Before every gate run (including a re-gate of an unchanged head), `git fetch origin`; if `git merge-base --is-ancestor origin/main HEAD` fails, `git merge origin/main`, resolve conflicts, run the self-check, commit and push first. Never rebase or force-push.
 1. **Run `Invoke-AutopilotGate.ps1` on every new head SHA** (keep default `-Root` so `summary.json` is written where `Start-DevinAutopilot.ps1` `Invoke-AutoMerge` and `Start-HydrogenWorker.ps1` read it; use a timeout >= 75 minutes):
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File C:\tivano\audit\tool\scripts\dev-loop\Invoke-AutopilotGate.ps1 -PrNumber <pr>
