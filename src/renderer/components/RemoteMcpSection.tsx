@@ -77,7 +77,9 @@ export function RemoteMcpSection(props: { settings: Settings }): React.JSX.Eleme
     ? t("Disabled")
     : listening
       ? t("Listening on 127.0.0.1:%d", String(port))
-      : t("Remote MCP could not start. Retry after freeing the port.");
+      : status?.failure
+        ? t("Remote MCP could not start. Retry after freeing the port.")
+        : "";
 
   const addressDetail = !publicValid
     ? t("Enter an HTTPS address, or leave it empty for this computer only.")
@@ -171,7 +173,7 @@ export function RemoteMcpSection(props: { settings: Settings }): React.JSX.Eleme
         <span>{t("Remote MCP status")}</span>
         <span>
           {statusText}
-          {enabled && !listening && (
+          {enabled && !listening && status?.failure && (
             <button
               type="button"
               className="choice control-retry"
@@ -183,6 +185,7 @@ export function RemoteMcpSection(props: { settings: Settings }): React.JSX.Eleme
                   .then((s) => {
                     if (mounted.current && s) setStatus(s as RemoteMcpStatus);
                   })
+                  .catch(() => {})
               }
             >
               {t("Retry")}
@@ -215,6 +218,7 @@ export function RemoteMcpSection(props: { settings: Settings }): React.JSX.Eleme
                     .then((s) => {
                       if (mounted.current && s) setStatus(s as RemoteMcpStatus);
                     })
+                    .catch(() => {})
                 }
               >
                 {t("Revoke access")}
@@ -235,6 +239,7 @@ export function RemoteMcpSection(props: { settings: Settings }): React.JSX.Eleme
                 .then((s) => {
                   if (mounted.current && s) setStatus(s as RemoteMcpStatus);
                 })
+                .catch(() => {})
             }
           >
             {t("Revoke all")}

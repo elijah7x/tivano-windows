@@ -23,6 +23,7 @@ const SERVER_NAME = "tivano";
 const MCP_PATH = "/mcp";
 const MAX_HEAD = 32_768;
 const MAX_BODY = 262_144;
+const MAX_METADATA_BYTES = 65_536;
 const MAX_TEXT = 65_536;
 const MAX_CONNECTIONS = 32;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -624,8 +625,16 @@ export class RemoteMcpAuthority {
         const rawScope = form.get("scope") ?? "";
         const parts = rawScope.split(/\s+/).filter(Boolean);
         const granted = new Set<string>(grant.scopes);
-        if (!parts.every((p) => granted.has(p))) return oauthErr("invalid_request");
-        grant.scopes = ALL_SCOPES.filter((s) => parts.includes(s));
+        if (parts.length === 0 || !parts.every((p) => granted.has(p)))
+          return oauthErr("invalid_request");
+        const scoped = ALL_SCOPES.filter((s) => parts.includes(s));
+        const nextRefresh = base64Url(randomBytes(32));
+        grant.refreshTokenHash = sha256Hex(nextRefresh);
+        grant.refreshExpiresAt = now + REFRESH_TTL_MS;
+        grant.lastUsedAt = now;
+        this.persist();
+        this.onChanged();
+        return this.issueToken(nextRefresh, grant, scoped);
       }
       const nextRefresh = base64Url(randomBytes(32));
       grant.refreshTokenHash = sha256Hex(nextRefresh);
@@ -638,13 +647,17 @@ export class RemoteMcpAuthority {
     return grantType === null ? oauthErr("invalid_request") : oauthErr("unsupported_grant_type");
   }
 
-  private issueToken(refreshText: string, grant: StoredGrant): HttpReply {
+  private issueToken(
+    refreshText: string,
+    grant: StoredGrant,
+    scopes: RemoteMcpScope[] = grant.scopes,
+  ): HttpReply {
     const now = Date.now();
     for (const [k, v] of this.accessTokens) if (v.expiresAt <= now) this.accessTokens.delete(k);
     const accessText = base64Url(randomBytes(32));
     this.accessTokens.set(sha256Hex(accessText), {
       grantId: grant.id,
-      scopes: new Set(grant.scopes),
+      scopes: new Set(scopes),
       resource: this.resourceUrl,
       expiresAt: now + ACCESS_TTL_MS,
     });
@@ -653,7 +666,7 @@ export class RemoteMcpAuthority {
       token_type: "Bearer",
       expires_in: Math.floor(ACCESS_TTL_MS / 1000),
       refresh_token: refreshText,
-      scope: formatScopes(grant.scopes),
+      scope: formatScopes(scopes),
     });
   }
 
@@ -672,7 +685,6 @@ export class RemoteMcpAuthority {
       u.protocol !== "https:" ||
       !u.hostname ||
       !u.pathname ||
-      u.pathname === "/" ||
       u.hash ||
       u.username ||
       u.password ||
@@ -686,10 +698,8 @@ export class RemoteMcpAuthority {
         signal: AbortSignal.timeout(5000),
       });
       if (res.status !== 200) return null;
-      const len = Number(res.headers.get("content-length") ?? "0");
-      if (len > 65_536) return null;
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length > 65_536) return null;
+      const buf = await readBoundedBody(res, MAX_METADATA_BYTES);
+      if (!buf) return null;
       const obj = JSON.parse(buf.toString("utf8")) as Record<string, unknown>;
       const redirects = obj["redirect_uris"];
       if (
@@ -699,14 +709,23 @@ export class RemoteMcpAuthority {
         !redirects.every((r): r is string => typeof r === "string" && isValidRedirect(r))
       )
         return null;
+      const now = Date.now();
+      for (const [k, v] of this.metadataCache) {
+        if (v.expiresAt <= now) this.metadataCache.delete(k);
+      }
+      while (this.metadataCache.size >= MAX_CLIENTS) {
+        const oldest = this.metadataCache.keys().next().value;
+        if (!oldest) break;
+        this.metadataCache.delete(oldest);
+      }
       const client: StoredClient = {
         id,
         name: clientName(obj["client_name"]),
         redirectURIs: redirects,
         source: "metadataDocument",
-        createdAt: Date.now(),
+        createdAt: now,
       };
-      this.metadataCache.set(id, { client, expiresAt: Date.now() + 600_000 });
+      this.metadataCache.set(id, { client, expiresAt: now + 600_000 });
       return client;
     } catch {
       return null;
@@ -1291,7 +1310,7 @@ export class RemoteMcpService {
           this.opts.engine.snapshot().settings.remoteMCPEnabled === true && !this.disposed;
         const targetBase = this.baseUrl;
         if (!enabled) {
-          this.stopServer();
+          await this.closeServer();
           this.failure = null;
           this.authority.cancelPending();
           this.notify();
@@ -1300,7 +1319,7 @@ export class RemoteMcpService {
         if (!forceRestart && this.server && this.listening && this.listeningBaseUrl === targetBase) {
           return;
         }
-        this.stopServer();
+        await this.closeServer();
         for (let attempt = 0; attempt < 2; attempt++) {
           if (this.disposed || this.opts.engine.snapshot().settings.remoteMCPEnabled !== true)
             return;
@@ -1319,6 +1338,11 @@ export class RemoteMcpService {
           }
           try {
             const srv = await this.listenOn(port, hosts, origins);
+            if (this.disposed || this.opts.engine.snapshot().settings.remoteMCPEnabled !== true) {
+              srv.closeAllConnections?.();
+              srv.close();
+              return;
+            }
             this.server = srv;
             this.listening = true;
             this.listeningBaseUrl = base;
@@ -1453,6 +1477,18 @@ export class RemoteMcpService {
     }
   }
 
+  private closeServer(): Promise<void> {
+    const srv = this.server;
+    this.server = undefined;
+    this.listening = false;
+    this.listeningBaseUrl = null;
+    if (!srv) return Promise.resolve();
+    return new Promise((resolve) => {
+      srv.closeAllConnections?.();
+      srv.close(() => resolve());
+    });
+  }
+
   private stopServer(): void {
     if (this.server) {
       this.server.closeAllConnections?.();
@@ -1467,6 +1503,39 @@ export class RemoteMcpService {
     this.disposed = true;
     this.stopServer();
     this.authority.cancelPending();
+  }
+}
+
+/** Stream a Fetch response up to `maxBytes`, cancelling the reader early once exceeded. */
+export async function readBoundedBody(
+  res: Response,
+  maxBytes = MAX_METADATA_BYTES,
+): Promise<Buffer | null> {
+  const headerLen = Number(res.headers.get("content-length") ?? "0");
+  if (Number.isFinite(headerLen) && headerLen > maxBytes) return null;
+  const reader = res.body?.getReader();
+  if (!reader) {
+    const buf = Buffer.from(await res.arrayBuffer());
+    return buf.length > maxBytes ? null : buf;
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+    }
+    return Buffer.concat(chunks);
+  } catch {
+    await reader.cancel().catch(() => {});
+    return null;
   }
 }
 

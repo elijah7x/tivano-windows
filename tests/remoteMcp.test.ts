@@ -5,6 +5,7 @@
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import http from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +17,7 @@ import { LocalControlService } from "../src/main/localControl";
 import {
   RemoteMcpService,
   normalizedPublicUrl,
+  readBoundedBody,
   remoteMcpBaseUrl,
 } from "../src/main/remoteMcp";
 
@@ -185,6 +187,25 @@ describe.runIf(loopbackBindable)("remote MCP (P2-25)", () => {
     expect(unauth.headers.get("www-authenticate")).toContain("oauth-protected-resource");
 
     // Unknown Host is rejected with 421; foreign Origin is rejected with 403.
+    const badHostStatus = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port: rm.port,
+          path: "/mcp",
+          method: "POST",
+          headers: { Host: "evil.example", "Content-Length": "2" },
+        },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        },
+      );
+      req.on("error", reject);
+      req.end("{}");
+    });
+    expect(badHostStatus).toBe(421);
+
     const badOrigin = await fetch(`${base}/mcp`, {
       method: "POST",
       headers: { Origin: "https://evil.example" },
@@ -480,5 +501,35 @@ describe.runIf(loopbackBindable)("remote MCP (P2-25)", () => {
     expect(s2.remoteMCPPublicURL).toBe("https://tunnel.example.com");
     expect(s2.remoteMCPPort).toBe(savedPort);
     store2.close();
+  });
+
+  it("bounds streaming metadata fetches at 64 KiB even without Content-Length", async () => {
+    let chunksSent = 0;
+    const srv = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      // Stream 8 KiB chunks without Content-Length; reader must cancel once > 65_536 bytes arrive.
+      const timer = setInterval(() => {
+        if (res.destroyed || res.writableEnded || chunksSent >= 20) {
+          clearInterval(timer);
+          if (!res.writableEnded) res.end();
+          return;
+        }
+        chunksSent++;
+        res.write(Buffer.alloc(8_192, 0x61));
+      }, 2);
+      res.on("close", () => clearInterval(timer));
+    });
+    await new Promise<void>((resolve) => srv.listen(0, "127.0.0.1", () => resolve()));
+    try {
+      const addr = srv.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      const res = await fetch(`http://127.0.0.1:${port}/client.json`);
+      const body = await readBoundedBody(res);
+      expect(body).toBeNull();
+      expect(chunksSent).toBeLessThan(20);
+    } finally {
+      srv.closeAllConnections?.();
+      srv.close();
+    }
   });
 });
