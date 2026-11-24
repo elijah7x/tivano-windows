@@ -1997,7 +1997,7 @@ select.runtime-mode:disabled {
   z-index: 45;
 }
 .prov-rail:hover .prov-rail-expand,
-.prov-rail:focus-within .prov-rail-expand { display: flex; }
+.prov-rail:has(:focus-visible) .prov-rail-expand { display: flex; }
 .prov-expand-row {
   display: flex;
   align-items: center;

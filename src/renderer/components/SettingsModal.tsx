@@ -826,7 +826,10 @@ export function SettingsModal(props: {
 
         <ProvidersSection
           codex={codex}
-          executablePathVisible={settings.providersShowExecutablePath === true}
+          executablePathVisible={
+            settings.providersShowExecutablePath ??
+            Boolean(codex?.savedExecutable || codex?.pendingExecutable)
+          }
           onExecutablePathVisible={(v) =>
             tryCall("settings:set", { providersShowExecutablePath: v })
           }
@@ -900,7 +903,7 @@ export function SettingsModal(props: {
               </>
             )}
           </div>
-          {(executablePath || codex?.savedExecutable || codex?.pendingExecutable) && (
+          {executablePath && (
             <p>
               {t(
                 "Choosing only selects a candidate. Saving or clearing changes the saved setting, not this launch, and never starts the program. On restart, explicit provider and environment settings take priority. A saved path is not installed or verified.",
@@ -913,7 +916,7 @@ export function SettingsModal(props: {
             </p>
           )}
           {loadErr && <p className="codex-setup-error" role="alert">{loadErr}</p>}
-          {(executablePath || codex?.savedExecutable || codex?.pendingExecutable) && (
+          {executablePath && (
           <div className="choice-row">
             <button
               className="choice"
