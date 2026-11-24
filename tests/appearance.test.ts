@@ -13,6 +13,7 @@ import { Store, emptyStore } from "../src/main/store";
 import { CorruptStoreError, validateStoreFile } from "../src/main/storeDoc";
 import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
+import { requestValidators } from "../src/shared/ipc";
 
 const dirs: string[] = [];
 function freshRoot(): string {
@@ -30,12 +31,14 @@ afterEach(() => {
 });
 
 describe("P2-62 retired settings migration", () => {
-  it("opens a store carrying retired v2.x settings without corruption and strips them", () => {
+  it("opens a v2.x store carrying retired settings without corruption", () => {
     const root = freshRoot();
     const { store } = makeEngine(root);
     store.close();
     const path = join(root, "store.json");
-    const doc = JSON.parse(readFileSync(path, "utf8"));
+    const doc = JSON.parse(readFileSync(path, "utf8")) as {
+      settings: Record<string, unknown>;
+    };
     doc.settings.performanceMode = true;
     doc.settings.notifyOnDone = false;
     doc.settings.commitInstructions = "use conventional commits";
@@ -44,11 +47,30 @@ describe("P2-62 retired settings migration", () => {
 
     const { store: store2, engine: engine2 } = makeEngine(root);
     expect(store2.recoveredFrom).toBeUndefined();
-    const settings = engine2.snapshot().settings as unknown as Record<string, unknown>;
-    expect(settings.performanceMode).toBeUndefined();
-    expect(settings.notifyOnDone).toBeUndefined();
-    expect(settings.commitInstructions).toBeUndefined();
-    expect(settings.antiSlopEnabled).toBeUndefined();
+    const settings = engine2.snapshot().settings;
+    expect("performanceMode" in settings).toBe(false);
+    expect("notifyOnDone" in settings).toBe(false);
+    expect("commitInstructions" in settings).toBe(false);
+    expect("antiSlopEnabled" in settings).toBe(false);
+    store2.close();
+  });
+
+  it("re-persists migrated stores without retired keys", () => {
+    const root = freshRoot();
+    const { store } = makeEngine(root);
+    store.close();
+    const path = join(root, "store.json");
+    const doc = JSON.parse(readFileSync(path, "utf8")) as {
+      settings: Record<string, unknown>;
+    };
+    doc.settings.performanceMode = true;
+    doc.settings.notifyOnDone = true;
+    doc.settings.commitInstructions = "concise";
+    doc.settings.antiSlopEnabled = true;
+    writeFileSync(path, JSON.stringify(doc));
+
+    const { store: store2, engine: engine2 } = makeEngine(root);
+    engine2.setSettings({ chimeWhenFinished: false });
     store2.close();
 
     const persisted = JSON.parse(readFileSync(path, "utf8")) as {
@@ -58,31 +80,46 @@ describe("P2-62 retired settings migration", () => {
     expect("notifyOnDone" in persisted.settings).toBe(false);
     expect("commitInstructions" in persisted.settings).toBe(false);
     expect("antiSlopEnabled" in persisted.settings).toBe(false);
+    expect(persisted.settings.chimeWhenFinished).toBe(false);
   });
 
-  it("drops malformed retired keys on load while still rejecting unknown keys", () => {
-    const base = emptyStore() as unknown as Record<string, unknown>;
-    const withRetired = {
-      ...base,
-      settings: {
-        ...(base.settings as Record<string, unknown>),
-        performanceMode: "loud",
-        notifyOnDone: 123,
-      },
+  it("drops malformed retired keys on load during document validation", () => {
+    const raw = JSON.parse(JSON.stringify(emptyStore())) as {
+      settings: Record<string, unknown>;
     };
-    const migrated = validateStoreFile(withRetired);
-    expect("performanceMode" in (migrated.settings as unknown as Record<string, unknown>)).toBe(
-      false,
-    );
-    expect("notifyOnDone" in (migrated.settings as unknown as Record<string, unknown>)).toBe(false);
+    raw.settings.performanceMode = "loud";
+    raw.settings.notifyOnDone = 123;
+    raw.settings.commitInstructions = 42;
+    raw.settings.antiSlopEnabled = "invalid";
 
-    const withBogus = {
-      ...base,
-      settings: {
-        ...(base.settings as Record<string, unknown>),
-        bogusUnknownKey: true,
-      },
+    const migrated = validateStoreFile(raw);
+    expect("performanceMode" in migrated.settings).toBe(false);
+    expect("notifyOnDone" in migrated.settings).toBe(false);
+    expect("commitInstructions" in migrated.settings).toBe(false);
+    expect("antiSlopEnabled" in migrated.settings).toBe(false);
+  });
+
+  it("still rejects genuinely unknown settings keys with CorruptStoreError", () => {
+    const raw = JSON.parse(JSON.stringify(emptyStore())) as {
+      settings: Record<string, unknown>;
     };
-    expect(() => validateStoreFile(withBogus)).toThrow(CorruptStoreError);
+    raw.settings.bogusUnknownKey = true;
+    expect(() => validateStoreFile(raw)).toThrow(CorruptStoreError);
+  });
+
+  it("rejects retired keys in settings:set IPC validation and ignores them in Engine.setSettings", () => {
+    const { store, engine } = makeEngine(freshRoot());
+    for (const key of [
+      "performanceMode",
+      "notifyOnDone",
+      "commitInstructions",
+      "antiSlopEnabled",
+    ]) {
+      const patch: Record<string, unknown> = { [key]: true };
+      expect(() => requestValidators["settings:set"](patch)).toThrow();
+      engine.setSettings(patch as Parameters<Engine["setSettings"]>[0]);
+      expect(key in engine.snapshot().settings).toBe(false);
+    }
+    store.close();
   });
 });

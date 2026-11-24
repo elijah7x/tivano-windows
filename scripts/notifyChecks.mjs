@@ -98,15 +98,24 @@ export async function runNotifyChecks({
     n3[1],
   );
 
-  // Retired switches and commit-message instructions are absent under zh-Hans.
+  // Retired switches and commit-message instructions are absent under en
+  // (using canonical English keys with a live switch anchor so the check
+  // cannot pass vacuously), then capture the Settings modal under zh-Hans.
   const { join } = await import("node:path");
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { language: "en" }),
+  );
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 10000 });
   verify(
     "NOTIFY-04 retired switches absent in Settings",
-    (await page.getByRole("switch", { name: "轮次完成时通知我" }).count()) === 0 &&
-      (await page.getByRole("switch", { name: "简洁的 AI 回复" }).count()) === 0 &&
-      (await page.locator(".modal", { hasText: "提交信息要求" }).count()) === 0,
+    (await page.getByRole("switch", { name: "Chime when a turn finishes" }).count()) === 1 &&
+      (await page.getByRole("switch", { name: "Notify when a turn finishes" }).count()) === 0 &&
+      (await page.getByRole("switch", { name: "Concise AI replies" }).count()) === 0 &&
+      (await page.locator(".modal", { hasText: "Commit-message instructions" }).count()) === 0,
+  );
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { language: "zh-Hans" }),
   );
   await page.screenshot({ path: join(outDir, "63-notify-setting-zh.png") });
   await page.locator(".modal-actions .primary").click();

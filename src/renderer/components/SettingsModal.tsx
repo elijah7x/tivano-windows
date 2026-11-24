@@ -342,7 +342,7 @@ export function SettingsModal(props: {
         </p>
         {/* v2.2.x frozen "Shelve projects" — idle days before a project
             shelves itself; running/unread/open chats keep it put. */}
-        <label className="wt-field commit-instructions">
+        <label className="wt-field settings-field-gap">
           <span>{t("Auto-shelve projects")}</span>
           <div
             className="choice-row"
@@ -546,7 +546,7 @@ export function SettingsModal(props: {
         <p className="codex-note">
           {t("Automatic uses the thread's own provider to write a title for a new thread and a draft for a commit message. Provider-specific picks are not supported yet.")}
         </p>
-        <label className="wt-field commit-instructions">
+        <label className="wt-field settings-field-gap">
           <span>{t("Thread titles")}</span>
           <div className="choices" role="radiogroup">
             {(

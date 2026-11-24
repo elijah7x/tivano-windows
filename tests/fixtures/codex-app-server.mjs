@@ -66,6 +66,11 @@ try {
           model: typeof t.model === "string" ? t.model : "fixture-model",
           effort: typeof t.effort === "string" ? t.effort : null,
           config: t.config && typeof t.config === "object" ? t.config : null,
+          developerInstructions:
+            typeof t.developerInstructions === "string" ? t.developerInstructions : null,
+          turns: Array.isArray(t.turns) ? t.turns : [],
+          archived: t.archived === true,
+          failRevert: t.failRevert === true,
         });
     } catch {
       /* a partial tmp write — ignored, never fatal */
@@ -227,6 +232,11 @@ function runTurn(threadId, turnId, prompt, model, effort, serviceTier, policy, c
     const polTag =
       policy !== undefined ? ` [ap=${policy.ap} rev=${policy.rev} sb=${policy.sb}]` : "";
     const cmTag = collab !== undefined ? ` [cm=${collab}]` : "";
+    const row = threads.get(threadId);
+    const diTag =
+      lower.includes("dicheck") && row
+        ? ` [di=${row.developerInstructions ?? "none"}]`
+        : "";
     // "markdown" → canned rich-markdown reply so the renderer's extended
     // blocks get exercised end to end (fixture only, still synthetic).
     const text = lower.includes("markdown")
@@ -271,7 +281,7 @@ function runTurn(threadId, turnId, prompt, model, effort, serviceTier, policy, c
             seg.push("LONG-REPLY-TAIL");
             return seg.join("\n\n");
           })()
-        : `fixture response: ${prompt.slice(0, 80)}${meTag}${polTag}${cmTag}`;
+        : `fixture response: ${prompt.slice(0, 80)}${meTag}${polTag}${cmTag}${diTag}`;
     const chunks = lower.includes("long")
       ? (text.match(/[\s\S]{1,2000}/g) ?? [text])
       : lower.includes("slow")
@@ -722,6 +732,11 @@ rl.on("line", (line) => {
         model: typeof params?.model === "string" ? params.model : "fixture-model",
         effort: null,
         config: params?.config && typeof params.config === "object" ? params.config : null,
+        developerInstructions:
+          typeof params?.developerInstructions === "string" ? params.developerInstructions : null,
+        turns: [],
+        archived: false,
+        failRevert: false,
       };
       threads.set(id2, row);
       persistThread(id2, row);
@@ -730,16 +745,109 @@ rl.on("line", (line) => {
     }
     case "thread/resume": {
       const tid = params?.threadId;
-      if (typeof tid !== "string" || !threads.has(tid)) {
+      if (typeof tid !== "string" || !threads.has(tid) || threads.get(tid).archived) {
         // Unknown resume target — the real server errors; so do we.
         respondError(id, -32000, `thread not found: ${String(tid)}`);
         break;
       }
       const row = threads.get(tid);
       if (typeof params?.model === "string") row.model = params.model;
-      if (params?.config && typeof params.config === "object") row.config = params.config;
+      row.config = params?.config && typeof params.config === "object" ? params.config : null;
+      row.developerInstructions =
+        typeof params?.developerInstructions === "string" ? params.developerInstructions : null;
       persistThread(tid, row);
       respond(id, { thread: fakeThread(tid, row.cwd, row.model, row.effort) });
+      break;
+    }
+    case "thread/turns/list": {
+      const tid = params?.threadId;
+      if (typeof tid !== "string" || !threads.has(tid) || threads.get(tid).archived) {
+        respondError(id, -32000, `thread not found: ${String(tid)}`);
+        break;
+      }
+      const row = threads.get(tid);
+      const list = Array.isArray(row.turns) ? [...row.turns] : [];
+      if (params?.sortDirection === "desc") list.reverse();
+      const offset = typeof params?.cursor === "string" ? Number(params.cursor) || 0 : 0;
+      const limit =
+        typeof params?.limit === "number" && Number.isInteger(params.limit) && params.limit > 0
+          ? params.limit
+          : 100;
+      const slice = list.slice(offset, offset + limit);
+      const nextOffset = offset + slice.length;
+      const nextCursor = nextOffset < list.length ? String(nextOffset) : null;
+      respond(id, {
+        data: slice.map((t) => fakeTurn(t.id)),
+        nextCursor,
+      });
+      break;
+    }
+    case "thread/revert": {
+      const tid = params?.threadId;
+      const beforeTurnId = params?.beforeTurnId;
+      if (typeof tid !== "string" || !threads.has(tid) || threads.get(tid).archived) {
+        respondError(id, -32000, `thread not found: ${String(tid)}`);
+        break;
+      }
+      const row = threads.get(tid);
+      if (row.failRevert) {
+        respondError(id, -32000, "thread cannot be reverted in place");
+        break;
+      }
+      const idx = Array.isArray(row.turns)
+        ? row.turns.findIndex((t) => t.id === beforeTurnId)
+        : -1;
+      if (idx < 0) {
+        respondError(id, -32000, `turn not found: ${String(beforeTurnId)}`);
+        break;
+      }
+      row.turns = row.turns.slice(0, idx);
+      persistThread(tid, row);
+      respond(id, { thread: fakeThread(tid, row.cwd, row.model, row.effort) });
+      break;
+    }
+    case "thread/fork": {
+      const origId = params?.threadId;
+      const lastTurnId = params?.lastTurnId;
+      if (typeof origId !== "string" || !threads.has(origId) || threads.get(origId).archived) {
+        respondError(id, -32000, `thread not found: ${String(origId)}`);
+        break;
+      }
+      const orig = threads.get(origId);
+      const idx = Array.isArray(orig.turns)
+        ? orig.turns.findIndex((t) => t.id === lastTurnId)
+        : -1;
+      if (idx < 0) {
+        respondError(id, -32000, `turn not found: ${String(lastTurnId)}`);
+        break;
+      }
+      const newId = `thread-${INSTANCE}-${++seq}`;
+      const forked = {
+        cwd: typeof params?.cwd === "string" ? params.cwd : orig.cwd,
+        model: typeof params?.model === "string" ? params.model : orig.model,
+        effort: orig.effort,
+        config: params?.config && typeof params.config === "object" ? params.config : null,
+        developerInstructions:
+          typeof params?.developerInstructions === "string" ? params.developerInstructions : null,
+        turns: orig.turns.slice(0, idx + 1),
+        archived: false,
+        failRevert: false,
+      };
+      threads.set(newId, forked);
+      persistThread(newId, forked);
+      respond(id, { thread: fakeThread(newId, forked.cwd, forked.model, forked.effort) });
+      break;
+    }
+    case "thread/archive": {
+      const tid = params?.threadId;
+      if (typeof tid !== "string" || !threads.has(tid)) {
+        respondError(id, -32000, `thread not found: ${String(tid)}`);
+        break;
+      }
+      const row = threads.get(tid);
+      row.archived = true;
+      persistThread(tid, row);
+      respond(id, {});
       break;
     }
     case "thread/compact/start": {
@@ -810,7 +918,7 @@ rl.on("line", (line) => {
     }
     case "turn/start": {
       const tid = params?.threadId;
-      if (typeof tid !== "string" || !threads.has(tid)) {
+      if (typeof tid !== "string" || !threads.has(tid) || threads.get(tid).archived) {
         respondError(id, -32000, `unknown thread: ${String(tid)}`);
         break;
       }
@@ -844,6 +952,9 @@ rl.on("line", (line) => {
           : undefined;
       row.model = sentModel ?? row.model;
       row.effort = sentEffort ?? row.effort;
+      const lowerPrompt = (prompt.split("---\n\n").pop() ?? prompt).toLowerCase();
+      if (lowerPrompt.includes("forkrevert")) row.failRevert = true;
+      (row.turns ??= []).push({ id: turnId });
       persistThread(tid, row);
       respond(id, { turn: fakeTurn(turnId) });
       // Echo only the CLIENT-SENT override — a silent default is proven

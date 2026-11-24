@@ -14,6 +14,8 @@ import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
 import { Store } from "../src/main/store";
 import { finishChimeWav, toneWave } from "../src/shared/toneSynth";
+import { requestValidators } from "../src/shared/ipc";
+import type { ProviderAdapter } from "../src/main/provider";
 
 const roots: string[] = [];
 function tmp(): string {
@@ -174,6 +176,56 @@ describe("F28 finish-signal (frozen turnFinished)", () => {
     store2.open();
     expect(store2.state.settings.chimeWhenFinished).toBe(false);
     store2.close();
+  });
+
+  it("an interrupted turn notifies as 'stopped' without chiming", async () => {
+    const root = tmp();
+    const store = new Store(root);
+    store.open();
+    const interrupting: ProviderAdapter = {
+      descriptor: { id: "int", label: "Int", mode: "mock", synthetic: true },
+      start(_ctx, cb) {
+        queueMicrotask(() => cb.onInterrupted?.());
+        return {
+          cancel: () => {},
+          resume: () => {},
+        };
+      },
+      dispose: () => Promise.resolve({ children: [], orphanedPending: 0 }),
+    };
+    const engine = new Engine(store, interrupting, root, "0.0.0-test");
+    const signals: FinishSignal[] = [];
+    engine.onEvent((e) => {
+      if (e.type === "finish-signal") signals.push(e as FinishSignal);
+    });
+    const th = engine.createThread(null, "chat");
+    engine.sendTurn(th.id, "work");
+    await waitFor(() => thread(engine, th.id).turn?.status === "interrupted");
+    expect(signals.at(-1)).toMatchObject({
+      threadId: th.id,
+      status: "interrupted",
+      chime: false,
+      notify: "stopped",
+      silent: false,
+    });
+    engine.shutdown();
+    store.close();
+  });
+
+  it("rejects notifyOnDone in settings:set and always notifies on done", async () => {
+    const { engine, store, signals } = make();
+    const patch: Record<string, unknown> = { notifyOnDone: false };
+    expect(() => requestValidators["settings:set"](patch)).toThrow();
+    engine.setSettings(patch as Parameters<Engine["setSettings"]>[0]);
+    const th = engine.createThread(null, "chat");
+    engine.sendTurn(th.id, "work");
+    await waitFor(() => thread(engine, th.id).turn?.status === "done");
+    expect(signals.at(-1)).toMatchObject({
+      threadId: th.id,
+      status: "done",
+      notify: "done",
+    });
+    store.close();
   });
 });
 

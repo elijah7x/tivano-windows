@@ -1007,3 +1007,72 @@ describe("P1-37 adaptive sub-agent identities", () => {
     store.close();
   });
 });
+
+describe("P2-62 Hydra finish-signal & unread suppression (frozen AppModel.turnFinished)", () => {
+  it("suppresses chime, notify, and unread on Hydra heads and on the lead until all heads finish", async () => {
+    const { engine, store } = make();
+    const signals: {
+      threadId: string;
+      status: string;
+      chime: boolean;
+      notify: string | null;
+      silent: boolean;
+    }[] = [];
+    engine.onEvent((e) => {
+      if (e.type === "finish-signal") signals.push(e);
+    });
+    engine.setSettings({ hydraMaxHeads: 1 });
+    const watcher = engine.createThread(null, "watcher");
+    const lead = engine.createThread(null, "lead");
+    engine.selectThread(watcher.id);
+
+    engine.sendTurn(lead.id, "go [mock:hydra-waitmany]");
+    await waitFor(
+      () =>
+        thread(engine, lead.id).turn?.status === "done" &&
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+
+    // Lead finished dispatching while a head is running + two are queued:
+    // no chime, no notification, and no unread mark yet.
+    const leadDispatchSignals = signals.filter((s) => s.threadId === lead.id);
+    expect(leadDispatchSignals.length).toBeGreaterThanOrEqual(1);
+    expect(leadDispatchSignals[0]).toMatchObject({
+      status: "done",
+      chime: false,
+      notify: null,
+      silent: false,
+    });
+    expect(thread(engine, lead.id).hasUnread).toBeFalsy();
+
+    // Stop the held head so the queued heads run and finish, flushing the report turn.
+    engine.stopHydraHead(heads(engine, lead.id)[0]!.id);
+    await waitFor(() => heads(engine, lead.id).length === 3);
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some((m) =>
+        m.content.includes("Hydra reports:"),
+      ),
+    );
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+
+    // None of the Hydra head threads ever emitted a finish-signal or marked unread.
+    const headIds = new Set(heads(engine, lead.id).map((h) => h.id));
+    expect(signals.filter((s) => headIds.has(s.threadId))).toEqual([]);
+    for (const h of heads(engine, lead.id)) {
+      expect(h.hasUnread).toBeFalsy();
+    }
+
+    // Once the report turn completes with no heads left out, the lead chimes,
+    // notifies, and marks unread (since watcher is selected).
+    const leadFinalSignal = signals.filter((s) => s.threadId === lead.id).at(-1);
+    expect(leadFinalSignal).toMatchObject({
+      status: "done",
+      chime: true,
+      notify: "done",
+      silent: true,
+    });
+    expect(thread(engine, lead.id).hasUnread).toBe(true);
+    store.close();
+  });
+});

@@ -1251,6 +1251,8 @@ export const ja: Record<string, string> = {
   "Codex did not confirm the requested conversation rollback.": "Codex は要求された会話のロールバックを確認できませんでした。",
   "Codex did not create a conversation at the revert point.": "Codex はロールバック地点で会話を作成しませんでした。",
   "Codex did not confirm the reverted conversation history.": "Codex はロールバック後の会話履歴を確認できませんでした。",
+  "The original Codex conversation is unavailable.": "元の Codex 会話を利用できません。",
+  "The selected message has no Codex turn ID, so its history cannot be safely reverted.": "選択したメッセージには Codex ターン ID がないため、履歴を安全に元に戻せません。",
   "permissions": "権限",
   "The sub-agent is no longer eligible for archiving.": "このサブエージェントはアーカイブの対象外になりました。",
   "archived": "アーカイブ済み",

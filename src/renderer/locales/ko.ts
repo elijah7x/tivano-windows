@@ -1251,6 +1251,8 @@ export const ko: Record<string, string> = {
   "Codex did not confirm the requested conversation rollback.": "Codex가 요청된 대화 롤백을 확인하지 못했습니다.",
   "Codex did not create a conversation at the revert point.": "Codex가 되돌리기 지점에 대화를 생성하지 않았습니다.",
   "Codex did not confirm the reverted conversation history.": "Codex가 되돌린 대화 기록을 확인하지 못했습니다.",
+  "The original Codex conversation is unavailable.": "원본 Codex 대화를 사용할 수 없습니다.",
+  "The selected message has no Codex turn ID, so its history cannot be safely reverted.": "선택한 메시지에 Codex 턴 ID가 없어 기록을 안전하게 되돌릴 수 없습니다.",
   "permissions": "권한",
   "The sub-agent is no longer eligible for archiving.": "이 하위 에이전트는 더 이상 보관 대상이 아닙니다.",
   "archived": "보관됨",

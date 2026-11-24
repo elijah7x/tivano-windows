@@ -1439,6 +1439,8 @@ const zhHans: Record<string, string> = {
   "Codex did not confirm the requested conversation rollback.": "Codex 未确认所请求的对话回退。",
   "Codex did not create a conversation at the revert point.": "Codex 未在回退点创建对话。",
   "Codex did not confirm the reverted conversation history.": "Codex 未确认回退后的对话历史。",
+  "The original Codex conversation is unavailable.": "原始的 Codex 对话不可用。",
+  "The selected message has no Codex turn ID, so its history cannot be safely reverted.": "所选消息没有 Codex 轮次 ID，因此无法安全地撤回其历史。",
   "permissions": "权限",
   "The sub-agent is no longer eligible for archiving.": "此子代理已不符合归档条件。",
   "archived": "已归档",

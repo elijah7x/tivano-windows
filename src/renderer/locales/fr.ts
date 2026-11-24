@@ -1251,6 +1251,8 @@ export const fr: Record<string, string> = {
   "Codex did not confirm the requested conversation rollback.": "Codex n’a pas confirmé le retour en arrière demandé pour la conversation.",
   "Codex did not create a conversation at the revert point.": "Codex n’a pas créé de conversation au point de rétablissement.",
   "Codex did not confirm the reverted conversation history.": "Codex n’a pas confirmé l’historique de conversation rétabli.",
+  "The original Codex conversation is unavailable.": "La conversation Codex d’origine n’est pas disponible.",
+  "The selected message has no Codex turn ID, so its history cannot be safely reverted.": "Le message sélectionné n’a pas d’identifiant de tour Codex ; son historique ne peut donc pas être annulé en toute sécurité.",
   "permissions": "autorisations",
   "The sub-agent is no longer eligible for archiving.": "Ce sous-agent n’est plus éligible à l’archivage.",
   "archived": "archivé",

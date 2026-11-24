@@ -3279,7 +3279,7 @@ html[data-paused="1"] .md-veil { animation: none !important; }
   color: var(--text);
 }
 .commit-push input { accent-color: var(--accent); }
-.commit-instructions { margin-top: 12px; }
+.settings-field-gap { margin-top: 12px; }
 
 /* F26 font-size stepper — frozen FontSizeButtons: minus / "N pt" / plus. */
 .fs-head {
