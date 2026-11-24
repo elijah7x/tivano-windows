@@ -3144,6 +3144,12 @@ export class Engine {
       }
     });
     this.emit({ type: "settings-changed", settings: this.store.state.settings });
+    if (patch.hydraEnabled === false) {
+      for (const leadId of [...this.hydraWaiting.keys()]) {
+        this.hydraWaiting.delete(leadId);
+        this.flushHydraReports(leadId);
+      }
+    }
     this.updateSleepGuard();
     // Turning the auto-shelve picker on applies the new window right
     // away — frozen parity, and the exemption set is re-evaluated here.
@@ -3760,6 +3766,10 @@ export class Engine {
     });
     this.emit({ type: "thread-updated", thread });
     this.emit({ type: "settings-changed", settings: this.store.state.settings });
+    if (!enabled) {
+      this.hydraWaiting.delete(threadId);
+      this.flushHydraReports(threadId);
+    }
   }
 
   /** P1-36: the chat's sub-agent mode (frozen picker row taps — the
@@ -4759,6 +4769,9 @@ export class Engine {
     // neither the chime nor a notification; Hydra head threads never
     // chime, notify, or mark unread (frozen AppModel.turnFinished).
     const isHead = thread.hydraHead !== undefined;
+    if (!isHead && this.hydraWaiting.has(thread.id) && this.hydraLaunchFor(thread) === undefined) {
+      this.hydraWaiting.delete(thread.id);
+    }
     const leadHeadsBusy =
       !isHead &&
       (this.hydraLeadBusy(thread.id) ||
@@ -5129,7 +5142,10 @@ export class Engine {
     const queue = this.hydraWaiting.get(leadId);
     if (!queue?.length) return;
     const launch = this.hydraLaunchFor(lead);
-    if (!launch) return;
+    if (!launch) {
+      this.hydraWaiting.delete(leadId);
+      return;
+    }
     while (queue.length) {
       const running = this.store.state.threads.filter(
         (t) => t.hydraHead?.leadId === leadId && t.hydraHead.status === "running",
@@ -6564,6 +6580,9 @@ export class Engine {
         )
         .map((t) => t.hydraHead!.batchId),
     );
+    if (this.hydraWaiting.has(leadId) && this.hydraLaunchFor(lead) === undefined) {
+      this.hydraWaiting.delete(leadId);
+    }
     for (const w of this.hydraWaiting.get(leadId) ?? [])
       runningBatches.add(w.batchId);
     const flushable = pending.filter((r) => !runningBatches.has(r.batchId ?? ""));

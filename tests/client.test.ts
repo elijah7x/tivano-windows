@@ -384,6 +384,7 @@ describe("finish-signal notification visibility (P2-62)", () => {
           headIndex: 0,
           name: "Hank",
           task: "work",
+          batchId: "b1",
           status: "completed" as const,
           spawnedAt: 1,
         },

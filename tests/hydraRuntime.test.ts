@@ -1075,4 +1075,65 @@ describe("P2-62 Hydra finish-signal & unread suppression (frozen AppModel.turnFi
     expect(thread(engine, lead.id).hasUnread).toBe(true);
     store.close();
   });
+
+  it("drops unlaunchable hydraWaiting entries when Hydra is turned off so future lead turns still signal", async () => {
+    const { engine, store } = make();
+    const signals: {
+      threadId: string;
+      status: string;
+      chime: boolean;
+      notify: string | null;
+      silent: boolean;
+    }[] = [];
+    engine.onEvent((e) => {
+      if (e.type === "finish-signal") signals.push(e);
+    });
+    engine.setSettings({ hydraMaxHeads: 1 });
+    const watcher = engine.createThread(null, "watcher");
+    const lead = engine.createThread(null, "lead");
+    engine.selectThread(watcher.id);
+
+    engine.sendTurn(lead.id, "go [mock:hydra-waitmany]");
+    await waitFor(
+      () =>
+        thread(engine, lead.id).turn?.status === "done" &&
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+
+    // Disable Hydra globally while two delegations sit in hydraWaiting.
+    engine.setSettings({ hydraEnabled: false });
+    engine.stopHydraHead(heads(engine, lead.id)[0]!.id);
+
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some((m) =>
+        m.content.includes("Hydra reports:"),
+      ),
+    );
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+    expect(heads(engine, lead.id)).toHaveLength(1);
+
+    const afterReport = signals.filter((s) => s.threadId === lead.id).at(-1);
+    expect(afterReport).toMatchObject({
+      status: "done",
+      chime: true,
+      notify: "done",
+      silent: true,
+    });
+    expect(thread(engine, lead.id).hasUnread).toBe(true);
+
+    // A later turn on the lead also signals normally instead of remaining wedged.
+    const countBefore = signals.filter((s) => s.threadId === lead.id).length;
+    engine.sendTurn(lead.id, "ordinary follow-up");
+    await waitFor(
+      () => signals.filter((s) => s.threadId === lead.id).length > countBefore,
+    );
+    expect(signals.filter((s) => s.threadId === lead.id).at(-1)).toMatchObject({
+      status: "done",
+      chime: true,
+      notify: "done",
+      silent: true,
+    });
+    store.close();
+  });
 });
