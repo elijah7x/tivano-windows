@@ -18,6 +18,8 @@ Report each category separately with the result, or `NOT RUN`. One category neve
 
 Tick a box once you have written its result, including `NOT RUN`. Results here are contributor self-tested until a Windows maintainer has reviewed them.
 
+A failing full-suite count must name the failing tests outside the expected Windows host set in [docs/windows-verify-host-failures.md](../docs/windows-verify-host-failures.md), or be labeled *agent-characterized*.
+
 ## Screenshots
 
 <!-- Required for any user-visible change. Attach them here; do not commit them. -->
