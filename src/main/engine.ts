@@ -5626,7 +5626,18 @@ export class Engine {
       }
       return;
     }
-    if (result === null) return;
+    if (result === null) {
+      // A wholesale copy failure still leaves an honest record: the
+      // files it could not capture are named as un-backed-up rather
+      // than vanishing from the report's skipped list.
+      const ci = cur.hydraHead;
+      ci.notBackedUpFiles = capHydraPaths([
+        ...(ci.notBackedUpFiles ?? []),
+        ...added,
+      ]);
+      this.store.update(() => {});
+      return;
+    }
     const ci = cur.hydraHead;
     ci.backupPath = folder;
     // Every persisted list keeps the storeDoc caps (10,000 entries of at
@@ -6577,9 +6588,10 @@ export class Engine {
     // batch open the same way a copy's landing does.
     if (info.backupPath !== undefined && head.worktreeDir === undefined) {
       info.landingPending = true;
-      void this.hydraBackupReportThenLand(head.id).catch(() =>
-        this.finishHydraLanding(head.id),
-      );
+      void this.hydraBackupReportThenLand(head.id).catch(() => {
+        // hydraBackupReportThenLand's finally already finished the
+        // landing — calling it again here would queue a second report.
+      });
       this.store.update(() => {});
       this.emit({ type: "thread-updated", thread: head });
       return;
