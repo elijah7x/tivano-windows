@@ -126,6 +126,7 @@ const vTurn = vObject({
   approval: vOptional(vApproval),
   question: vOptional(vQuestionRequest),
   assistantMessageId: vNonEmptyString(120),
+  providerTurnId: vOptional(vNonEmptyString(200)),
 });
 
 const vMessage = vObject({
@@ -135,6 +136,7 @@ const vMessage = vObject({
   status: vMessageStatus,
   ts: vTs,
   turnId: vOptional(vString),
+  providerTurnId: vOptional(vNonEmptyString(200)),
   kind: vOptional(vEnum(["reasoning", "plan", "todos", "tool", "notice"] as const)),
   noticeLevel: vOptional(vEnum(["info", "warning", "error"] as const)),
   steps: vOptional(

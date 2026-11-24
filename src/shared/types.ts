@@ -511,6 +511,8 @@ export interface Message {
   ts: number;
   /** Turn that produced this message (assistant/system). */
   turnId?: string;
+  /** Codex provider turn ID recorded at turn admission for conversation rewind. */
+  providerTurnId?: string;
   /** F03: system-role message rendered as a dedicated block
    *  (Codex reasoning/plan/tool items, turn todos, provider notices)
    *  instead of a plain note. */
@@ -625,6 +627,8 @@ export interface Turn {
   approval?: ApprovalRequest;
   question?: CodexQuestionRequest;
   assistantMessageId: string;
+  /** Codex provider turn ID recorded at turn admission for conversation rewind. */
+  providerTurnId?: string;
   /**
    * F03 quiet-watchdog readout (volatile): whole minutes since the last
    * provider event once silence passes the 5-minute label threshold —
