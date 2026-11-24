@@ -295,13 +295,20 @@ export function validateBuilderConfig(cfg) {
  * scheme.json, using app-builder-lib's own bundled ajv — catches
  * arbitrary unknown/typo'd properties the policy check above does not
  * enumerate. Returns [{instancePath,message}]; empty means schema-valid.
+ * The compiled validator is cached: compiling the bundled schema afresh
+ * per call is what made repeated validation exceed a test budget under
+ * host load.
  */
+let builderSchemaValidate = null;
 export function validateBuilderSchema(cfg) {
-  const ablRequire = createRequire(createRequire(import.meta.url).resolve("app-builder-lib/package.json"));
-  const Ajv = ablRequire("ajv");
-  const schema = ablRequire("app-builder-lib/scheme.json");
-  const ajv = new Ajv({ allErrors: true, strict: false });
-  const validate = ajv.compile(schema);
+  if (builderSchemaValidate === null) {
+    const ablRequire = createRequire(createRequire(import.meta.url).resolve("app-builder-lib/package.json"));
+    const Ajv = ablRequire("ajv");
+    const schema = ablRequire("app-builder-lib/scheme.json");
+    const ajv = new Ajv({ allErrors: true, strict: false });
+    builderSchemaValidate = ajv.compile(schema);
+  }
+  const validate = builderSchemaValidate;
   if (validate(cfg)) return [];
   return (validate.errors ?? []).map((e) => ({
     instancePath: e.instancePath,
