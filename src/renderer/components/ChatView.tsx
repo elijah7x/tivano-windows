@@ -49,6 +49,9 @@ import {
 } from "../messageGroups";
 import {
   TIMELINE_WINDOW,
+  scrollFollowRelease,
+  scrollFollowRepin,
+  shouldPageHistory,
   timelineFollowReset,
   timelineGrownOpen,
   timelineJumpWindow,
@@ -206,6 +209,49 @@ export function ChatView(props: {
   const timelineJumpRef = useRef<string | null>(null);
   const timelineLastPageRef = useRef(0);
   const timelineVisibleRef = useRef(timelineVisible);
+  // P2-30 (frozen ThreadTimeline tracking): whether growth pins to the
+  // end, the last observed scroll geometry for direction, and the input
+  // recency that tells the reader's own scrolling apart from layout or
+  // anchor motion. Frozen sees reader drags through isReaderInteracting;
+  // the port's pointer/wheel gate misses native-scrollbar drags and
+  // keyboard paging, so onScroll additionally treats a scrollTop drop
+  // with an unchanged scrollHeight as reader motion (the port's writes
+  // only ever raise scrollTop — a layout clamp shrinks scrollHeight).
+  const timelineFollowingRef = useRef(true);
+  // The tail's last landed id and the outstanding wait row's key let the
+  // growth effect spot the two frozen re-pin events: the reader's own
+  // send (attended — always back to the end) and a newly-appeared
+  // approval/question row (frozen "fetches any reader").
+  const timelineWaitRef = useRef<string | null>(null);
+  // The port's own scroll writes (follow snap, anchor shift, minimap
+  // jump) suppress the unexplained-motion release/re-pin for a beat —
+  // otherwise a minimap scrollIntoView reads as the reader moving up.
+  const timelineProgrammaticUntilRef = useRef(0);
+  // A minimap jump is the one write that can LOWER scrollTop (block:
+  // "start" on a tall block above the current top) — it rides its own
+  // window so that drop never reads as the reader scrolling up.
+  const timelineJumpUntilRef = useRef(0);
+  const timelineLastScrollRef = useRef<{
+    top: number;
+    dist: number;
+    h: number;
+  } | null>(null);
+  const timelineInteractRef = useRef(false);
+  const timelineWheelUntilRef = useRef(0);
+  useEffect(() => {
+    // A pointer released outside the timeline (or the window) still ends
+    // the press — element-level onPointerUp alone can leave the flag
+    // stuck and let a later programmatic scroll read as reader input.
+    const clear = () => {
+      timelineInteractRef.current = false;
+    };
+    window.addEventListener("pointerup", clear);
+    window.addEventListener("pointercancel", clear);
+    return () => {
+      window.removeEventListener("pointerup", clear);
+      window.removeEventListener("pointercancel", clear);
+    };
+  }, []);
   const timelineItems = useMemo(
     () => (thread ? groupMessages(thread.messages) : []),
     [thread?.messages, thread],
@@ -235,6 +281,9 @@ export function ChatView(props: {
   }, [threadId]);
 
   useEffect(() => {
+    // A thread switch opens pinned to the end with no carried geometry.
+    timelineFollowingRef.current = true;
+    timelineLastScrollRef.current = null;
     const t = window.setTimeout(() => {
       // The open grow prepends too — hold the bottom spot through the
       // same measured shift as a scroll-back page rather than trusting
@@ -249,13 +298,91 @@ export function ChatView(props: {
     return () => window.clearTimeout(t);
   }, [threadId]);
 
+  const wt = thread?.turn;
+  // Frozen fetches a paged-back reader only for a question row — an
+  // approval appearing at the end never re-pins on its own. Outstanding
+  // means question.status === "pending" on ANY turn status: the engine
+  // keeps questions under a running turn, while an approval landing
+  // after an answered question leaves wt.question set without being
+  // outstanding.
+  const waitKey =
+    wt?.question?.status === "pending"
+      ? (wt.question.providerKey ?? wt.id)
+      : null;
+  // Frozen attended send: any path that puts a user message on the
+  // wire re-pins even from a released position — composer send/resend,
+  // interrupt-send, queueChat's idle send, follow-up Send now. The
+  // growth effect lands it once the user row mounts.
+  useEffect(
+    () =>
+      clientStore.onAttendedSend((id) => {
+        if (id === threadId) timelineFollowingRef.current = true;
+      }),
+    [threadId],
+  );
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: "end" });
+    // P2-30 (frozen pinned-follow): growth keeps the end in view only
+    // while the reader stays pinned — a scroll-up during streaming
+    // released the pin in onScroll, so a starting turn or a flush never
+    // yanks a paged-back reader down.
+    const el = timelineRef.current;
+    // Frozen: "Sending a message always brings the reader back to the
+    // conversation's end" — but only an attended send does, so the
+    // composer arms the pin itself (onSent below). Engine-injected user
+    // messages (queued drains, head briefs, auto-continues) never reach
+    // this branch: a starting turn must not yank a paged-back reader.
+    // Frozen fetches the reader for a question row only — a newly-
+    // outstanding question re-pins once (the id guard keeps an answered
+    // or lingering row from holding the pin while the reader reviews).
+    if (waitKey !== null && waitKey !== timelineWaitRef.current) {
+      timelineFollowingRef.current = true;
+    }
+    timelineWaitRef.current = waitKey;
+    // Frozen revives a stale pin: a released reader sitting at the end
+    // (within 1pt) and NOT mid-gesture follows new growth again — a
+    // wheel-up that started inside the band is never pulled back down.
+    if (el) {
+      // old.distanceFromBottom is the PRE-growth resting distance —
+      // scrollHeight already includes the new row here, so measuring
+      // now never revives a reader who was within 1pt. The last
+      // recorded distance is that truth; silent growth fires no
+      // scroll event, so the record re-measures here for the next
+      // growth to compare (a reader drifted out of the band stays
+      // released, same as frozen).
+      const prevDist =
+        timelineLastScrollRef.current?.dist ?? Number.MAX_VALUE;
+      timelineLastScrollRef.current = {
+        top: el.scrollTop,
+        dist: el.scrollHeight - el.scrollTop - el.clientHeight,
+        h: el.scrollHeight,
+      };
+      if (
+        !timelineFollowingRef.current &&
+        prevDist <= 1 &&
+        !timelineInteractRef.current &&
+        Date.now() > timelineWheelUntilRef.current
+      ) {
+        timelineFollowingRef.current = true;
+      }
+    }
+    if (
+      timelineFollowingRef.current &&
+      // Frozen !isReaderInteracting: a held pointer (selecting text,
+      // touch-hold) or a wheel flick that just fired must not be yanked
+      // by the snap — the pin stays and the next quiet growth lands it.
+      !timelineInteractRef.current &&
+      Date.now() > timelineWheelUntilRef.current
+    ) {
+      timelineProgrammaticUntilRef.current = Date.now() + 100;
+      endRef.current?.scrollIntoView({ block: "end" });
+    }
     // Following the live tail past the eager limit collapses the window
     // (frozen): a reader who paged back keeps what they loaded only while
     // nothing new pins them to the end.
-    setTimelineVisible((v) => timelineFollowReset(v, true));
-  }, [thread?.messages.length, thread?.turn?.seq, thread?.turn?.status]);
+    setTimelineVisible((v) =>
+      timelineFollowReset(v, timelineFollowingRef.current),
+    );
+  }, [thread?.messages.length, thread?.turn?.seq, thread?.turn?.status, waitKey]);
 
   // A page landing prepends rows: hold the reader's spot by measuring the
   // document growth and shifting scrollTop by the same amount (frozen
@@ -268,16 +395,28 @@ export function ChatView(props: {
     const anchor = timelineAnchorRef.current;
     if (el && anchor !== null) {
       timelineAnchorRef.current = null;
+      timelineProgrammaticUntilRef.current = Date.now() + 100;
       el.scrollTop = el.scrollHeight - anchor;
     }
     const jumpId = timelineJumpRef.current;
     if (el && jumpId !== null) {
       timelineJumpRef.current = null;
+      timelineProgrammaticUntilRef.current = Date.now() + 100;
+      timelineJumpUntilRef.current = Date.now() + 100;
       el
         .querySelector<HTMLElement>(`[data-mid="${jumpId}"]`)
         ?.scrollIntoView({ block: "start" });
     }
   }, [timelineVisible]);
+
+  // One page of earlier history in: anchor the reader's spot so the
+  // prepend lands without moving what they're reading (the layout
+  // effect above applies the measured shift pre-paint).
+  const pageEarlier = (el: HTMLDivElement): void => {
+    timelineLastPageRef.current = Date.now();
+    timelineAnchorRef.current = el.scrollHeight - el.scrollTop;
+    setTimelineVisible((v) => timelinePagedBack(v));
+  };
 
   // F22: the lead's resolved heads for the mark and the panel (frozen
   // HydraButton.panelHeads). Runtime-only panel visibility — a new head
@@ -553,22 +692,103 @@ export function ChatView(props: {
         ref={timelineRef}
         data-chat-id={thread.id}
         onScroll={() => {
-          // P1-26: nearing the top with unrendered history pages a chunk
-          // in (frozen page=10); the anchor ref holds the measured spot
-          // so the prepend lands without moving the reader. One page per
-          // gesture — a wheel burst near the top must not pull several
-          // chunks in one motion.
+          // P2-30 (frozen ThreadTimeline): only the reader's own
+          // scrolling decides whether the tail is followed — growth or
+          // anchor shifts under the reader never read as them leaving
+          // the end, and a starting turn never interrupts them.
           const el = timelineRef.current;
+          if (!el) return;
+          const top = el.scrollTop;
+          const dist = el.scrollHeight - top - el.clientHeight;
+          const prev = timelineLastScrollRef.current;
+          const delta = prev ? top - prev.top : 0;
+          const prevDist = prev ? prev.dist : Number.MAX_VALUE;
+          // A native-scrollbar drag (and keyboard paging) fires no
+          // wheel/touch/pointer event the gate can see — so a scrollTop
+          // change with an unchanged scrollHeight that is not one of the
+          // port's own writes (follow snap, anchor shift, minimap jump —
+          // all suppressed by the programmatic window) is reader motion:
+          // a drop is them moving up, a rise is them moving down. A
+          // layout clamp (window collapse shrinking scrollHeight) stays
+          // out because the height must match.
+          const programmatic =
+            Date.now() < timelineProgrammaticUntilRef.current;
+          const h = el.scrollHeight;
+          // Our writes almost only ever RAISE scrollTop (bottom snaps,
+          // anchor shifts) — the one lowering write is a minimap jump,
+          // which rides its own window. Every other drop is reader
+          // motion: neither the programmatic window nor an unchanged
+          // document gates UP. Only a shrinking document is ambiguous
+          // (a window collapse can lower scrollTop on its own).
+          // Streaming growth no longer swallows keyboard paging or
+          // native scrollbar drags — that's the whole point of the
+          // release path.
+          const unexplainedUp =
+            Date.now() > timelineJumpUntilRef.current &&
+            h >= (prev?.h ?? h) &&
+            delta < -0.1;
+          // Down keeps both gates: our snaps raise scrollTop, so a rise
+          // is reader motion only while the document is quiet.
+          const unexplainedDown =
+            !programmatic && h === (prev?.h ?? h) && delta > 0.1;
+          timelineLastScrollRef.current = { top, dist, h: el.scrollHeight };
+          const userScrolling =
+            timelineInteractRef.current ||
+            Date.now() < timelineWheelUntilRef.current;
           if (
-            !el ||
-            el.scrollTop >= 120 ||
-            windowedHidden === 0 ||
-            Date.now() - timelineLastPageRef.current < 250
-          )
-            return;
-          timelineLastPageRef.current = Date.now();
-          timelineAnchorRef.current = el.scrollHeight - el.scrollTop;
-          setTimelineVisible((v) => timelinePagedBack(v));
+            scrollFollowRelease(dist, delta, userScrolling, unexplainedUp)
+          ) {
+            timelineFollowingRef.current = false;
+          } else if (
+            (userScrolling || unexplainedDown) &&
+            scrollFollowRepin(dist, prevDist)
+          ) {
+            // Frozen re-pin evaluates only under reader-driven motion
+            // (the `scrolled` gate): wheel/touch/pointer recency OR the
+            // unexplained-down path that covers scrollbar drags and
+            // keyboard paging — a programmatic snap or layout reflow
+            // landing inside the 8px band must not re-pin behind the
+            // reader's back.
+            timelineFollowingRef.current = true;
+          }
+          // P1-26/P2-30: within a screenful of the top while moving up,
+          // page a chunk of earlier history in (frozen page=10, travel
+          // < containerHeight). One page per gesture — a wheel burst or
+          // a growth-driven event near the top must not chain the whole
+          // history in. The anchor ref holds the measured spot so the
+          // prepend lands without moving the reader.
+          if (
+            shouldPageHistory({
+              scrollTop: top,
+              viewportHeight: el.clientHeight,
+              hidden: windowedHidden,
+              movedUp: delta < 0,
+              lastPageAt: timelineLastPageRef.current,
+              now: Date.now(),
+            })
+          ) {
+            pageEarlier(el);
+          }
+        }}
+        onWheel={() => {
+          // Frozen 150ms recency — long enough for the deferred geometry
+          // pass, never long enough to credit stale input.
+          timelineWheelUntilRef.current = Date.now() + 150;
+        }}
+        onTouchMove={() => {
+          timelineWheelUntilRef.current = Date.now() + 150;
+        }}
+        onPointerDown={() => {
+          timelineInteractRef.current = true;
+        }}
+        onPointerUp={() => {
+          timelineInteractRef.current = false;
+        }}
+        onPointerCancel={() => {
+          timelineInteractRef.current = false;
+        }}
+        onLostPointerCapture={() => {
+          timelineInteractRef.current = false;
         }}
       >
         {thread.messages.length === 0 && (
@@ -577,6 +797,24 @@ export function ChatView(props: {
             project={props.project ?? null}
             projects={props.projects ?? []}
           />
+        )}
+        {/* Frozen "Show earlier messages" pill: paging loads itself as
+            the reader nears the top, but the pill stays tappable — and
+            it is what unstrands a gesture that hit scrollTop 0 inside
+            the page cooldown. */}
+        {windowedHidden > 0 && (
+          <div className="history-pill-row">
+            <button
+              type="button"
+              className="history-pill"
+              onClick={() => {
+                const el = timelineRef.current;
+                if (el) pageEarlier(el);
+              }}
+            >
+              {t("Show %d earlier messages", String(windowedHidden))}
+            </button>
+          </div>
         )}
         {(() => {
           // A84 (frozen StreamVeil): the tail that just flushed dissolves
@@ -967,12 +1205,28 @@ export function ChatView(props: {
         messages={thread.messages}
         scrollRef={timelineRef}
         onJumpToMessage={(id) => {
+          // The minimap's own scrollIntoView lands right after this —
+          // suppress it as reader motion so a jump to the tall last
+          // reply is not unpinned by the port's own scroll (frozen: a
+          // jump to the last block keeps isPinnedToBottom).
+          timelineProgrammaticUntilRef.current = Date.now() + 100;
+          timelineJumpUntilRef.current = Date.now() + 100;
           const idx = timelineItems.findIndex((it) =>
             it.kind === "lone"
               ? it.message.id === id
               : it.messages.some((m) => m.id === id),
           );
           if (idx < 0) return;
+          // Frozen jump(to:) sets isPinnedToBottom = (target == last
+          // block): jumping away from the latest unpins so streaming
+          // never yanks the reader back down; a jump to the very end
+          // re-pins. While a turn lives below the items (working row,
+          // approval) the end IS that tail, so every minimap jump
+          // unpins.
+          const lastMsg = thread.messages[thread.messages.length - 1];
+          const liveTail =
+            turn?.status === "running" || turn?.status === "waiting-approval";
+          timelineFollowingRef.current = id === lastMsg?.id && !liveTail;
           // Only when the target sits above the window does the row need
           // mounting first — stash the pending jump so the layout effect
           // scrolls once it lands. An already-mounted target scrolls in

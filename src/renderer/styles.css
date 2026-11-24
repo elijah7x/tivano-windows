@@ -2614,6 +2614,27 @@ select.runtime-mode:disabled {
   transform: rotate(45deg);
   margin-top: -2px;
 }
+
+/* P2-30: frozen "Show N earlier messages" pill — centered capsule at
+   the head of the timeline while hidden history remains. */
+.history-pill-row {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+.history-pill {
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-2) 14%, transparent);
+  color: var(--text-2);
+  font-size: calc(12.5px + var(--fs-ui-off));
+  font-weight: 500;
+  cursor: pointer;
+}
+.history-pill:hover {
+  background: color-mix(in srgb, var(--text-2) 22%, transparent);
+}
 .hydra-report-pop {
   position: fixed;
   width: 460px;

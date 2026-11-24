@@ -8,7 +8,7 @@
 import { useState } from "react";
 import type { ChatThread, FollowUpItem } from "../../shared/types";
 import { useT } from "../locale";
-import { tryCall } from "../client";
+import { clientStore, tryCall } from "../client";
 
 /** Display number for each item: a bundle shares its first member's. */
 function rowNumbers(items: FollowUpItem[]): (number | null)[] {
@@ -138,7 +138,11 @@ export function FollowUpQueue(props: {
               className="followup-btn followup-send"
               title={t("Send now — stops the running turn first")}
               disabled={disabled}
-              onClick={() => call("followUps:send-now", { threadId: thread.id, id: item.id })}
+              onClick={() => {
+                call("followUps:send-now", { threadId: thread.id, id: item.id });
+                // Attended send — re-pin like a composer send (frozen).
+                clientStore.markAttendedSend(thread.id);
+              }}
             >
               ▶
             </button>

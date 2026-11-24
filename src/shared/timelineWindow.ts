@@ -57,3 +57,65 @@ export function timelineFollowReset(
     ? TIMELINE_WINDOW.initial
     : visible;
 }
+
+// P2-30 (frozen ThreadTimeline scroll tracking): only the reader's own
+// scrolling decides whether the timeline follows new text. `delta` is the
+// raw scrollTop change (positive is downward); the caller excludes anchor
+// and growth motion through the same-height/programmatic gates, so what
+// reaches these helpers reads as reader motion.
+
+/** Frozen release: while the reader is interacting, any upward motion
+ *  away from the end unpins the follow. A held finger is not a release;
+ *  a starting turn is not either — growth under a top anchor never reads
+ *  as the reader leaving the end because `delta` excludes it.
+ *  `unexplainedUp` covers the input the port's event gate cannot see:
+ *  a native-scrollbar drag (or keyboard paging) fires no wheel/touch/
+ *  pointer event, yet the port's own writes only ever raise scrollTop —
+ *  so a scrollTop drop with an UNCHANGED scrollHeight is still the
+ *  reader moving up (a layout clamp shrinks scrollHeight too and is
+ *  excluded by the caller). */
+export function scrollFollowRelease(
+  distanceFromBottom: number,
+  delta: number,
+  userScrolling: boolean,
+  unexplainedUp = false,
+): boolean {
+  return (userScrolling || unexplainedUp) && distanceFromBottom > 0.5 && delta < -0.1;
+}
+
+/** Frozen re-pin: the reader scrolling back down re-follows once the end
+ *  is within 8px — a coast that lands exactly is a follow again. */
+export function scrollFollowRepin(
+  distanceFromBottom: number,
+  previousDistance: number,
+): boolean {
+  return distanceFromBottom < previousDistance && distanceFromBottom <= 8;
+}
+
+/** Frozen load-ahead: page earlier history in when the hidden travel left
+ *  under the reader is less than a screenful (`new.travel < containerHeight`),
+ *  but only while the reader is actually moving up — a growth-driven event
+ *  near the top never chains the whole history in. `lastAt`/`now` keep the
+ *  port's one-page-per-gesture bound (frozen `historyLoadPending`). */
+export function shouldPageHistory(args: {
+  scrollTop: number;
+  viewportHeight: number;
+  hidden: number;
+  movedUp: boolean;
+  lastPageAt: number;
+  now: number;
+}): boolean {
+  // Frozen: the top pill's visibility check fires with no cooldown —
+  // a gesture that lands exactly on scrollTop 0 reaches the trigger
+  // the same way (a flick or scrollbar drag can't strand the rest of
+  // history inside the 250ms window). Each landing still pages once:
+  // the anchor shift lifts the reader off 0, so chaining needs a new
+  // gesture like the cooldown gives the mid-travel path.
+  const atTop = args.scrollTop <= 0;
+  return (
+    (args.movedUp || atTop) &&
+    args.scrollTop < args.viewportHeight &&
+    args.hidden > 0 &&
+    (atTop || args.now - args.lastPageAt >= 250)
+  );
+}

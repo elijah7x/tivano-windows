@@ -152,6 +152,7 @@ const zhHans: Record<string, string> = {
   "Show these steps": "显示这些步骤",
   "Hide these steps": "隐藏这些步骤",
   "Show 1 earlier step": "显示 1 个更早的步骤",
+  "Show %d earlier messages": "显示更早的 %d 条消息",
   "Show %@ earlier steps": "显示 %@ 个更早的步骤",
   "Show %@ earlier steps (%@ hidden)": "显示 %@ 个更早的步骤（共 %@ 个已隐藏）",
   "Ask %@ to build, fix or explain. @ for files, / for commands":

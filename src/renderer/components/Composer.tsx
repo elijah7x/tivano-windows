@@ -273,6 +273,8 @@ export function Composer(props: {
     // F09: an armed edit always takes the resend path — queueing an
     // edited message behind the running turn would silently skip the
     // rewind; the engine refuses resend while busy with a clear error.
+    // The attended-send pin fires inside clientStore once a real send
+    // leaves — an empty draft or a /plan local command never arms it.
     if (running && !editTarget) void clientStore.interruptSendDraft(thread.id);
     else void clientStore.sendDraft(thread.id);
   };

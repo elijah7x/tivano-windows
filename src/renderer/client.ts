@@ -405,6 +405,21 @@ export class ClientStore {
     return serializeOutgoing(d.quotes ?? [], d.text.trim(), d.command);
   }
 
+  /** P2-30: attended sends re-pin the timeline — every path that puts a
+   *  user message on the wire (composer send/resend, interrupt-send,
+   *  queue Send-now) reports here; local commands (/plan, /compact),
+   *  empty drafts and queued follow-ups never do. */
+  private attendedSendListeners = new Set<(threadId: string) => void>();
+  onAttendedSend(fn: (threadId: string) => void): () => void {
+    this.attendedSendListeners.add(fn);
+    return () => {
+      this.attendedSendListeners.delete(fn);
+    };
+  }
+  markAttendedSend(threadId: string): void {
+    for (const fn of this.attendedSendListeners) fn(threadId);
+  }
+
   async sendDraft(threadId: string): Promise<void> {
     const d = this.drafts.get(threadId);
     const text = d ? this.outgoingText(d) : "";
@@ -445,6 +460,7 @@ export class ClientStore {
         } else {
           await this.invoke("turns:send", { threadId, text });
         }
+        this.markAttendedSend(threadId);
       }
       const cur = this.drafts.get(threadId);
       if (cur && cur.version === version) this.drafts.delete(threadId);
@@ -468,6 +484,7 @@ export class ClientStore {
     this.notify();
     try {
       await this.invoke(channel, { threadId, text });
+      if (channel === "followUps:interrupt-send") this.markAttendedSend(threadId);
       const cur = this.drafts.get(threadId);
       if (cur && cur.version === version) this.drafts.delete(threadId);
     } catch (e) {
