@@ -103,22 +103,24 @@ function RemoteMcpApprovalPrompt(props: {
           {t("Code: %@ · Redirects to %@", r.code, r.redirectHost || r.clientId)}
         </p>
         <div className="modal-actions">
-          <button
-            className="primary"
-            data-testid="remote-mcp-allow-full"
-            autoFocus
-            onClick={() => props.onDecide("full")}
-          >
-            {t("Allow full control")}
-          </button>
           {offersWrite && (
             <button
-              data-testid="remote-mcp-allow-read"
-              onClick={() => props.onDecide("read")}
+              className="primary"
+              data-testid="remote-mcp-allow-full"
+              autoFocus
+              onClick={() => props.onDecide("full")}
             >
-              {t("Allow read only")}
+              {t("Allow full control")}
             </button>
           )}
+          <button
+            className={offersWrite ? undefined : "primary"}
+            autoFocus={!offersWrite}
+            data-testid="remote-mcp-allow-read"
+            onClick={() => props.onDecide("read")}
+          >
+            {t("Allow read only")}
+          </button>
           <button data-testid="remote-mcp-deny" onClick={() => props.onDecide("deny")}>
             {t("Deny")}
           </button>

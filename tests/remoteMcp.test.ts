@@ -195,6 +195,41 @@ describe.runIf(loopbackBindable)("remote MCP (P2-25)", () => {
     await expect(lc.handleExternal("settingsGet", {}, "remote")).rejects.toMatchObject({
       code: "permission",
     });
+
+    // Malformed percent-encoded URL returns 400 safely without crashing.
+    const badPct = await fetch(`${base}/%ZZ`);
+    expect(badPct.status).toBe(400);
+
+    // Oversized body returns 413 cleanly.
+    const big = await fetch(`${base}/mcp`, {
+      method: "POST",
+      body: "x".repeat(300_000),
+    });
+    expect(big.status).toBe(413);
+
+    // Aborted request bodies never leak active connection slots.
+    const { request: httpRequest } = await import("node:http");
+    for (let i = 0; i < 36; i++) {
+      await new Promise<void>((resolve) => {
+        const r = httpRequest(
+          `${base}/mcp`,
+          { method: "POST", headers: { "Content-Length": "1000" } },
+          () => resolve(),
+        );
+        r.on("error", () => resolve());
+        r.write("partial");
+        setTimeout(() => {
+          r.destroy();
+          resolve();
+        }, 5);
+      });
+    }
+    const stillHealthy = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`);
+    expect(stillHealthy.status).toBe(200);
+
+    // refresh() while readOnly never throws or rejects.
+    engine.enterReadOnly();
+    await expect(rm.refresh(true)).resolves.toBeUndefined();
   });
 
   it("supports OAuth 2.1 read-only vs full-control grants, refresh rotation, and revoke", async () => {

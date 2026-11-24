@@ -858,11 +858,11 @@ bootstrap = app.whenReady().then(async () => {
     onChanged: (status) => broadcast({ type: "remote-mcp-changed", status }),
   });
   localControl.setRemoteListeningCheck(() => remoteMcp?.listening === true);
-  void remoteMcp.refresh();
+  void remoteMcp.refresh().catch(() => {});
   eng.onEvent((e) => {
     if (e.type === "settings-changed") {
       localControl?.refreshListening();
-      void remoteMcp?.refresh();
+      void remoteMcp?.refresh().catch(() => {});
       refreshQuickChord();
     }
   });

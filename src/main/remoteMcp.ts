@@ -1275,58 +1275,80 @@ export class RemoteMcpService {
 
   async refresh(forceRestart = false): Promise<void> {
     const run = async () => {
-      const s = this.opts.engine.snapshot().settings;
-      if ((s.remoteMCPPort ?? 0) === 0 && !this.disposed) {
-        const picked = await pickFreePort();
-        if (picked > 0) this.opts.engine.setSettings({ remoteMCPPort: picked });
-      }
-      const enabled = this.opts.engine.snapshot().settings.remoteMCPEnabled === true && !this.disposed;
-      const targetBase = this.baseUrl;
-      if (!enabled) {
-        this.stopServer();
-        this.failure = null;
-        this.authority.cancelPending();
-        this.notify();
-        return;
-      }
-      if (!forceRestart && this.server && this.listening && this.listeningBaseUrl === targetBase) {
-        return;
-      }
-      this.stopServer();
-      for (let attempt = 0; attempt < 2; attempt++) {
-        if (this.disposed || this.opts.engine.snapshot().settings.remoteMCPEnabled !== true) return;
-        const port = this.port;
-        const base = this.baseUrl;
-        this.authority.setBaseUrl(base);
-        const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-        const origins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
-        try {
-          const u = new URL(base);
-          hosts.add(u.hostname.toLowerCase());
-          hosts.add(u.host.toLowerCase());
-          origins.add(`${u.protocol}//${u.host}`);
-        } catch {
-          /* loopback defaults already present */
-        }
-        try {
-          const srv = await this.listenOn(port, hosts, origins);
-          this.server = srv;
-          this.listening = true;
-          this.listeningBaseUrl = base;
-          this.failure = null;
-          this.notify();
-          return;
-        } catch {
-          if (attempt === 0) {
-            const next = await pickFreePort();
-            if (next > 0) this.opts.engine.setSettings({ remoteMCPPort: next });
-          } else {
-            this.listening = false;
-            this.listeningBaseUrl = null;
-            this.failure = "Remote MCP could not start. Retry after freeing the port.";
-            this.notify();
+      try {
+        const s = this.opts.engine.snapshot().settings;
+        if ((s.remoteMCPPort ?? 0) === 0 && !this.disposed && !this.opts.engine.readOnly) {
+          const picked = await pickFreePort();
+          if (picked > 0 && !this.opts.engine.readOnly) {
+            try {
+              this.opts.engine.setSettings({ remoteMCPPort: picked });
+            } catch {
+              /* engine entered read-only or closed mid-refresh */
+            }
           }
         }
+        const enabled =
+          this.opts.engine.snapshot().settings.remoteMCPEnabled === true && !this.disposed;
+        const targetBase = this.baseUrl;
+        if (!enabled) {
+          this.stopServer();
+          this.failure = null;
+          this.authority.cancelPending();
+          this.notify();
+          return;
+        }
+        if (!forceRestart && this.server && this.listening && this.listeningBaseUrl === targetBase) {
+          return;
+        }
+        this.stopServer();
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (this.disposed || this.opts.engine.snapshot().settings.remoteMCPEnabled !== true)
+            return;
+          const port = this.port;
+          const base = this.baseUrl;
+          this.authority.setBaseUrl(base);
+          const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+          const origins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+          try {
+            const u = new URL(base);
+            hosts.add(u.hostname.toLowerCase());
+            hosts.add(u.host.toLowerCase());
+            origins.add(`${u.protocol}//${u.host}`);
+          } catch {
+            /* loopback defaults already present */
+          }
+          try {
+            const srv = await this.listenOn(port, hosts, origins);
+            this.server = srv;
+            this.listening = true;
+            this.listeningBaseUrl = base;
+            this.failure = null;
+            this.notify();
+            return;
+          } catch {
+            if (attempt === 0 && !this.opts.engine.readOnly) {
+              const next = await pickFreePort();
+              if (next > 0 && !this.opts.engine.readOnly) {
+                try {
+                  this.opts.engine.setSettings({ remoteMCPPort: next });
+                } catch {
+                  /* engine entered read-only or closed */
+                }
+              }
+            } else {
+              this.listening = false;
+              this.listeningBaseUrl = null;
+              this.failure = "Remote MCP could not start. Retry after freeing the port.";
+              this.notify();
+              return;
+            }
+          }
+        }
+      } catch {
+        this.listening = false;
+        this.listeningBaseUrl = null;
+        this.failure = "Remote MCP could not start. Retry after freeing the port.";
+        this.notify();
       }
     };
     this.queue = this.queue.then(run, run);
@@ -1348,13 +1370,27 @@ export class RemoteMcpService {
           return;
         }
         active++;
-        void this.handleHttp(req, res, allowedHosts, allowedOrigins).finally(() => {
-          active--;
-        });
+        void this.handleHttp(req, res, allowedHosts, allowedOrigins)
+          .catch(() => {
+            if (!res.writableEnded) {
+              res.writeHead(500);
+              res.end();
+            }
+          })
+          .finally(() => {
+            active--;
+          });
       });
       srv.once("error", reject);
       srv.listen(port, "127.0.0.1", () => {
         srv.removeListener("error", reject);
+        srv.on("error", () => {
+          if (this.server === srv) {
+            this.stopServer();
+            this.failure = "Remote MCP could not start. Retry after freeing the port.";
+            this.notify();
+          }
+        });
         resolve(srv);
       });
     });
@@ -1371,37 +1407,50 @@ export class RemoteMcpService {
       res.writeHead(reply.status, reply.headers);
       res.end(reply.body ?? "");
     };
-    const host = req.headers.host?.toLowerCase();
-    if (!host || !allowedHosts.has(host)) return send({ status: 421 });
-    const origin = req.headers.origin;
-    if (typeof origin === "string" && !allowedOrigins.has(origin)) return send({ status: 403 });
-    if (req.method === "OPTIONS") return send({ status: 204 });
-
-    let body: Buffer;
     try {
-      body = await readBody(req, MAX_BODY);
+      const host = req.headers.host?.toLowerCase();
+      if (!host || !allowedHosts.has(host)) return send({ status: 421 });
+      const origin = req.headers.origin;
+      if (typeof origin === "string" && !allowedOrigins.has(origin)) return send({ status: 403 });
+      if (req.method === "OPTIONS") return send({ status: 204 });
+
+      let parsedUrl: URL;
+      let path: string;
+      try {
+        parsedUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+        path = decodeURIComponent(parsedUrl.pathname);
+      } catch {
+        return send({ status: 400 });
+      }
+
+      let body: Buffer;
+      try {
+        body = await readBody(req, MAX_BODY);
+      } catch (err) {
+        if ((err as Error)?.message === "body too large") return send({ status: 413 });
+        return;
+      }
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (typeof v === "string") headers[k.toLowerCase()] = v;
+        else if (Array.isArray(v) && v.length > 0) headers[k.toLowerCase()] = v[v.length - 1]!;
+      }
+      const httpReq: HttpRequest = {
+        method: (req.method ?? "GET").toUpperCase(),
+        path,
+        query: parsedUrl.searchParams,
+        headers,
+        body,
+      };
+      const authRes = await this.authority.handle(httpReq);
+      if (authRes) return send(authRes);
+      if (httpReq.path !== MCP_PATH) return send({ status: 404 });
+      const access = this.authority.authenticate(httpReq);
+      if (!access) return send(this.authority.unauthorized());
+      return send(await this.endpoint.handle(httpReq, access));
     } catch {
-      return send({ status: 413 });
+      return send({ status: 500 });
     }
-    const headers: Record<string, string> = {};
-    for (const [k, v] of Object.entries(req.headers)) {
-      if (typeof v === "string") headers[k.toLowerCase()] = v;
-      else if (Array.isArray(v) && v.length > 0) headers[k.toLowerCase()] = v[v.length - 1]!;
-    }
-    const parsedUrl = new URL(req.url ?? "/", "http://127.0.0.1");
-    const httpReq: HttpRequest = {
-      method: (req.method ?? "GET").toUpperCase(),
-      path: decodeURIComponent(parsedUrl.pathname),
-      query: parsedUrl.searchParams,
-      headers,
-      body,
-    };
-    const authRes = await this.authority.handle(httpReq);
-    if (authRes) return send(authRes);
-    if (httpReq.path !== MCP_PATH) return send({ status: 404 });
-    const access = this.authority.authenticate(httpReq);
-    if (!access) return send(this.authority.unauthorized());
-    return send(await this.endpoint.handle(httpReq, access));
   }
 
   private stopServer(): void {
@@ -1425,17 +1474,38 @@ function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    req.on("data", (chunk: Buffer) => {
+    let settled = false;
+    const finish = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      req.removeListener("data", onData);
+      req.removeListener("end", onEnd);
+      req.removeListener("error", onErr);
+      req.removeListener("aborted", onAbort);
+      req.removeListener("close", onClose);
+      if (err) reject(err);
+      else resolve(Buffer.concat(chunks));
+    };
+    const onData = (chunk: Buffer) => {
       size += chunk.length;
       if (size > maxBytes) {
-        req.destroy();
-        reject(new Error("body too large"));
+        req.pause();
+        finish(new Error("body too large"));
         return;
       }
       chunks.push(chunk);
-    });
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
+    };
+    const onEnd = () => finish();
+    const onErr = (err: Error) => finish(err);
+    const onAbort = () => finish(new Error("aborted"));
+    const onClose = () => {
+      if (!req.complete) finish(new Error("aborted"));
+    };
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onErr);
+    req.on("aborted", onAbort);
+    req.on("close", onClose);
   });
 }
 
