@@ -15,7 +15,8 @@ param(
   [ValidatePattern('^[A-Za-z0-9._:/-]+$')][string]$DevinModel = 'swe-2-high',
   [ValidateRange(1, 720)][int]$ReviewTimeoutMin = 240,
   [ValidateRange(1, 240)][int]$GlmTimeoutMin = 20,
-  [switch]$SkipGlm
+  [switch]$SkipGlm,
+  [ValidateRange(0, 1000)][int]$MaxBehindMain = 5
 )
 
 Set-StrictMode -Version Latest
@@ -200,6 +201,25 @@ function Test-NetworkFailure {
 }
 
 # Runs from the state root, which is never a git checkout, so gh never reads repository context from the cwd.
+function Get-BranchStaleness {
+  # Returns a failure message when the PR head conflicts with its base or is more than
+  # $MaxBehindMain commits behind it; $null when it is current enough (or GitHub cannot tell).
+  param($Info)
+  if ([string]$Info.mergeable -eq 'CONFLICTING') {
+    return 'the PR conflicts with main; merge origin/main into the branch and resolve the conflicts before running the gate'
+  }
+  $baseRef = [string]$Info.base
+  if ([string]::IsNullOrWhiteSpace($baseRef)) { $baseRef = 'main' }
+  $cmp = Invoke-Gh ('api repos/' + $Repo + '/compare/' + $baseRef + '...' + $Info.headSha + ' --jq .behind_by')
+  if ($cmp.exitCode -ne 0) { return $null }
+  $behind = 0
+  if (-not [int]::TryParse(([string]$cmp.text).Trim(), [ref]$behind)) { return $null }
+  if ($behind -gt $MaxBehindMain) {
+    return ('the branch is ' + $behind + ' commits behind ' + $baseRef + '; merge origin/main into the branch (never rebase), run the self-check, push, then run the gate again')
+  }
+  return $null
+}
+
 function Invoke-Gh {
   param([string]$Arguments)
   $tmpBase = if ($script:RunDir) { $script:RunDir } else { $script:WorkRoot }
@@ -1382,6 +1402,13 @@ try {
     $msg = 'PR #' + $PrNumber + ' is not open (state ' + $info.state + ')'
     $null = $failuresOut.Add($msg)
     Write-Log $msg
+  } elseif ($null -ne ($staleMsg = Get-BranchStaleness $info)) {
+    # Checks and reviews of an out-of-date head fail for reasons unrelated to the PR and cost a full gate run.
+    $headShaOut = $info.headSha
+    $verdictOut = 'fail'
+    $exitCode = 1
+    $null = $failuresOut.Add($staleMsg)
+    Write-Log ('gate skipped: ' + $staleMsg)
   } else {
     $headShaOut = $info.headSha
     $review = $null
