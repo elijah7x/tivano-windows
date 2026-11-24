@@ -1252,6 +1252,59 @@ const zhHans: Record<string, string> = {
   "Opus 5.5 leads DeepSeek V4.1": "Opus 5.5 主导 DeepSeek V4.1",
   "Opus 5.5 leads GLM-5.3 Flash": "Opus 5.5 主导 GLM-5.3 Flash",
   "Fable 5.1 leads Composer 2.5": "Fable 5.1 主导 Composer 2.5",
+  // Antigravity provider & P2-35 / P2-59 strings (upstream Localizable.xcstrings)
+  "Antigravity": "Antigravity",
+  "Antigravity CLI": "Antigravity CLI",
+  "Antigravity fixture": "Antigravity 模拟",
+  "Offline Antigravity protocol fixture — deterministic, no real CLI or model":
+    "离线 Antigravity 协议模拟 — 结果可重现，无真实 CLI 或模型",
+  "Antigravity CLI is not configured": "尚未配置 Antigravity CLI",
+  "Antigravity CLI (`agy`)": "Antigravity CLI (`agy`)",
+  "auto-detected installation": "自动检测安装",
+  "not an Antigravity launch": "本次并非以 Antigravity 启动",
+  "Servers of your own: a command that runs on this computer, or a streamable-HTTP endpoint. Check runs a real JSON-RPC handshake and lists the tools the server actually reported; saved servers ride into Codex sessions when a thread starts — connected servers never reach Antigravity (none is written for it) or other providers.":
+    "由你配置的服务端：可是在本机运行的命令，或是流式 HTTP 端点。点击检查会发起真实的 JSON-RPC 握手并列出实际汇报的工具；已保存的服务端会在对话启动时带入 Codex 会话 —— 已连接的 MCP 服务器不会传给 Antigravity（也不会为其写入配置），其余服务商亦看不到。",
+  "The fallback reviews when the first cannot run. Grok and Pi appear here once this build supports them.":
+    "首选无法运行时，会由备选来审。Grok 和 Pi 在本版本支持后会显示在这里。",
+  "Antigravity did not answer. Is `agy` signed in? Run `agy` once in Terminal.":
+    "Antigravity 没有响应。`agy` 是否已登录？请在终端运行一次 `agy`。",
+  "Antigravity did not finish starting in time.": "Antigravity 未能及时完成启动。",
+  "Antigravity exited.": "Antigravity 已退出。",
+  "Antigravity is not signed in. Run `agy` once in Terminal to sign in.":
+    "Antigravity 尚未登录。请在终端运行一次 `agy` 以登录。",
+  "Antigravity stopped before finishing.": "Antigravity 未完成即停止。",
+  "Antigravity held back %@ waiting for a permission it could not ask for. Use Full access for this chat.":
+    "Antigravity 拦下了 %@，等待一个它无法询问的权限。请为此对话开启完全访问。",
+  "Antigravity held back actions waiting for permission.":
+    "Antigravity 拦下了需要等待权限的操作。",
+  "Antigravity held back %@ without prompting. Use Full access or add an allow rule in the CLI's settings.":
+    "Antigravity 未经询问就拦下了 %@。请使用完全访问，或在 CLI 设置中添加允许规则。",
+  "Antigravity input stream could not accept prompt.":
+    "Antigravity 输入流无法接收提示词。",
+  "ANTIGRAVITY_NOT_CONFIGURED": "Antigravity 未配置",
+  "ANTIGRAVITY_EXECUTABLE_INVALID": "Antigravity 可执行文件无效",
+  "ANTIGRAVITY_FIXTURE_INVALID": "Antigravity 模拟配置无效",
+  "Antigravity is not configured — install `agy` or select it in Settings":
+    "Antigravity 未配置 —— 请安装 `agy` 或在“设置”中选择",
+  "Antigravity review timed out": "Antigravity 审查超时",
+  "`agy models` failed.": "`agy models` 执行失败。",
+  "`agy models` listed no models.": "`agy models` 未列出任何模型。",
+  "`agy models` produced no output.": "`agy models` 没有输出。",
+  "Antigravity: the model request failed (%@); agy is retrying, attempt %@.":
+    "Antigravity：模型请求失败（%@），agy 正在重试，第 %@ 次。",
+  "Connection to Antigravity dropped. Continuing the same conversation in %@ s (attempt %@ of 2)…":
+    "与 Antigravity 的连接中断，%@ 秒后在同一对话中继续（第 %@/2 次）…",
+  "Antigravity sub-agent %@ lost its connection; continuing the same conversation in %@ s (attempt %@ of 2)…":
+    "Antigravity 子代理 %@ 连接中断，%@ 秒后在同一对话中继续（第 %@/2 次）…",
+  "Your last request got no answer from the model and was stopped after 10 minutes. Continue the task from where you were.":
+    "你上一次请求没有得到模型回应，10 分钟后被停止。请从中断处继续任务。",
+  "Abandoned: no activity for 30 minutes; stopped by Tivano.":
+    "已放弃：30 分钟没有任何活动，已由 Tivano 停止。",
+  "Last output from the provider: %@ min before the stop.":
+    "停止前 %@ 分钟 provider 最后一次有输出。",
+  "Last message from the provider: %@": "provider 最后一条消息：%@",
+  "After restart, if Codex is unset, Antigravity will start if a saved path is configured; otherwise explicit provider and environment settings still apply.":
+    "重启后，若未配置 Codex，则会使用已保存的 Antigravity 路径启动；其余情况下仍以显式服务商及环境变量设置为准。本次启动保持不变。",
   "Astra 6 leads Spark 1.3 Contributor": "Astra 6 主导 Spark 1.3 Contributor",
   "Astra 6 leads Terra 5.6": "Astra 6 主导 Terra 5.6",
   "Astra 6 leads Sol 5.6": "Astra 6 主导 Sol 5.6",
@@ -1435,9 +1488,15 @@ export function translateNotice(
     // Recovery is only for the notices the engine itself interpolates —
     // other parameterized keys stay on the translateError path.
     .filter((k) =>
-      ["Hydra:", "Hydra settings:", "Sub-agents:"].some((p) =>
-        k.startsWith(p),
-      ),
+      [
+        "Hydra:",
+        "Hydra settings:",
+        "Sub-agents:",
+        "Antigravity:",
+        "Antigravity sub-agent ",
+        "Antigravity held back ",
+        "Connection to Antigravity dropped.",
+      ].some((p) => k.startsWith(p)),
     )
     // Only substantial templates qualify: a stub like "%@ failed" could
     // mis-recover an unrelated notice that happens to end the same way.

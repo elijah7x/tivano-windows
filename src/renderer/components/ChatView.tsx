@@ -4,7 +4,16 @@
 // streaming/approval/error/interruption states, and the composer.
 
 import { createElement, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { ChatThread, CheckpointRecordView, CodexInfo, Message, Project, Settings, Turn } from "../../shared/types";
+import type {
+  AntigravityInfo,
+  ChatThread,
+  CheckpointRecordView,
+  CodexInfo,
+  Message,
+  Project,
+  Settings,
+  Turn,
+} from "../../shared/types";
 import { INTERRUPTED_MARKER } from "../../shared/types";
 import { AttachChip } from "./AttachChip";
 import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
@@ -156,8 +165,9 @@ export function ChatView(props: {
    *  affiliation switch (frozen NewThreadPrompt). */
   projects?: Project[];
   providerLabel: string;
-  mode: "mock" | "synthetic-stdio" | "codex";
+  mode: "mock" | "synthetic-stdio" | "codex" | "antigravity";
   codex?: CodexInfo;
+  antigravity?: AntigravityInfo;
   readOnly?: boolean;
   /** F15: the thread's working directory when provably available. */
   directory?: string | null;
@@ -404,17 +414,22 @@ export function ChatView(props: {
       turn.status === "cancelled" ||
       turn.status === "denied" ||
       turn.status === "interrupted") &&
-    (props.mode !== "codex" || thread.providerThread !== undefined);
+    (props.mode !== "codex" && props.mode !== "antigravity" || thread.providerThread !== undefined);
   const hadInterrupted = thread.messages.some((m) => m.status === "interrupted");
   const syntheticStdio = props.mode === "synthetic-stdio";
   const codex = props.mode === "codex" ? props.codex : undefined;
+  const antigravity = props.mode === "antigravity" ? props.antigravity : undefined;
   const badgeText = syntheticStdio
     ? t("Synthetic stdio")
     : codex
       ? codex.state === "fixture"
         ? t("Codex fixture")
         : t("Codex")
-      : t("Mock Provider");
+      : antigravity
+        ? antigravity.state === "fixture"
+          ? t("Antigravity fixture")
+          : t("Antigravity")
+        : t("Mock Provider");
   const badgeTitle = syntheticStdio
     ? t("Controlled local child process — no real model, tools or network")
     : codex
@@ -423,7 +438,13 @@ export function ChatView(props: {
         : codex.state === "unconfigured"
           ? t("Codex app-server is not configured")
           : t("Codex app-server — real launch not yet verified")
-      : t("Synthetic provider — no real model, tools or commands");
+      : antigravity
+        ? antigravity.state === "fixture"
+          ? t("Offline Antigravity protocol fixture — deterministic, no real CLI or model")
+          : antigravity.state === "unconfigured"
+            ? t("Antigravity CLI is not configured")
+            : t("Antigravity CLI (`agy`)")
+        : t("Synthetic provider — no real model, tools or commands");
 
   return (
     <main className="chat">

@@ -244,7 +244,7 @@ export function McpSection(props: { settings: Settings; home: string }): React.J
       <h3>MCP</h3>
       <p className="codex-note">
         {t(
-          "Servers of your own: a command that runs on this computer, or a streamable-HTTP endpoint. Check runs a real JSON-RPC handshake and lists the tools the server actually reported; saved servers ride into Codex sessions when a thread starts — other providers never see them.",
+          "Servers of your own: a command that runs on this computer, or a streamable-HTTP endpoint. Check runs a real JSON-RPC handshake and lists the tools the server actually reported; saved servers ride into Codex sessions when a thread starts — connected servers never reach Antigravity (none is written for it) or other providers.",
         )}
       </p>
 

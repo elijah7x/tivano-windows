@@ -11,6 +11,7 @@ import { recordExternalOpen, type ExternalOpenRecord } from "./externalOpen";
 import { ValidationError } from "../shared/validate";
 import { EngineError, type Engine } from "./engine";
 import type {
+  AntigravitySetupState,
   CodexChooseResult,
   CodexSetupState,
   CodexWriteResult,
@@ -62,6 +63,13 @@ export interface IpcOptions {
    */
   codexSetup?: {
     state(): CodexSetupState;
+    choose(): Promise<CodexChooseResult>;
+    save(): CodexWriteResult;
+    clear(): CodexWriteResult;
+  };
+  /** Antigravity CLI setup surface (P2-35): same empty-payload discipline as Codex. */
+  antigravitySetup?: {
+    state(): AntigravitySetupState;
     choose(): Promise<CodexChooseResult>;
     save(): CodexWriteResult;
     clear(): CodexWriteResult;
@@ -503,6 +511,15 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("codex:choose", () => codexSetup().choose());
   handle("codex:save", () => codexSetup().save());
   handle("codex:clear", () => codexSetup().clear());
+
+  const antigravitySetup = () => {
+    if (!opts.antigravitySetup) throw new ValidationError("antigravity setup is not available");
+    return opts.antigravitySetup;
+  };
+  handle("antigravity:setup-state", () => antigravitySetup().state());
+  handle("antigravity:choose", () => antigravitySetup().choose());
+  handle("antigravity:save", () => antigravitySetup().save());
+  handle("antigravity:clear", () => antigravitySetup().clear());
 
   // Per-thread model/effort overrides (F17). The catalog read takes no
   // payload — provider-owned state only; set-model resolves ids from the

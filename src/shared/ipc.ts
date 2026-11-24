@@ -77,7 +77,7 @@ const vHydraReviewChoice = vObject({
 // F17 model-list slices — same persisted shape as storeDoc; pins only
 // organize the picker, the catalog stays provider-owned.
 const vModelPin = vObject({
-  provider: vEnum(["codex"] as const),
+  provider: vEnum(["codex", "antigravity"] as const),
   modelID: vNonEmptyString(200),
 });
 const vModelSection = vObject({
@@ -258,6 +258,10 @@ export const REQUEST_CHANNELS = [
   "codex:choose",
   "codex:save",
   "codex:clear",
+  "antigravity:setup-state",
+  "antigravity:choose",
+  "antigravity:save",
+  "antigravity:clear",
   "control:status",
   "control:retry",
   "cli:status",
@@ -670,6 +674,11 @@ export const requestValidators = {
   // for the chooser/save/clear but can never name a path, argv or env.
   // The selected path arrives only from main's native dialog result.
   "codex:setup-state": vObject({}),
+  // Antigravity setup — same empty-payload discipline as Codex.
+  "antigravity:setup-state": vObject({}),
+  "antigravity:choose": vObject({}),
+  "antigravity:save": vObject({}),
+  "antigravity:clear": vObject({}),
   // F33 local control: status read + retry — empty payloads, the socket
   // itself is never reachable through IPC (Unix socket only).
   "control:status": vObject({}),

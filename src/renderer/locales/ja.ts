@@ -1191,4 +1191,56 @@ export const ja: Record<string, string> = {
   "View all releases on GitHub": "GitHub ですべてのリリースを表示",
   "Expanded": "展開済み",
   "Collapsed": "折りたたみ済み",
+  "Antigravity": "Antigravity",
+  "Antigravity CLI": "Antigravity CLI",
+  "Antigravity fixture": "Antigravity フィクスチャ",
+  "Offline Antigravity protocol fixture — deterministic, no real CLI or model":
+    "オフライン Antigravity プロトコルフィクスチャ — 決定的動作、実際の CLI やモデルなし",
+  "Antigravity CLI is not configured": "Antigravity CLI が設定されていません",
+  "Antigravity CLI (`agy`)": "Antigravity CLI (`agy`)",
+  "auto-detected installation": "自動検出されたインストール",
+  "not an Antigravity launch": "Antigravity としての起動ではありません",
+  "Servers of your own: a command that runs on this computer, or a streamable-HTTP endpoint. Check runs a real JSON-RPC handshake and lists the tools the server actually reported; saved servers ride into Codex sessions when a thread starts — connected servers never reach Antigravity (none is written for it) or other providers.":
+    "独自のサーバー: このコンピューターで実行するコマンド、または streamable-HTTP エンドポイントです。「確認」は実際の JSON-RPC ハンドシェイクを実行してサーバーが実際に報告したツールを一覧表示します。保存済みサーバーはスレッド開始時に Codex セッションへ渡されますが、接続済みサーバーは Antigravity（設定も書き込まれません）や他のプロバイダーには渡されません。",
+  "The fallback reviews when the first cannot run. Grok and Pi appear here once this build supports them.":
+    "最初のモデルが実行できない場合、フォールバックがレビューを行います。このビルドで Grok、Pi がサポートされるとここに表示されます。",
+  "Antigravity did not answer. Is `agy` signed in? Run `agy` once in Terminal.":
+    "Antigravity が応答しませんでした。`agy` にサインインしていますか？ターミナルで `agy` を一度実行してください。",
+  "Antigravity did not finish starting in time.": "Antigravity が時間内に起動を完了できませんでした。",
+  "Antigravity exited.": "Antigravity が終了しました。",
+  "Antigravity is not signed in. Run `agy` once in Terminal to sign in.":
+    "Antigravity にサインインしていません。ターミナルで `agy` を一度実行してサインインしてください。",
+  "Antigravity stopped before finishing.": "Antigravity は完了する前に停止しました。",
+  "Antigravity held back %@ waiting for a permission it could not ask for. Use Full access for this chat.":
+    "Antigravity は確認できないアクセス権を待機して %@ を保留しました。このチャットでは「フルアクセス」を使用してください。",
+  "Antigravity held back actions waiting for permission.":
+    "Antigravity は許可待ちのため操作を保留しました。",
+  "Antigravity held back %@ without prompting. Use Full access or add an allow rule in the CLI's settings.":
+    "Antigravity は確認なしで %@ を保留しました。「フルアクセス」を使用するか、CLI の設定で許可ルールを追加してください。",
+  "Antigravity input stream could not accept prompt.":
+    "Antigravity の入力ストリームがプロンプトを受け付けられませんでした。",
+  "ANTIGRAVITY_NOT_CONFIGURED": "Antigravity は未設定です",
+  "ANTIGRAVITY_EXECUTABLE_INVALID": "Antigravity の実行ファイルが無効です",
+  "ANTIGRAVITY_FIXTURE_INVALID": "Antigravity フィクスチャ設定が無効です",
+  "Antigravity is not configured — install `agy` or select it in Settings":
+    "Antigravity が設定されていません — `agy` をインストールするか、設定で選択してください",
+  "Antigravity review timed out": "Antigravity のレビューがタイムアウトしました",
+  "`agy models` failed.": "`agy models` が失敗しました。",
+  "`agy models` listed no models.": "`agy models` からモデルが一覧表示されませんでした。",
+  "`agy models` produced no output.": "`agy models` の出力がありませんでした。",
+  "Antigravity: the model request failed (%@); agy is retrying, attempt %@.":
+    "Antigravity：モデルリクエストに失敗しました（%@）。agy が再試行しています（%@ 回目）。",
+  "Connection to Antigravity dropped. Continuing the same conversation in %@ s (attempt %@ of 2)…":
+    "Antigravity への接続が切れました。%@ 秒後に同じ会話で続行します（%@/2 回目）…",
+  "Antigravity sub-agent %@ lost its connection; continuing the same conversation in %@ s (attempt %@ of 2)…":
+    "Antigravity サブエージェント %@ の接続が切れました。%@ 秒後に同じスレッドで続行します（%@/2 回目）…",
+  "Your last request got no answer from the model and was stopped after 10 minutes. Continue the task from where you were.":
+    "前回のリクエストはモデルからの応答がなく、10 分後に停止されました。中断したところからタスクを続行してください。",
+  "Abandoned: no activity for 30 minutes; stopped by Tivano.":
+    "中断：30 分間アクティビティがなかったため、Tivano により停止されました。",
+  "Last output from the provider: %@ min before the stop.":
+    "プロバイダーの最後の出力は停止の %@ 分前でした。",
+  "Last message from the provider: %@": "プロバイダーからの最後のメッセージ：%@",
+  "After restart, if Codex is unset, Antigravity will start if a saved path is configured; otherwise explicit provider and environment settings still apply.":
+    "再起動後、Codex が未設定の場合は保存された Antigravity パスで起動します。それ以外の場合は明示的なプロバイダーおよび環境変数の設定が適用されます。",
 };

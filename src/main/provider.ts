@@ -28,9 +28,9 @@ export interface ProviderDescriptor {
    * controlled local child process; "codex" speaks the pinned app-server
    * JSON-RPC protocol (fixture or, when gated in, a real CLI).
    */
-  readonly mode: "mock" | "synthetic-stdio" | "codex";
-  /** Always true in this phase — real providers are not wired. */
-  readonly synthetic: true;
+  readonly mode: "mock" | "synthetic-stdio" | "codex" | "antigravity";
+  /** True for synthetic/fixture adapters, false for real CLIs. */
+  readonly synthetic: boolean;
   /**
    * Recorded BEFORE spawn for synthetic adapters: the resolved executable
    * and its actual runtime version. Diagnostic only — never probing a
@@ -319,6 +319,12 @@ export interface ProviderAdapter {
    * maps that to the frozen "Nothing to compact yet." notice.
    */
   compact?(localThreadId: string): Promise<void>;
+  /**
+   * Antigravity / streaming providers: timestamp (epoch ms) when any frame or
+   * output was last received for a local thread, used by Hydra 30-min
+   * abandoned reporting.
+   */
+  lastOutputAt?(localThreadId: string): number | undefined;
   /**
    * End every owned child and report per-child outcomes. Idempotent; must
    * not throw — individual failures are reported in the result instead so

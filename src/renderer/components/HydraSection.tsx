@@ -364,7 +364,7 @@ function ReviewerCard(props: {
     (id) =>
       props.providers.find((p) => p.id === id) ?? {
         id,
-        label: id === "codex" ? "Codex" : id,
+        label: id === "codex" ? "Codex" : id === "antigravity" ? "Antigravity" : id,
         ready: false,
         models: [],
       },
@@ -443,7 +443,7 @@ function ReviewerCard(props: {
         );
       })}
       <p className="codex-note">
-        {t("The fallback reviews when the first cannot run. Grok, Pi and Antigravity appear here once this build supports them.")}
+        {t("The fallback reviews when the first cannot run. Grok and Pi appear here once this build supports them.")}
       </p>
     </div>
   );

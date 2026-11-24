@@ -1191,4 +1191,56 @@ export const fr: Record<string, string> = {
   "View all releases on GitHub": "Voir toutes les versions sur GitHub",
   "Expanded": "Développé",
   "Collapsed": "Réduit",
+  "Antigravity": "Antigravity",
+  "Antigravity CLI": "Antigravity CLI",
+  "Antigravity fixture": "Simulateur Antigravity",
+  "Offline Antigravity protocol fixture — deterministic, no real CLI or model":
+    "Simulateur de protocole Antigravity hors ligne — déterministe, sans véritable CLI ni modèle",
+  "Antigravity CLI is not configured": "Antigravity CLI n’est pas configuré",
+  "Antigravity CLI (`agy`)": "Antigravity CLI (`agy`)",
+  "auto-detected installation": "installation détectée automatiquement",
+  "not an Antigravity launch": "ce lancement n’utilise pas Antigravity",
+  "Servers of your own: a command that runs on this computer, or a streamable-HTTP endpoint. Check runs a real JSON-RPC handshake and lists the tools the server actually reported; saved servers ride into Codex sessions when a thread starts — connected servers never reach Antigravity (none is written for it) or other providers.":
+    "Vos propres serveurs : une commande exécutée sur cet ordinateur ou un point de terminaison streamable-HTTP. « Vérifier » lance une véritable poignée de main JSON-RPC et liste les outils réellement renvoyés par le serveur ; les serveurs enregistrés sont transmis aux sessions Codex au démarrage d’une conversation — les serveurs connectés ne sont jamais transmis à Antigravity (aucune configuration n’est écrite pour lui) ni aux autres fournisseurs.",
+  "The fallback reviews when the first cannot run. Grok and Pi appear here once this build supports them.":
+    "Le modèle de secours examine lorsque le premier ne peut pas s’exécuter. Grok et Pi apparaîtront ici dès que cette version les prendra en charge.",
+  "Antigravity did not answer. Is `agy` signed in? Run `agy` once in Terminal.":
+    "Antigravity n’a pas répondu. `agy` est-il connecté ? Exécutez `agy` une fois dans Terminal.",
+  "Antigravity did not finish starting in time.": "Antigravity n’a pas terminé son démarrage à temps.",
+  "Antigravity exited.": "Antigravity s’est arrêté.",
+  "Antigravity is not signed in. Run `agy` once in Terminal to sign in.":
+    "Antigravity n’est pas connecté. Exécutez `agy` une fois dans Terminal pour vous connecter.",
+  "Antigravity stopped before finishing.": "Antigravity s’est arrêté avant d’avoir terminé.",
+  "Antigravity held back %@ waiting for a permission it could not ask for. Use Full access for this chat.":
+    "Antigravity a retenu %@ en attente d’une autorisation qu’il ne pouvait pas demander. Activez l’accès complet pour cette discussion.",
+  "Antigravity held back actions waiting for permission.":
+    "Antigravity a retenu des actions en attente d’autorisation.",
+  "Antigravity held back %@ without prompting. Use Full access or add an allow rule in the CLI's settings.":
+    "Antigravity a retenu %@ sans demander confirmation. Utilisez l’accès complet ou ajoutez une règle d’autorisation dans les réglages de la CLI.",
+  "Antigravity input stream could not accept prompt.":
+    "Le flux d’entrée Antigravity n’a pas pu accepter l’invite.",
+  "ANTIGRAVITY_NOT_CONFIGURED": "Antigravity n’est pas configuré",
+  "ANTIGRAVITY_EXECUTABLE_INVALID": "Exécutable Antigravity invalide",
+  "ANTIGRAVITY_FIXTURE_INVALID": "Configuration de simulation Antigravity invalide",
+  "Antigravity is not configured — install `agy` or select it in Settings":
+    "Antigravity n’est pas configuré — installez `agy` ou sélectionnez-le dans les réglages",
+  "Antigravity review timed out": "La revue Antigravity a expiré",
+  "`agy models` failed.": "Échec de `agy models`.",
+  "`agy models` listed no models.": "`agy models` n’a listé aucun modèle.",
+  "`agy models` produced no output.": "`agy models` n’a produit aucune sortie.",
+  "Antigravity: the model request failed (%@); agy is retrying, attempt %@.":
+    "Antigravity : la requête au modèle a échoué (%@) ; agy réessaie, tentative %@.",
+  "Connection to Antigravity dropped. Continuing the same conversation in %@ s (attempt %@ of 2)…":
+    "La connexion à Antigravity a été interrompue. Reprise de la même conversation dans %@ s (tentative %@ sur 2)…",
+  "Antigravity sub-agent %@ lost its connection; continuing the same conversation in %@ s (attempt %@ of 2)…":
+    "Le sous-agent Antigravity %@ a perdu la connexion ; reprise de la même conversation dans %@ s (tentative %@ sur 2)…",
+  "Your last request got no answer from the model and was stopped after 10 minutes. Continue the task from where you were.":
+    "Votre dernière demande n’a reçu aucune réponse du modèle et a été arrêtée après 10 minutes. Reprenez la tâche là où vous en étiez.",
+  "Abandoned: no activity for 30 minutes; stopped by Tivano.":
+    "Abandonné : aucune activité pendant 30 minutes ; arrêté par Tivano.",
+  "Last output from the provider: %@ min before the stop.":
+    "Dernière sortie du fournisseur : %@ min avant l’arrêt.",
+  "Last message from the provider: %@": "Dernier message du fournisseur : %@",
+  "After restart, if Codex is unset, Antigravity will start if a saved path is configured; otherwise explicit provider and environment settings still apply.":
+    "Après redémarrage, si Codex n’est pas défini, Antigravity démarrera si un chemin enregistré est configuré ; sinon les réglages explicites du fournisseur et des variables d’environnement s’appliquent.",
 };
