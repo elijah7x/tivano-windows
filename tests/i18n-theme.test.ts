@@ -251,12 +251,32 @@ describe("i18n", () => {
     ).toContain("明天 9:00 AM");
     expect(translateNotice(t, 'Work handed off to "Next task".')).toContain("Next task");
     expect(translateNotice(t, 'Work handed off to "Next task".')).toContain("交接");
+    expect(
+      translateNotice(t, "Codex sent nothing for 10 minutes, so Tivano stopped the turn."),
+    ).toBe("Codex 已 10 分钟没有任何输出，Tivano 已停止这一轮。");
+    expect(
+      translateNotice(
+        t,
+        "Codex sent nothing for 30 minutes while a tool ran, so Tivano stopped the turn.",
+      ),
+    ).toBe("工具运行期间，Codex 已 30 分钟没有任何输出，Tivano 已停止这一轮。");
 
     const winCwd = win32.join("C:\\", "repo");
     expect(translateDetail(t, `cwd: ${winCwd}`)).toContain(`工作目录：${winCwd}`);
     expect(translateDetail(t, "network access, read: src/a.ts, glob scan depth 3")).toBe(
       "网络访问、读取：src/a.ts、glob 扫描深度 3",
     );
+    expect(translateDetail(t, "read: src/a.ts, src/b.ts")).toBe("读取：src/a.ts, src/b.ts");
+    expect(translateDetail(t, "read: src/a.ts, write: src/b.ts")).toBe(
+      "读取：src/a.ts、写入：src/b.ts",
+    );
+    expect(translateDetail(t, "read: src/a.ts, network access")).toBe("读取：src/a.ts、网络访问");
+    expect(
+      translateDetail(
+        t,
+        "network access\nread: src/a.ts, src/b.ts\nwrite: src/c.ts\ndeny: src/d.ts\nglob scan depth 3",
+      ),
+    ).toBe("网络访问\n读取：src/a.ts, src/b.ts\n写入：src/c.ts\n拒绝：src/d.ts\nglob 扫描深度 3");
   });
 });
 

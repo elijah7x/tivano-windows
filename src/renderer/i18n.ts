@@ -2156,6 +2156,8 @@ const EXTRA_NOTICE_KEYS = [
   "%@ is waiting for your answer. Open it from the Hydra panel to reply.",
   "%@ is waiting for your answer. Open it from the sub-agents panel to reply.",
   "The head could not start: %@",
+  "%@ sent nothing for 10 minutes, so Tivano stopped the turn.",
+  "%@ sent nothing for 30 minutes while a tool ran, so Tivano stopped the turn.",
   "Usage limit reached. Continuing automatically at %@.",
   "⚠ Automatic continue failed: %@",
   'Work handed off to "%@".',
@@ -2204,11 +2206,12 @@ function buildNoticeTemplates(): { key: string; re: RegExp; emptyAllowed?: boole
           ),
         };
       }
+      const flags = key.includes("\n") ? "s" : "";
       return {
         key,
         re: new RegExp(
           "^" + key.split(/%@|%d/).map(escapeRe).join("(.+?)") + "$",
-          "s",
+          flags,
         ),
       };
     });
@@ -2247,18 +2250,43 @@ export function translateNotice(
   return translateError(t, message);
 }
 
-/** Translate approval / permission detail lines (single template or comma-joined grants). */
+const DETAIL_CLAUSE_BOUNDARY =
+  /, (?=(?:network access(?:, |$)|(?:cwd|requested write root|read|write|deny): |glob scan depth ))/;
+const DETAIL_PREFIX_KEYS: ReadonlyArray<readonly [prefix: string, key: string]> = [
+  ["cwd: ", "cwd: %@"],
+  ["requested write root: ", "requested write root: %@"],
+  ["read: ", "read: %@"],
+  ["write: ", "write: %@"],
+  ["deny: ", "deny: %@"],
+  ["glob scan depth ", "glob scan depth %@"],
+];
+
+function translateDetailClause(
+  t: (k: string, ...vars: string[]) => string,
+  clause: string,
+): string {
+  if (clause === "network access") return t("network access");
+  for (const [prefix, key] of DETAIL_PREFIX_KEYS) {
+    if (clause.startsWith(prefix) && clause.length > prefix.length) {
+      return t(key, clause.slice(prefix.length));
+    }
+  }
+  return translateNotice(t, clause);
+}
+
+/** Translate approval / permission detail lines (newline- or comma-joined grants). */
 export function translateDetail(
   t: (k: string, ...vars: string[]) => string,
   detail: string,
 ): string {
-  const whole = translateNotice(t, detail);
-  if (whole !== detail) return whole;
-  if (!detail.includes(", ")) return detail;
   return detail
-    .split(", ")
-    .map((part) => translateNotice(t, part))
-    .join(t(", "));
+    .split("\n")
+    .map((line) => {
+      if (line === "") return "";
+      const clauses = line.split(DETAIL_CLAUSE_BOUNDARY);
+      return clauses.map((c) => translateDetailClause(t, c)).join(t(", "));
+    })
+    .join("\n");
 }
 
 export const TRANSLATED_LANGUAGES = ["zh-Hans", "zh-Hant", "ja", "ko", "fr"] as const;
