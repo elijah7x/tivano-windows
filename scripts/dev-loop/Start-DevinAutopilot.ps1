@@ -821,6 +821,9 @@ function Get-DevinLogActivity {
         $filePendingUtc = $parsed
       } elseif ($null -ne $filePendingUtc -and $line -match 'User approved tool permission|User denied tool permission|auto-decided') {
         $filePendingUtc = $null
+      } elseif ($null -ne $filePendingUtc -and $agentWork -and $parsed -gt $filePendingUtc) {
+        # The same session did agent work after the prompt, so the prompt is no longer what it waits on.
+        $filePendingUtc = $null
       }
     }
     if ($null -ne $filePendingUtc -and ($null -eq $oldestPendingUtc -or $filePendingUtc -lt $oldestPendingUtc)) {
@@ -1801,7 +1804,10 @@ function Invoke-WatchTick {
     return
   }
 
-  if ($null -ne $activity.pendingApprovalUtc) {
+  $recentWork = ($null -ne $activity.newestWriteUtc -and ($nowUtc - $activity.newestWriteUtc).TotalMinutes -lt $IdleMinutes)
+  if ($null -ne $activity.pendingApprovalUtc -and $recentWork) {
+    Write-Log ('approval prompt from ' + $activity.pendingApprovalUtc.ToString('o') + ' looks stale: agent work seen ' + [Math]::Round(($nowUtc - $activity.newestWriteUtc).TotalMinutes, 1) + 'm ago; not recovering')
+  } elseif ($null -ne $activity.pendingApprovalUtc) {
     $pendingMin = ($nowUtc - $activity.pendingApprovalUtc).TotalMinutes
     if ($pendingMin -ge $ApprovalMinutes) {
       $pendingKey = $activity.pendingApprovalUtc.ToString('o')
