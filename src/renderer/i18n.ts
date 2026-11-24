@@ -2109,6 +2109,89 @@ const zhHans: Record<string, string> = {
   "Turn completed": "本轮完成",
   "1 head": "1 个子代理",
   "heads": "子代理",
+  "command approval requests cwd outside the workspace — declined": "命令审批请求的工作目录位于工作区之外 — 已拒绝",
+  "command exceeds the displayable length — declined": "命令超出可显示长度 — 已拒绝",
+  "command context exceeds the displayable length — declined": "命令上下文超出可显示长度 — 已拒绝",
+  "file-change grantRoot escapes the workspace — declined": "文件更改授权根目录超出工作区 — 已拒绝",
+  "file-change request exceeds the displayable length — declined": "文件更改请求超出可显示长度 — 已拒绝",
+  "unsafe or undisplayable permission request — declined (%@)": "不安全或无法显示的权限请求 — 已拒绝（%@）",
+  "question request %@ — declined": "提问请求%@ — 已拒绝",
+  "unknown Codex error": "未知 Codex 错误",
+  "Codex turn failed": "Codex 本轮执行失败",
+  "Codex error": "Codex 错误",
+  "the answer could not be queued": "回答未能进入发送队列",
+  "the answer write failed: %@": "回答写入失败：%@",
+  "CODEX_EXECUTABLE_INVALID": "Codex 可执行文件无效",
+  "CODEX_FIXTURE_INVALID": "Codex 夹具配置无效",
+  "CODEX_HOME_UNSAFE": "Codex 主目录不安全",
+  "CODEX_CONFIG_INCOMPATIBLE": "Codex 配置不兼容",
+  "CLEANUP_INCOMPLETE": "进程树清理未完成",
+  "executable path is empty or over the 4000-character bound": "可执行文件路径为空或超过 4000 个字符上限",
+  "executable must be a clean absolute path": "可执行文件必须是干净的绝对路径",
+  "script entrypoints (.cmd/.bat) are refused — a native executable is required": "拒绝脚本入口（.cmd/.bat）— 需要原生可执行文件",
+  'only the native Codex CLI binary is allowed (got "%@")': '仅允许原生 Codex CLI 二进制文件（收到“%@”）',
+  "not a regular file: %@": "不是普通文件：%@",
+  "path cannot be resolved: %@": "无法解析路径：%@",
+  "TIVANO_CODEX_NODE must be an absolute executable path": "TIVANO_CODEX_NODE 必须是可执行文件的绝对路径",
+  "TIVANO_CODEX_FIXTURE must be an absolute .mjs path": "TIVANO_CODEX_FIXTURE 必须是 .mjs 文件的绝对路径",
+  "TIVANO_CODEX_FIXTURE and TIVANO_CODEX_EXECUTABLE are both set — refusing to guess which runtime you meant": "同时设置了 TIVANO_CODEX_FIXTURE 和 TIVANO_CODEX_EXECUTABLE — 拒绝猜测要使用的运行时",
+  "existing config.toml is not the app's minimal credential-store policy — refusing to adopt or modify it": "现有的 config.toml 不符合应用的最小凭证存储策略 — 拒绝采用或修改",
+  "saved executable no longer valid": "已保存的可执行文件不再有效",
+  "TIVANO_PROVIDER=%@ routes this launch away from Codex — the saved path can only apply when Codex routing is selected": "TIVANO_PROVIDER=%@ 将本次启动路由到了其他服务商 — 已保存的路径仅在选择 Codex 路由时生效",
+  "TIVANO_CODEX_EXECUTABLE and TIVANO_CODEX_FIXTURE are both set — explicit environment always wins over the saved path": "同时设置了 TIVANO_CODEX_EXECUTABLE 和 TIVANO_CODEX_FIXTURE — 显式环境变量始终优先于已保存路径",
+  "TIVANO_CODEX_EXECUTABLE overrides the saved path for this launch": "TIVANO_CODEX_EXECUTABLE 已覆盖本次启动的已保存路径",
+  "TIVANO_CODEX_FIXTURE overrides the saved path for this launch": "TIVANO_CODEX_FIXTURE 已覆盖本次启动的已保存路径",
+  "read-only": "只读",
+  "job-helper exited 4; tree cleanup unproven": "作业辅助进程以退出码 4 结束；进程树清理未证实",
+  "the session is not live": "会话未处于运行状态",
+  "previous job cleanup is unproven": "上次作业的进程清理未证实",
+  "provider is disposed": "服务商已释放",
+  "set TIVANO_CODEX_EXECUTABLE to a codex.exe absolute path (or TIVANO_CODEX_FIXTURE for the offline protocol fixture)": "请将 TIVANO_CODEX_EXECUTABLE 设为 codex.exe 的绝对路径（或设置 TIVANO_CODEX_FIXTURE 以使用离线协议夹具）",
+  "process-tree cleanup unproven": "进程树清理能力未证实",
+  "codex requires a main-authorized workspace": "Codex 需要主进程授权的工作区",
+  "this thread's session is bound to a different workspace": "此对话的会话绑定到了另一个工作区",
+  "no session is bound to this thread": "此对话尚未绑定会话",
+  "app-server connection closed": "app-server 连接已关闭",
+  "session shutdown": "会话已关闭",
+  "process closed (code %@, signal %@)": "进程已关闭（退出码 %@，信号 %@）",
+  "process closed (code %@, signal %@) — stderr tail: %@": "进程已关闭（退出码 %@，信号 %@）— stderr 末尾：%@",
+  "data root cannot be resolved: %@": "无法解析数据根目录：%@",
+  "cannot inspect codex-home: %@": "无法检查 codex-home：%@",
+  "codex-home must not be a link: %@": "codex-home 不能是符号链接：%@",
+  "codex-home is not a directory: %@": "codex-home 不是目录：%@",
+  "cannot create codex-home: %@": "无法创建 codex-home：%@",
+  "codex-home cannot be resolved: %@": "无法解析 codex-home：%@",
+  "codex-home escapes the data root: %@": "codex-home 超出数据根目录范围：%@",
+  "cannot inspect config.toml: %@": "无法检查 config.toml：%@",
+  "config.toml must not be a link: %@": "config.toml 不能是符号链接：%@",
+  "config.toml is not a regular file: %@": "config.toml 不是普通文件：%@",
+  "cannot write config.toml: %@": "无法写入 config.toml：%@",
+  "config.toml appeared as a non-regular/link file: %@": "config.toml 变为了非普通文件或符号链接：%@",
+  "cannot read config.toml: %@": "无法读取 config.toml：%@",
+  "cannot inspect tmp: %@": "无法检查 tmp：%@",
+  "tmp must not be a link: %@": "tmp 不能是符号链接：%@",
+  "tmp is not a directory: %@": "tmp 不是目录：%@",
+  "cannot create tmp: %@": "无法创建 tmp：%@",
+  "tmp escapes codex-home: %@": "tmp 超出 codex-home 范围：%@",
+  "tmp cannot be resolved: %@": "无法解析 tmp：%@",
+  "Codex app-server": "Codex app-server",
+  "Codex app-server (unconfigured)": "Codex app-server（未配置）",
+  "Codex (offline fixture)": "Codex（离线夹具）",
+  "no working directory — the thread has no available folder": "没有工作目录 — 此对话没有可用的文件夹",
+  "editor is not available: %@": "编辑器不可用：%@",
+  "could not open %@: %@": "无法打开 %@：%@",
+  "Queued message could not be sent: %@": "无法发送排队消息：%@",
+  "the copy's state could not be read": "无法读取该副本的状态",
+  "Wait for the running turn to finish first.": "请先等待正在运行的一轮结束。",
+  "None": "无",
+  "Ultra": "Ultra",
+  "Monday": "周一",
+  "Tuesday": "周二",
+  "Wednesday": "周三",
+  "Thursday": "周四",
+  "Friday": "周五",
+  "Saturday": "周六",
+  "Sunday": "周日",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
@@ -2130,23 +2213,86 @@ export function translate(lang: LanguageId, key: string, vars?: string[]): strin
   return s;
 }
 
+const ERROR_TEMPLATE_KEYS = [
+  'only the native Codex CLI binary is allowed (got "%@")',
+  "not a regular file: %@",
+  "path cannot be resolved: %@",
+  "TIVANO_PROVIDER=%@ routes this launch away from Codex — the saved path can only apply when Codex routing is selected",
+  "the answer write failed: %@",
+  "process closed (code %@, signal %@) — stderr tail: %@",
+  "process closed (code %@, signal %@)",
+  "data root cannot be resolved: %@",
+  "cannot inspect codex-home: %@",
+  "codex-home must not be a link: %@",
+  "codex-home is not a directory: %@",
+  "cannot create codex-home: %@",
+  "codex-home cannot be resolved: %@",
+  "codex-home escapes the data root: %@",
+  "cannot inspect config.toml: %@",
+  "config.toml must not be a link: %@",
+  "config.toml is not a regular file: %@",
+  "cannot write config.toml: %@",
+  "config.toml appeared as a non-regular/link file: %@",
+  "cannot read config.toml: %@",
+  "cannot inspect tmp: %@",
+  "tmp must not be a link: %@",
+  "tmp is not a directory: %@",
+  "cannot create tmp: %@",
+  "tmp escapes codex-home: %@",
+  "tmp cannot be resolved: %@",
+  "editor is not available: %@",
+  "could not open %@: %@",
+] as const;
+
+let errorTemplates: { key: string; re: RegExp }[] | undefined;
+
+function buildErrorTemplates(): { key: string; re: RegExp }[] {
+  return [...ERROR_TEMPLATE_KEYS]
+    .sort(
+      (a, b) =>
+        b.split(/%@|%d/).join("").length - a.split(/%@|%d/).join("").length,
+    )
+    .map((key) => ({
+      key,
+      re: new RegExp("^" + key.split(/%@|%d/).map(escapeRe).join("(.+?)") + "$"),
+    }));
+}
+
 /**
  * Translate an engine/protocol error like "WORKSPACE_NOT_CONFIGURED: no
- * authorized directory…" — the all-caps prefix is localized when known and
- * the remainder is passed through verbatim.
+ * authorized directory…" or an exact colon-containing catalog entry — exact
+ * full-sentence matches win first, then parameterized error templates, then
+ * the prefix + recursive remainder path.
  */
 export function translateError(t: (k: string) => string, message: string): string {
+  const exact = t(message);
+  if (exact !== message) return exact;
+  errorTemplates ??= buildErrorTemplates();
+  for (const { key, re } of errorTemplates) {
+    const m = re.exec(message);
+    if (!m) continue;
+    let out = t(key);
+    for (let idx = 1; idx < m.length; idx++) {
+      let val = m[idx]!;
+      if (key === "could not open %@: %@" && idx === 1) val = t(val);
+      out = out.replace(/%@|%d/, () => val);
+    }
+    return out;
+  }
   const i = message.indexOf(":");
-  const head = (i > 0 ? message.slice(0, i) : message).trim();
+  if (i <= 0) return message;
+  const head = message.slice(0, i).trim();
   const localized = t(head);
-  if (i < 0) return localized;
   if (localized === head) return message; // unknown prefix → show raw
-  return `${localized}: ${message.slice(i + 1).trim()}`;
+  const rest = message.slice(i + 1).trim();
+  if (!rest) return localized;
+  return `${localized}: ${translateError(t, rest)}`;
 }
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-let noticeTemplates: { key: string; re: RegExp; emptyAllowed?: boolean }[] | undefined;
+let noticeTemplates: { key: string; re: RegExp }[] | undefined;
 
+const WEEKDAY_PATTERN = "(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)";
 const NOTICE_PREFIXES = ["Hydra:", "Hydra settings:", "Sub-agents:", "Auto-merge"];
 const EXTRA_NOTICE_KEYS = [
   "%@'s work landed; the lead is settling a conflict in 1 file.\n%@\n\nThe checkout had moved on where %@ was working, so the merge was three-way and left markers in this file. The lead resolves them before the work goes out; nothing to do on your side.",
@@ -2161,14 +2307,18 @@ const EXTRA_NOTICE_KEYS = [
   "Usage limit reached. Continuing automatically at %@.",
   "⚠ Automatic continue failed: %@",
   'Work handed off to "%@".',
+  "Queued message could not be sent: %@",
   "Codex error (retrying): %@",
   "interrupt request failed: %@",
   'unsupported Codex server request "%@" — declined',
+  "unsafe or undisplayable permission request — declined (%@)",
+  "question request %@ — declined",
   "question answer %@ — the request was expired unanswered",
   "approval answer %@ — the request was expired unanswered",
   "The endpoint answered HTTP %@.",
   "HTTP %@ — no JSON-RPC reply",
   "tomorrow at %@",
+  "%@ at %@",
   "cwd: %@",
   "requested write root: %@",
   "read: %@",
@@ -2180,7 +2330,7 @@ const EXTRA_NOTICE_KEYS = [
 const PATCH_LANDING_KEY =
   "%@'s work did not land and was kept as a patch.\n%@\n\n%@Apply it with `git apply --3way %@` and settle what conflicts.";
 
-function buildNoticeTemplates(): { key: string; re: RegExp; emptyAllowed?: boolean }[] {
+function buildNoticeTemplates(): { key: string; re: RegExp }[] {
   const keys = new Set(
     zhHansKeys().filter(
       (k) =>
@@ -2199,11 +2349,16 @@ function buildNoticeTemplates(): { key: string; re: RegExp; emptyAllowed?: boole
         const parts = key.split(/%@|%d/).map(escapeRe);
         return {
           key,
-          emptyAllowed: true,
           re: new RegExp(
             "^" + parts[0] + "(.+?)" + parts[1] + "(.+?)" + parts[2] + "(.*?)" + parts[3] + "(.+?)" + parts[4] + "$",
             "s",
           ),
+        };
+      }
+      if (key === "%@ at %@") {
+        return {
+          key,
+          re: new RegExp(`^${WEEKDAY_PATTERN} at (.+?)$`),
         };
       }
       const flags = key.includes("\n") ? "s" : "";
@@ -2240,9 +2395,17 @@ export function translateNotice(
       args[0] = translateError(t, args[0]);
     } else if (key === "Usage limit reached. Continuing automatically at %@." && args[0]) {
       args[0] = translateNotice(t, args[0]);
-    } else if (key === "⚠ Automatic continue failed: %@" && args[0]) {
-      args[0] = translateError(t, args[0]);
-    } else if (key === "The head could not start: %@" && args[0]) {
+    } else if (key === "%@ at %@" && args[0]) {
+      args[0] = t(args[0]);
+    } else if (
+      (key === "⚠ Automatic continue failed: %@" ||
+        key === "The head could not start: %@" ||
+        key === "Queued message could not be sent: %@" ||
+        key === "Codex error (retrying): %@" ||
+        key === "question answer %@ — the request was expired unanswered" ||
+        key === "approval answer %@ — the request was expired unanswered") &&
+      args[0]
+    ) {
       args[0] = translateError(t, args[0]);
     }
     return t(key, ...args);

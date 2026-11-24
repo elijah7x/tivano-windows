@@ -100,7 +100,7 @@ export function OpenInMenu(props: {
                 act(() => callApi("openin:open", { threadId: props.threadId, editorId: ed.id }))
               }
             >
-              {ed.name}
+              {t(ed.name)}
             </button>
           ))}
           <div className="openin-divider" aria-hidden="true" />

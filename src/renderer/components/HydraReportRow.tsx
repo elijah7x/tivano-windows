@@ -38,6 +38,19 @@ function reportSummary(
   return parts.join(t(", "));
 }
 
+function effortLabel(effort: string, t: (k: string) => string): string {
+  return effort
+    .split(" · ")
+    .map((part) => {
+      if (part === "xhigh" || part === "extra-high") return t("Extra High");
+      const cap = part.charAt(0).toUpperCase() + part.slice(1);
+      const translatedCap = t(cap);
+      if (translatedCap !== cap) return translatedCap;
+      return t(part);
+    })
+    .join(" · ");
+}
+
 function landingView(landing: Landing, t: (k: string, ...v: string[]) => string) {
   if (landing.kind === "none") return null;
   if (landing.kind === "nothing")
@@ -154,7 +167,7 @@ export function HydraReportRow(props: {
         <span className={`hr-outcome s-${h.outcome}`}>
           {h.outcome === "done" ? t("done") : h.outcome === "failed" ? t("failed") : t("stopped")}
         </span>
-        {h.effort && <span className="hr-effort">{t(h.effort)}</span>}
+        {h.effort && <span className="hr-effort">{effortLabel(h.effort, t)}</span>}
         <span className="hr-card-task">{h.task}</span>
         {collapsible && <span className="hr-chev" aria-hidden="true" />}
       </button>

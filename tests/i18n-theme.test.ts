@@ -14,6 +14,7 @@ import {
   zhHansKeys,
 } from "../src/renderer/i18n";
 import { MCP_CATALOG } from "../src/shared/mcpCatalog";
+import { MAIN_STRINGS, mainT } from "../src/main/mainStrings";
 import { LANGUAGE_IDS, LANGUAGE_LABELS } from "../src/shared/types";
 import { THEMES } from "../src/renderer/theme";
 import { existsSync, readFileSync } from "node:fs";
@@ -141,11 +142,28 @@ describe("i18n", () => {
 
   it("covers P2-26 and P2-28 catalog surfaces across all translated languages", () => {
     const surfaceKeys = [
-      // Provider errors
+      // Provider errors & Codex runtime/setup diagnostics
       "Codex reported an error.",
       "Codex refused the MCP server configuration, so this session runs without MCP servers. Check MCP in Settings.",
       "Codex's stored login has expired. Run `codex login` in a terminal, then check again.",
       "Codex could not be asked for its usage.",
+      "Codex app-server (unconfigured)",
+      "Codex (offline fixture)",
+      "unknown Codex error",
+      "Codex turn failed",
+      "Codex error",
+      "CODEX_EXECUTABLE_INVALID",
+      "CODEX_FIXTURE_INVALID",
+      "CODEX_HOME_UNSAFE",
+      "CODEX_CONFIG_INCOMPATIBLE",
+      "CLEANUP_INCOMPLETE",
+      "command approval requests cwd outside the workspace — declined",
+      "Wait for the running turn to finish first.",
+      "the copy's state could not be read",
+      "Terminal",
+      "None",
+      "Monday",
+      "Thursday",
       // Plan approval & permission prompts
       "Plan ready",
       "Ready to build this plan?",
@@ -192,6 +210,11 @@ describe("i18n", () => {
     );
     for (const key of surfaceKeys) {
       expect(translate("zh-Hans", key), `zh-Hans missing ${key}`).not.toBe(key);
+      for (const lang of TRANSLATED_LANGUAGES) {
+        expect(langKeySets.get(lang)!.has(key), `${lang} catalog missing ${key}`).toBe(true);
+      }
+    }
+    for (const key of ["Codex app-server", "Ultra"]) {
       for (const lang of TRANSLATED_LANGUAGES) {
         expect(langKeySets.get(lang)!.has(key), `${lang} catalog missing ${key}`).toBe(true);
       }
@@ -277,6 +300,80 @@ describe("i18n", () => {
         "network access\nread: src/a.ts, src/b.ts\nwrite: src/c.ts\ndeny: src/d.ts\nglob scan depth 3",
       ),
     ).toBe("网络访问\n读取：src/a.ts, src/b.ts\n写入：src/c.ts\n拒绝：src/d.ts\nglob 扫描深度 3");
+
+    // Weekly weekday resets and queued-send failures localize cleanly, without hijacking unrelated " at " text.
+    expect(
+      translateNotice(t, "Usage limit reached. Continuing automatically at Thursday at 9:00 AM."),
+    ).toBe("已达用量上限，将于 周四 9:00 AM 自动继续。");
+    expect(translateNotice(t, "something failed at step 2")).toBe("something failed at step 2");
+    expect(
+      translateNotice(
+        t,
+        "Queued message could not be sent: read-only: close failed earlier — no new work is accepted",
+      ),
+    ).toBe("无法发送排队消息：只读：上次关闭未完成 —— 不接收新任务");
+    expect(
+      translateNotice(
+        t,
+        "unsafe or undisplayable permission request — declined (entries unbounded)",
+      ),
+    ).toBe("不安全或无法显示的权限请求 — 已拒绝（entries unbounded）");
+    expect(translateNotice(t, "question request questions is empty — declined")).toBe(
+      "提问请求questions is empty — 已拒绝",
+    );
+  });
+
+  it("translateError preserves colon-containing catalog keys and translates Codex/openIn errors", () => {
+    const t = (k: string) => translate("zh-Hans", k);
+    expect(translateError(t, "read-only: close failed earlier — no new work is accepted")).toBe(
+      "只读：上次关闭未完成 —— 不接收新任务",
+    );
+    expect(translateError(t, "Already on main: nothing to merge.")).toBe(
+      "已经在 main 上：没有需要合并的内容。",
+    );
+    expect(translateError(t, "Declined: the user declined this command.")).toBe(
+      "已拒绝：用户拒绝了此命令。",
+    );
+    expect(translateError(t, "Declined: plan mode is read-only.")).toBe(
+      "已拒绝：计划模式为只读。",
+    );
+    expect(
+      translateError(t, "CODEX_EXECUTABLE_INVALID: executable must be a clean absolute path"),
+    ).toBe("Codex 可执行文件无效: 可执行文件必须是干净的绝对路径");
+    expect(
+      translateError(t, "CODEX_EXECUTABLE_INVALID: not a regular file: C:\\bad\\codex.exe"),
+    ).toBe("Codex 可执行文件无效: 不是普通文件：C:\\bad\\codex.exe");
+    expect(
+      translateError(
+        t,
+        "CODEX_CONFIG_INCOMPATIBLE: existing config.toml is not the app's minimal credential-store policy — refusing to adopt or modify it",
+      ),
+    ).toBe(
+      "Codex 配置不兼容: 现有的 config.toml 不符合应用的最小凭证存储策略 — 拒绝采用或修改",
+    );
+    expect(
+      translateError(t, "CLEANUP_INCOMPLETE: job-helper exited 4; tree cleanup unproven"),
+    ).toBe("进程树清理未完成: 作业辅助进程以退出码 4 结束；进程树清理未证实");
+    expect(
+      translateError(
+        t,
+        "TIVANO_PROVIDER=mock routes this launch away from Codex — the saved path can only apply when Codex routing is selected",
+      ),
+    ).toContain("TIVANO_PROVIDER=mock");
+    expect(translateError(t, "editor is not available: terminal")).toBe("编辑器不可用：terminal");
+    expect(translateError(t, "could not open Terminal: missing")).toBe("无法打开 终端：missing");
+    expect(translateError(t, "UNLISTED_THING: happened")).toBe("UNLISTED_THING: happened");
+  });
+
+  it("MAIN_STRINGS covers all translated languages for main-process dialogs", () => {
+    for (const key of Object.keys(MAIN_STRINGS) as Array<keyof typeof MAIN_STRINGS>) {
+      expect(mainT("en", key)).toBe(key);
+      for (const lang of TRANSLATED_LANGUAGES) {
+        const val = mainT(lang, key);
+        expect(val.length, `${lang}: ${key}`).toBeGreaterThan(0);
+        if (lang === "zh-Hans") expect(val, `${lang}: ${key}`).not.toBe(key);
+      }
+    }
   });
 });
 

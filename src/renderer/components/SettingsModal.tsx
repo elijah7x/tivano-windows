@@ -19,6 +19,7 @@ import {
   type Settings,
 } from "../../shared/types";
 import { useT } from "../locale";
+import { translateError } from "../i18n";
 import { api, tryCall } from "../client";
 import { playFinishChime } from "../finishChime";
 import { themeById } from "../theme";
@@ -849,7 +850,7 @@ export function SettingsModal(props: {
                 {codex.runtime.reason && (
                   <>
                     <span>{t("Runtime reason")}</span>
-                    <span className="mono">{codex.runtime.reason}</span>
+                    <span className="mono">{translateError(t, codex.runtime.reason)}</span>
                   </>
                 )}
               </>
@@ -867,7 +868,7 @@ export function SettingsModal(props: {
             {codex?.savedInvalidReason && (
               <>
                 <span>{t("Saved path status")}</span>
-                <span className="mono">{codex.savedInvalidReason}</span>
+                <span className="mono">{translateError(t, codex.savedInvalidReason)}</span>
               </>
             )}
             {codex && codex.savedEffect !== "none" && (
@@ -878,7 +879,9 @@ export function SettingsModal(props: {
                     ? t("In effect for this launch")
                     : codex.savedEffect === "pending-restart"
                       ? t("Takes effect on next launch")
-                      : codex.savedBlockReason ?? t("Blocked by an explicit override")}
+                      : codex.savedBlockReason
+                        ? translateError(t, codex.savedBlockReason)
+                        : t("Blocked by an explicit override")}
                 </span>
               </>
             )}
@@ -902,10 +905,10 @@ export function SettingsModal(props: {
           </p>
           {codexErr && (
             <p className="codex-setup-error" role="alert">
-              {t(codexErr)}
+              {translateError(t, codexErr)}
             </p>
           )}
-          {loadErr && <p className="codex-setup-error" role="alert">{loadErr}</p>}
+          {loadErr && <p className="codex-setup-error" role="alert">{translateError(t, loadErr)}</p>}
           <div className="choice-row">
             <button
               className="choice"
@@ -999,7 +1002,7 @@ export function SettingsModal(props: {
                 {info.codex.reason && (
                   <>
                     <span>{t("Codex status")}</span>
-                    <span className="mono">{info.codex.reason}</span>
+                    <span className="mono">{translateError(t, info.codex.reason)}</span>
                   </>
                 )}
               </>

@@ -430,7 +430,7 @@ function ReviewerCard(props: {
               >
                 <option value="">{t("Default")}</option>
                 {choice?.effort && !efforts.includes(choice.effort) && (
-                  <option value={choice.effort}>{`${effortTitle(choice.effort)} (${t("saved")})`}</option>
+                  <option value={choice.effort}>{`${t(effortTitle(choice.effort))} (${t("saved")})`}</option>
                 )}
                 {efforts.map((e) => (
                   <option key={e} value={e}>
@@ -586,7 +586,7 @@ function PairEditor(props: {
     >
       <option value="">{t("Default")}</option>
       {value !== undefined && !efforts.includes(value) && (
-        <option value={value}>{`${effortTitle(value)} (${t("saved")})`}</option>
+        <option value={value}>{`${t(effortTitle(value))} (${t("saved")})`}</option>
       )}
       {efforts.map((e) => (
         <option key={e} value={e}>
