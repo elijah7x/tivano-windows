@@ -5,6 +5,10 @@
 // phase-1-only keys are translated faithfully in the same style.
 
 import type { LanguageId } from "../shared/types";
+import { zhHant } from "./locales/zh-Hant";
+import { ja } from "./locales/ja";
+import { ko } from "./locales/ko";
+import { fr } from "./locales/fr";
 
 const zhHans: Record<string, string> = {
   // Upstream keys (values from v2.0.0 Localizable.xcstrings)
@@ -1347,6 +1351,14 @@ const zhHans: Record<string, string> = {
   "key": "密钥",
   "value": "值",
   "Choose a file or folder": "选择文件或文件夹",
+  "Archive thread?": "归档对话？",
+  "Forward": "转发",
+  "Each head gets one brief and a panel of its own beside the chat, all working at the same time. Heads use the selected models to do their tasks, then return their reports to the lead chat.":
+    "每个子代理各领一份任务简报，在对话旁拥有自己的面板，并同时工作。子代理使用所选模型执行任务，再把工作报告交回主对话。",
+  "failed": "失败",
+  "Shown in the picker and the composer": "显示在选择器与输入框中",
+  "Finder": "Finder",
+  "Unread": "未读",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
@@ -1355,6 +1367,10 @@ const dictionaries: Record<LanguageId, Record<string, string>> = {
     { get: (_t, key: string) => key },
   ) as Record<string, string>,
   "zh-Hans": zhHans,
+  "zh-Hant": zhHant,
+  ja,
+  ko,
+  fr,
 };
 
 export function translate(lang: LanguageId, key: string, vars?: string[]): string {
@@ -1421,6 +1437,13 @@ export function translateNotice(
     if (m) return t(key, ...m.slice(1));
   }
   return translateError(t, message);
+}
+
+export const TRANSLATED_LANGUAGES = ["zh-Hans", "zh-Hant", "ja", "ko", "fr"] as const;
+
+/** Keys present in a translated catalog; used by completeness tests. */
+export function catalogKeys(lang: (typeof TRANSLATED_LANGUAGES)[number] = "zh-Hans"): string[] {
+  return Object.keys(dictionaries[lang]);
 }
 
 /** Keys present in zh-Hans; used by the completeness test. */

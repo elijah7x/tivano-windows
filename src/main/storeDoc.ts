@@ -24,6 +24,7 @@ import {
 import { SHORTCUT_COMMANDS, type KeyChord } from "../shared/shortcuts";
 import { MODEL_LIST_LIMIT, type ModelPreference } from "../shared/modelList";
 import {
+  LANGUAGE_IDS,
   SCHEMA_VERSION,
   THEME_IDS,
   type ChatThread,
@@ -497,7 +498,7 @@ const vMcpServer = vObject({
 
 const vSettings = vObject({
   theme: vEnum(THEME_IDS),
-  language: vEnum(["en", "zh-Hans"] as const),
+  language: vEnum(LANGUAGE_IDS),
   alwaysAllow: vArray(vString, PERSIST_MAX_GRANTS),
   // Optional so every pre-A18 store loads verbatim — absent means off.
   notifyOnDone: vOptional(vBoolean),

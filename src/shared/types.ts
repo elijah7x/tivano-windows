@@ -56,7 +56,17 @@ export const THEME_IDS = [
   "matrix",
 ] as const;
 export type ThemeId = (typeof THEME_IDS)[number];
-export type LanguageId = "en" | "zh-Hans";
+export const LANGUAGE_IDS = ["en", "zh-Hans", "zh-Hant", "ja", "ko", "fr"] as const;
+export type LanguageId = (typeof LANGUAGE_IDS)[number];
+
+export const LANGUAGE_LABELS: Record<LanguageId, string> = {
+  en: "English",
+  "zh-Hans": "简体中文",
+  "zh-Hant": "繁體中文",
+  ja: "日本語",
+  ko: "한국어",
+  fr: "Français",
+};
 
 export interface Settings {
   theme: ThemeId;

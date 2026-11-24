@@ -21,7 +21,7 @@ import {
   ValidationError,
   type Validator,
 } from "./validate";
-import { THEME_IDS, type LanguageId } from "./types";
+import { LANGUAGE_IDS, THEME_IDS } from "./types";
 import { SHORTCUT_COMMANDS, type KeyChord } from "./shortcuts";
 import type { ModelPreference } from "./modelList";
 
@@ -294,7 +294,7 @@ export type RequestChannel = (typeof REQUEST_CHANNELS)[number];
 export const EVENT_CHANNEL = "tivano:event";
 
 const vTheme = vEnum(THEME_IDS);
-const vLanguage = vEnum(["en", "zh-Hans"] as const satisfies readonly LanguageId[]);
+const vLanguage = vEnum(LANGUAGE_IDS);
 
 /** Bounded dynamic record {questionId: answer[]} — the ONLY map-shaped
  *  payload in the contract. Question ids are re-validated against the

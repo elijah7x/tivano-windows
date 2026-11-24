@@ -6,15 +6,17 @@
 // block carrying the AGPL attribution this derivative owes upstream.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  AppInfo,
-  ChatThread,
-  CodexSetupState,
-  CodexChooseResult,
-  CodexWriteResult,
-  LanguageId,
-  Project,
-  Settings,
+import {
+  LANGUAGE_IDS,
+  LANGUAGE_LABELS,
+  type AppInfo,
+  type ChatThread,
+  type CodexSetupState,
+  type CodexChooseResult,
+  type CodexWriteResult,
+  type LanguageId,
+  type Project,
+  type Settings,
 } from "../../shared/types";
 import { useT } from "../locale";
 import { api, tryCall } from "../client";
@@ -417,7 +419,7 @@ export function SettingsModal(props: {
 
         <h3>{t("Language")}</h3>
         <div className="choice-row" role="radiogroup" aria-label={t("Language")}>
-          {(["en", "zh-Hans"] as const).map((l) => (
+          {LANGUAGE_IDS.map((l) => (
             <button
               key={l}
               role="radio"
@@ -425,7 +427,7 @@ export function SettingsModal(props: {
               className={`choice${settings.language === l ? " active" : ""}`}
               onClick={() => setLanguage(l)}
             >
-              {l === "en" ? "English" : "简体中文"}
+              {LANGUAGE_LABELS[l]}
             </button>
           ))}
         </div>

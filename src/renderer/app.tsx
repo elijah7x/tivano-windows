@@ -351,7 +351,7 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     if (snapshot) {
-      document.documentElement.lang = snapshot.settings.language === "zh-Hans" ? "zh-Hans" : "en";
+      document.documentElement.lang = snapshot.settings.language;
     }
   }, [snapshot?.settings.language]);
 
