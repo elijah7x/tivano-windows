@@ -221,6 +221,13 @@ export class ClientStore {
     if (gen !== this.hydrateGen) return; // superseded cycle (StrictMode replay)
     for (const id of this.pacedNotifyTimers.values()) clearTimeout(id);
     this.pacedNotifyTimers.clear();
+    // Same for a pending off-screen deferral — it must not straddle
+    // the hydration cycle (the trailing notify() already publishes).
+    if (this.unseenTimer !== null) {
+      clearTimeout(this.unseenTimer);
+      this.unseenTimer = null;
+    }
+    this.unseenDirty = false;
     this.snapshot = s;
     this.snapshotRev = s.rev;
     this.limitResumes = { ...(s.limitResumesAt ?? {}) };
@@ -777,9 +784,16 @@ export class ClientStore {
   }
 
   flushStreamPacing(): void {
-    if (this.pacedNotifyTimers.size === 0) return;
+    // Window-active flushes BOTH pacing paths — a shown panel's paced
+    // notify and an off-screen thread's deferred publish share the one
+    // notify pass (the mutations already landed on the snapshot).
+    if (this.pacedNotifyTimers.size === 0 && !this.unseenDirty) return;
     for (const id of this.pacedNotifyTimers.values()) clearTimeout(id);
     this.pacedNotifyTimers.clear();
+    if (this.unseenTimer !== null) {
+      clearTimeout(this.unseenTimer);
+      this.unseenTimer = null;
+    }
     this.notify();
   }
 
