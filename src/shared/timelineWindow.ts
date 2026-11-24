@@ -105,10 +105,17 @@ export function shouldPageHistory(args: {
   lastPageAt: number;
   now: number;
 }): boolean {
+  // Frozen: the top pill's visibility check fires with no cooldown —
+  // a gesture that lands exactly on scrollTop 0 reaches the trigger
+  // the same way (a flick or scrollbar drag can't strand the rest of
+  // history inside the 250ms window). Each landing still pages once:
+  // the anchor shift lifts the reader off 0, so chaining needs a new
+  // gesture like the cooldown gives the mid-travel path.
+  const atTop = args.scrollTop <= 0;
   return (
-    args.movedUp &&
+    (args.movedUp || atTop) &&
     args.scrollTop < args.viewportHeight &&
     args.hidden > 0 &&
-    args.now - args.lastPageAt >= 250
+    (atTop || args.now - args.lastPageAt >= 250)
   );
 }

@@ -287,11 +287,26 @@ export function ChatView(props: {
 
   const wt = thread?.turn;
   // Frozen fetches a paged-back reader only for a question row — an
-  // approval appearing at the end never re-pins on its own.
+  // approval appearing at the end never re-pins on its own. Outstanding
+  // means question.status === "pending" on ANY turn status: the engine
+  // keeps questions under a running turn, while an approval landing
+  // after an answered question leaves wt.question set without being
+  // outstanding.
   const waitKey =
-    wt?.status === "waiting-approval" && wt.question !== undefined
+    wt?.question?.status === "pending"
       ? (wt.question.providerKey ?? wt.id)
       : null;
+  // Frozen attended send: any path that puts a user message on the
+  // wire re-pins even from a released position — composer send/resend,
+  // interrupt-send, queueChat's idle send, follow-up Send now. The
+  // growth effect lands it once the user row mounts.
+  useEffect(
+    () =>
+      clientStore.onAttendedSend((id) => {
+        if (id === threadId) timelineFollowingRef.current = true;
+      }),
+    [threadId],
+  );
   useEffect(() => {
     // P2-30 (frozen pinned-follow): growth keeps the end in view only
     // while the reader stays pinned — a scroll-up during streaming
@@ -322,7 +337,14 @@ export function ChatView(props: {
     ) {
       timelineFollowingRef.current = true;
     }
-    if (timelineFollowingRef.current) {
+    if (
+      timelineFollowingRef.current &&
+      // Frozen !isReaderInteracting: a held pointer (selecting text,
+      // touch-hold) or a wheel flick that just fired must not be yanked
+      // by the snap — the pin stays and the next quiet growth lands it.
+      !timelineInteractRef.current &&
+      Date.now() > timelineWheelUntilRef.current
+    ) {
       timelineProgrammaticUntilRef.current = Date.now() + 100;
       endRef.current?.scrollIntoView({ block: "end" });
     }
@@ -357,6 +379,15 @@ export function ChatView(props: {
         ?.scrollIntoView({ block: "start" });
     }
   }, [timelineVisible]);
+
+  // One page of earlier history in: anchor the reader's spot so the
+  // prepend lands without moving what they're reading (the layout
+  // effect above applies the measured shift pre-paint).
+  const pageEarlier = (el: HTMLDivElement): void => {
+    timelineLastPageRef.current = Date.now();
+    timelineAnchorRef.current = el.scrollHeight - el.scrollTop;
+    setTimelineVisible((v) => timelinePagedBack(v));
+  };
 
   // F22: the lead's resolved heads for the mark and the panel (frozen
   // HydraButton.panelHeads). Runtime-only panel visibility — a new head
@@ -603,9 +634,19 @@ export function ChatView(props: {
           // out because the height must match.
           const programmatic =
             Date.now() < timelineProgrammaticUntilRef.current;
-          const sameHeight = el.scrollHeight === (prev?.h ?? el.scrollHeight);
-          const unexplainedUp = !programmatic && sameHeight && delta < -0.1;
-          const unexplainedDown = !programmatic && sameHeight && delta > 0.1;
+          const h = el.scrollHeight;
+          // Our writes only ever RAISE scrollTop (bottom snaps, anchor
+          // shifts) — a drop is never ours, so neither the programmatic
+          // window nor an unchanged document gates UP. Only a shrinking
+          // document is ambiguous (a window collapse can lower scrollTop
+          // on its own). Streaming growth no longer swallows keyboard
+          // paging or native scrollbar drags — that's the whole point of
+          // the release path.
+          const unexplainedUp = h >= (prev?.h ?? h) && delta < -0.1;
+          // Down keeps both gates: our snaps raise scrollTop, so a rise
+          // is reader motion only while the document is quiet.
+          const unexplainedDown =
+            !programmatic && h === (prev?.h ?? h) && delta > 0.1;
           timelineLastScrollRef.current = { top, dist, h: el.scrollHeight };
           const userScrolling =
             timelineInteractRef.current ||
@@ -642,9 +683,7 @@ export function ChatView(props: {
               now: Date.now(),
             })
           ) {
-            timelineLastPageRef.current = Date.now();
-            timelineAnchorRef.current = el.scrollHeight - top;
-            setTimelineVisible((v) => timelinePagedBack(v));
+            pageEarlier(el);
           }
         }}
         onWheel={() => {
@@ -674,6 +713,24 @@ export function ChatView(props: {
             project={props.project ?? null}
             projects={props.projects ?? []}
           />
+        )}
+        {/* Frozen "Show earlier messages" pill: paging loads itself as
+            the reader nears the top, but the pill stays tappable — and
+            it is what unstrands a gesture that hit scrollTop 0 inside
+            the page cooldown. */}
+        {windowedHidden > 0 && (
+          <div className="history-pill-row">
+            <button
+              type="button"
+              className="history-pill"
+              onClick={() => {
+                const el = timelineRef.current;
+                if (el) pageEarlier(el);
+              }}
+            >
+              {t("Show %d earlier messages", String(windowedHidden))}
+            </button>
+          </div>
         )}
         {(() => {
           // A84 (frozen StreamVeil): the tail that just flushed dissolves
@@ -1105,12 +1162,6 @@ export function ChatView(props: {
         thread={thread}
         mode={props.mode}
         readOnly={!!props.readOnly}
-        onSent={() => {
-          // Frozen attended send: re-pin even from a released scroll
-          // position. The growth effect lands it once the user row
-          // mounts.
-          timelineFollowingRef.current = true;
-        }}
       />
       {msgMenu && (
         <MessagePopover state={msgMenu} onClose={() => setMsgMenu(null)} />

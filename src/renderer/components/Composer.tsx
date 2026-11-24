@@ -104,10 +104,6 @@ export function Composer(props: {
   thread: ChatThread;
   mode?: "mock" | "synthetic-stdio" | "codex";
   readOnly?: boolean;
-  /** P2-30: fired when the user issues a send from this composer — the
-   *  timeline treats it as the frozen attended send and re-pins even
-   *  from a released scroll position. */
-  onSent?: () => void;
 }): React.JSX.Element {
   const t = useT();
   const { thread } = props;
@@ -277,9 +273,10 @@ export function Composer(props: {
     // F09: an armed edit always takes the resend path — queueing an
     // edited message behind the running turn would silently skip the
     // rewind; the engine refuses resend while busy with a clear error.
+    // The attended-send pin fires inside clientStore once a real send
+    // leaves — an empty draft or a /plan local command never arms it.
     if (running && !editTarget) void clientStore.interruptSendDraft(thread.id);
     else void clientStore.sendDraft(thread.id);
-    props.onSent?.();
   };
   const queue = () => {
     if (readOnly) return;

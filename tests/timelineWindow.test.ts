@@ -139,5 +139,17 @@ describe("scroll follow (P2-30, frozen ThreadTimeline)", () => {
     expect(shouldPageHistory({ ...base, lastPageAt: 9_750, now: 10_000 })).toBe(
       true,
     );
+    // P2-30 (frozen top pill): a landing exactly on scrollTop 0 pages
+    // even inside the cooldown and without upward motion — the gesture
+    // bound can never strand the rest of the history there.
+    expect(
+      shouldPageHistory({ ...base, scrollTop: 0, lastPageAt: 9_800 }),
+    ).toBe(true);
+    expect(shouldPageHistory({ ...base, scrollTop: 0, movedUp: false })).toBe(
+      true,
+    );
+    expect(
+      shouldPageHistory({ ...base, scrollTop: 0, movedUp: false, hidden: 0 }),
+    ).toBe(false);
   });
 });
