@@ -8,15 +8,17 @@ import {
   TRANSLATED_LANGUAGES,
   catalogKeys,
   translate,
+  translateDetail,
   translateError,
   translateNotice,
   zhHansKeys,
 } from "../src/renderer/i18n";
+import { MCP_CATALOG } from "../src/shared/mcpCatalog";
 import { LANGUAGE_IDS, LANGUAGE_LABELS } from "../src/shared/types";
 import { THEMES } from "../src/renderer/theme";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -135,6 +137,126 @@ describe("i18n", () => {
     // An untemplated notice falls through to the prefix path.
     const raw = "UNLISTED_THING: happened";
     expect(translateNotice(t, raw)).toBe(translateError(t, raw));
+  });
+
+  it("covers P2-26 and P2-28 catalog surfaces across all translated languages", () => {
+    const surfaceKeys = [
+      // Provider errors
+      "Codex reported an error.",
+      "Codex refused the MCP server configuration, so this session runs without MCP servers. Check MCP in Settings.",
+      "Codex's stored login has expired. Run `codex login` in a terminal, then check again.",
+      "Codex could not be asked for its usage.",
+      // Plan approval & permission prompts
+      "Plan ready",
+      "Ready to build this plan?",
+      "Implement this plan",
+      "Additional permissions",
+      "Network access",
+      "Apply these changes?",
+      "Grant extra access?",
+      "Run this command?",
+      // Provider errors
+      "Z.ai declined the reset.",
+      "Stopped or interrupted",
+      // Usage & reset details
+      "Unknown reset time",
+      "tomorrow at %@",
+      "Usage limit reached · resets %@",
+      // Tool-call rows
+      "Send out a head",
+      "Send out a sub-agent",
+      "Web search",
+      "Image",
+      "Called %d tools",
+      // Model descriptions
+      "OpenAI · latest frontier model for general complex work",
+      "Anthropic · best combo of speed & intelligence",
+      "Best reasoning and coding quality",
+      // Menus, notifications & update errors
+      "Increase Font Size",
+      "Pi sent a notification.",
+      "The update check failed.",
+      "The update download failed its checksum check.",
+      "The update information could not be read.",
+      // Hydra merge notes
+      "Landing sub-agent work",
+      "Merged sub-agent changes in %@",
+      "Already on main: nothing to merge.",
+      // MCP sign-in pages & errors
+      "Couldn't find the sign-in page.",
+      "Sign-in was rejected. Sign in again in your browser.",
+      "MCP HTTP error (status %d)",
+    ];
+    const langKeySets = new Map(
+      TRANSLATED_LANGUAGES.map((lang) => [lang, new Set(catalogKeys(lang))]),
+    );
+    for (const key of surfaceKeys) {
+      expect(translate("zh-Hans", key), `zh-Hans missing ${key}`).not.toBe(key);
+      for (const lang of TRANSLATED_LANGUAGES) {
+        expect(langKeySets.get(lang)!.has(key), `${lang} catalog missing ${key}`).toBe(true);
+      }
+    }
+
+    // Every MCP catalog summary and input field label/help must translate.
+    for (const entry of MCP_CATALOG) {
+      expect(translate("zh-Hans", entry.summary), `zh-Hans mcp summary: ${entry.id}`).not.toBe(
+        entry.summary,
+      );
+      for (const lang of TRANSLATED_LANGUAGES) {
+        expect(langKeySets.get(lang)!.has(entry.summary), `${lang} mcp summary: ${entry.id}`).toBe(
+          true,
+        );
+        for (const field of entry.fields ?? []) {
+          expect(translate("zh-Hans", field.label), `zh-Hans mcp label: ${field.label}`).not.toBe(
+            field.label,
+          );
+          expect(langKeySets.get(lang)!.has(field.label), `${lang} mcp label: ${field.label}`).toBe(
+            true,
+          );
+          if (field.help) {
+            expect(translate("zh-Hans", field.help), `zh-Hans mcp help: ${field.help}`).not.toBe(
+              field.help,
+            );
+            expect(langKeySets.get(lang)!.has(field.help), `${lang} mcp help: ${field.help}`).toBe(
+              true,
+            );
+          }
+        }
+      }
+    }
+  });
+
+  it("translateNotice and translateDetail recover P2-26/P2-28 runtime messages", () => {
+    const t = (k: string, ...vars: string[]) => translate("zh-Hans", k, vars);
+
+    const conflictOne =
+      "Walter's work landed; the lead is settling a conflict in 1 file.\n`src/a.ts`\n\nThe checkout had moved on where Walter was working, so the merge was three-way and left markers in this file. The lead resolves them before the work goes out; nothing to do on your side.";
+    const conflictTranslated = translateNotice(t, conflictOne);
+    expect(conflictTranslated).toContain("Walter 的工作已落地");
+    expect(conflictTranslated).toContain("`src/a.ts`");
+
+    const patchWithReason =
+      "Hank's work did not land and was kept as a patch.\n`src/b.ts`\n\nWhy it did not land: the copy was gone before its work could land.\n\nApply it with `git apply --3way .tivano/hank.patch` and settle what conflicts.";
+    const patchTranslated = translateNotice(t, patchWithReason);
+    expect(patchTranslated).toContain("Hank 的工作没有落地");
+    expect(patchTranslated).toContain("没有落地的原因");
+    expect(patchTranslated).toContain(".tivano/hank.patch");
+
+    const patchNoReason =
+      "Hank's work did not land and was kept as a patch.\n`src/b.ts`\n\nApply it with `git apply --3way .tivano/hank.patch` and settle what conflicts.";
+    expect(translateNotice(t, patchNoReason)).toContain("Hank 的工作没有落地");
+
+    expect(
+      translateNotice(t, "Usage limit reached. Continuing automatically at tomorrow at 9:00 AM."),
+    ).toContain("明天 9:00 AM");
+    expect(translateNotice(t, 'Work handed off to "Next task".')).toContain("Next task");
+    expect(translateNotice(t, 'Work handed off to "Next task".')).toContain("交接");
+
+    const winCwd = win32.join("C:\\", "repo");
+    expect(translateDetail(t, `cwd: ${winCwd}`)).toContain(`工作目录：${winCwd}`);
+    expect(translateDetail(t, "network access, read: src/a.ts, glob scan depth 3")).toBe(
+      "网络访问、读取：src/a.ts、glob 扫描深度 3",
+    );
   });
 });
 

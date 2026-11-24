@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, callApi } from "../client";
 import { useT } from "../locale";
+import { translateError } from "../i18n";
 
 interface EditorEntry {
   id: string;
@@ -57,7 +58,7 @@ export function OpenInMenu(props: {
     setNote(null);
     fn()
       .then(() => setOpen(false))
-      .catch((e) => setNote(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setNote(translateError(t, e instanceof Error ? e.message : String(e))));
   };
 
   return (

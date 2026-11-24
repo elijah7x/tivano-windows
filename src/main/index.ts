@@ -134,6 +134,34 @@ const MAIN_STRINGS = {
     ko: "이미지",
     fr: "Images",
   },
+  "Could not finish closing cleanly": {
+    "zh-Hans": "无法彻底完成关闭",
+    "zh-Hant": "無法完全完成關閉",
+    ja: "終了処理を正常に完了できませんでした",
+    ko: "종료 처리를 완전히 끝내지 못했습니다",
+    fr: "Impossible de terminer la fermeture proprement",
+  },
+  "Nothing was deleted; the data file and child processes were left untouched where their state was uncertain.": {
+    "zh-Hans": "未删除任何数据；状态不确定的数据文件和子进程均已保留原样。",
+    "zh-Hant": "未刪除任何資料；狀態不確定的資料檔案與子處理程序皆已保留原樣。",
+    ja: "何も削除されていません。状態が不確定なデータファイルおよび子プロセスはそのまま残されました。",
+    ko: "삭제된 항목이 없습니다. 상태가 불확실한 데이터 파일과 하위 프로세스는 그대로 유지되었습니다.",
+    fr: "Rien n’a été supprimé ; le fichier de données et les processus enfants dont l’état était incertain ont été laissés intacts.",
+  },
+  Retry: {
+    "zh-Hans": "重试",
+    "zh-Hant": "重試",
+    ja: "再試行",
+    ko: "다시 시도",
+    fr: "Réessayer",
+  },
+  "Keep open (read-only)": {
+    "zh-Hans": "保持打开（只读）",
+    "zh-Hant": "保持開啟（唯讀）",
+    ja: "開いたままにする（読み取り専用）",
+    ko: "열린 상태 유지(읽기 전용)",
+    fr: "Laisser ouvert (lecture seule)",
+  },
 } as const satisfies Record<string, Record<Exclude<LanguageId, "en">, string>>;
 
 function mainT(lang: LanguageId, key: keyof typeof MAIN_STRINGS): string {
@@ -478,11 +506,12 @@ const coordinator = new CloseCoordinator({
     if (process.env.TIVANO_TEST_ASK === "keep") return "keep";
     if (process.env.TIVANO_TEST_ASK === "retry") return "retry";
     if (!win || win.isDestroyed()) return "keep";
+    const lang = store.state.settings.language ?? "en";
     const r = await dialog.showMessageBox(win, {
       type: "error",
-      message: "Could not finish closing cleanly",
-      detail: `${failure}\n\nNothing was deleted; the data file and child processes were left untouched where their state was uncertain.`,
-      buttons: ["Retry", "Keep open (read-only)"],
+      message: mainT(lang, "Could not finish closing cleanly"),
+      detail: `${failure}\n\n${mainT(lang, "Nothing was deleted; the data file and child processes were left untouched where their state was uncertain.")}`,
+      buttons: [mainT(lang, "Retry"), mainT(lang, "Keep open (read-only)")],
       defaultId: 0,
       cancelId: 1,
     });

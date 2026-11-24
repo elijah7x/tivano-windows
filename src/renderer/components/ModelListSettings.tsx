@@ -40,6 +40,7 @@ import {
   type ModelSection,
 } from "../../shared/modelList";
 import { useT } from "../locale";
+import { translateError } from "../i18n";
 import { api, tryCall, clientStore } from "../client";
 
 function effortTitle(effort: string): string {
@@ -302,7 +303,7 @@ export function ModelListSettings(): React.JSX.Element {
     const parts = [t("Codex")];
     if (opt && opt.efforts.length > 0) {
       const eff = pref?.effort ?? opt.defaultEffort;
-      if (eff) parts.push(`${effortTitle(eff)} ${t("effort")}`);
+      if (eff) parts.push(`${t(effortTitle(eff))} ${t("effort")}`);
     }
     if (pref?.fastMode === true && opt?.fastTier) parts.push(t("Fast"));
     return parts.join(" · ");
@@ -600,7 +601,7 @@ export function ModelListSettings(): React.JSX.Element {
         {catalog === null ? (
           <div className="ml-row"><span className="ml-detail">{t("Loading model list…")}</span></div>
         ) : catalog.state !== "ready" ? (
-          <div className="ml-row"><span className="ml-detail">{catalog.reason}</span></div>
+          <div className="ml-row"><span className="ml-detail">{translateError(t, catalog.reason)}</span></div>
         ) : catalogMatches.length === 0 ? (
           <div className="ml-row">
             <span className="ml-detail">
@@ -620,7 +621,7 @@ export function ModelListSettings(): React.JSX.Element {
                   {m.isDefault ? " ★" : ""}
                 </span>
                 <span className="ml-summary">
-                  {m.detail ?? ""}
+                  {m.detail ? t(m.detail) : ""}
                   {m.efforts.length > 0 ? ` · ${m.efforts.length} ${t("efforts")}` : ""}
                 </span>
                 <button
@@ -832,7 +833,7 @@ function EffortCard(props: {
           onClick={() => props.onPref({ effort: e, fastMode: fast })}
         >
           <span className="suggest-name">
-            {effortTitle(e)}
+            {t(effortTitle(e))}
             {opt?.defaultEffort === e ? ` (${t("model default")})` : ""}
           </span>
         </button>

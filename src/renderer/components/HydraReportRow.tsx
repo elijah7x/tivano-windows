@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { personaAt } from "../../shared/hydraDelegation";
 import { parseHydraReportDigest, type Head, type Landing } from "../../shared/hydraReportDigest";
 import { useT } from "../locale";
+import { translateError } from "../i18n";
 import { renderMarkdown } from "../markdown";
 
 const hex = (n: number): string => `#${n.toString(16).padStart(6, "0")}`;
@@ -58,7 +59,7 @@ function landingView(landing: Landing, t: (k: string, ...v: string[]) => string)
     <div className={`hr-landing ${cls}`}>
       <div className="hr-landing-head">
         {landing.kind === "landed" ? t("Landed in your checkout") : t("Did not land")}
-        {landing.kind === "notLanded" && landing.error ? ` (${landing.error})` : ""}
+        {landing.kind === "notLanded" && landing.error ? ` (${translateError(t, landing.error)})` : ""}
       </div>
       {landing.files.length > 0 && (
         <ul className="hr-files">
@@ -153,7 +154,7 @@ export function HydraReportRow(props: {
         <span className={`hr-outcome s-${h.outcome}`}>
           {h.outcome === "done" ? t("done") : h.outcome === "failed" ? t("failed") : t("stopped")}
         </span>
-        {h.effort && <span className="hr-effort">{h.effort}</span>}
+        {h.effort && <span className="hr-effort">{t(h.effort)}</span>}
         <span className="hr-card-task">{h.task}</span>
         {collapsible && <span className="hr-chev" aria-hidden="true" />}
       </button>
