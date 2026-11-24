@@ -153,12 +153,49 @@ describe("resolveMarkdownLinkTarget (P2-31, frozen MarkdownLinkTarget)", () => {
       expect(resolve(p, BASE, stat)).toEqual({ kind: "missing" });
     }
     expect(stat).not.toHaveBeenCalled();
-    // Drive-form device spellings stay local: they take the stat path
-    // under their verbatim \\?\ name.
+    // Drive-form device spellings stay local: the \\?\ prefix strips to
+    // the drive-absolute form and that path stats/opens.
     const device = "\\\\?\\C:\\work\\proj\\a.txt";
+    const stripped = "C:\\work\\proj\\a.txt";
+    expect(resolve(device, BASE, statWith([stripped]))).toEqual({
+      kind: "file",
+      path: stripped,
+    });
+    // With no base they still resolve — they are absolute, not
+    // driveless-rooted (a bare `\x` rightly goes missing here).
+    expect(resolve("\\\\.\\C:\\work\\proj\\a.txt", undefined, statWith([stripped]))).toEqual({
+      kind: "file",
+      path: stripped,
+    });
+    expect(resolve("\\x", undefined, statWith([]))).toEqual({
+      kind: "missing",
+    });
+  });
+
+  it("decodes percent escapes on non-file: local paths (frozen removingPercentEncoding)", () => {
+    const spaced = abs("my dir\\a b.txt");
     expect(
-      resolve(device, BASE, statWith([device])),
-    ).toEqual({ kind: "file", path: device });
+      resolve("my%20dir/a%20b.txt", BASE, statWith([spaced])),
+    ).toEqual({ kind: "file", path: spaced });
+    // A multi-byte UTF-8 run decodes as one sequence.
+    const zh = abs("中\\文.txt");
+    expect(
+      resolve("%E4%B8%AD/%E6%96%87.txt", BASE, statWith([zh])),
+    ).toEqual({ kind: "file", path: zh });
+    // A stray % that is not an escape stays literal.
+    const literal = abs("a%b.txt");
+    expect(resolve("a%b.txt", BASE, statWith([literal]))).toEqual({
+      kind: "file",
+      path: literal,
+    });
+  });
+
+  it("opens a directory whose name carries an executable extension", () => {
+    const d = abs("tools.com");
+    expect(resolve("tools.com", BASE, statWith([], [d]))).toEqual({
+      kind: "file",
+      path: d,
+    });
   });
 
   it("expands ~ and refuses a relative path with no base", () => {
@@ -214,7 +251,6 @@ describe("resolveMarkdownLinkTarget (P2-31, frozen MarkdownLinkTarget)", () => {
     ]) {
       expect(resolve(href, BASE, stat)).toEqual({ kind: "missing" });
     }
-    expect(stat).not.toHaveBeenCalled();
     // A `run.exe:12` strip target is refused the same way.
     const stat2 = statWith([abs("tools\\run.exe")]);
     expect(resolve("tools/run.exe:12", BASE, stat2)).toEqual({ kind: "missing" });
@@ -248,11 +284,18 @@ describe("resolveMarkdownLinkTarget (P2-31, frozen MarkdownLinkTarget)", () => {
   });
 
   it("still stats the local device namespace (\\\\?\\ and \\\\.\\)", () => {
-    const f = "\\\\?\\C:\\work\\proj\\dev.txt";
-    expect(resolve(f, BASE, statWith([f]))).toEqual({
-      kind: "file",
-      path: f,
-    });
+    // The device prefix strips to the drive-absolute form; that path
+    // is what stats and opens.
+    const stripped = "C:\\work\\proj\\dev.txt";
+    for (const f of [
+      "\\\\?\\C:\\work\\proj\\dev.txt",
+      "\\\\.\\C:\\work\\proj\\dev.txt",
+    ]) {
+      expect(resolve(f, BASE, statWith([stripped]))).toEqual({
+        kind: "file",
+        path: stripped,
+      });
+    }
   });
 
   it("beeps on empty and whitespace-only input", () => {

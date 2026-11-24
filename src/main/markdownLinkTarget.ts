@@ -62,13 +62,33 @@ export function resolveMarkdownLinkTarget(
       // Frozen: `url.host == nil` marks the pseudo-scheme case — the
       // authority check keeps `https://h/x` from ever reading as a path.
       if (url.host === "") {
-        const local = resolveLocalPath(raw, base, stat, paths);
+        const local = resolveLocalPath(
+          decodePathEscapes(raw),
+          base,
+          stat,
+          paths,
+        );
         if (local.kind === "file") return local;
       }
       return { kind: "web", url: raw };
     }
   }
-  return resolveLocalPath(raw, base, stat, paths);
+  return resolveLocalPath(decodePathEscapes(raw), base, stat, paths);
+}
+
+/** The renderer forbids literal whitespace in link targets, so a local
+ *  path with spaces arrives percent-encoded (`my%20dir/a.txt`). Frozen
+ *  decodes via `removingPercentEncoding`, which leaves malformed
+ *  escapes alone — decode each maximal run of %XX pairs and keep
+ *  anything else verbatim (a stray `%` stays literal). */
+function decodePathEscapes(raw: string): string {
+  return raw.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+    try {
+      return decodeURIComponent(run);
+    } catch {
+      return run;
+    }
+  });
 }
 
 function isWindowsAbsoluteLike(raw: string): boolean {
@@ -119,6 +139,11 @@ function resolveLocalPath(
 ): MarkdownLinkTarget {
   let path = expandTilde(rawPath);
   if (isUncPath(path)) return { kind: "missing" };
+  // Drive-form device spellings (`\\?\C:\x`, `\\.\C:\x`) are absolute
+  // drive paths — strip the namespace prefix before the rooted check,
+  // which would otherwise treat them as driveless.
+  const device = path.match(/^\\\\[.?]\\([a-zA-Z]:[\\/].*)$/);
+  if (device !== null) path = device[1];
   if (/^[\\/]/.test(path)) {
     // A rooted but driveless path (`\x`, `/x`) resolves on the BASE's
     // drive — `isAbsolute` counts it absolute on win32, so without this
@@ -132,8 +157,12 @@ function resolveLocalPath(
     path = paths.resolve(path);
   }
   if (isUncPath(path)) return { kind: "missing" };
+  const st = stat(path);
+  // A directory hit opens in Explorer regardless of its extension —
+  // the exec deny list guards launches, not folders named `tools.com`.
+  if (st === "dir") return { kind: "file", path };
   if (isExecutablePath(path)) return { kind: "missing" };
-  if (stat(path) !== "none") return { kind: "file", path };
+  if (st === "file") return { kind: "file", path };
   const stripped = stripLineColumnSuffix(path, stat);
   if (stripped !== undefined && !isExecutablePath(stripped))
     return { kind: "file", path: stripped };
