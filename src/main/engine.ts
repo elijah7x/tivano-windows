@@ -813,8 +813,10 @@ export class Engine {
       externalHydra?: { enabled: boolean; pairId?: string };
       /** P2-42: a one-off resolved default for this create (Quick chat's
        *  preset chip) — applied like the saved newThreadDefault, never
-       *  persisted back to it. */
-      newThreadDefault?: import("../shared/hydra").NewThreadDefault;
+       *  persisted back to it. An explicit null overrides the saved
+       *  default with Last selection (the chip's own "Last selection"
+       *  entry). */
+      newThreadDefault?: import("../shared/hydra").NewThreadDefault | null;
     },
   ): ChatThread {
     this.assertMutable();
@@ -822,6 +824,26 @@ export class Engine {
     // Frozen: starting a thread in a shelved project wakes it.
     if (projectId) this.wakeShelvedProject(projectId);
     const settings = this.store.state.settings;
+    // P2-42: frozen newThreadDefault resolves BEFORE the Last-selection
+    // seeds below — a resolved pick replaces them wholesale (frozen
+    // makeThread: an explicit model pick is a pair-less chat, a preset
+    // pick binds its own pair/mode); only a null seed (no choice or an
+    // unavailable one) keeps the saved last-pair/sub-agent defaults.
+    const choice =
+      opts?.newThreadDefault === undefined
+        ? settings.newThreadDefault
+        : (opts.newThreadDefault ?? undefined);
+    const defaultSeed = opts?.externalHydra
+      ? null
+      : newThreadDefaultSeed(
+          choice,
+          settings.hydraPairs ?? [],
+          // Frozen gates the preset default on the app-wide Hydra
+          // switch (settings.hydraEnabled), not the per-chat default.
+          settings.hydraEnabled !== false,
+          this.provider.descriptor.mode,
+          this.readyModelIds,
+        );
     const thread: ChatThread = {
       id: randomUUID(),
       projectId,
@@ -846,34 +868,38 @@ export class Engine {
       // inherits the saved default or last pair.
       hydraEnabled: opts?.externalHydra
         ? opts.externalHydra.enabled
-        : settings.hydraDefaultEnabled !== false,
+        : defaultSeed?.hydraEnabled ?? settings.hydraDefaultEnabled !== false,
       ...(opts?.externalHydra
         ? opts.externalHydra.pairId
           ? { hydraPairId: opts.externalHydra.pairId }
           : {}
-        : settings.lastHydraPairId
-          ? { hydraPairId: settings.lastHydraPairId }
-          : {}),
+        : defaultSeed !== null
+          ? defaultSeed.hydraPairId !== undefined
+            ? { hydraPairId: defaultSeed.hydraPairId }
+            : {}
+          : settings.lastHydraPairId
+            ? { hydraPairId: settings.lastHydraPairId }
+            : {}),
       ...(opts?.externalHydra
         ? {}
-        : settings.subagentModeDefault
-          ? { subagentMode: settings.subagentModeDefault }
-          : {}),
-      // P2-42: frozen newThreadDefault — an explicit model or preset wins
-      // over the Last-selection seeds above; a deleted preset or an
-      // unavailable pick falls back to them. External creates keep
-      // their own resolved choice.
-      ...(opts?.externalHydra
+        : defaultSeed?.subagentMode
+          ? { subagentMode: defaultSeed.subagentMode }
+          : defaultSeed === null && settings.subagentModeDefault
+            ? { subagentMode: settings.subagentModeDefault }
+            : {}),
+      // P2-42: frozen newThreadDefault — the resolved seed's lead
+      // model/effort (an explicit model pick or a preset's lead) wins
+      // over Last selection; pair/mode/enabled are applied above.
+      ...(defaultSeed === null
         ? {}
-        : (newThreadDefaultSeed(
-            opts?.newThreadDefault ?? settings.newThreadDefault,
-            settings.hydraPairs ?? [],
-            // Frozen gates the preset default on the app-wide Hydra
-            // switch (settings.hydraEnabled), not the per-chat default.
-            settings.hydraEnabled !== false,
-            this.provider.descriptor.mode,
-            this.readyModelIds,
-          ) ?? {})),
+        : {
+            ...(defaultSeed.codexModel !== undefined
+              ? { codexModel: defaultSeed.codexModel }
+              : {}),
+            ...(defaultSeed.codexEffort !== undefined
+              ? { codexEffort: defaultSeed.codexEffort }
+              : {}),
+          }),
     };
     this.store.update((d) => {
       d.threads.push(thread);

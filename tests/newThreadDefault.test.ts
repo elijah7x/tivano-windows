@@ -9,9 +9,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { Store } from "../src/main/store";
+import { Store, emptyStore } from "../src/main/store";
 import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
+import { validateStoreFile } from "../src/main/storeDoc";
 import {
   newHydraPair,
   newThreadDefaultAfterPairChange,
@@ -196,5 +197,83 @@ describe("P2-42 createThread seeding", () => {
     engine.setSettings({ newThreadDefault: null });
     expect(store.state.settings.newThreadDefault).toBeUndefined();
     expect(engine.createThread(null).codexModel).toBeUndefined();
+  });
+  it("an explicit .model pick creates a pair-less chat (frozen makeThread)", () => {
+    const { engine } = makeEngine();
+    const pair = newHydraPair("mock");
+    // The saved last-pair + sub-agent default must not leak onto an
+    // explicit model pick — frozen makeThread starts a model-selected
+    // chat with no pair at all.
+    engine.setSettings({
+      hydraPairs: [pair],
+      lastHydraPairId: pair.id,
+      subagentModeDefault: "preset",
+    });
+    const t = engine.createThread(null, undefined, {
+      newThreadDefault: { kind: "model", model: "m1" },
+    });
+    expect(t.hydraPairId).toBeUndefined();
+    expect(t.subagentMode).toBeUndefined();
+    expect(t.codexModel).toBe("m1");
+    // A saved model default behaves identically.
+    engine.setSettings({
+      newThreadDefault: { kind: "model", model: "m9", effort: "high" },
+    });
+    const t2 = engine.createThread(null);
+    expect(t2.hydraPairId).toBeUndefined();
+    expect(t2.subagentMode).toBeUndefined();
+    expect(t2.codexModel).toBe("m9");
+    expect(t2.codexEffort).toBe("high");
+  });
+  it("an explicit Last-selection pick overrides a saved preset default", () => {
+    const { engine } = makeEngine();
+    const pair = newHydraPair("mock");
+    engine.setSettings({
+      hydraPairs: [pair],
+      newThreadDefault: { kind: "pair", pairId: pair.id },
+      lastHydraPairId: pair.id,
+      subagentModeDefault: "same",
+    });
+    const t = engine.createThread(null, undefined, { newThreadDefault: null });
+    // Last selection resumes the last-used pair/mode — not the preset.
+    expect(t.hydraPairId).toBe(pair.id);
+    expect(t.subagentMode).toBe("same");
+  });
+  it("a persisted half-pick narrows to Last selection on load", () => {
+    const doc = emptyStore();
+    for (const half of [
+      { kind: "model" },
+      { kind: "pair" },
+      { kind: "model", effort: "high" },
+    ]) {
+      const d = {
+        ...doc,
+        settings: { ...doc.settings, newThreadDefault: half },
+      };
+      expect(validateStoreFile(d).settings.newThreadDefault).toBeUndefined();
+    }
+    const good = {
+      ...doc,
+      settings: {
+        ...doc.settings,
+        newThreadDefault: { kind: "model", model: "m", effort: "low" },
+      },
+    };
+    expect(validateStoreFile(good).settings.newThreadDefault).toEqual({
+      kind: "model",
+      model: "m",
+      effort: "low",
+    });
+    const goodPair = {
+      ...doc,
+      settings: {
+        ...doc.settings,
+        newThreadDefault: { kind: "pair", pairId: "p1" },
+      },
+    };
+    expect(validateStoreFile(goodPair).settings.newThreadDefault).toEqual({
+      kind: "pair",
+      pairId: "p1",
+    });
   });
 });

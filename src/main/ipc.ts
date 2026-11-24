@@ -41,7 +41,10 @@ export interface IpcOptions {
   quick?: {
     show: () => void;
     hide: () => void;
-    expand: (text: string) => void;
+    expand: (
+      text: string,
+      pick?: import("../shared/hydra").NewThreadDefault | null,
+    ) => void;
     isVisible: () => boolean;
   };
   /** F33 local control — absent only in builds without the slice. */
@@ -288,18 +291,41 @@ export function registerIpc(opts: IpcOptions): () => void {
     // it (the old create-then-setThreadModel path left the pair bound
     // and dropped the lead effort).
     const thread = engine.createThread(null, undefined, {
-      ...(p.pairId
-        ? { newThreadDefault: { kind: "pair" as const, pairId: p.pairId } }
-        : p.model
-          ? { newThreadDefault: { kind: "model" as const, model: p.model } }
-          : {}),
+      ...(p.last
+        ? { newThreadDefault: null }
+        : p.pairId
+          ? { newThreadDefault: { kind: "pair" as const, pairId: p.pairId } }
+          : p.model
+            ? {
+                newThreadDefault: {
+                  kind: "model" as const,
+                  model: p.model,
+                  ...(p.effort ? { effort: p.effort } : {}),
+                },
+              }
+            : {}),
     });
     engine.sendTurn(thread.id, p.text);
     opts.quick?.hide();
     if (p.openApp) opts.focusWindow?.();
     return { threadId: thread.id };
   });
-  handle("quick:expand", (p) => opts.quick?.expand(p.text));
+  handle("quick:expand", (p) =>
+    opts.quick?.expand(
+      p.text,
+      p.last
+        ? null
+        : p.pairId
+          ? { kind: "pair" as const, pairId: p.pairId }
+          : p.model
+            ? {
+                kind: "model" as const,
+                model: p.model,
+                ...(p.effort ? { effort: p.effort } : {}),
+              }
+            : undefined,
+    ),
+  );
   handle("projects:set-shelved", (p) => {
     engine.setProjectShelved(p.id, p.shelved);
     return { ok: true };

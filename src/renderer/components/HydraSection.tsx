@@ -45,7 +45,7 @@ import { api, tryCall } from "../client";
 
 type T = (key: string, ...vars: string[]) => string;
 
-interface CatalogProvider {
+export interface CatalogProvider {
   id: string;
   label: string;
   ready: boolean;

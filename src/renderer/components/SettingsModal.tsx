@@ -23,7 +23,11 @@ import { themeById } from "../theme";
 import { ThemePicker } from "./ThemePicker";
 import { TokenActivitySection } from "./TokenActivitySection";
 import { ShortcutsSection } from "./ShortcutsSection";
-import { HydraSection, modelsTitle } from "./HydraSection";
+import {
+  HydraSection,
+  modelsTitle,
+  type CatalogProvider,
+} from "./HydraSection";
 import { McpSection } from "./McpSection";
 import { ForgeSection } from "./ForgeSection";
 import { WallpaperSection } from "./WallpaperSection";
@@ -335,7 +339,7 @@ export function SettingsModal(props: {
         <p className="codex-note">
           {t("A card with the turn's progress bar, or a plain line")}
         </p>
-        <DefaultModelRow settings={settings} />
+        <DefaultModelRow settings={settings} providerId={info.providerId} />
         {/* v2.2.x frozen "Shelve projects" — idle days before a project
             shelves itself; running/unread/open chats keep it put. */}
         <label className="wt-field commit-instructions">
@@ -1033,10 +1037,17 @@ export function SettingsModal(props: {
  *  model, or a sub-agent preset. A saved pick that no longer resolves
  *  shows "(unavailable)": its seeding falls back to Last selection
  *  until it returns. */
-function DefaultModelRow({ settings }: { settings: Settings }) {
+function DefaultModelRow({
+  settings,
+  providerId,
+}: {
+  settings: Settings;
+  providerId: string;
+}) {
   const t = useT();
   const [models, setModels] = useState<string[] | null>(null);
   const [catalogReady, setCatalogReady] = useState(false);
+  const [providers, setProviders] = useState<CatalogProvider[]>([]);
   useEffect(() => {
     void api()
       .invoke("models:list", {})
@@ -1046,8 +1057,21 @@ function DefaultModelRow({ settings }: { settings: Settings }) {
         setModels(cat.state === "ready" ? cat.models.map((m) => m.id) : []);
       })
       .catch(() => setModels([]));
+    void api()
+      .invoke("hydra:catalog", {})
+      .then((c) =>
+        setProviders((c as { providers?: CatalogProvider[] }).providers ?? []),
+      )
+      .catch(() => undefined);
   }, []);
   const pairs = settings.hydraPairs ?? [];
+  // Frozen ConversationSettingsPage only lists presets usable here —
+  // the app-wide Hydra switch on and the pair's provider matching the
+  // active provider; the same rules decide a saved default's
+  // "(unavailable)" mark (frozen newThreadDefaultSeed).
+  const usablePairs = pairs.filter(
+    (p) => settings.hydraEnabled !== false && p.provider === providerId,
+  );
   const saved = settings.newThreadDefault;
   const value =
     saved === undefined
@@ -1056,10 +1080,12 @@ function DefaultModelRow({ settings }: { settings: Settings }) {
         ? `pair:${saved.pairId}`
         : `model:${saved.model}`;
   // A saved model is only "unavailable" when a loaded catalog provably
-  // lacks it — a pending/failed list must not condemn the pick.
+  // lacks it — a pending/failed list must not condemn the pick. A saved
+  // pair is unavailable whenever it fails the usable-preset rules:
+  // Hydra off, a foreign provider, or deleted.
   const resolved =
     saved === undefined ||
-    (saved.kind === "pair" && pairs.some((p) => p.id === saved.pairId)) ||
+    (saved.kind === "pair" && usablePairs.some((p) => p.id === saved.pairId)) ||
     (saved.kind === "model" &&
       !(catalogReady && !(models ?? []).includes(saved.model)));
   const unavailable = !resolved;
@@ -1087,9 +1113,9 @@ function DefaultModelRow({ settings }: { settings: Settings }) {
             {id}
           </option>
         ))}
-        {pairs.map((p) => (
+        {usablePairs.map((p) => (
           <option key={`p:${p.id}`} value={`pair:${p.id}`}>
-            {(p.name ?? "").trim() || modelsTitle(t, p, [])}
+            {(p.name ?? "").trim() || modelsTitle(t, p, providers)}
           </option>
         ))}
         {unavailable && (

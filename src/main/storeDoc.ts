@@ -23,6 +23,7 @@ import {
 } from "../shared/validate";
 import { SHORTCUT_COMMANDS, type KeyChord } from "../shared/shortcuts";
 import { MODEL_LIST_LIMIT, type ModelPreference } from "../shared/modelList";
+import type { NewThreadDefault } from "../shared/hydra";
 import {
   SCHEMA_VERSION,
   THEME_IDS,
@@ -393,12 +394,28 @@ const vHydraPair = vObject({
 
 // P2-42: frozen NewThreadDefault — optional so every pre-P2-42 store
 // loads verbatim; absent = "Last selection".
-const vNewThreadDefault = vObject({
-  kind: vEnum(["model", "pair"] as const),
-  model: vOptional(vNonEmptyString(200)),
-  effort: vOptional(vNonEmptyString(100)),
-  pairId: vOptional(vNonEmptyString(120)),
-});
+const vNewThreadDefault: Validator<NewThreadDefault | undefined> = (v) => {
+  const raw = vObject({
+    kind: vEnum(["model", "pair"] as const),
+    model: vOptional(vNonEmptyString(200)),
+    effort: vOptional(vNonEmptyString(100)),
+    pairId: vOptional(vNonEmptyString(120)),
+  })(v);
+  // Discriminated union like the settings:set narrowing — a half-pick
+  // on disk ({kind:"model"} without model, or vice versa) narrows to
+  // absent rather than seeding undefined fields.
+  if (raw.kind === "pair")
+    return raw.pairId === undefined
+      ? undefined
+      : { kind: "pair", pairId: raw.pairId };
+  return raw.model === undefined
+    ? undefined
+    : {
+        kind: "model",
+        model: raw.model,
+        ...(raw.effort !== undefined ? { effort: raw.effort } : {}),
+      };
+};
 
 // P1-37 Chimera presets — adaptive sub-agent identities.
 const vChimeraPick = vObject({
