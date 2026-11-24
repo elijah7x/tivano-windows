@@ -371,7 +371,10 @@ export class LocalControlService {
         return { info: this.welcome() };
       case "providers": {
         const d = engine.providerDescriptor;
-        const catalog = d.mode === "codex" ? await engine.codexModels() : null;
+        const catalog =
+          d.mode === "codex" || d.mode === "antigravity"
+            ? await engine.codexModels()
+            : null;
         return {
           providers: [
             {

@@ -17,6 +17,7 @@ import {
 import { MockProvider, MOCK_ACTION_ID } from "./mockProvider";
 import { probeForgeClis, type ForgeCliStatus } from "./forgeProbe";
 import { antiSlopInstructions } from "./antiSlop";
+import { isAntigravityTransientFailure } from "./antigravityProvider";
 import { builtinSlashCommands } from "../shared/slashCommands";
 import { clampFontSize } from "../shared/typeScale";
 import { buildWhatsNewInfo, recordWhatsNewLaunch } from "../shared/whatsNew";
@@ -98,6 +99,7 @@ import { INTERRUPTED_MARKER } from "../shared/types";
 import { threadsInAffiliation } from "../shared/threadOrder";
 import { extractTitle } from "../shared/textGen";
 import type {
+  AntigravityInfo,
   AppInfo,
   ApprovalRequest,
   ChatThread,
@@ -217,12 +219,22 @@ export class Engine {
   private readonly quietLabelMs = Number(process.env.TIVANO_QUIET_LABEL_MS) || 5 * 60_000;
   private readonly quietStopMs = Number(process.env.TIVANO_QUIET_STOP_MS) || 10 * 60_000;
   private readonly quietToolStopMs = Number(process.env.TIVANO_QUIET_TOOL_STOP_MS) || 30 * 60_000;
+  private readonly quietAbandonedMs =
+    Number(process.env.TIVANO_QUIET_ABANDONED_MS) || 30 * 60_000;
   /** Frozen HydraWatchdog.toolCounts — a head's tool-call count at the
    *  last look; unchanged across two looks is part of the stall check. */
   private readonly hydraQuietTools = new Map<string, number>();
   /** Frozen HydraWatchdog.stalledHeadIDs — heads the quiet watchdog is
    *  stopping; finishHydraHead turns the mark into stopReason=stalled. */
   private readonly hydraStalledIds = new Set<string>();
+  /** Antigravity heads that already used their one-time 10-minute stall resume. */
+  private readonly hydraStallResumedIds = new Set<string>();
+  /** Connection-drop transient retry bookkeeping per thread (max 2 attempts: 3s, 9s). */
+  private readonly transientRetryCounts = new Map<string, number>();
+  private readonly transientRetryTimers = new Map<
+    string,
+    { timer: NodeJS.Timeout; token: string; model: string | undefined; isHead: boolean; resumePrompt?: string }
+  >();
   /** Per-turn checkpoint lifecycle — attached by bootstrap when the
    *  service exists. Optional so tests/mock runs keep the old path. */
   private checkpoints?: CheckpointCoordinator;
@@ -634,6 +646,8 @@ export class Engine {
   /** Codex runtime status for AppInfo — supplied by bootstrap (index.ts)
    *  because it owns the resolved CodexRuntimeConfig. */
   codexInfo?: CodexInfo;
+  /** Antigravity runtime status injected by main bootstrap. */
+  antigravityInfo?: AntigravityInfo;
 
   /** Read-only descriptor for external surfaces (local control). */
   get providerDescriptor() {
@@ -656,12 +670,13 @@ export class Engine {
       providerLabel: desc.label,
       home: homedir(),
       worktreesDir: join(this.dataRoot, "worktrees"),
-      mock: true, // every current provider is synthetic
+      mock: desc.synthetic,
       mode: desc.mode,
       ...(desc.compact ? { supportsCompact: true as const } : {}),
       realCli: { status: "not-configured" },
       ...(desc.runtimeInfo ? { syntheticRuntime: desc.runtimeInfo } : {}),
       ...(this.codexInfo ? { codex: this.codexInfo } : {}),
+      ...(this.antigravityInfo ? { antigravity: this.antigravityInfo } : {}),
       ...(this.recoveredFrom ? { recoveredFrom: this.recoveredFrom } : {}),
       ...(whatsNew ? { whatsNew } : {}),
       ...(typeof TIVANO_TERMINAL_CANDIDATE !== "undefined" &&
@@ -683,6 +698,10 @@ export class Engine {
     // Limit waits die with the process (frozen Task-based parity).
     for (const w of this.limitWaits.values()) clearTimeout(w.timer);
     this.limitWaits.clear();
+    for (const r of this.transientRetryTimers.values()) clearTimeout(r.timer);
+    this.transientRetryTimers.clear();
+    this.transientRetryCounts.clear();
+    this.hydraStallResumedIds.clear();
     if (this.quietTimer) {
       clearInterval(this.quietTimer);
       this.quietTimer = null;
@@ -1402,12 +1421,14 @@ export class Engine {
       (turn.status === "running" || turn.status === "waiting-approval")
     ) {
       this.pendingSends.delete(id);
+      this.clearTransientRetry(id, true);
       this.checkpoints?.turnCancelled(id, turn.id);
       this.handles.get(id)?.cancel();
       this.handles.delete(id);
       this.endTurn(thread, turn, "cancelled");
     } else {
       this.pendingSends.delete(id);
+      this.clearTransientRetry(id, true);
     }
     // Frozen parity: an archived thread loses its pin with its row, and
     // archive() dismisses its auto-continue — the limit wait ends with the
@@ -1458,6 +1479,8 @@ export class Engine {
     // Latch the queue first — a synchronous cancel→endTurn callback must
     // never fire a pendingSend on a thread being deleted.
     this.pendingSends.delete(id);
+    this.clearTransientRetry(id, true);
+    this.hydraStallResumedIds.delete(id);
     this.dropPendingChunk(id);
     this.threadAccessOrder.delete(id);
     this.handles.get(id)?.cancel();
@@ -1595,9 +1618,12 @@ export class Engine {
   sendTurn(
     threadId: string,
     text: string,
-    opts?: { authored?: boolean; hydraReport?: number[]; hydraBrief?: boolean },
+    opts?: { authored?: boolean; hydraReport?: number[]; hydraBrief?: boolean; internalRetry?: boolean },
   ): Turn {
     this.assertMutable();
+    if (!opts?.internalRetry) {
+      this.clearTransientRetry(threadId, true);
+    }
     // Frozen beginTurn(userAuthored): a real user request restarts the
     // delegation-round budget; Hydra report/refusal turns don't. The
     // generation bump voids refunds charged under earlier requests.
@@ -2154,7 +2180,8 @@ export class Engine {
           // defaultRuntimeMode, frozen default fullAccess).
           runtimeMode: live.runtimeMode ?? "supervised",
           interactionMode: live.interactionMode ?? "build",
-          ...(this.provider.descriptor.mode === "codex"
+          ...(this.provider.descriptor.mode === "codex" ||
+          this.provider.descriptor.mode === "antigravity"
             ? {
                 ...(live.codexModel ? { model: live.codexModel } : {}),
                 ...(live.codexEffort ? { effort: live.codexEffort } : {}),
@@ -2417,14 +2444,34 @@ export class Engine {
           this.noteTurnEvent(turn.id);
           continue;
         }
-        if (tools.some((m) => m.tool?.state === "running")) continue;
-        const quiet = now - (this.turnLastEvent.get(turn.id) ?? turn.startedAt);
+        const toolRunning = tools.some((m) => m.tool?.state === "running");
+        const isAg = this.provider.descriptor.mode === "antigravity";
+        const lastOutput =
+          (isAg ? this.provider.lastOutputAt?.(thread.id) : undefined) ??
+          this.turnLastEvent.get(turn.id) ??
+          turn.startedAt;
+        const quiet = now - lastOutput;
+        if (isAg && quiet >= this.quietAbandonedMs) {
+          info.stalledNote = this.buildAntigravityStopNote(thread, quiet, true);
+          this.hydraStalledIds.add(thread.id);
+          this.stopHydraHead(thread.id);
+          continue;
+        }
+        if (toolRunning) continue;
         const edits = tools.filter((m) => m.tool?.kind === "edit").length;
         if (
           quiet >= this.quietStopMs &&
           edits === 0 &&
           prevTools === tools.length
         ) {
+          if (isAg && !this.hydraStallResumedIds.has(thread.id)) {
+            this.hydraStallResumedIds.add(thread.id);
+            this.resumeStalledAntigravityHead(thread, turn);
+            continue;
+          }
+          if (isAg) {
+            info.stalledNote = this.buildAntigravityStopNote(thread, quiet, false);
+          }
           this.hydraStalledIds.add(thread.id);
           this.stopHydraHead(thread.id);
         }
@@ -2445,7 +2492,13 @@ export class Engine {
       const toolRunning = thread.messages.some(
         (m) => m.turnId === turn.id && m.kind === "tool" && m.tool?.state === "running",
       );
-      if (quiet >= (toolRunning ? this.quietToolStopMs : this.quietStopMs)) {
+      const isAntigravity = this.provider.descriptor.mode === "antigravity";
+      const stopThreshold = isAntigravity
+        ? this.quietToolStopMs
+        : toolRunning
+          ? this.quietToolStopMs
+          : this.quietStopMs;
+      if (quiet >= stopThreshold) {
         // Frozen: stopQuietInterrupt → error notice + stop once. The
         // interrupt path is the same one a user stop takes, so cancel,
         // expiry and unread marking all reuse it.
@@ -3198,6 +3251,27 @@ export class Engine {
     this.emit({ type: "settings-changed", settings: this.store.state.settings });
   }
 
+  setAntigravityExecutable(path: string | undefined): void {
+    this.assertMutable();
+    if (!this.store.ownsWrites)
+      throw new EngineError("store is not writable — the saved path cannot be persisted");
+    const prev = this.store.state.settings.antigravityExecutable;
+    this.store.update((d) => {
+      if (path === undefined) delete d.settings.antigravityExecutable;
+      else d.settings.antigravityExecutable = path;
+    });
+    try {
+      this.store.flushNow();
+    } catch (err) {
+      this.store.update((d) => {
+        if (prev === undefined) delete d.settings.antigravityExecutable;
+        else d.settings.antigravityExecutable = prev;
+      });
+      throw err;
+    }
+    this.emit({ type: "settings-changed", settings: this.store.state.settings });
+  }
+
   // ---- per-thread model/effort selection (F17) -----------------------------
 
   /**
@@ -3238,6 +3312,8 @@ export class Engine {
     // service-tier-only changes leave the wait alone.
     if (thread.codexModel !== modelBefore && this.limitWaits.has(thread.id))
       this.clearLimitWait(thread.id);
+    if (thread.codexModel !== modelBefore)
+      this.clearTransientRetry(thread.id, true);
   }
 
   /**
@@ -3865,7 +3941,8 @@ export class Engine {
    * pending; a failed read → unavailable with the real reason.
    */
   async codexModels(): Promise<CodexModelCatalog> {
-    if (this.provider.descriptor.mode !== "codex")
+    const mode = this.provider.descriptor.mode;
+    if (mode !== "codex" && mode !== "antigravity")
       return { state: "unsupported", reason: "the active provider has no model catalog" };
     const fetcher = this.provider.modelCatalog;
     if (!fetcher)
@@ -3875,7 +3952,10 @@ export class Engine {
       if (models === null)
         return {
           state: "pending",
-          reason: "no Codex session is bound yet — send a turn, then reopen",
+          reason:
+            mode === "antigravity"
+              ? "no Antigravity session is bound yet — send a turn, then reopen"
+              : "no Codex session is bound yet — send a turn, then reopen",
         };
       return { state: "ready", models };
     } catch (err) {
@@ -3908,7 +3988,7 @@ export class Engine {
       models: { id: string; name: string; efforts: string[] }[];
       defaultModel?: string | undefined;
     } = { id: desc.mode, label: desc.label, ready: true, models: [] };
-    if (desc.mode === "codex") {
+    if (desc.mode === "codex" || desc.mode === "antigravity") {
       const cat = await this.codexModels();
       if (cat.state === "ready") {
         entry.models = cat.models.map((m) => ({
@@ -4762,23 +4842,30 @@ export class Engine {
     // auto-continue wait — while it waits the thread still counts as
     // working (frozen stillWorking), so the failure leaves NO unread
     // mark and fires no completion: it isn't a finished result.
-    if (status === "done") this.maybeReviewTitle(thread);
+    if (status === "done") {
+      this.transientRetryCounts.delete(thread.id);
+      this.maybeReviewTitle(thread);
+    }
 
     const waitingForLimit = this.limitFinished(thread, turn.id, status);
+    const waitingForTransient =
+      !waitingForLimit &&
+      this.pendingSends.get(thread.id) === undefined &&
+      this.scheduleTransientRetryIfEligible(thread, turn, status);
 
     // F28 frozen turnFinished — completion signals. `continues` = a
     // queued message picks up right away (a send-now fires on ANY end
     // status; the queue itself drains only after a completed turn whose
     // first bundle holds real text). `userStopped` = the user cancelled
     // or answered the turn away — both witnessed. A thread still working
-    // (a successor or a limit wait) claims neither the chime nor a
-    // notification.
+    // (a successor, limit wait, or connection-drop auto-continue) claims
+    // neither the chime nor a notification.
     const pending = this.pendingSends.get(thread.id);
     const continues =
       pending !== undefined ||
       (status === "done" && this.nextBundleHasText(thread));
     const userStopped = status === "cancelled" || status === "denied";
-    const stillWorking = continues || waitingForLimit;
+    const stillWorking = continues || waitingForLimit || waitingForTransient;
     const chimed =
       this.store.state.settings.chimeWhenFinished !== false &&
       status !== "interrupted" &&
@@ -4814,6 +4901,7 @@ export class Engine {
     if (
       (status === "done" || status === "error" || status === "interrupted") &&
       !waitingForLimit &&
+      !waitingForTransient &&
       this.store.state.ui.selectedThreadId !== thread.id
     ) {
       thread.hasUnread = true;
@@ -4850,8 +4938,176 @@ export class Engine {
     } else if (status === "done") {
       this.drainFollowUps(thread);
     }
-    this.endTurnHydra(thread, turn, status);
+    if (!waitingForTransient || !thread.hydraHead) {
+      this.endTurnHydra(thread, turn, status);
+    }
     this.updateSleepGuard();
+  }
+
+  private transientRetryDelaysMs(): [number, number] {
+    const raw = process.env.TIVANO_TRANSIENT_RETRY_DELAYS_MS;
+    if (raw) {
+      const parts = raw
+        .split(",")
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n) && n >= 0);
+      if (parts.length >= 2) return [parts[0]!, parts[1]!];
+      if (parts.length === 1) return [parts[0]!, parts[0]!];
+    }
+    return [3_000, 9_000];
+  }
+
+  private clearTransientRetry(threadId: string, resetCount: boolean): void {
+    const existing = this.transientRetryTimers.get(threadId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      this.transientRetryTimers.delete(threadId);
+    }
+    if (resetCount) this.transientRetryCounts.delete(threadId);
+  }
+
+  private buildAntigravityStopNote(
+    thread: ChatThread,
+    quietMs: number,
+    abandoned: boolean,
+  ): string {
+    const minsAgo = Math.max(0, Math.floor(quietMs / 60_000));
+    const lastWarning = [...thread.messages]
+      .reverse()
+      .find(
+        (m) =>
+          m.kind === "notice" &&
+          (m.noticeLevel === "warning" || m.noticeLevel === "error") &&
+          m.content.trim(),
+      )
+      ?.content.trim();
+    const lastMsg =
+      lastWarning ??
+      [...thread.messages]
+        .reverse()
+        .find((m) => (m.role === "assistant" || m.kind === "tool") && m.content.trim())
+        ?.content.trim();
+    const parts = [
+      abandoned
+        ? "Abandoned: no activity for 30 minutes; stopped by Tivano."
+        : QUIET_STALL_NOTE,
+      `Last output from the provider: ${minsAgo} min before the stop.`,
+    ];
+    if (lastMsg) {
+      const excerpt = lastMsg.length > 240 ? `${lastMsg.slice(0, 240)}…` : lastMsg;
+      parts.push(`Last message from the provider: ${excerpt}`);
+    }
+    return parts.join(" ");
+  }
+
+  private scheduleTransientRetryIfEligible(
+    thread: ChatThread,
+    turn: Turn,
+    status: Turn["status"],
+  ): boolean {
+    if (this.workGate !== "open" || this.provider.descriptor.mode !== "antigravity") {
+      return false;
+    }
+    if (thread.isArchived === true || !thread.providerThread?.codexThreadId) {
+      return false;
+    }
+    if (status !== "error" || !turn.error) return false;
+    if (!isAntigravityTransientFailure(turn.error)) return false;
+
+    const priorAttempts = this.transientRetryCounts.get(thread.id) ?? 0;
+    if (priorAttempts >= 2) return false;
+
+    const nextAttempt = priorAttempts + 1;
+    const delays = this.transientRetryDelaysMs();
+    const delayMs = delays[Math.min(nextAttempt - 1, delays.length - 1)]!;
+    const delaySec = Math.max(1, Math.round(delayMs / 1000));
+    const isHead = Boolean(thread.hydraHead);
+
+    this.clearTransientRetry(thread.id, false);
+    this.transientRetryCounts.set(thread.id, nextAttempt);
+
+    if (isHead && thread.hydraHead) {
+      const lead = this.store.state.threads.find((t) => t.id === thread.hydraHead!.leadId);
+      if (lead && !lead.hydraHead) {
+        this.appendNotice(
+          lead,
+          `Antigravity sub-agent ${thread.hydraHead.name} lost its connection; continuing the same conversation in ${delaySec} s (attempt ${nextAttempt} of 2)…`,
+          "info",
+        );
+      }
+    } else {
+      this.appendNotice(
+        thread,
+        `Connection to Antigravity dropped. Continuing the same conversation in ${delaySec} s (attempt ${nextAttempt} of 2)…`,
+        "info",
+        turn.id,
+      );
+    }
+
+    const token = randomUUID();
+    const timer = setTimeout(() => {
+      this.fireTransientRetry(thread.id, turn.id, token);
+    }, delayMs);
+    timer.unref?.();
+    this.transientRetryTimers.set(thread.id, {
+      timer,
+      token,
+      model: thread.codexModel,
+      isHead,
+      resumePrompt: Engine.FAILED_TURN_CONTINUE_MESSAGE,
+    });
+    return true;
+  }
+
+  private fireTransientRetry(threadId: string, turnId: string, token: string): void {
+    const entry = this.transientRetryTimers.get(threadId);
+    if (!entry || entry.token !== token) return;
+    this.transientRetryTimers.delete(threadId);
+    if (this.workGate !== "open" || !this.store.ownsWrites) return;
+    const thread = this.store.state.threads.find((t) => t.id === threadId);
+    if (!thread || thread.isArchived === true) return;
+    if (thread.turn?.id !== turnId || this.threadBusy(thread)) return;
+    if (thread.codexModel !== entry.model) return;
+    if (entry.isHead && thread.hydraHead?.status !== "running") return;
+    try {
+      this.sendTurn(thread.id, entry.resumePrompt ?? Engine.FAILED_TURN_CONTINUE_MESSAGE, {
+        authored: false,
+        internalRetry: true,
+      });
+    } catch {
+      if (entry.isHead && thread.hydraHead && thread.turn) {
+        this.finishHydraHead(thread, "error");
+        this.flushHydraReports(thread.hydraHead.leadId);
+      }
+    }
+  }
+
+  private resumeStalledAntigravityHead(head: ChatThread, turn: Turn): void {
+    const handle = this.handles.get(head.id);
+    this.handles.delete(head.id);
+    handle?.cancel();
+    this.turnLastEvent.delete(turn.id);
+    turn.status = "interrupted";
+    turn.endedAt = Date.now();
+    this.toolItemsSeen.delete(turn.id);
+    this.store.update(() => {});
+    this.emit({ type: "thread-updated", thread: head });
+    if (this.workGate === "open" && this.store.ownsWrites) {
+      try {
+        this.sendTurn(
+          head.id,
+          "Your last request got no answer from the model and was stopped after 10 minutes. Continue the task from where you were.",
+          {
+            authored: false,
+            internalRetry: true,
+          },
+        );
+      } catch {
+        this.hydraStalledIds.add(head.id);
+        this.finishHydraHead(head, "interrupted");
+        if (head.hydraHead) this.flushHydraReports(head.hydraHead.leadId);
+      }
+    }
   }
 
   // ---- F22 Hydra runtime (frozen delegation slice, bounded) ---------
@@ -6439,11 +6695,15 @@ export class Engine {
     // A start that never reached a turn (routing, unreadable checkout,
     // a send that threw) has no recorded turn error and stays unmarked.
     const err = head.turn?.error?.trim();
+    const transientCheck =
+      this.provider.descriptor.mode === "antigravity"
+        ? isAntigravityTransientFailure
+        : hydraIsTransientFailure;
     const startupFailure =
       info.status === "failed" &&
       err !== undefined &&
       err !== "" &&
-      !hydraIsTransientFailure(err) &&
+      !transientCheck(err) &&
       !head.messages.some(
         (m) =>
           m.kind === "tool" ||
@@ -6688,7 +6948,8 @@ export class Engine {
     )
       return false;
     if (
-      this.provider.descriptor.mode === "codex" &&
+      (this.provider.descriptor.mode === "codex" ||
+        this.provider.descriptor.mode === "antigravity") &&
       thread.providerThread === undefined
     )
       return false;

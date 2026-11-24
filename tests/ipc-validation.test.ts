@@ -149,6 +149,10 @@ describe("IPC request validators", () => {
       "codex:choose",
       "codex:save",
       "codex:clear",
+      "antigravity:setup-state",
+      "antigravity:choose",
+      "antigravity:save",
+      "antigravity:clear",
     ] as const) {
       expect(() => requestValidators[c]({}), c).not.toThrow();
       for (const bad of [

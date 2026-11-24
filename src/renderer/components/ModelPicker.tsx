@@ -93,9 +93,11 @@ export function ModelPicker(props: {
   // P1-25: frozen hidesOutdatedModels — the unpinned catalog trims to
   // each vendor's three newest versions; the thread's own model, pins
   // and Hydra pair models always stay (frozen protectedModelIDs).
+  const activeProvider: "codex" | "antigravity" =
+    clientStore.snapshot?.info.mode === "antigravity" ? "antigravity" : "codex";
   const protectedIds = protectedModelIds(
     { modelList: pinnedList, hydraPairs: settings?.hydraPairs },
-    "codex",
+    activeProvider,
     selected0 === "" ? [] : [selected0],
   );
   const visibleModels =
@@ -155,7 +157,7 @@ export function ModelPicker(props: {
           // F17: a pinned model's stored defaults seed the selection
           // (frozen "how a model starts in new chats").
           const pref = nextModel
-            ? settings?.modelPreferences?.[prefKey("codex", nextModel)]
+            ? settings?.modelPreferences?.[prefKey(activeProvider, nextModel)]
             : undefined;
           if (pref?.effort !== undefined) nextEffort = pref.effort;
           if (pref?.fastMode === true && nextOption?.fastTier)

@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   LANGUAGE_IDS,
   LANGUAGE_LABELS,
+  type AntigravitySetupState,
   type AppInfo,
   type ChatThread,
   type CodexSetupState,
@@ -71,6 +72,28 @@ function sourceLabel(
   }
 }
 
+function agSourceLabel(
+  t: (k: string) => string,
+  s: AntigravitySetupState,
+): string {
+  switch (s.effectiveSource) {
+    case "fixture":
+      return t("offline fixture (synthetic)");
+    case "environment":
+      return t("environment variable");
+    case "saved":
+      return t("saved setting");
+    case "discovered":
+      return t("auto-detected installation");
+    case "none":
+      return t("not configured");
+    default:
+      return s.launchProvider === "antigravity"
+        ? t("unknown")
+        : t("not an Antigravity launch");
+  }
+}
+
 /** F33 CLI install state reported by main — real fs state, no caching. */
 type CliState = {
   state: "unavailable" | "absent" | "foreign" | "installed" | "repair" | string;
@@ -93,6 +116,10 @@ export function SettingsModal(props: {
   const [codexErr, setCodexErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<"load" | "choose" | "save" | "clear" | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [ag, setAg] = useState<AntigravitySetupState | null>(null);
+  const [agErr, setAgErr] = useState<string | null>(null);
+  const [agBusy, setAgBusy] = useState<"load" | "choose" | "save" | "clear" | null>(null);
+  const [agLoadErr, setAgLoadErr] = useState<string | null>(null);
   const [control, setControl] = useState<{
     enabled: boolean;
     listening: boolean;
@@ -103,6 +130,51 @@ export function SettingsModal(props: {
   const mounted = useRef(false);
   const operationLocked = useRef(false);
   const requestId = useRef(0);
+  const agLocked = useRef(false);
+  const agReqId = useRef(0);
+
+  const refreshAg = useCallback(async (id: number) => {
+    if (!mounted.current || agReqId.current !== id) return;
+    try {
+      const next = (await api().invoke("antigravity:setup-state", {})) as AntigravitySetupState;
+      if (!mounted.current || agReqId.current !== id) return;
+      setAg(next);
+      setAgLoadErr(null);
+    } catch (e) {
+      if (!mounted.current || agReqId.current !== id) return;
+      setAgLoadErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const runAg = useCallback(
+    async (op: "load" | "choose" | "save" | "clear", invoke?: () => Promise<unknown>) => {
+      if (!mounted.current || agLocked.current) return;
+      agLocked.current = true;
+      const id = ++agReqId.current;
+      const current = () => mounted.current && agReqId.current === id;
+      setAgBusy(op);
+      setAgErr(null);
+      try {
+        if (invoke) {
+          const r = (await invoke()) as CodexChooseResult | CodexWriteResult;
+          if (!current()) return;
+          if (r.status === "invalid" || r.status === "unavailable") setAgErr(r.reason);
+          else if (r.status === "error") setAgErr(r.error);
+          else if (r.status === "superseded") setAgErr("Selection was superseded by a newer action");
+          else if (r.status === "busy") setAgErr("The program chooser is already open. Close it, then refresh status.");
+        }
+      } catch (e) {
+        if (current()) setAgErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (current()) await refreshAg(id);
+        if (current()) {
+          agLocked.current = false;
+          setAgBusy(null);
+        }
+      }
+    },
+    [refreshAg],
+  );
 
   const refresh = useCallback(async (id: number) => {
     if (!mounted.current || requestId.current !== id) return;
@@ -177,15 +249,19 @@ export function SettingsModal(props: {
   useEffect(() => {
     mounted.current = true;
     operationLocked.current = false;
+    agLocked.current = false;
     void run("load");
+    void runAg("load");
     void refreshControl();
     void refreshCli();
     return () => {
       mounted.current = false;
       ++requestId.current;
+      ++agReqId.current;
       operationLocked.current = false;
+      agLocked.current = false;
     };
-  }, [run]);
+  }, [run, runAg]);
 
   // Either gate changing reruns refreshListening in main — re-read the
   // real socket state instead of assuming a toggle meant success.
@@ -203,6 +279,7 @@ export function SettingsModal(props: {
   const setLanguage = (language: LanguageId) => tryCall("settings:set", { language });
 
   const canWrite = !!codex?.mutable && !loadErr && !busy && !codex.chooserBusy;
+  const canWriteAg = !!ag?.mutable && !agLoadErr && !agBusy && !ag.chooserBusy;
 
   return (
     <div
@@ -932,6 +1009,115 @@ export function SettingsModal(props: {
             </button>
             <button className="choice" disabled={busy !== null} onClick={() => void run("load")}>
               {busy === "load" ? t("Loading") : t(loadErr ? "Retry" : "Refresh status")}
+            </button>
+          </div>
+        </div>
+
+        <h3>{t("Antigravity CLI")}</h3>
+        <div className="about codex-setup" aria-busy={agBusy !== null}>
+          <div className="kv">
+            <span>{t("This launch")}</span>
+            <span>
+              {t(info.providerLabel)}
+              {ag ? ` — ${agSourceLabel(t, ag)}` : ""}
+            </span>
+            {ag?.runtime && (
+              <>
+                <span>{t("Runtime status")}</span>
+                <span className="mono">
+                  {ag.runtime.state === "fixture"
+                    ? t("offline fixture (synthetic)")
+                    : ag.runtime.state === "configured-unverified"
+                      ? t("configured — unverified")
+                      : ag.runtime.state === "unsupported"
+                        ? t("unsupported")
+                        : t("unconfigured")}
+                </span>
+                {ag.runtime.reason && (
+                  <>
+                    <span>{t("Runtime reason")}</span>
+                    <span className="mono">{ag.runtime.reason}</span>
+                  </>
+                )}
+              </>
+            )}
+            {ag?.effectiveExecutable && (
+              <>
+                <span>{t("Executable in use")}</span>
+                <span className="mono">{ag.effectiveExecutable}</span>
+              </>
+            )}
+            <span>{t("Saved program")}</span>
+            <span className="mono">
+              {ag ? ag.savedExecutable ?? t("None saved") : t(agLoadErr ? "Failed to load" : "Loading")}
+            </span>
+            {ag?.savedInvalidReason && (
+              <>
+                <span>{t("Saved path status")}</span>
+                <span className="mono">{ag.savedInvalidReason}</span>
+              </>
+            )}
+            {ag && ag.savedEffect !== "none" && (
+              <>
+                <span>{t("Saved effect")}</span>
+                <span>
+                  {ag.savedEffect === "active"
+                    ? t("In effect for this launch")
+                    : ag.savedEffect === "pending-restart"
+                      ? t("Takes effect on next launch")
+                      : ag.savedBlockReason ?? t("Blocked by an explicit override")}
+                </span>
+              </>
+            )}
+            {ag && ag.savedExecutable === null && (
+              <>
+                <span>{t("After restart")}</span>
+                <span>
+                  {t(
+                    "After restart, if Codex is unset, Antigravity will start if a saved path is configured; otherwise explicit provider and environment settings still apply.",
+                  )}
+                </span>
+              </>
+            )}
+            {ag?.pendingExecutable && (
+              <>
+                <span>{t("Selected, not saved")}</span>
+                <span className="mono">{ag.pendingExecutable}</span>
+              </>
+            )}
+          </div>
+          {agErr && (
+            <p className="codex-setup-error" role="alert">
+              {t(agErr)}
+            </p>
+          )}
+          {agLoadErr && <p className="codex-setup-error" role="alert">{agLoadErr}</p>}
+          <div className="choice-row">
+            <button
+              className="choice"
+              disabled={!canWriteAg}
+              onClick={() => void runAg("choose", () => api().invoke("antigravity:choose", {}))}
+            >
+              {agBusy === "choose" || ag?.chooserBusy ? t("Choosing…") : t("Choose program…")}
+            </button>
+            <button
+              className="choice"
+              disabled={!canWriteAg || !ag?.pendingExecutable}
+              onClick={() => void runAg("save", () => api().invoke("antigravity:save", {}))}
+            >
+              {agBusy === "save" ? t("Saving…") : t("Save")}
+            </button>
+            <button
+              className="choice"
+              disabled={
+                !canWriteAg || (!ag?.savedExecutable && !ag?.pendingExecutable)
+              }
+              onClick={() => void runAg("clear", () => api().invoke("antigravity:clear", {}))}
+            >
+              {agBusy === "clear" ? t("Clearing…") : t("Clear")}
+            </button>
+            <button className="choice" disabled={agBusy !== null} onClick={() => void runAg("load")}>
+              {agBusy === "load" ? t("Loading") : t(agLoadErr ? "Retry" : "Refresh status")}
             </button>
           </div>
         </div>

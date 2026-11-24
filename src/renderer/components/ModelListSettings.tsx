@@ -214,9 +214,13 @@ export function ModelListSettings(): React.JSX.Element {
   // trims like the picker does; searching always lists the full one
   // (frozen "search still finds everything").
   const hideOutdated = settings?.hideOutdatedModels ?? true;
+  const activeProvider: "codex" | "antigravity" =
+    clientStore.snapshot?.info.mode === "antigravity" ? "antigravity" : "codex";
+  const activeProviderLabel =
+    activeProvider === "antigravity" ? "Antigravity" : "Codex";
   const catalogProtected = protectedModelIds(
     { modelList: pins, hydraPairs: settings?.hydraPairs },
-    "codex",
+    activeProvider,
   );
   const visibleCatalog =
     hideOutdated && trimmed === ""
@@ -299,7 +303,7 @@ export function ModelListSettings(): React.JSX.Element {
   const summary = (pin: ModelPin): string => {
     const opt = optionById.get(pin.modelID);
     const pref = prefs[prefKey(pin.provider, pin.modelID)];
-    const parts = [t("Codex")];
+    const parts = [t(pin.provider === "antigravity" ? "Antigravity" : "Codex")];
     if (opt && opt.efforts.length > 0) {
       const eff = pref?.effort ?? opt.defaultEffort;
       if (eff) parts.push(`${effortTitle(eff)} ${t("effort")}`);
@@ -594,7 +598,7 @@ export function ModelListSettings(): React.JSX.Element {
       )}
 
       <div className="ml-head">
-        <span className="ml-head-title">{t("Codex")}</span>
+        <span className="ml-head-title">{t(activeProviderLabel)}</span>
       </div>
       <div className="ml-card">
         {catalog === null ? (
@@ -609,7 +613,7 @@ export function ModelListSettings(): React.JSX.Element {
           </div>
         ) : (
           catalogMatches.map((m) => {
-            const pid = `codex/${m.id}`;
+            const pid = `${activeProvider}/${m.id}`;
             const isPinned = pinnedIds.has(pid);
             const full = pins.length >= MODEL_LIST_LIMIT;
             return (
@@ -637,7 +641,7 @@ export function ModelListSettings(): React.JSX.Element {
                   onClick={() =>
                     write({
                       modelList: addPin(freshLists().pins, {
-                        provider: "codex",
+                        provider: activeProvider,
                         modelID: m.id,
                       }),
                     })

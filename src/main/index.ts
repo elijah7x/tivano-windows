@@ -50,9 +50,25 @@ import {
   validateCodexExecutable,
   type CodexRuntimeConfig,
 } from "./codexRuntimeConfig";
+import { AntigravityProvider } from "./antigravityProvider";
+import {
+  ANTIGRAVITY_PROTOCOL_PIN,
+  AntigravitySetup,
+  antigravitySavedEffect,
+  antigravityTestPick,
+  resolveAntigravityRuntime,
+  validateAntigravityExecutable,
+  type AntigravityRuntimeConfig,
+} from "./antigravityRuntimeConfig";
 import type { ProviderAdapter, WorkspaceGrant } from "./provider";
 import type { SpawnSpec } from "./stdioTransport";
-import type { CodexInfo, CodexSetupState, LanguageId } from "../shared/types";
+import type {
+  AntigravityInfo,
+  AntigravitySetupState,
+  CodexInfo,
+  CodexSetupState,
+  LanguageId,
+} from "../shared/types";
 import { ProjectRuntimePaths } from "./projectRuntimePaths";
 import { DirectoryOpener } from "./openProjectDirectory";
 import { AttachmentService } from "./attachmentService";
@@ -221,6 +237,7 @@ const paths = new ProjectRuntimePaths(
 let engine: Engine | null = null;
 let adapter: ProviderAdapter | null = null;
 let codexRuntime: CodexRuntimeConfig | null = null;
+let antigravityRuntime: AntigravityRuntimeConfig | null = null;
 
 // Packaged job-helper attestation is kicked off HERE — at module load, in
 // parallel with Electron startup — and shared by BOTH consumers: the
@@ -333,11 +350,53 @@ export function codexInfoFor(cfg: CodexRuntimeConfig): CodexInfo {
   }
 }
 
+/** AppInfo.antigravity — the only Antigravity state the renderer may see. */
+export function antigravityInfoFor(cfg: AntigravityRuntimeConfig): AntigravityInfo {
+  const base = {
+    protocolPin: ANTIGRAVITY_PROTOCOL_PIN,
+    cliVersion: "unknown",
+  };
+  switch (cfg.mode) {
+    case "fixture":
+      return {
+        ...base,
+        state: "fixture",
+        executable: `${cfg.fixtureNode} ${cfg.fixtureScript}`,
+      };
+    case "real": {
+      if (cfg.treeCapability.supported) {
+        return {
+          ...base,
+          state: "configured-unverified",
+          executable: cfg.executable!,
+          ...(cfg.treeCapability.helperVersion
+            ? { helperVersion: cfg.treeCapability.helperVersion }
+            : {}),
+        };
+      }
+      const reason = cfg.realUnavailableReason ?? cfg.treeCapability.reason;
+      return {
+        ...base,
+        state: "unsupported",
+        executable: cfg.executable!,
+        ...(reason ? { reason } : {}),
+      };
+    }
+    default:
+      return {
+        ...base,
+        state: "unconfigured",
+        ...(cfg.realUnavailableReason ? { reason: cfg.realUnavailableReason } : {}),
+      };
+  }
+}
+
 async function makeProvider(): Promise<ProviderAdapter> {
   // Persisted setup candidate (P2N). Read once here, like every env var —
-  // it can only select the NEXT launch's codex route, never hijack an
+  // it can only select the NEXT launch's provider route, never hijack an
   // explicit TIVANO_PROVIDER (synthetic/mock/unknown keep their behavior).
   const savedExe = store.state.settings.codexExecutable?.trim() || undefined;
+  const savedAntigravityExe = store.state.settings.antigravityExecutable?.trim() || undefined;
   const explicitProvider = process.env.TIVANO_PROVIDER;
   if (explicitProvider === "codex" || (explicitProvider === undefined && savedExe !== undefined)) {
     // The attested packaged-helper verdict — awaited once here; the probe
@@ -357,6 +416,23 @@ async function makeProvider(): Promise<ProviderAdapter> {
       // F18: the Settings-connected MCP registry rides into each new
       // thread's config.mcp_servers (live-read per bind).
       mcpServers: () => engine!.snapshot().settings.mcpServers ?? [],
+    });
+  }
+  if (
+    explicitProvider === "antigravity" ||
+    (explicitProvider === undefined && savedExe === undefined && savedAntigravityExe !== undefined)
+  ) {
+    const treeCapability = (await packagedTreeProbe) ?? undefined;
+    antigravityRuntime = resolveAntigravityRuntime(process.env, dataRoot, {
+      ...(treeCapability ? { treeCapability } : {}),
+      ...(savedAntigravityExe ? { savedExecutable: savedAntigravityExe } : {}),
+    });
+    return new AntigravityProvider({
+      config: antigravityRuntime,
+      lookupBinding: (tid) => engine!.lookupProviderThread(tid),
+      bindThread: (tid, b) => engine!.bindProviderThread(tid, b),
+      onThreadNotice: (tid, text, level) =>
+        engine!.onThreadNotice(tid, text, level),
     });
   }
   if (process.env.TIVANO_PROVIDER !== "synthetic-stdio") {
@@ -521,6 +597,7 @@ bootstrap = app.whenReady().then(async () => {
   if (process.env.TIVANO_LIMIT_MARGIN_MS)
     engine.limitMarginMs = Math.max(0, Number(process.env.TIVANO_LIMIT_MARGIN_MS) || 0);
   if (codexRuntime) engine.codexInfo = codexInfoFor(codexRuntime);
+  if (antigravityRuntime) engine.antigravityInfo = antigravityInfoFor(antigravityRuntime);
   engine.noteStoreRecovery(store.recoveredFrom);
   // Rebuild authorized workspace grants from the persisted file — each
   // entry is revalidated against the live filesystem and the live project
@@ -736,6 +813,72 @@ bootstrap = app.whenReady().then(async () => {
       savedEffect,
       ...(savedBlockReason ? { savedBlockReason } : {}),
       runtime: codexRuntime ? codexInfoFor(codexRuntime) : null,
+      mutable: codexSetupMutable(),
+    };
+  };
+
+  const antigravitySetup = new AntigravitySetup({
+    mutable: codexSetupMutable,
+    savedExecutable: () => store.state.settings.antigravityExecutable,
+    commit: (p) => eng.setAntigravityExecutable(p),
+    platform: process.platform,
+  });
+  const antigravityShowOpenDialog = () => {
+    const pick = antigravityTestPick(app.isPackaged, process.env);
+    if (pick !== undefined) {
+      return Promise.resolve(
+        pick === ""
+          ? { canceled: true, filePaths: [] as string[] }
+          : { canceled: false, filePaths: [pick] },
+      );
+    }
+    if (!win || win.isDestroyed())
+      return Promise.resolve({ canceled: true, filePaths: [] as string[] });
+    return dialog.showOpenDialog(win, {
+      title:
+        eng.snapshot().settings.language === "zh-Hans"
+          ? "选择 Antigravity 程序"
+          : "Choose Antigravity executable",
+      properties: ["openFile"],
+      filters:
+        process.platform === "win32"
+          ? [{ name: "agy.exe", extensions: ["exe"] }]
+          : [{ name: "Antigravity CLI", extensions: ["exe", "*"] }],
+    });
+  };
+  const antigravitySetupState = (): AntigravitySetupState => {
+    const saved = store.state.settings.antigravityExecutable ?? null;
+    const providerOverride = process.env.TIVANO_PROVIDER ?? null;
+    const launchProvider = adapter?.descriptor.mode ?? "mock";
+    const effSource = antigravityRuntime?.configuredFrom ?? null;
+    const effExe =
+      antigravityRuntime?.mode === "real" ? antigravityRuntime.executable ?? null : null;
+    let savedInvalidReason: string | undefined;
+    if (saved) {
+      try {
+        validateAntigravityExecutable(saved);
+      } catch (err) {
+        savedInvalidReason = (err as Error).message;
+      }
+    }
+    const { savedEffect, savedBlockReason } = antigravitySavedEffect(
+      saved,
+      antigravityRuntime,
+      process.env,
+      savedInvalidReason,
+    );
+    return {
+      savedExecutable: saved,
+      ...(savedInvalidReason ? { savedInvalidReason } : {}),
+      pendingExecutable: antigravitySetup.pendingExecutable,
+      chooserBusy: antigravitySetup.isChooserBusy,
+      providerOverride,
+      launchProvider,
+      effectiveSource: effSource,
+      effectiveExecutable: effExe,
+      savedEffect,
+      ...(savedBlockReason ? { savedBlockReason } : {}),
+      runtime: antigravityRuntime ? antigravityInfoFor(antigravityRuntime) : null,
       mutable: codexSetupMutable(),
     };
   };
@@ -1020,6 +1163,12 @@ bootstrap = app.whenReady().then(async () => {
       choose: () => codexSetup.choose(codexShowOpenDialog),
       save: () => codexSetup.save(),
       clear: () => codexSetup.clear(),
+    },
+    antigravitySetup: {
+      state: antigravitySetupState,
+      choose: () => antigravitySetup.choose(antigravityShowOpenDialog),
+      save: () => antigravitySetup.save(),
+      clear: () => antigravitySetup.clear(),
     },
     // F05 draft attachments: the dialog is main-owned; a
     // TIVANO_TEST_ATTACH env value (path-delimited) bypasses it for

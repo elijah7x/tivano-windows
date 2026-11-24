@@ -14,10 +14,8 @@ export interface HydraReviewChoice {
   effort?: string | undefined;
 }
 
-/** Frozen `HydraReviewChoice.providers` ∩ this build's providers:
- *  Grok, Pi and Antigravity surface only when they exist (P2-59/P2-60
- *  blocked), so the bounded card lists Codex only. */
-export const HYDRA_REVIEW_PROVIDERS = ["codex"] as const;
+/** Frozen `HydraReviewChoice.providers` ∩ this build's providers. */
+export const HYDRA_REVIEW_PROVIDERS = ["codex", "antigravity"] as const;
 
 /** Frozen `HydraReviewChoice` defaults — `defaultFirst` is Codex at
  *  high effort; `defaultSecond` is Claude, which this build cannot run,

@@ -1191,4 +1191,43 @@ export const zhHant: Record<string, string> = {
   "View all releases on GitHub": "在 GitHub 上檢視所有發行版本",
   "Expanded": "已展開",
   "Collapsed": "已收合",
+  "Antigravity": "Antigravity",
+  "Antigravity CLI": "Antigravity CLI",
+  "Antigravity fixture": "Antigravity 模擬",
+  "Offline Antigravity protocol fixture — deterministic, no real CLI or model":
+    "離線 Antigravity 協定模擬 — 結果可重現，無真實 CLI 或模型",
+  "Antigravity CLI is not configured": "尚未設定 Antigravity CLI",
+  "Antigravity CLI (`agy`)": "Antigravity CLI (`agy`)",
+  "auto-detected installation": "自動偵測安裝",
+  "not an Antigravity launch": "本次並非以 Antigravity 啟動",
+  "Servers of your own: a command that runs on this computer, or a streamable-HTTP endpoint. Check runs a real JSON-RPC handshake and lists the tools the server actually reported; saved servers ride into Codex sessions when a thread starts — connected servers never reach Antigravity (none is written for it) or other providers.":
+    "您自己的伺服器：在本機執行的命令，或 streamable-HTTP 端點。「檢查」會執行真實的 JSON-RPC 交握並列出伺服器實際回報的工具；已儲存的伺服器會在對話啟動時帶入 Codex 工作階段 — 已連線的 MCP 伺服器不會傳給 Antigravity（也不會為其寫入設定），其他服務商亦看不到。",
+  "The fallback reviews when the first cannot run. Grok and Pi appear here once this build supports them.":
+    "首選模型無法執行時會由備援模型審查。此版本支援 Grok 和 Pi 後，它們會顯示在這裡。",
+  "Antigravity did not answer. Is `agy` signed in? Run `agy` once in Terminal.":
+    "Antigravity 沒有回應。`agy` 是否已登入？請在終端機執行一次 `agy`。",
+  "Antigravity did not finish starting in time.": "Antigravity 未能及時完成啟動。",
+  "Antigravity exited.": "Antigravity 已結束。",
+  "Antigravity is not signed in. Run `agy` once in Terminal to sign in.":
+    "Antigravity 尚未登入。請在終端機執行一次 `agy` 以登入。",
+  "Antigravity stopped before finishing.": "Antigravity 在完成前已停止。",
+  "Antigravity held back %@ waiting for a permission it could not ask for. Use Full access for this chat.":
+    "Antigravity 暫緩了 %@，因無法請求所需的權限。請為此對話開啟「完整存取權限」。",
+  "Antigravity held back %@ without prompting. Use Full access or add an allow rule in the CLI's settings.":
+    "Antigravity 未經詢問即暫緩了 %@。請使用「完整存取權限」，或在 CLI 設定中新增允許規則。",
+  "`agy models` listed no models.": "`agy models` 未列出任何模型。",
+  "`agy models` produced no output.": "`agy models` 沒有任何輸出。",
+  "Antigravity: the model request failed (%@); agy is retrying, attempt %@.":
+    "Antigravity：模型請求失敗（%@），agy 正在重試，第 %@ 次。",
+  "Connection to Antigravity dropped. Continuing the same conversation in %@ s (attempt %@ of 2)…":
+    "與 Antigravity 的連線中斷。將在 %@ 秒後於同一對話中繼續（第 %@/2 次嘗試）…",
+  "Antigravity sub-agent %@ lost its connection; continuing the same conversation in %@ s (attempt %@ of 2)…":
+    "Antigravity 子代理 %@ 連線中斷，將在 %@ 秒後於同一對話繼續（第 %@/2 次）…",
+  "Abandoned: no activity for 30 minutes; stopped by Tivano.":
+    "已放棄：30 分鐘內無任何活動，已由 Tivano 停止。",
+  "Last output from the provider: %@ min before the stop.":
+    "供應商最後一次輸出是在停止前 %@ 分鐘。",
+  "Last message from the provider: %@": "來自供應商的最後一則訊息：%@",
+  "After restart, if Codex is unset, Antigravity will start if a saved path is configured; otherwise explicit provider and environment settings still apply.":
+    "重新啟動後，若未設定 Codex，則會使用已儲存的 Antigravity 路徑啟動；其餘情況仍以明確的服務商與環境變數設定為準。本次啟動保持不變。",
 };

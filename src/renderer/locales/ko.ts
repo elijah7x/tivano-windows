@@ -1191,4 +1191,43 @@ export const ko: Record<string, string> = {
   "View all releases on GitHub": "GitHub에서 모든 릴리스 보기",
   "Expanded": "펼쳐짐",
   "Collapsed": "접힘",
+  "Antigravity": "Antigravity",
+  "Antigravity CLI": "Antigravity CLI",
+  "Antigravity fixture": "Antigravity 픽스처",
+  "Offline Antigravity protocol fixture — deterministic, no real CLI or model":
+    "오프라인 Antigravity 프로토콜 픽스처 — 결정론적 동작, 실제 CLI 또는 모델 없음",
+  "Antigravity CLI is not configured": "Antigravity CLI가 구성되지 않았습니다",
+  "Antigravity CLI (`agy`)": "Antigravity CLI (`agy`)",
+  "auto-detected installation": "자동 감지된 설치",
+  "not an Antigravity launch": "Antigravity로 실행되지 않음",
+  "Servers of your own: a command that runs on this computer, or a streamable-HTTP endpoint. Check runs a real JSON-RPC handshake and lists the tools the server actually reported; saved servers ride into Codex sessions when a thread starts — connected servers never reach Antigravity (none is written for it) or other providers.":
+    "사용자 지정 서버: 이 컴퓨터에서 실행되는 명령 또는 streamable-HTTP 엔드포인트입니다. 「확인」은 실제 JSON-RPC 핸드셰이크를 실행해 서버가 실제로 보고한 도구를 나열합니다. 저장된 서버는 스레드가 시작될 때 Codex 세션에 전달되며, 연결된 서버는 Antigravity(설정도 작성되지 않음)나 다른 제공자에게 전달되지 않습니다.",
+  "The fallback reviews when the first cannot run. Grok and Pi appear here once this build supports them.":
+    "첫 번째 모델이 실행될 수 없을 때 대체 모델이 검토합니다. 이 빌드에서 Grok, Pi가 지원되면 여기에 표시됩니다.",
+  "Antigravity did not answer. Is `agy` signed in? Run `agy` once in Terminal.":
+    "Antigravity가 응답하지 않았습니다. `agy`에 로그인되어 있나요? 터미널에서 `agy`를 한 번 실행해 보세요.",
+  "Antigravity did not finish starting in time.": "Antigravity가 제시간에 시작을 완료하지 못했습니다.",
+  "Antigravity exited.": "Antigravity가 종료되었습니다.",
+  "Antigravity is not signed in. Run `agy` once in Terminal to sign in.":
+    "Antigravity에 로그인되어 있지 않습니다. 터미널에서 `agy`를 한 번 실행해 로그인하세요.",
+  "Antigravity stopped before finishing.": "Antigravity가 완료되기 전에 중지되었습니다.",
+  "Antigravity held back %@ waiting for a permission it could not ask for. Use Full access for this chat.":
+    "Antigravity가 요청할 수 없는 권한을 기다리느라 %@ 작업을 보류했습니다. 이 대화에는 전체 접근 권한을 사용하세요.",
+  "Antigravity held back %@ without prompting. Use Full access or add an allow rule in the CLI's settings.":
+    "Antigravity가 확인 요청 없이 %@ 작업을 보류했습니다. 전체 접근 권한을 사용하거나 CLI 설정에서 허용 규칙을 추가하세요.",
+  "`agy models` listed no models.": "`agy models`가 모델을 나열하지 않았습니다.",
+  "`agy models` produced no output.": "`agy models`의 출력이 없습니다.",
+  "Antigravity: the model request failed (%@); agy is retrying, attempt %@.":
+    "Antigravity: 모델 요청에 실패했습니다(%@). agy가 다시 시도 중입니다(시도 %@회).",
+  "Connection to Antigravity dropped. Continuing the same conversation in %@ s (attempt %@ of 2)…":
+    "Antigravity와의 연결이 끊어졌습니다. %@초 후 같은 대화에서 계속합니다(%@/2회 시도)…",
+  "Antigravity sub-agent %@ lost its connection; continuing the same conversation in %@ s (attempt %@ of 2)…":
+    "Antigravity 하위 에이전트 %@의 연결이 끊어졌습니다. %@초 후 같은 대화에서 계속합니다(시도 %@/2)…",
+  "Abandoned: no activity for 30 minutes; stopped by Tivano.":
+    "중단됨: 30분 동안 활동이 없어 Tivano에서 중지했습니다.",
+  "Last output from the provider: %@ min before the stop.":
+    "제공자의 마지막 출력은 중지 %@분 전이었습니다.",
+  "Last message from the provider: %@": "제공자의 마지막 메시지: %@",
+  "After restart, if Codex is unset, Antigravity will start if a saved path is configured; otherwise explicit provider and environment settings still apply.":
+    "재시작 후 Codex가 설정되지 않은 경우 저장된 Antigravity 경로가 있으면 해당 경로로 시작됩니다. 그 외에는 명시적인 제공자 및 환경 변수 설정이 우선 적용됩니다.",
 };

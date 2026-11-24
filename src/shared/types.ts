@@ -164,6 +164,12 @@ export interface Settings {
    */
   codexExecutable?: string;
   /**
+   * User-saved Antigravity (`agy`) CLI path (physical, validated at save time).
+   * Consulted ONLY at the next launch's runtime resolution — setting it
+   * never hot-swaps the running adapter. Absent on every old store.
+   */
+  antigravityExecutable?: string;
+  /**
    * F29: while tasks run, optionally keep the machine awake. "system"
    * blocks idle system sleep only (screen may still dim); "display" also
    * keeps the screen lit. Manual sleep and closing the lid still work —
@@ -637,7 +643,7 @@ export interface Turn {
  * first turn ever starts, so a restart can resume it.
  */
 export interface ProviderThreadBinding {
-  providerId: "codex";
+  providerId: "codex" | "antigravity";
   codexThreadId: string;
   /** Workspace directory recorded at bind time. */
   cwd: string;
@@ -1058,7 +1064,7 @@ export interface CodexSetupState {
   /** Raw TIVANO_PROVIDER value at bootstrap (null = unset). */
   providerOverride: string | null;
   /** Provider actually launched this run. */
-  launchProvider: "mock" | "synthetic-stdio" | "codex";
+  launchProvider: "mock" | "synthetic-stdio" | "codex" | "antigravity";
   /** Which source produced this launch's codex runtime (null = not codex). */
   effectiveSource: "fixture" | "environment" | "saved" | "none" | null;
   /** Executable this launch resolved (real mode only). */
@@ -1078,6 +1084,32 @@ export interface CodexSetupState {
   mutable: boolean;
 }
 
+/** Antigravity (`agy`) runtime status — the only Antigravity state shown in UI. */
+export interface AntigravityInfo {
+  state: "fixture" | "configured-unverified" | "unsupported" | "unconfigured";
+  executable?: string;
+  helperVersion?: string;
+  protocolPin: string;
+  cliVersion: string;
+  reason?: string;
+}
+
+/** Honest Antigravity CLI setup snapshot for the Settings surface. */
+export interface AntigravitySetupState {
+  savedExecutable: string | null;
+  savedInvalidReason?: string;
+  pendingExecutable: string | null;
+  chooserBusy: boolean;
+  providerOverride: string | null;
+  launchProvider: "mock" | "synthetic-stdio" | "codex" | "antigravity";
+  effectiveSource: "fixture" | "environment" | "saved" | "discovered" | "none" | null;
+  effectiveExecutable: string | null;
+  savedEffect: "none" | "active" | "pending-restart" | "blocked";
+  savedBlockReason?: string;
+  runtime: AntigravityInfo | null;
+  mutable: boolean;
+}
+
 export interface AppInfo {
   appVersion: string;
   baselineTag: string;
@@ -1085,9 +1117,9 @@ export interface AppInfo {
   dataRoot: string;
   providerId: string;
   providerLabel: string;
-  mock: true;
+  mock: boolean;
   /** Provider kind shown in the UI. */
-  mode: "mock" | "synthetic-stdio" | "codex";
+  mode: "mock" | "synthetic-stdio" | "codex" | "antigravity";
   /** F09: present (true) only when the provider runs `/compact` itself —
    *  the composer sends the command as plain text otherwise (frozen
    *  fall-through for unsupported providers). */
@@ -1102,6 +1134,8 @@ export interface AppInfo {
   syntheticRuntime?: { executable: string; version: string };
   /** Codex adapter runtime status — present whenever mode is "codex". */
   codex?: CodexInfo;
+  /** Antigravity adapter runtime status — present whenever mode is "antigravity". */
+  antigravity?: AntigravityInfo;
   /** Set when the previous store file was unreadable and preserved aside. */
   recoveredFrom?: string;
   /** Present (true) ONLY in bundles compiled with --terminal-candidate:
