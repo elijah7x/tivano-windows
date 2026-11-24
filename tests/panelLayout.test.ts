@@ -1,4 +1,5 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-01.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-24.
+// Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P2-40 component coverage (frozen floating_panel_checks): the three
 // panel layouts render their frozen surfaces — Single docks the team
 // panel, Independent pops later running heads, Off hides the panel and

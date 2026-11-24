@@ -134,7 +134,8 @@ function statusLabel(t: (k: string) => string, m: Message): string | null {
 
 /** F22: the delegation card rendered in place of a fenced hydra block
  *  (frozen HydraDelegationBlock) — injected so markdown stays pure. */
-const delegationCard = (body: string, sent: boolean): React.ReactNode =>  createElement(HydraDelegationCard, { body, sent });
+const delegationCard = (body: string, sent: boolean): React.ReactNode =>
+  createElement(HydraDelegationCard, { body, sent });
 
 /** P2-40 "One per sub-agent": auto-popped panels spread over the
  *  pane's corners (frozen corner fill order). */
