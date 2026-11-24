@@ -1191,4 +1191,33 @@ export const ko: Record<string, string> = {
   "View all releases on GitHub": "GitHub에서 모든 릴리스 보기",
   "Expanded": "펼쳐짐",
   "Collapsed": "접힘",
+  "Connections": "연결",
+  "Remote MCP": "원격 MCP",
+  "Run remote chats without approval": "승인 없이 원격 대화 실행",
+  "Let cloud agents such as Muse or Grok Bot control this edition of Tivano over MCP, through a tunnel you run. Each agent needs your approval here once. Approvals and questions in chats still wait in Tivano.":
+    "Muse 또는 Grok Bot 같은 클라우드 에이전트가 사용자가 실행한 터널을 통해 MCP로 이 버전의 Tivano를 제어하도록 허용합니다. 각 에이전트는 여기서 최초 1회 승인이 필요합니다. 대화 내 승인과 질문은 여전히 Tivano에서 대기합니다.",
+  "Chats that cloud agents create start in Full access: commands and file changes run without asking. Chats created while this is off, and your own chats, keep their permissions. Questions still wait in Tivano.":
+    "클라우드 에이전트가 생성하는 대화는 '전체 접근' 권한으로 시작되어 명령과 파일 변경이 확인 없이 실행됩니다. 이 옵션이 꺼져 있는 동안 생성된 대화와 사용자의 대화는 기존 권한을 유지합니다. 질문은 계속 Tivano에서 대기합니다.",
+  "Public address": "공개 주소",
+  "Paste your tunnel's HTTPS address": "터널의 HTTPS 주소 붙여넣기",
+  "Enter an HTTPS address, or leave it empty for this computer only.":
+    "HTTPS 주소를 입력하거나 비워 두어 이 컴퓨터에서만 허용하세요.",
+  "Your tunnel's HTTPS address, forwarding to http://127.0.0.1:%d. Leave empty to allow only this computer.":
+    "http://127.0.0.1:%d 주소로 전달하는 터널의 HTTPS 주소입니다. 비워 두면 이 컴퓨터에서만 연결을 허용합니다.",
+  "Server URL": "서버 URL",
+  "Copy server URL": "서버 URL 복사",
+  "Remote MCP status": "원격 MCP 상태",
+  "Listening on 127.0.0.1:%d": "127.0.0.1:%d에서 수신 대기 중",
+  "Remote MCP could not start. Retry after freeing the port.":
+    "원격 MCP를 시작할 수 없습니다. 포트를 비운 후 다시 시도하세요.",
+  "Retry remote MCP": "원격 MCP 다시 시도",
+  "Revoke access": "접근 권한 취소",
+  "Revoke all": "모두 취소",
+  "Full control": "전체 제어",
+  "Read only": "읽기 전용",
+  "Last used %@": "마지막 사용: %@",
+  "Allow %@ to control Tivano?": "%@에서 Tivano를 제어하도록 허용하시겠습니까?",
+  "Allow full control": "전체 제어 허용",
+  "Allow read only": "읽기 전용 허용",
+  "Code: %@ · Redirects to %@": "코드: %@ · 리디렉션 대상 %@",
 };

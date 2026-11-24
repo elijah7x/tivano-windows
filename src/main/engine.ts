@@ -1159,6 +1159,7 @@ export class Engine {
     title?: string,
     opts?: {
       workspaceDefault?: boolean;
+      runtimeMode?: import("../shared/types").RuntimeMode;
       /** F34: external-control create (frozen createExternalThread)
        *  never inherits the saved per-chat default or last pair — the
        *  resolved choice is handed in explicitly: `enabled` plus the
@@ -1187,7 +1188,7 @@ export class Engine {
       hasStartedTurn: false,
       // F06: seed the thread's runtime mode from the saved default
       // (frozen makeThread — absent setting = fullAccess).
-      runtimeMode: settings.defaultRuntimeMode ?? "fullAccess",
+      runtimeMode: opts?.runtimeMode ?? settings.defaultRuntimeMode ?? "fullAccess",
       // F21: seed the per-chat Hydra flag from the saved default (frozen
       // ChatThread.hydraDefaultKey semantics — absent setting = on).
       // F34: an external create instead takes its choice verbatim —
@@ -2931,6 +2932,10 @@ export class Engine {
     antiSlopEnabled?: boolean | undefined;
     alphaEnabled?: boolean | undefined;
     externalControlEnabled?: boolean | undefined;
+    remoteMCPEnabled?: boolean | undefined;
+    remoteMCPFullAccess?: boolean | undefined;
+    remoteMCPPublicURL?: string | undefined;
+    remoteMCPPort?: number | undefined;
     fontSizes?:
       | { ui?: number | undefined; content?: number | undefined; code?: number | undefined }
       | undefined;
@@ -3030,6 +3035,16 @@ export class Engine {
       if (patch.alphaEnabled !== undefined) d.settings.alphaEnabled = patch.alphaEnabled;
       if (patch.externalControlEnabled !== undefined)
         d.settings.externalControlEnabled = patch.externalControlEnabled;
+      if (patch.remoteMCPEnabled !== undefined)
+        d.settings.remoteMCPEnabled = patch.remoteMCPEnabled;
+      if (patch.remoteMCPFullAccess !== undefined)
+        d.settings.remoteMCPFullAccess = patch.remoteMCPFullAccess;
+      if (patch.remoteMCPPublicURL !== undefined) {
+        if (patch.remoteMCPPublicURL === "") delete d.settings.remoteMCPPublicURL;
+        else d.settings.remoteMCPPublicURL = patch.remoteMCPPublicURL;
+      }
+      if (patch.remoteMCPPort !== undefined)
+        d.settings.remoteMCPPort = patch.remoteMCPPort;
       // F26: per-category writes merge and clamp like the frozen didSet —
       // a category never lands out of its range; reset writes the frozen
       // defaults explicitly (the Settings button sends all three).

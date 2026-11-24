@@ -260,6 +260,11 @@ export const REQUEST_CHANNELS = [
   "codex:clear",
   "control:status",
   "control:retry",
+  "remoteMcp:status",
+  "remoteMcp:retry",
+  "remoteMcp:decide",
+  "remoteMcp:revoke",
+  "remoteMcp:revoke-all",
   "cli:status",
   "cli:install",
   "cli:uninstall",
@@ -503,6 +508,9 @@ export const requestValidators = {
     // F33: double gate — both must be true before the socket listens.
     alphaEnabled: vOptional(vBoolean),
     externalControlEnabled: vOptional(vBoolean),
+    remoteMCPEnabled: vOptional(vBoolean),
+    remoteMCPFullAccess: vOptional(vBoolean),
+    remoteMCPPublicURL: vOptional(vMaxString(2000)),
     // F26: per-category absolute sizes; frozen ranges enforced at write.
     fontSizes: vOptional(
       vObject({
@@ -674,6 +682,14 @@ export const requestValidators = {
   // itself is never reachable through IPC (Unix socket only).
   "control:status": vObject({}),
   "control:retry": vObject({}),
+  "remoteMcp:status": vObject({}),
+  "remoteMcp:retry": vObject({}),
+  "remoteMcp:decide": vObject({
+    id: vId,
+    decision: vEnum(["full", "read", "deny"] as const),
+  }),
+  "remoteMcp:revoke": vObject({ id: vId }),
+  "remoteMcp:revoke-all": vObject({}),
   // F33 CLI install surface — bounded: no paths cross the bridge; main
   // owns dir/target resolution and reports honest state back.
   "cli:status": vObject({}),
@@ -854,4 +870,5 @@ type AppEventPayload =
       recentCommands: Record<string, string[]>;
     }
   | { type: "window-activity"; active: boolean }
-  | { type: "memory-pressure"; critical: boolean };
+  | { type: "memory-pressure"; critical: boolean }
+  | { type: "remote-mcp-changed"; status: import("./types").RemoteMcpStatus };

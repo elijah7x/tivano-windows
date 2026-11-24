@@ -1191,4 +1191,33 @@ export const zhHant: Record<string, string> = {
   "View all releases on GitHub": "在 GitHub 上檢視所有發行版本",
   "Expanded": "已展開",
   "Collapsed": "已收合",
+  "Connections": "連線",
+  "Remote MCP": "遠端 MCP",
+  "Run remote chats without approval": "無須核准即可執行遠端對話",
+  "Let cloud agents such as Muse or Grok Bot control this edition of Tivano over MCP, through a tunnel you run. Each agent needs your approval here once. Approvals and questions in chats still wait in Tivano.":
+    "允許 Muse 或 Grok Bot 等雲端代理透過你執行的通道，以 MCP 控制目前的 Tivano 應用程式。每個代理都須先在此獲得你的核准一次。對話中的核准與提問仍會在 Tivano 中等待處理。",
+  "Chats that cloud agents create start in Full access: commands and file changes run without asking. Chats created while this is off, and your own chats, keep their permissions. Questions still wait in Tivano.":
+    "雲端代理建立的對話會以「完整存取權限」啟動：指令與檔案變更無須詢問即可執行。關閉此項期間建立的對話以及你自己的對話會保留原有權限。提問仍會在 Tivano 中等待回覆。",
+  "Public address": "公開位址",
+  "Paste your tunnel's HTTPS address": "貼上你的通道 HTTPS 位址",
+  "Enter an HTTPS address, or leave it empty for this computer only.":
+    "請輸入 HTTPS 位址；留空則僅限本機存取。",
+  "Your tunnel's HTTPS address, forwarding to http://127.0.0.1:%d. Leave empty to allow only this computer.":
+    "你的通道 HTTPS 位址，轉發至 http://127.0.0.1:%d。留空則僅允許本機存取。",
+  "Server URL": "伺服器 URL",
+  "Copy server URL": "拷貝伺服器 URL",
+  "Remote MCP status": "遠端 MCP 狀態",
+  "Listening on 127.0.0.1:%d": "正在監聽 127.0.0.1:%d",
+  "Remote MCP could not start. Retry after freeing the port.":
+    "遠端 MCP 無法啟動。請釋放連接埠後再重試。",
+  "Retry remote MCP": "重試遠端 MCP",
+  "Revoke access": "撤銷授權",
+  "Revoke all": "全部撤銷",
+  "Full control": "完全控制",
+  "Read only": "唯讀",
+  "Last used %@": "上次使用：%@",
+  "Allow %@ to control Tivano?": "允許 %@ 控制 Tivano 嗎？",
+  "Allow full control": "允許完全控制",
+  "Allow read only": "僅允許唯讀存取",
+  "Code: %@ · Redirects to %@": "驗證碼：%@ · 重新導向至 %@",
 };

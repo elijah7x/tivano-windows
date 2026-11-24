@@ -1191,4 +1191,33 @@ export const fr: Record<string, string> = {
   "View all releases on GitHub": "Voir toutes les versions sur GitHub",
   "Expanded": "Développé",
   "Collapsed": "Réduit",
+  "Connections": "Connexions",
+  "Remote MCP": "MCP distant",
+  "Run remote chats without approval": "Exécuter les conversations distantes sans validation",
+  "Let cloud agents such as Muse or Grok Bot control this edition of Tivano over MCP, through a tunnel you run. Each agent needs your approval here once. Approvals and questions in chats still wait in Tivano.":
+    "Autorise les agents cloud tels que Muse ou Grok Bot à contrôler cette édition de Tivano via MCP, à travers un tunnel que vous exécutez. Chaque agent nécessite votre approbation ici une fois. Les approbations et questions dans les conversations restent dans Tivano.",
+  "Chats that cloud agents create start in Full access: commands and file changes run without asking. Chats created while this is off, and your own chats, keep their permissions. Questions still wait in Tivano.":
+    "Les conversations créées par les agents cloud démarrent en accès complet : les commandes et modifications de fichiers s’exécutent sans confirmation. Les conversations créées lorsque cette option est désactivée, ainsi que vos propres conversations, conservent leurs autorisations. Les questions attendent toujours dans Tivano.",
+  "Public address": "Adresse publique",
+  "Paste your tunnel's HTTPS address": "Collez l’adresse HTTPS de votre tunnel",
+  "Enter an HTTPS address, or leave it empty for this computer only.":
+    "Saisissez une adresse HTTPS, ou laissez vide pour n’autoriser que cet ordinateur.",
+  "Your tunnel's HTTPS address, forwarding to http://127.0.0.1:%d. Leave empty to allow only this computer.":
+    "L’adresse HTTPS de votre tunnel, redirigée vers http://127.0.0.1:%d. Laissez vide pour n’autoriser que cet ordinateur.",
+  "Server URL": "URL du serveur",
+  "Copy server URL": "Copier l’URL du serveur",
+  "Remote MCP status": "État du MCP distant",
+  "Listening on 127.0.0.1:%d": "Écoute sur 127.0.0.1:%d",
+  "Remote MCP could not start. Retry after freeing the port.":
+    "Impossible de démarrer le MCP distant. Libérez le port puis réessayez.",
+  "Retry remote MCP": "Réessayer le MCP distant",
+  "Revoke access": "Révoquer l’accès",
+  "Revoke all": "Tout révoquer",
+  "Full control": "Contrôle total",
+  "Read only": "Lecture seule",
+  "Last used %@": "Dernière utilisation : %@",
+  "Allow %@ to control Tivano?": "Autoriser %@ à contrôler Tivano ?",
+  "Allow full control": "Autoriser le contrôle total",
+  "Allow read only": "Autoriser en lecture seule",
+  "Code: %@ · Redirects to %@": "Code : %@ · Redirige vers %@",
 };

@@ -545,6 +545,11 @@ const vSettings = vObject({
   // gates off (the control socket never listens without them).
   alphaEnabled: vOptional(vBoolean),
   externalControlEnabled: vOptional(vBoolean),
+  // P2-25: Remote MCP lives outside Alpha under Settings > Connections.
+  remoteMCPEnabled: vOptional(vBoolean),
+  remoteMCPFullAccess: vOptional(vBoolean),
+  remoteMCPPublicURL: vOptional(vMaxString(2000)),
+  remoteMCPPort: vOptional(vInt(0, 65535)),
   // Optional so every pre-A38 store loads verbatim — absent = the
   // frozen defaults 14/15/13 (see shared/typeScale.ts).
   fontSizes: vOptional(vFontSizes),
