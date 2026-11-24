@@ -14,7 +14,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { personaAt } from "../../shared/hydraDelegation";
 import type { HydraReview } from "../../shared/hydraReview";
 import type { ChatThread } from "../../shared/types";
-import { callApi } from "../client";
+import { callApi, clientStore } from "../client";
 import { useT } from "../locale";
 import { HydraStaveBar } from "./HydraStaveBar";
 import { MiniSpinner } from "./SpinnerCells";
@@ -231,6 +231,18 @@ export function HydraPanel(props: {
         : null,
     [props.threads, ownHead],
   );
+
+  // P2-32/P2-63 (frozen noteShown): a head timeline shown in the panel
+  // is not offscreen — its stave excerpt updates on chunks, so the
+  // heads pace at the shown 90ms cadence, not the off-screen 1s.
+  const headIds = heads.map((h) => h.id).join(",");
+  useEffect(() => {
+    const ids = headIds === "" ? [] : headIds.split(",");
+    for (const id of ids) clientStore.noteTimelineShown(id, true);
+    return () => {
+      for (const id of ids) clientStore.noteTimelineShown(id, false);
+    };
+  }, [headIds]);
 
   // Frozen DotFieldSweep: when a head leaves "running", one wave of its
   // persona colour flows through the panel once. The prev-status map

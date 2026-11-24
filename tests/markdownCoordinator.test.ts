@@ -40,11 +40,17 @@ interface Coordinator {
     veil: null,
   ): ReactNode[] | null;
   dispose(): void;
+  readonly isDisposed: boolean;
   setOnLanded(fn: () => void): void;
 }
 const Coordinator = sandbox.module.exports.StreamingMarkdownCoordinator as new (
   onLanded: () => void,
   schedule?: (fn: () => void) => void,
+) => Coordinator;
+const mdCoordEntry = sandbox.module.exports.mdCoordEntry as (
+  map: Map<string, Coordinator>,
+  id: string,
+  onLanded: () => void,
 ) => Coordinator;
 const SYNC_BOUND = (
   sandbox.module.exports.STREAM_SYNC_TAIL_CHARS as number
@@ -161,5 +167,23 @@ describe("StreamingMarkdownCoordinator (frozen sync/deferred split)", () => {
     mq.flush();
     expect(a).toBe(0);
     expect(b).toBe(1);
+  });
+
+  it("mdCoordEntry replaces a cache-held coordinator disposed under the map", () => {
+    // Memory pressure and LRU eviction dispose coordinators while the
+    // mounted view's map still holds them — access must heal the entry
+    // or the streaming reply renders null until it finishes.
+    const map = new Map<string, Coordinator>();
+    const dead = mdCoordEntry(map, "m1", () => {});
+    dead.dispose();
+    expect(dead.isDisposed).toBe(true);
+    expect(dead.parse("hello", undefined, null)).toBe(null);
+    const fresh = mdCoordEntry(map, "m1", () => {});
+    expect(fresh).not.toBe(dead);
+    expect(fresh.isDisposed).toBe(false);
+    expect(map.get("m1")).toBe(fresh);
+    expect(walkText(fresh.parse("hello", undefined, null))).toContain("hello");
+    // A live entry is reused, not rebuilt.
+    expect(mdCoordEntry(map, "m1", () => {})).toBe(fresh);
   });
 });

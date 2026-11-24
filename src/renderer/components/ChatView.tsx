@@ -11,6 +11,7 @@ import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
 import { useT } from "../locale";
 import { translateError, translateNotice } from "../i18n";
 import {
+  mdCoordEntry,
   prewarmMarkdown,
   renderMarkdown,
   StreamingMarkdownCoordinator,
@@ -347,17 +348,10 @@ export function ChatView(props: {
     [threadId],
   );
   const [, mdBump] = useReducer((x: number) => x + 1, 0);
-  const mdCoordFor = (id: string): StreamingMarkdownCoordinator => {
-    let c = mdMap.get(id);
-    if (!c) {
-      c = new StreamingMarkdownCoordinator(() => mdBump());
-      mdMap.set(id, c);
-    }
-    // A cached coordinator can still have a deferred parse in flight —
-    // rebind so its landing bumps THIS mount's view, not a dead one's.
-    c.setOnLanded(() => mdBump());
-    return c;
-  };
+  // A pressure flush or LRU eviction can dispose entries the mounted
+  // map still holds — mdCoordEntry replaces them on access.
+  const mdCoordFor = (id: string): StreamingMarkdownCoordinator =>
+    mdCoordEntry(mdMap, id, () => mdBump());
   useEffect(() => {
     setHydraPanelHidden(false);
     headCount.current = 0;
@@ -373,7 +367,12 @@ export function ChatView(props: {
   useEffect(() => {
     return subscribeMemoryPressure(() => {
       veilRef.current.clear();
-      mdCoordCache.forEach((map) => map.forEach((c) => c.dispose()));
+      mdCoordCache.forEach((map) => {
+        map.forEach((c) => c.dispose());
+        // A mounted view holds its map object — empty it too so the
+        // next render rebuilds instead of holding disposed entries.
+        map.clear();
+      });
       mdCoordCache.clear();
     });
   }, []);

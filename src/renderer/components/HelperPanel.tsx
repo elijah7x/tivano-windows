@@ -82,8 +82,8 @@ export function HelperPanel(props: {
   }, [thread.messages.length, thread.turn?.seq]);
 
   // P2-32 (frozen noteShown/noteHidden): the panel's timeline counts as
-  // shown — its stream chunks render immediately, not on the off-screen
-  // cadence.
+  // shown — its chunks pace at the shown 90ms cadence, not the
+  // off-screen 1s.
   useEffect(() => {
     clientStore.noteTimelineShown(thread.id, true);
     return () => clientStore.noteTimelineShown(thread.id, false);

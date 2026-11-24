@@ -921,6 +921,12 @@ export class StreamingMarkdownCoordinator {
     this.pending = null;
   }
 
+  /** A cache that kept this coordinator after disposal must replace it —
+   *  `parse` returns null forever otherwise. */
+  get isDisposed(): boolean {
+    return this.disposed;
+  }
+
   /** Rebind the landed callback. P2-32: a cached coordinator outlives
    *  the ChatView mount that first created it — the remounted view
    *  re-attaches its own bump so an in-flight deferred parse still
@@ -956,6 +962,25 @@ export class StreamingMarkdownCoordinator {
       this.startNext();
     });
   }
+}
+
+/** Get-or-create one coordinator for a message in a cache map — an
+ *  entry disposed under the map (memory-pressure flush, LRU eviction)
+ *  is replaced on access, or its reply renders null until the stream
+ *  ends. The landed callback rebinds every call so an in-flight
+ *  deferred parse bumps the CURRENT mount, not a dead one. */
+export function mdCoordEntry(
+  map: Map<string, StreamingMarkdownCoordinator>,
+  id: string,
+  onLanded: () => void,
+): StreamingMarkdownCoordinator {
+  let c = map.get(id);
+  if (!c || c.isDisposed) {
+    c = new StreamingMarkdownCoordinator(onLanded);
+    map.set(id, c);
+  }
+  c.setOnLanded(onLanded);
+  return c;
 }
 
 /** Test helper: true when a URL would render as an anchor. */
