@@ -1213,8 +1213,19 @@ export const zhHant: Record<string, string> = {
   "Antigravity stopped before finishing.": "Antigravity 在完成前已停止。",
   "Antigravity held back %@ waiting for a permission it could not ask for. Use Full access for this chat.":
     "Antigravity 暫緩了 %@，因無法請求所需的權限。請為此對話開啟「完整存取權限」。",
+  "Antigravity held back actions waiting for permission.":
+    "Antigravity 暫緩了等待權限的操作。",
   "Antigravity held back %@ without prompting. Use Full access or add an allow rule in the CLI's settings.":
     "Antigravity 未經詢問即暫緩了 %@。請使用「完整存取權限」，或在 CLI 設定中新增允許規則。",
+  "Antigravity input stream could not accept prompt.":
+    "Antigravity 輸入串流無法接收提示詞。",
+  "ANTIGRAVITY_NOT_CONFIGURED": "尚未設定 Antigravity",
+  "ANTIGRAVITY_EXECUTABLE_INVALID": "Antigravity 可執行檔無效",
+  "ANTIGRAVITY_FIXTURE_INVALID": "Antigravity 模擬設定無效",
+  "Antigravity is not configured — install `agy` or select it in Settings":
+    "尚未設定 Antigravity —— 請安裝 `agy` 或在「設定」中選取",
+  "Antigravity review timed out": "Antigravity 審查逾時",
+  "`agy models` failed.": "`agy models` 執行失敗。",
   "`agy models` listed no models.": "`agy models` 未列出任何模型。",
   "`agy models` produced no output.": "`agy models` 沒有任何輸出。",
   "Antigravity: the model request failed (%@); agy is retrying, attempt %@.":
@@ -1223,6 +1234,8 @@ export const zhHant: Record<string, string> = {
     "與 Antigravity 的連線中斷。將在 %@ 秒後於同一對話中繼續（第 %@/2 次嘗試）…",
   "Antigravity sub-agent %@ lost its connection; continuing the same conversation in %@ s (attempt %@ of 2)…":
     "Antigravity 子代理 %@ 連線中斷，將在 %@ 秒後於同一對話繼續（第 %@/2 次）…",
+  "Your last request got no answer from the model and was stopped after 10 minutes. Continue the task from where you were.":
+    "你上一次的請求未收到模型回應，已在 10 分鐘後停止。請從中斷處繼續任務。",
   "Abandoned: no activity for 30 minutes; stopped by Tivano.":
     "已放棄：30 分鐘內無任何活動，已由 Tivano 停止。",
   "Last output from the provider: %@ min before the stop.":

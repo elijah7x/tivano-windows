@@ -1213,8 +1213,19 @@ export const fr: Record<string, string> = {
   "Antigravity stopped before finishing.": "Antigravity s’est arrêté avant d’avoir terminé.",
   "Antigravity held back %@ waiting for a permission it could not ask for. Use Full access for this chat.":
     "Antigravity a retenu %@ en attente d’une autorisation qu’il ne pouvait pas demander. Activez l’accès complet pour cette discussion.",
+  "Antigravity held back actions waiting for permission.":
+    "Antigravity a retenu des actions en attente d’autorisation.",
   "Antigravity held back %@ without prompting. Use Full access or add an allow rule in the CLI's settings.":
     "Antigravity a retenu %@ sans demander confirmation. Utilisez l’accès complet ou ajoutez une règle d’autorisation dans les réglages de la CLI.",
+  "Antigravity input stream could not accept prompt.":
+    "Le flux d’entrée Antigravity n’a pas pu accepter l’invite.",
+  "ANTIGRAVITY_NOT_CONFIGURED": "Antigravity n’est pas configuré",
+  "ANTIGRAVITY_EXECUTABLE_INVALID": "Exécutable Antigravity invalide",
+  "ANTIGRAVITY_FIXTURE_INVALID": "Configuration de simulation Antigravity invalide",
+  "Antigravity is not configured — install `agy` or select it in Settings":
+    "Antigravity n’est pas configuré — installez `agy` ou sélectionnez-le dans les réglages",
+  "Antigravity review timed out": "La revue Antigravity a expiré",
+  "`agy models` failed.": "Échec de `agy models`.",
   "`agy models` listed no models.": "`agy models` n’a listé aucun modèle.",
   "`agy models` produced no output.": "`agy models` n’a produit aucune sortie.",
   "Antigravity: the model request failed (%@); agy is retrying, attempt %@.":
@@ -1223,6 +1234,8 @@ export const fr: Record<string, string> = {
     "La connexion à Antigravity a été interrompue. Reprise de la même conversation dans %@ s (tentative %@ sur 2)…",
   "Antigravity sub-agent %@ lost its connection; continuing the same conversation in %@ s (attempt %@ of 2)…":
     "Le sous-agent Antigravity %@ a perdu la connexion ; reprise de la même conversation dans %@ s (tentative %@ sur 2)…",
+  "Your last request got no answer from the model and was stopped after 10 minutes. Continue the task from where you were.":
+    "Votre dernière demande n’a reçu aucune réponse du modèle et a été arrêtée après 10 minutes. Reprenez la tâche là où vous en étiez.",
   "Abandoned: no activity for 30 minutes; stopped by Tivano.":
     "Abandonné : aucune activité pendant 30 minutes ; arrêté par Tivano.",
   "Last output from the provider: %@ min before the stop.":

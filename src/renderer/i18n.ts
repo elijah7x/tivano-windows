@@ -1275,8 +1275,19 @@ const zhHans: Record<string, string> = {
   "Antigravity stopped before finishing.": "Antigravity 未完成即停止。",
   "Antigravity held back %@ waiting for a permission it could not ask for. Use Full access for this chat.":
     "Antigravity 拦下了 %@，等待一个它无法询问的权限。请为此对话开启完全访问。",
+  "Antigravity held back actions waiting for permission.":
+    "Antigravity 拦下了需要等待权限的操作。",
   "Antigravity held back %@ without prompting. Use Full access or add an allow rule in the CLI's settings.":
     "Antigravity 未经询问就拦下了 %@。请使用完全访问，或在 CLI 设置中添加允许规则。",
+  "Antigravity input stream could not accept prompt.":
+    "Antigravity 输入流无法接收提示词。",
+  "ANTIGRAVITY_NOT_CONFIGURED": "Antigravity 未配置",
+  "ANTIGRAVITY_EXECUTABLE_INVALID": "Antigravity 可执行文件无效",
+  "ANTIGRAVITY_FIXTURE_INVALID": "Antigravity 模拟配置无效",
+  "Antigravity is not configured — install `agy` or select it in Settings":
+    "Antigravity 未配置 —— 请安装 `agy` 或在“设置”中选择",
+  "Antigravity review timed out": "Antigravity 审查超时",
+  "`agy models` failed.": "`agy models` 执行失败。",
   "`agy models` listed no models.": "`agy models` 未列出任何模型。",
   "`agy models` produced no output.": "`agy models` 没有输出。",
   "Antigravity: the model request failed (%@); agy is retrying, attempt %@.":
@@ -1285,6 +1296,8 @@ const zhHans: Record<string, string> = {
     "与 Antigravity 的连接中断，%@ 秒后在同一对话中继续（第 %@/2 次）…",
   "Antigravity sub-agent %@ lost its connection; continuing the same conversation in %@ s (attempt %@ of 2)…":
     "Antigravity 子代理 %@ 连接中断，%@ 秒后在同一对话中继续（第 %@/2 次）…",
+  "Your last request got no answer from the model and was stopped after 10 minutes. Continue the task from where you were.":
+    "你上一次请求没有得到模型回应，10 分钟后被停止。请从中断处继续任务。",
   "Abandoned: no activity for 30 minutes; stopped by Tivano.":
     "已放弃：30 分钟没有任何活动，已由 Tivano 停止。",
   "Last output from the provider: %@ min before the stop.":

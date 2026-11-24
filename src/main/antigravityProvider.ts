@@ -44,9 +44,8 @@ export const ANTIGRAVITY_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as 
 export const ANTIGRAVITY_DEFAULT_START_TIMEOUT_MS = 90_000;
 export const ANTIGRAVITY_DEFAULT_REVIEW_TIMEOUT_MS = 900_000;
 
-/** Exact effort-suffixed base models listed by `agy models` (P2-59). */
+/** Exact effort-suffixed base models listed by `agy models` (v3.0.0 baseline). */
 export const ANTIGRAVITY_SUFFIXED_BASES = new Set([
-  "gemini-4-neon",
   "gemini-4-carbon",
   "gemini-4-argon",
   "gemini-4-hydrogen",
@@ -54,15 +53,8 @@ export const ANTIGRAVITY_SUFFIXED_BASES = new Set([
   "gpt-oss-120b",
 ]);
 
-/** Seed catalog entries retained for Antigravity (retired Gemini models dropped). */
+/** Seed catalog entries retained for Antigravity matching v3.0.0 ProviderRegistry.antigravitySeed. */
 export const ANTIGRAVITY_SEED: readonly CodexModelOption[] = [
-  {
-    id: "gemini-4-neon",
-    name: "Gemini 4 Neon",
-    efforts: ["low", "medium", "high", "xhigh"],
-    defaultEffort: "high",
-    isDefault: true,
-  },
   {
     id: "gemini-4-carbon",
     name: "Gemini 4 Carbon",
@@ -89,7 +81,7 @@ export const ANTIGRAVITY_SEED: readonly CodexModelOption[] = [
     name: "Gemini 3.8 Flash",
     efforts: ["low", "medium", "high"],
     defaultEffort: "high",
-    isDefault: false,
+    isDefault: true,
   },
   {
     id: "claude-sonnet-4-6",
@@ -257,7 +249,7 @@ export function parseModelsOutput(stdout: string): ParsedModelsResult {
       name: item.name,
       efforts,
       ...(defaultEffort ? { defaultEffort } : {}),
-      isDefault: item.id === "gemini-4-neon",
+      isDefault: item.id === "gemini-3.8-flash",
     });
   }
 
@@ -1228,6 +1220,7 @@ interface ThreadSession {
   logFile: string;
   signature: SessionSignature;
   transport: StdioTransport<Record<string, unknown>> | null;
+  disposing?: Promise<ChildCleanupResult | null>;
   knownErrors: Set<string>;
   lastOutputAt: number;
   activeTurn: ActiveTurnState | null;
@@ -1261,7 +1254,7 @@ interface ActiveTurnState {
   toolStates: Map<string, ToolActivity>;
   cancelled: boolean;
   settled: boolean;
-  settle: (exitInfo?: { code: number | null; signal: string | null }) => void;
+  settle: (exitInfo?: { code: number | null; signal: string | null; stderr?: string }) => void;
   initReceived: boolean;
   startTimer: NodeJS.Timeout | null;
   tailer: AntigravityLogTailer;
@@ -1356,7 +1349,7 @@ export class AntigravityProvider implements ProviderAdapter {
       if (!this.deps.config.fixtureNode || !this.deps.config.fixtureScript) {
         throw new AntigravityConfigError(
           "ANTIGRAVITY_FIXTURE_INVALID",
-          "Antigravity fixture paths are missing",
+          "ANTIGRAVITY_FIXTURE_INVALID: Antigravity fixture paths are missing",
         );
       }
       return {
@@ -1376,10 +1369,14 @@ export class AntigravityProvider implements ProviderAdapter {
         baseArgs: [],
       };
     }
+    const reason =
+      this.deps.config.realUnavailableReason ??
+      "ANTIGRAVITY_NOT_CONFIGURED: Antigravity is not configured — install `agy` or select it in Settings";
     throw new AntigravityConfigError(
       "ANTIGRAVITY_NOT_CONFIGURED",
-      this.deps.config.realUnavailableReason ??
-        "Antigravity is not configured — install `agy` or select its executable in Settings",
+      reason.startsWith("ANTIGRAVITY_") || reason.startsWith(PROCESS_TREE_UNSUPPORTED)
+        ? reason
+        : `ANTIGRAVITY_NOT_CONFIGURED: ${reason}`,
     );
   }
 
@@ -1470,9 +1467,13 @@ export class AntigravityProvider implements ProviderAdapter {
 
   async modelCatalog(): Promise<CodexModelOption[] | null> {
     if (this.deps.config.mode === "unconfigured") {
-      throw new Error(
+      const reason =
         this.deps.config.realUnavailableReason ??
-          "Antigravity is not configured — install `agy` or set it in Settings",
+        "ANTIGRAVITY_NOT_CONFIGURED: Antigravity is not configured — install `agy` or select it in Settings";
+      throw new Error(
+        reason.startsWith("ANTIGRAVITY_") || reason.startsWith(PROCESS_TREE_UNSUPPORTED)
+          ? reason
+          : `ANTIGRAVITY_NOT_CONFIGURED: ${reason}`,
       );
     }
     const res = await this.runBoundedCli(["models"], {
@@ -1576,6 +1577,7 @@ export class AntigravityProvider implements ProviderAdapter {
         let session = this.sessions.get(threadId);
         if (session && (!session.transport || !sameSignature(session.signature, sig))) {
           await this.teardownSessionTransport(session);
+          if (this.disposed || cancelled) return;
         }
 
         if (!session) {
@@ -1642,7 +1644,7 @@ export class AntigravityProvider implements ProviderAdapter {
         session.activeTurn = turn;
         tailer.startTurn();
 
-        const settleTurn = (exitInfo?: { code: number | null; signal: string | null }) => {
+        const settleTurn = (exitInfo?: { code: number | null; signal: string | null; stderr?: string }) => {
           if (turn.settled) return;
           turn.settled = true;
           if (turn.startTimer) {
@@ -1657,6 +1659,7 @@ export class AntigravityProvider implements ProviderAdapter {
             callbacks.onFileChanges?.(Array.from(turn.touchedPaths));
           }
 
+          const stderrTail = exitInfo?.stderr ?? session!.transport?.stderrTail();
           if (
             !turn.initReceived &&
             !turn.cancelled &&
@@ -1668,7 +1671,7 @@ export class AntigravityProvider implements ProviderAdapter {
             const detail =
               exitInfo !== undefined
                 ? agyError({
-                    ...(session!.transport ? { stderr: session!.transport.stderrTail() } : {}),
+                    ...(stderrTail !== undefined ? { stderr: stderrTail } : {}),
                     exitCode: exitInfo.code,
                     ...(fallbackErr ? { detail: fallbackErr } : {}),
                   })
@@ -1691,7 +1694,7 @@ export class AntigravityProvider implements ProviderAdapter {
             replyOnlyInResult: turn.replyOnlyInResult,
             resultError: turn.resultError,
             ...(exitInfo ? { exitCode: exitInfo.code, signal: exitInfo.signal } : {}),
-            ...(session!.transport ? { stderr: session!.transport.stderrTail() } : {}),
+            ...(stderrTail !== undefined ? { stderr: stderrTail } : {}),
           });
 
           if (turn.resultError?.trim()) {
@@ -1749,33 +1752,40 @@ export class AntigravityProvider implements ProviderAdapter {
             limits,
             {
               onFrame: (frame) => {
+                if (session!.transport !== transport) return;
                 session!.lastOutputAt = Date.now();
                 const t = session!.activeTurn;
                 if (!t || t.settled) return;
                 this.handleFrame(session!, t, frame, () => t.settle());
               },
               onProtocolError: (err) => {
+                if (session!.transport !== transport) return;
+                const stderr = transport.stderrTail();
+                void this.teardownSessionTransport(session!);
                 const t = session!.activeTurn;
                 if (t && !t.settled) {
                   t.resultError = err.message;
-                  t.settle();
+                  t.settle({ code: null, signal: null, stderr });
                 }
-                void this.teardownSessionTransport(session!);
               },
               onSpawnError: (err) => {
+                if (session!.transport !== transport) return;
+                session!.transport = null;
+                const stderr = transport.stderrTail();
                 const t = session!.activeTurn;
                 if (t && !t.settled) {
                   t.resultError = err.message;
-                  t.settle({ code: null, signal: null });
+                  t.settle({ code: null, signal: null, stderr });
                 }
-                session!.transport = null;
               },
               onExit: () => {},
               onClose: (code, signal) => {
+                if (session!.transport !== transport) return;
                 session!.transport = null;
+                const stderr = transport.stderrTail();
                 const t = session!.activeTurn;
                 if (t && !t.settled) {
-                  t.settle({ code, signal });
+                  t.settle({ code, signal, stderr });
                 }
               },
             },
@@ -1785,6 +1795,8 @@ export class AntigravityProvider implements ProviderAdapter {
           session.transport = transport;
           transport.start();
         }
+
+        if (turn.settled || !session.transport) return;
 
         if (!turn.initReceived) {
           turn.startTimer = setTimeout(() => {
@@ -1825,15 +1837,19 @@ export class AntigravityProvider implements ProviderAdapter {
     return {
       cancel: () => {
         cancelled = true;
+        const sess = this.sessions.get(threadId);
         if (activeTurnRef) {
           activeTurnRef.cancelled = true;
+          activeTurnRef.settled = true;
           if (activeTurnRef.startTimer) {
             clearTimeout(activeTurnRef.startTimer);
             activeTurnRef.startTimer = null;
           }
           activeTurnRef.tailer.stopTurn();
+          if (sess && sess.activeTurn === activeTurnRef) {
+            sess.activeTurn = null;
+          }
         }
-        const sess = this.sessions.get(threadId);
         if (sess) {
           void this.teardownSessionTransport(sess);
         }
@@ -2241,19 +2257,37 @@ export class AntigravityProvider implements ProviderAdapter {
   }
 
   private async teardownSessionTransport(session: ThreadSession): Promise<ChildCleanupResult | null> {
+    const prev = session.disposing;
     const t = session.transport;
     session.transport = null;
-    if (!t) return null;
+    if (!t) {
+      return prev ? await prev : null;
+    }
+    const run = (async (): Promise<ChildCleanupResult | null> => {
+      if (prev) {
+        try {
+          await prev;
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        return await t.dispose();
+      } catch (err) {
+        return {
+          pid: undefined,
+          confirmed: false,
+          exitCode: null,
+          signal: null,
+          problem: err instanceof Error ? err.message : String(err),
+        };
+      }
+    })();
+    session.disposing = run;
     try {
-      return await t.dispose();
-    } catch (err) {
-      return {
-        pid: undefined,
-        confirmed: false,
-        exitCode: null,
-        signal: null,
-        problem: err instanceof Error ? err.message : String(err),
-      };
+      return await run;
+    } finally {
+      if (session.disposing === run) delete session.disposing;
     }
   }
 

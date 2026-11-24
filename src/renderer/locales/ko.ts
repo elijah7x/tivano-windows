@@ -1213,8 +1213,19 @@ export const ko: Record<string, string> = {
   "Antigravity stopped before finishing.": "Antigravity가 완료되기 전에 중지되었습니다.",
   "Antigravity held back %@ waiting for a permission it could not ask for. Use Full access for this chat.":
     "Antigravity가 요청할 수 없는 권한을 기다리느라 %@ 작업을 보류했습니다. 이 대화에는 전체 접근 권한을 사용하세요.",
+  "Antigravity held back actions waiting for permission.":
+    "Antigravity가 권한 대기로 인해 작업을 보류했습니다.",
   "Antigravity held back %@ without prompting. Use Full access or add an allow rule in the CLI's settings.":
     "Antigravity가 확인 요청 없이 %@ 작업을 보류했습니다. 전체 접근 권한을 사용하거나 CLI 설정에서 허용 규칙을 추가하세요.",
+  "Antigravity input stream could not accept prompt.":
+    "Antigravity 입력 스트림이 프롬프트를 수락할 수 없습니다.",
+  "ANTIGRAVITY_NOT_CONFIGURED": "Antigravity가 구성되지 않았습니다",
+  "ANTIGRAVITY_EXECUTABLE_INVALID": "Antigravity 실행 파일이 올바르지 않습니다",
+  "ANTIGRAVITY_FIXTURE_INVALID": "Antigravity 픽스처 구성이 올바르지 않습니다",
+  "Antigravity is not configured — install `agy` or select it in Settings":
+    "Antigravity가 구성되지 않았습니다 — `agy`를 설치하거나 설정에서 선택하세요",
+  "Antigravity review timed out": "Antigravity 검토 시간이 초과되었습니다",
+  "`agy models` failed.": "`agy models` 실행에 실패했습니다.",
   "`agy models` listed no models.": "`agy models`가 모델을 나열하지 않았습니다.",
   "`agy models` produced no output.": "`agy models`의 출력이 없습니다.",
   "Antigravity: the model request failed (%@); agy is retrying, attempt %@.":
@@ -1223,6 +1234,8 @@ export const ko: Record<string, string> = {
     "Antigravity와의 연결이 끊어졌습니다. %@초 후 같은 대화에서 계속합니다(%@/2회 시도)…",
   "Antigravity sub-agent %@ lost its connection; continuing the same conversation in %@ s (attempt %@ of 2)…":
     "Antigravity 하위 에이전트 %@의 연결이 끊어졌습니다. %@초 후 같은 대화에서 계속합니다(시도 %@/2)…",
+  "Your last request got no answer from the model and was stopped after 10 minutes. Continue the task from where you were.":
+    "마지막 요청에 모델 응답이 없어 10분 후 중지되었습니다. 멈춘 지점부터 작업을 계속하세요.",
   "Abandoned: no activity for 30 minutes; stopped by Tivano.":
     "중단됨: 30분 동안 활동이 없어 Tivano에서 중지했습니다.",
   "Last output from the provider: %@ min before the stop.":

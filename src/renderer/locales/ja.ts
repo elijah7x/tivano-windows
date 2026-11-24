@@ -1213,8 +1213,19 @@ export const ja: Record<string, string> = {
   "Antigravity stopped before finishing.": "Antigravity は完了する前に停止しました。",
   "Antigravity held back %@ waiting for a permission it could not ask for. Use Full access for this chat.":
     "Antigravity は確認できないアクセス権を待機して %@ を保留しました。このチャットでは「フルアクセス」を使用してください。",
+  "Antigravity held back actions waiting for permission.":
+    "Antigravity は許可待ちのため操作を保留しました。",
   "Antigravity held back %@ without prompting. Use Full access or add an allow rule in the CLI's settings.":
     "Antigravity は確認なしで %@ を保留しました。「フルアクセス」を使用するか、CLI の設定で許可ルールを追加してください。",
+  "Antigravity input stream could not accept prompt.":
+    "Antigravity の入力ストリームがプロンプトを受け付けられませんでした。",
+  "ANTIGRAVITY_NOT_CONFIGURED": "Antigravity は未設定です",
+  "ANTIGRAVITY_EXECUTABLE_INVALID": "Antigravity の実行ファイルが無効です",
+  "ANTIGRAVITY_FIXTURE_INVALID": "Antigravity フィクスチャ設定が無効です",
+  "Antigravity is not configured — install `agy` or select it in Settings":
+    "Antigravity が設定されていません — `agy` をインストールするか、設定で選択してください",
+  "Antigravity review timed out": "Antigravity のレビューがタイムアウトしました",
+  "`agy models` failed.": "`agy models` が失敗しました。",
   "`agy models` listed no models.": "`agy models` からモデルが一覧表示されませんでした。",
   "`agy models` produced no output.": "`agy models` の出力がありませんでした。",
   "Antigravity: the model request failed (%@); agy is retrying, attempt %@.":
@@ -1223,6 +1234,8 @@ export const ja: Record<string, string> = {
     "Antigravity への接続が切れました。%@ 秒後に同じ会話で続行します（%@/2 回目）…",
   "Antigravity sub-agent %@ lost its connection; continuing the same conversation in %@ s (attempt %@ of 2)…":
     "Antigravity サブエージェント %@ の接続が切れました。%@ 秒後に同じスレッドで続行します（%@/2 回目）…",
+  "Your last request got no answer from the model and was stopped after 10 minutes. Continue the task from where you were.":
+    "前回のリクエストはモデルからの応答がなく、10 分後に停止されました。中断したところからタスクを続行してください。",
   "Abandoned: no activity for 30 minutes; stopped by Tivano.":
     "中断：30 分間アクティビティがなかったため、Tivano により停止されました。",
   "Last output from the provider: %@ min before the stop.":

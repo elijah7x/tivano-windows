@@ -45,11 +45,12 @@ if (args[0] === "models") {
   process.stdout.write(
     [
       "Fetching available models...",
-      "gemini-4-neon-low\tGemini 4 Neon (Low)",
-      "gemini-4-neon-medium\tGemini 4 Neon (Medium)",
-      "gemini-4-neon-high\tGemini 4 Neon (High)",
-      "gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)",
+      "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
+      "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+      "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+      "gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)",
       "gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)",
+      "gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)",
       "gemini-4-argon-medium\tGemini 4 Argon (Medium)",
       "gemini-2.5-pro\tGemini 2.5 Pro",
       "gemini-3.5-pro\tGemini 3.5 Pro",

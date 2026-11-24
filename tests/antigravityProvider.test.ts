@@ -145,9 +145,9 @@ describe("Antigravity P2-35 / P2-59 pure hardening rules", () => {
     expect(parseModelRow("gemini-2.5-pro\tGemini 2.5 Pro")).toBeNull();
     expect(parseModelRow("gemini-3.5-pro\tGemini 3.5 Pro")).toBeNull();
     expect(parseModelRow("gemini-3-flash\tGemini 3 Flash")).toBeNull();
-    expect(parseModelRow("gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)")).toEqual({
-      id: "gemini-4-neon-xhigh",
-      name: "Gemini 4 Neon (XHigh)",
+    expect(parseModelRow("gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)")).toEqual({
+      id: "gemini-4-hydrogen-xhigh",
+      name: "Gemini 4 Hydrogen (XHigh)",
     });
 
     const parsed = parseModelsOutput(
@@ -155,9 +155,10 @@ describe("Antigravity P2-35 / P2-59 pure hardening rules", () => {
         "Fetching available models...",
         "id\tname",
         "gemini-2.5-pro\tGemini 2.5 Pro",
-        "gemini-4-neon-low\tGemini 4 Neon (Low)",
-        "gemini-4-neon-high\tGemini 4 Neon (High)",
-        "gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)",
+        "gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)",
+        "gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)",
+        "gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)",
+        "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
         "claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)",
         "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)",
       ].join("\n"),
@@ -166,29 +167,32 @@ describe("Antigravity P2-35 / P2-59 pure hardening rules", () => {
     const ids = parsed.models.map((m) => m.id);
     expect(ids).not.toContain("gemini-2.5-pro");
     expect(ids).not.toContain("Fetching");
-    expect(ids).toContain("gemini-4-neon");
+    expect(ids).toContain("gemini-4-hydrogen");
     expect(ids).toContain("gemini-4-argon");
-    const neon = parsed.models.find((m) => m.id === "gemini-4-neon")!;
-    expect(neon.name).toBe("Gemini 4 Neon");
-    expect(neon.efforts).toEqual(["low", "high", "xhigh"]);
+    expect(parsed.models.find((m) => m.isDefault)?.id).toBe("gemini-3.8-flash");
+    const hydrogen = parsed.models.find((m) => m.id === "gemini-4-hydrogen")!;
+    expect(hydrogen.name).toBe("Gemini 4 Hydrogen");
+    expect(hydrogen.efforts).toEqual(["low", "high", "xhigh"]);
     const opus = parsed.models.find((m) => m.id === "claude-opus-4-6-thinking")!;
     expect(opus.efforts).toEqual([]);
 
     const seeded = addingSeedRows([]);
-    expect(seeded.some((m) => m.id === "gemini-4-neon" && m.efforts.includes("xhigh"))).toBe(true);
+    expect(seeded.some((m) => m.id === "gemini-4-hydrogen" && m.efforts.includes("xhigh"))).toBe(true);
+    expect(seeded.find((m) => m.isDefault)?.id).toBe("gemini-3.8-flash");
+    expect(seeded.some((m) => m.id === "gemini-4-neon")).toBe(false);
     expect(seeded.some((m) => m.id === "gemini-4-argon")).toBe(true);
   });
 
   it("passes full agy ids for suffixed models, omits --effort for Claude, and clamps effort to listed levels", () => {
-    expect(normalizeModelAndEffort("gemini-4-neon", "xhigh", ANTIGRAVITY_SEED)).toEqual({
-      model: "gemini-4-neon-xhigh",
+    expect(normalizeModelAndEffort("gemini-4-hydrogen", "xhigh", ANTIGRAVITY_SEED)).toEqual({
+      model: "gemini-4-hydrogen-xhigh",
     });
-    expect(normalizeModelAndEffort("gemini-4-neon-high", undefined, ANTIGRAVITY_SEED)).toEqual({
-      model: "gemini-4-neon-high",
+    expect(normalizeModelAndEffort("gemini-4-hydrogen-high", undefined, ANTIGRAVITY_SEED)).toEqual({
+      model: "gemini-4-hydrogen-high",
     });
-    // Unsupported `max` for gemini-4-neon clamps to model default (`high`)
-    expect(normalizeModelAndEffort("gemini-4-neon", "max", ANTIGRAVITY_SEED)).toEqual({
-      model: "gemini-4-neon-high",
+    // Unsupported `max` for gemini-4-hydrogen clamps to model default (`high`)
+    expect(normalizeModelAndEffort("gemini-4-hydrogen", "max", ANTIGRAVITY_SEED)).toEqual({
+      model: "gemini-4-hydrogen-high",
     });
     // Claude models hosted on Antigravity never take --effort
     expect(
@@ -337,14 +341,15 @@ describe("AntigravityProvider fixture process integration", () => {
     const catalog = await provider.modelCatalog();
     expect(catalog).not.toBeNull();
     expect(catalog!.some((m) => m.id === "gemini-2.5-pro")).toBe(false);
-    expect(catalog!.some((m) => m.id === "gemini-4-neon")).toBe(true);
+    expect(catalog!.some((m) => m.id === "gemini-3.8-flash")).toBe(true);
+    expect(catalog!.some((m) => m.id === "gemini-4-hydrogen")).toBe(true);
 
     const sup = await runProviderTurn(provider, {
       prompt: "[echo-args]",
       threadId: "t-sup",
       turnId: "turn-sup",
       cwd,
-      model: "gemini-4-neon",
+      model: "gemini-4-hydrogen",
       effort: "xhigh",
       runtimeMode: "supervised",
       interactionMode: "build",
@@ -359,7 +364,7 @@ describe("AntigravityProvider fixture process integration", () => {
     expect(supArgs[supArgs.indexOf("--settings") + 1]).toBe('{"agentMode":""}');
     expect(supArgs).not.toContain("--dangerously-skip-permissions");
     expect(supArgs).not.toContain("--mcp-config");
-    expect(supArgs[supArgs.indexOf("--model") + 1]).toBe("gemini-4-neon-xhigh");
+    expect(supArgs[supArgs.indexOf("--model") + 1]).toBe("gemini-4-hydrogen-xhigh");
     expect(supArgs).not.toContain("--effort");
     expect(bindings).toEqual(["antigravity:ag-conv-1"]);
 
@@ -482,10 +487,48 @@ describe("AntigravityProvider fixture process integration", () => {
     const review = await provider.generateHydraReview("[review] inspect diff", {
       cwd,
       readableDirs: [cwd],
-      model: "gemini-4-neon",
+      model: "gemini-3.8-flash",
       effort: "high",
     });
     expect(review).toContain("Finding 1:");
+  });
+
+  it("ignores late close/error hooks from a cancelled transport so an immediate replacement turn finishes cleanly", async () => {
+    const dataRoot = freshTemp();
+    const cwd = freshTemp("ag-cwd-");
+    const provider = makeFixtureProvider(dataRoot);
+
+    let turn1Error: string | undefined;
+    const h1 = provider.start(
+      {
+        prompt: "[hang-init]",
+        threadId: "t-race",
+        turnId: "turn-1",
+        workspace: { projectId: "proj-1", directory: cwd },
+      },
+      {
+        onChunk: () => {},
+        onApproval: () => {},
+        onDone: () => {},
+        onError: (msg) => {
+          turn1Error = msg;
+        },
+      },
+    );
+
+    // Wait briefly so transport 1 has spawned, then cancel and immediately start turn 2.
+    await new Promise((r) => setTimeout(r, 40));
+    h1.cancel();
+
+    const turn2 = await runProviderTurn(provider, {
+      prompt: "hello replacement",
+      threadId: "t-race",
+      turnId: "turn-2",
+      cwd,
+    });
+    expect(turn1Error).toBeUndefined();
+    expect(turn2.status).toBe("done");
+    expect(turn2.error).toBeUndefined();
   });
 });
 

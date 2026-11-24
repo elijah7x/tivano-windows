@@ -2,7 +2,7 @@
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 
 import { describe, expect, it, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -47,7 +47,7 @@ describe("antigravityRuntimeConfig", () => {
     writeFileSync(cmdShim, "@echo off\n", "utf8");
     writeFileSync(otherExe, "stub", "utf8");
 
-    expect(validateAntigravityExecutable(agyExe, "win32")).toBe(agyExe);
+    expect(validateAntigravityExecutable(agyExe, "win32")).toBe(realpathSync(agyExe));
     expect(() => validateAntigravityExecutable("agy.exe", "win32")).toThrow(AntigravityConfigError);
     expect(() => validateAntigravityExecutable("\\\\evil-host\\share\\agy.exe", "win32")).toThrow(
       AntigravityConfigError,
@@ -61,7 +61,7 @@ describe("antigravityRuntimeConfig", () => {
 
     const posixBin = join(dir, "agy");
     writeFileSync(posixBin, "#!/bin/sh\n", "utf8");
-    expect(validateAntigravityExecutable(posixBin, "linux")).toBe(posixBin);
+    expect(validateAntigravityExecutable(posixBin, "linux")).toBe(realpathSync(posixBin));
   });
 
   it("refuses simultaneous fixture + real executable overrides", () => {
@@ -152,7 +152,7 @@ describe("antigravityRuntimeConfig", () => {
       { LOCALAPPDATA: root, PATH: badPath },
       "win32",
     );
-    expect(found).toBe(exe);
+    expect(found).toBe(realpathSync(exe));
   });
 
   it("manages AntigravitySetup choose/save/clear lifecycle and savedEffect reporting", async () => {
@@ -173,12 +173,13 @@ describe("antigravityRuntimeConfig", () => {
     const bad = await setup.choose(async () => ({ canceled: false, filePaths: [join(dir, "missing.exe")] }));
     expect(bad.status).toBe("invalid");
 
+    const realExe = realpathSync(exe);
     const chosen = await setup.choose(async () => ({ canceled: false, filePaths: [exe] }));
-    expect(chosen).toEqual({ status: "chosen", path: exe });
+    expect(chosen).toEqual({ status: "chosen", path: realExe });
 
     const saved = setup.save();
-    expect(saved).toEqual({ status: "saved", path: exe, changed: true });
-    expect(persisted).toBe(exe);
+    expect(saved).toEqual({ status: "saved", path: realExe, changed: true });
+    expect(persisted).toBe(realExe);
 
     expect(
       antigravitySavedEffect(persisted, null, { TIVANO_PROVIDER: "mock" }).savedEffect,

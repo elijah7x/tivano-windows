@@ -469,7 +469,7 @@ export function resolveAntigravityRuntime(
     env: buildAntigravityEnv({ mode: "real", platform, sourceEnv: env }),
     treeCapability,
     realUnavailableReason:
-      "Antigravity is not configured — install `agy` or choose its executable in Settings",
+      "ANTIGRAVITY_NOT_CONFIGURED: Antigravity is not configured — install `agy` or select it in Settings",
   };
 }
 
