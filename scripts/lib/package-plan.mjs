@@ -297,12 +297,17 @@ export function validateBuilderConfig(cfg) {
  * arbitrary unknown/typo'd properties the policy check above does not
  * enumerate. Returns [{instancePath,message}]; empty means schema-valid.
  */
+// Compiling the scheme takes seconds; compile it once per process.
+let builderSchemaValidator = null;
 export function validateBuilderSchema(cfg) {
-  const ablRequire = createRequire(createRequire(import.meta.url).resolve("app-builder-lib/package.json"));
-  const Ajv = ablRequire("ajv");
-  const schema = ablRequire("app-builder-lib/scheme.json");
-  const ajv = new Ajv({ allErrors: true, strict: false });
-  const validate = ajv.compile(schema);
+  if (!builderSchemaValidator) {
+    const ablRequire = createRequire(createRequire(import.meta.url).resolve("app-builder-lib/package.json"));
+    const Ajv = ablRequire("ajv");
+    const schema = ablRequire("app-builder-lib/scheme.json");
+    const ajv = new Ajv({ allErrors: true, strict: false });
+    builderSchemaValidator = ajv.compile(schema);
+  }
+  const validate = builderSchemaValidator;
   if (validate(cfg)) return [];
   return (validate.errors ?? []).map((e) => ({
     instancePath: e.instancePath,
