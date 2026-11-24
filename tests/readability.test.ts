@@ -31,4 +31,11 @@ describe("P2-46 spacing rhythm", () => {
     expect(css).toContain(".msg li ul,");
     expect(css).toMatch(/\.timeline \{[^}]*gap: 14px;/s);
   });
+  it("keeps task rows flush by cancelling exactly the list indent", () => {
+    const indent = css.match(/\.msg ul,\r?\n\.msg ol \{[^}]*padding-left: ([\d.]+em);/s);
+    const pull = css.match(/\.msg li\.md-task \{[^}]*margin-left: -([\d.]+em);/s);
+    expect(indent).not.toBeNull();
+    expect(pull).not.toBeNull();
+    expect(pull![1]).toBe(indent![1]);
+  });
 });
