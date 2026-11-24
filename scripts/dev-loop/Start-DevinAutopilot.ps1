@@ -1,6 +1,6 @@
 # Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-22.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-ApprovalRecoveryAttempts <n>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
+# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-ApprovalRecoveryAttempts <n>] [-StalePrHours <h>] [-StalePrGateRuns <n>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
 # Launches and watches a single Devin Desktop autopilot chat following autopilot.md.
 
 param(
@@ -15,6 +15,8 @@ param(
   [ValidateRange(5, 240)][int]$IdleMinutes = 25,
   [ValidateRange(1, 240)][int]$ApprovalMinutes = 3,
   [ValidateRange(1, 20)][int]$ApprovalRecoveryAttempts = 3,
+  [ValidateRange(1, 720)][int]$StalePrHours = 48,
+  [ValidateRange(1, 100)][int]$StalePrGateRuns = 5,
   [ValidateRange(0, 3600)][int]$UserIdleSeconds = 120,
   [ValidateRange(1, 1440)][int]$IntervalMinutes = 15,
   [string]$SyncSource = 'C:\tivano\audit\tool',
@@ -1339,6 +1341,40 @@ function Add-AuditLogComment {
   }
 }
 
+function Write-StalePrReport {
+  # Lists open nyx/ PRs that have been open for at least $StalePrHours hours and have used at least
+  # $StalePrGateRuns gate runs, in <autopilot>\stale-prs.json. autopilot.md section 11 parks them so they
+  # stop consuming gate runs; the report itself changes nothing.
+  param($OpenPrs)
+  $gateRoot = Join-Path $script:AutopilotDir 'gate'
+  $nowUtc = [DateTime]::UtcNow
+  $stale = New-Object Collections.Generic.List[object]
+  foreach ($pr in @($OpenPrs)) {
+    $head = [string](Get-JsonProp $pr 'headRefName')
+    if (-not $head.StartsWith('nyx/')) { continue }
+    $num = [int](Get-JsonProp $pr 'number')
+    $created = Parse-UtcTimestamp ([string](Get-JsonProp $pr 'createdAt'))
+    if ($null -eq $created) { continue }
+    $ageHours = ($nowUtc - $created).TotalHours
+    if ($ageHours -lt $StalePrHours) { continue }
+    $runs = 0
+    if (Test-Path -LiteralPath $gateRoot -PathType Container) {
+      $runs = @(Get-ChildItem -LiteralPath $gateRoot -Directory -Filter ('pr-' + $num + '-*') -ErrorAction SilentlyContinue |
+          Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'summary.json') -PathType Leaf }).Count
+    }
+    if ($runs -lt $StalePrGateRuns) { continue }
+    $lane = 'devin'
+    if ($head.StartsWith('nyx/h-')) { $lane = 'hydrogen' }
+    $null = $stale.Add([ordered]@{ pr = $num; branch = $head; lane = $lane; ageHours = [Math]::Round($ageHours, 1); gateRuns = $runs })
+  }
+  $report = [ordered]@{ generatedUtc = $nowUtc.ToString('o'); thresholdHours = $StalePrHours; thresholdGateRuns = $StalePrGateRuns; prs = $stale.ToArray() }
+  Write-Text (Join-Path $script:AutopilotDir 'stale-prs.json') ((ConvertTo-Json -InputObject $report -Depth 4) + "`n")
+  if ($stale.Count -gt 0) {
+    $names = @($stale.ToArray() | ForEach-Object { '#' + $_.pr + ' (' + $_.gateRuns + ' runs, ' + [int]$_.ageHours + 'h)' })
+    Write-Log ('stale PRs to park: ' + ($names -join ', '))
+  }
+}
+
 function Invoke-AutoMerge {
   param([switch]$DryRun)
   $whatIfVar = Get-Variable -Name 'WhatIfPreference' -ErrorAction SilentlyContinue
@@ -1354,7 +1390,7 @@ function Invoke-AutoMerge {
     $script:GhPath = $ghCmd.Source
   }
 
-  $listRes = Invoke-Gh ('pr list -R ' + $Repo + ' --state open --limit 100 --json number,headRefName,headRefOid,title,body,labels,author,baseRefName,isCrossRepository')
+  $listRes = Invoke-Gh ('pr list -R ' + $Repo + ' --state open --limit 100 --json number,headRefName,headRefOid,title,body,labels,author,baseRefName,isCrossRepository,createdAt')
   if ($listRes.exitCode -ne 0) {
     Write-Log ('auto-merge: skipped (gh pr list failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $listRes) 200) + ')')
     return
@@ -1370,6 +1406,12 @@ function Invoke-AutoMerge {
   } catch {
     Write-Log ('auto-merge: skipped (could not parse gh pr list JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 200) + ')')
     return
+  }
+
+  try {
+    Write-StalePrReport $openPrs
+  } catch {
+    Write-Log ('stale-pr report error: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
   }
 
   $mergedTodayLoaded = $false

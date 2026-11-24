@@ -354,6 +354,17 @@ if ($pending.Count -gt 0) {
   Add-Check 'uncommitted' 'WARN' ('commit or delete before push: ' + (Join-Limited $pending.ToArray()))
 }
 
+# ---- pr size (advisory) ------------------------------------------------------
+
+$sizeLines = @($plusAll + $minusAll | Where-Object {
+    $_.file -like 'src/*' -and $_.file -ne 'src/renderer/i18n.ts' -and $_.file -notlike 'src/renderer/locales/*'
+  }).Count
+if ($sizeLines -gt 600) {
+  Add-Check 'pr-size' 'WARN' ([string]$sizeLines + ' changed lines in src/ (tests and translation catalogs excluded); keep a PR to about 600 - implement the smallest slice of the row and leave the rest partial for a follow-up')
+} else {
+  Add-Check 'pr-size' 'PASS' ([string]$sizeLines + ' changed lines in src/ (tests and translation catalogs excluded)')
+}
+
 # ---- j. UNC paths (advisory) -------------------------------------------------
 
 $sync = @($plusAll | Where-Object { $_.file -like 'src/main/*' -and $_.text -match '\b(statSync|lstatSync|existsSync|realpathSync|readdirSync|accessSync|openSync)\s*\(' } |

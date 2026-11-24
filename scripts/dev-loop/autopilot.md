@@ -140,6 +140,7 @@ if (-not $ok) {
   - Never add, remove, or change dependencies in `package.json`, and never change the technology stack.
   - Never set any `docs/parity.md` row to `done` (update to `partial` or leave it, with Notes).
   - One change does one thing; use synthetic data only; add the two-line license header to every new source file; add English + Simplified Chinese (`src/renderer/i18n.ts`) for every new user-visible string; leave no stray or build files in the worktree (`dist/` and `.devdata/` are ignored).
+- **Keep each PR small:** one parity row, and about 600 changed lines in `src/` at most (tests and translation catalogs excluded). If an issue needs more, implement the smallest slice that delivers the row's core behavior first, leave the row `partial` with Notes naming what is left, and say so in one issue comment so the planner opens a follow-up. Large PRs cost many gate rounds: every fix round re-reviews the whole diff and tends to surface new findings.
 - Put PR body files, commit message files, and any evidence under `C:\tivano\dev-loop\autopilot\runs\<n>\`, never inside the worktree.
 - Self-test in the worktree: run `npm ci` if `node_modules` is missing, then run `npm run verify`, and stop leftover worktree processes afterward.
 
@@ -278,6 +279,7 @@ Then:
   - The issue fails its own gate after Devin's first fix round and up to 2 Gemini 4 Neon fix runs on that head lineage (or Neon returns `no-change`/`unavailable`).
   - A `nyx/audit` block survives Devin's fix round and up to 2 Gemini 4 Neon fix runs on that head lineage (or Neon returns `no-change`/`unavailable`) with no valid rebuttal.
   - The gate stays `unavailable` after 3 retries, or the same `npm run verify` test still fails after Neon escalation (or Neon returns `no-change`/`unavailable`).
+  - **Long-running PR:** the PR is listed in `C:\tivano\dev-loop\autopilot\stale-prs.json` (the watchdog writes it every tick: open for at least 48 hours and at least 5 gate runs). Park it right away instead of running another gate; the revisit (below) restarts it from current `origin/main` as a smaller change.
 - **How to park (initial failure or revisit failure):**
   1. **Leave the PR open.** Remove the issue from `awaitingAudit` if present.
   2. Read `C:\tivano\dev-loop\autopilot\parked.json` (default `[]`).
@@ -295,6 +297,7 @@ Then:
     gh pr close <oldPr> -R elijah7x/tivano-windows --comment "Closing to retry #<n> from current main with a different approach informed by audit feedback."
     ```
   - Remove the old worktree (`git -C C:\tivano\dev-loop\repo worktree remove --force <oldWorktree>`) and fetch `origin --prune`.
+  - **Revisit as a smaller change:** if the old PR changed more than one parity row or more than about 600 lines in `src/` (tests and translation catalogs excluded), implement only the smallest slice that delivers the row's core behavior; record what is left in the row's `Notes` as `partial` and in one issue comment, so the planner opens a follow-up.
   - Start a fresh branch from current `origin/main`:
     ```powershell
     git -C C:\tivano\dev-loop\repo worktree add -b nyx/<n>-<slug>-r<k> C:\tivano\dev-loop\work\<n>-<slug>-r<k> origin/main
