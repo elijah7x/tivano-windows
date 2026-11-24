@@ -145,13 +145,32 @@ if (-not $ok) {
 
 ### Pre-PR self-check
 
-Run this self-check before every push of a new head (initial PR creation and every fix push):
+Run this self-check before every push of a new head (initial PR creation and every fix push).
+
+First run the trusted copy of the mechanical check (never the copy inside your worktree, which the PR can change):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\tivano\audit\tool\scripts\dev-loop\Invoke-PrePrSelfCheck.ps1 -Worktree <worktree> -Issue <n> -BodyFile C:\tivano\dev-loop\autopilot\runs\<n>\pr-body.md -RunChecks
+```
+
+Fix every `FAIL` and re-run until it exits 0; do not push while it fails. Read every `WARN` and either fix it or say in the PR body why it does not apply. It checks conflicts with `origin/main`, guarded paths, dependency changes, parity rows newly set to `done` or more than one row touched, new strings without zh-Hans, license headers, attribution, `Closes #<n>`, stray files, and (with `-RunChecks`) typecheck plus the changed test files. On this Windows host `npm run verify` has known baseline failures (symlink `EPERM`, Unix-socket and POSIX child tests), so do not read its failures as "pre-existing" without comparing against `origin/main`; the self-check's `typecheck` and `changed-tests` results must pass outright (`changed-tests` reruns failing files on the merge base and only fails on tests that pass there).
+
+Findings the gate and audit raise most often; check them by reading your diff:
+
+- Every new user-visible string, engine notices included, has an exact zh-Hans entry, and notices start with `Hydra:`, `Hydra settings:` or `Sub-agents:` so `translateNotice` localizes them. Reuse frozen baseline i18n keys verbatim; never invent near-duplicates.
+- One parity row per PR; never set a row to `done`; Notes cite the upstream file that actually holds the behavior.
+- Never edit guarded paths, `CONTRIBUTING.md` included; put new documentation under `docs/`.
+- When UI text or selectors change, update the e2e checks in `scripts/*Checks.mjs` in the same PR.
+- For every new code path that can throw or be cancelled (`await`, child processes, timers), check what state is left behind when it fails.
+- Merge `origin/main` and resolve conflicts before pushing.
+
+Then:
 
 - Re-read the issue and the full `git diff` against `origin/main` to confirm every requirement is satisfied and no unintended edits remain.
 - Treat every path from the renderer, model output, or files as untrusted: make no blocking `fs`/`stat` calls on UNC (`\\host`), `//host`, or `file://host` paths in the main process.
 - Ensure tests that touch paths use `node:path` `win32`/`posix` explicitly so they pass on any OS.
-- Confirm `npm run verify` passes cleanly on the exact head you are pushing (and stop leftover worktree processes).
-- Confirm the PR body includes `Closes #<n>` and has no AI/agent attribution (and commits/comments contain no `Co-authored-by:` or `Generated with` lines).
+- Confirm `npm run verify` on the exact head you are pushing shows no failure that does not also occur on `origin/main` (and stop leftover worktree processes).
+- Confirm the PR body includes `Closes #<n>` and has no AI/agent attribution (and new commits/comments contain no `Co-authored-by:` or `Generated with` lines).
 - Confirm the change scope is strictly limited to the issue (no unrelated refactors, guarded paths, or dependency changes).
 
 ### Commit, push, and PR
