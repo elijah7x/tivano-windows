@@ -435,8 +435,28 @@ describe("P2-58 Codex rewind (scripted wire)", () => {
         true,
       );
 
-      // Missing providerTurnId on a bound thread refuses cleanly.
+      // Missing providerTurnId on a bound thread refuses cleanly — both when
+      // at the tail and when BEFORE a later turn that carries providerTurnId.
       const th = r.store.state.threads.find((t) => t.id === r.threadId)!;
+      th.messages.unshift({
+        id: "u-legacy-before",
+        role: "user",
+        content: "legacy turn before",
+        status: "done",
+        ts: Date.now() - 10,
+        turnId: "turn-legacy-before",
+      });
+      await expect(
+        r.engine.revertTurn(r.threadId, "turn-legacy-before") as Promise<void>,
+      ).rejects.toThrow(/no Codex turn ID/);
+      await expect(c1.next(50)).rejects.toThrow(/timeout/);
+      expect(
+        getThread(r.engine, r.threadId).messages.some((m) => m.id === "u-legacy-before"),
+      ).toBe(true);
+      expect(
+        getThread(r.engine, r.threadId).messages.some((m) => m.turnId === t1.id),
+      ).toBe(true);
+
       th.messages.push({
         id: "u-legacy",
         role: "user",

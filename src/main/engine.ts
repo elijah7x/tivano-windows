@@ -7345,11 +7345,12 @@ export class Engine {
       this.applyRewind(thread, removed);
       return;
     }
-    return this.revertProviderThread(thread, removed);
+    return this.revertProviderThread(thread, turnId, removed);
   }
 
   private async revertProviderThread(
     thread: ChatThread,
+    turnId: string,
     removed: Set<string>,
   ): Promise<void> {
     const threadId = thread.id;
@@ -7359,7 +7360,7 @@ export class Engine {
       const turnHasNonError = new Map<string, boolean>();
       for (const m of thread.messages) {
         if (!m.turnId || !removed.has(m.turnId)) continue;
-        if (!targetProviderTurnId && m.providerTurnId) {
+        if (m.turnId === turnId && !targetProviderTurnId && m.providerTurnId) {
           targetProviderTurnId = m.providerTurnId;
         }
         if (m.role === "assistant") {
@@ -7371,7 +7372,7 @@ export class Engine {
       if (
         !targetProviderTurnId &&
         thread.turn &&
-        removed.has(thread.turn.id) &&
+        thread.turn.id === turnId &&
         thread.turn.providerTurnId
       ) {
         targetProviderTurnId = thread.turn.providerTurnId;
