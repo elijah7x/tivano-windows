@@ -5987,8 +5987,13 @@ export class Engine {
     // system-folder route (the task-workspaces exemption carries over
     // because Tivano's own worktrees are repos).
     if (probe.state === "git") {
+      // The checkout is the repo TOP, not the named folder — a repo
+      // rooted at the home folder or a protected root routes the whole
+      // tree, so the home exemption that applies to owned-files routes
+      // can never apply to a checkout (there is no per-file narrowing
+      // on this path). Home-rooted and protected-rooted repos refuse.
       if (
-        sepFold(probe.root.replace(/[\\/]+$/, "")) !== homeLower &&
+        sepFold(probe.root.replace(/[\\/]+$/, "")) === homeLower ||
         this.hydraTouchesProtectedRoot(probe.root)
       ) {
         return refuse(

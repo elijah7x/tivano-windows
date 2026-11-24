@@ -448,6 +448,44 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(head.hydraHead!.summary).toContain("system folder");
   });
 
+  it("a repo rooted at the home folder is refused", async () => {
+    const { engine } = rig();
+    // A Git repo rooted at the profile root: the head's checkout would
+    // be the whole home tree, and there is no per-file narrowing on a
+    // checkout — the owned-files exemption must never apply here.
+    const fakeHome = tmp("tivano-home-");
+    mkdirSync(join(fakeHome, ".git"), { recursive: true });
+    writeFileSync(join(fakeHome, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const sub = join(fakeHome, "sub");
+    mkdirSync(sub);
+    const prevProfile = process.env.USERPROFILE;
+    const prevHome = process.env.HOME;
+    process.env.USERPROFILE = fakeHome;
+    process.env.HOME = fakeHome;
+    try {
+      const lead = engine.createThread(null, "lead");
+      engine.sendTurn(lead.id, `do it [mock:hydra-path]${sub}`);
+      await waitFor(() => heads(engine, lead.id).length === 1);
+      const head = heads(engine, lead.id)[0]!;
+      await waitFor(() => head.hydraHead!.status !== "running");
+      expect(head.hydraHead!.status).toBe("failed");
+      expect(head.hydraHead!.summary).toContain("system folder");
+      // Naming ~ itself (the repo top) refuses the same way.
+      const lead2 = engine.createThread(null, "lead2");
+      engine.sendTurn(lead2.id, "do it [mock:hydra-path]~");
+      await waitFor(() => heads(engine, lead2.id).length === 1);
+      const head2 = heads(engine, lead2.id)[0]!;
+      await waitFor(() => head2.hydraHead!.status !== "running");
+      expect(head2.hydraHead!.status).toBe("failed");
+      expect(head2.hydraHead!.summary).toContain("system folder");
+    } finally {
+      if (prevProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = prevProfile;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+    }
+  });
+
   it("a name that is no sidebar project and no path is still refused", async () => {
     const { engine } = rig();
     const lead = engine.createThread(null, "lead");
