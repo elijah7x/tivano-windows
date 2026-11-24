@@ -15,6 +15,7 @@ import {
 } from "../src/renderer/i18n";
 import { MCP_CATALOG } from "../src/shared/mcpCatalog";
 import { MAIN_STRINGS, mainT } from "../src/main/mainStrings";
+import { formatReset } from "../src/main/usageLimit";
 import { LANGUAGE_IDS, LANGUAGE_LABELS } from "../src/shared/types";
 import { THEMES } from "../src/renderer/theme";
 import { existsSync, readFileSync } from "node:fs";
@@ -305,7 +306,25 @@ describe("i18n", () => {
     expect(
       translateNotice(t, "Usage limit reached. Continuing automatically at Thursday at 9:00 AM."),
     ).toBe("已达用量上限，将于 周四 9:00 AM 自动继续。");
+    const inThreeDays = new Date();
+    inThreeDays.setDate(inThreeDays.getDate() + 3);
+    inThreeDays.setHours(9, 0, 0, 0);
+    const weekdayFromFormatter = translateNotice(
+      t,
+      `Usage limit reached. Continuing automatically at ${formatReset(inThreeDays.getTime())}.`,
+    );
+    expect(weekdayFromFormatter).toContain("已达用量上限，将于 ");
+    expect(weekdayFromFormatter).not.toContain(" at ");
     expect(translateNotice(t, "something failed at step 2")).toBe("something failed at step 2");
+    expect(
+      translateNotice(
+        t,
+        "interrupt request failed: CODEX_CONNECTION_CLOSED: process closed (code 1, signal null)",
+      ),
+    ).toBe("中断请求失败：Codex 连接已关闭: 进程已关闭（退出码 1，信号 null）");
+    expect(translate("zh-Hans", "Lead %@, heads %@ effort", ["$&%@", "high"])).toBe(
+      "主导 $&%@，执行 high 强度",
+    );
     expect(
       translateNotice(
         t,
@@ -393,6 +412,13 @@ describe("i18n", () => {
         if (lang === "zh-Hans") expect(val, `${lang}: ${key}`).not.toBe(key);
       }
     }
+    expect(
+      mainT(
+        "zh-Hans",
+        "Tivano is waiting for you to approve %@ on your computer. Check that Tivano shows this code:",
+        ["Cloud Agent"],
+      ),
+    ).toBe("Tivano 正在等待你在电脑上批准 Cloud Agent。请确认 Tivano 显示以下验证码：");
   });
 });
 

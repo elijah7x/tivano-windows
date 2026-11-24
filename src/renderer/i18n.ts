@@ -1897,11 +1897,6 @@ const zhHans: Record<string, string> = {
   "MCP configuration could not be loaded. Repair the file and retry in Settings before making changes.": "无法加载 MCP 配置。请修复文件并在设置中重试后再修改。",
   "The server returned an error without a message.": "服务器返回了错误，但没有说明。",
   "tools": "工具",
-  "Too many requests waiting": "等待中的请求过多",
-  "Approve or deny the requests already waiting in Tivano, then try again.": "请先在 Tivano 中批准或拒绝等待中的请求，然后重试。",
-  "OK": "好",
-  "Approve on your Mac": "在你的 Mac 上批准",
-  "Tivano is waiting for you to approve %@ on your Mac. Check that Tivano shows this code:": "Tivano 正在等待你在 Mac 上批准 %@。请确认 Tivano 显示以下验证码：",
   "Tivano local control (the app must already be running and manually enabled in Settings › Connections).\nCommands: info | providers | projects | threads | thread UUID | history UUID\n  create --workspace local|worktree --provider ID [--project UUID] [--model ID] [--hydra on|off]\n  send UUID --text TEXT [--continuation automatic|fresh|providerSession|transcript]\n  send UUID --stdin [--continuation MODE]\n  interrupt UUID --turn UUID\n  operation INSTANCE/UUID/TIMESTAMP\n  settings get | settings set textGeneration automatic|claude|codex|grok|pi|off\n  settings set weatherWindow true|false\nList flags: --limit N --cursor TOKEN\nThread flags: --archive active|archived|all --role normal|helper|head|all\n  --affiliation all|standalone|project|missing_project [--project UUID] [--search TEXT]\nWrites: --operation INSTANCE/UUID/TIMESTAMP reuses an existing ticket in that instance only.\nSave the ticket printed before delivery. A disconnect is not failure; query the ticket instead of repeating the write.\nJSON output reports acceptance, not task success. Expired/restarted outcomes are unknown. No automatic retries or app launch.": "Tivano 本地控制（应用必须已运行，并在“设置 › 连接”中手动启用）。\n命令：info | providers | projects | threads | thread UUID | history UUID\n  create --workspace local|worktree --provider ID [--project UUID] [--model ID] [--hydra on|off]\n  send UUID --text TEXT [--continuation automatic|fresh|providerSession|transcript]\n  send UUID --stdin [--continuation MODE]\n  interrupt UUID --turn UUID\n  operation INSTANCE/UUID/TIMESTAMP\n  settings get | settings set textGeneration automatic|claude|codex|grok|pi|off\n  settings set weatherWindow true|false\n列表选项：--limit N --cursor TOKEN\n对话选项：--archive active|archived|all --role normal|helper|head|all\n  --affiliation all|standalone|project|missing_project [--project UUID] [--search TEXT]\n写操作：--operation INSTANCE/UUID/TIMESTAMP 仅在同一应用实例中复用已有操作凭据。\n请保存发送前打印的操作凭据。断开连接不代表失败；应查询凭据，而非重复执行写操作。\nJSON 输出表示操作已接受，不代表任务成功。过期或重启后的结果为 unknown。不会自动重试或启动应用。",
   "Your answer didn't reach %@. The request may no longer be available, or the provider could not accept the answer. Try again or send a message to carry on.": "你的回答未能送达 %@。请求可能已失效，或服务商无法接受该回答。请重试，或发送消息继续。",
   "Your answer didn't reach %@: its session had already closed. Send a message to carry on.": "你的回答未送达 %@：其会话已关闭。发送消息以继续。",
@@ -2232,7 +2227,10 @@ const dictionaries: Record<LanguageId, Record<string, string>> = {
 export function translate(lang: LanguageId, key: string, vars?: string[]): string {
   let s = dictionaries[lang][key] ?? key;
   // Upstream uses %@ for objects and %d for counts — both are positional.
-  if (vars) for (const v of vars) s = s.replace(/%@|%d/, v);
+  if (vars?.length) {
+    let i = 0;
+    s = s.replace(/%@|%d/g, (m) => (i < vars.length ? vars[i++]! : m));
+  }
   return s;
 }
 
@@ -2433,6 +2431,7 @@ export function translateNotice(
         key === "The head could not start: %@" ||
         key === "Queued message could not be sent: %@" ||
         key === "Codex error (retrying): %@" ||
+        key === "interrupt request failed: %@" ||
         key === "question answer %@ — the request was expired unanswered" ||
         key === "approval answer %@ — the request was expired unanswered") &&
       args[0]

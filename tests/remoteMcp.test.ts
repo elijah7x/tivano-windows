@@ -532,4 +532,65 @@ describe.runIf(loopbackBindable)("remote MCP (P2-25)", () => {
       srv.close();
     }
   });
+
+  it("localizes Remote MCP OAuth sign-in and error HTML pages for settings.language", async () => {
+    if (!loopbackBindable) return;
+    const { engine, rm } = rig();
+    engine.setSettings({ remoteMCPEnabled: true, language: "zh-Hans" });
+    await rm.refresh();
+    const base = `http://127.0.0.1:${rm.port}`;
+
+    const badReq = await fetch(`${base}/oauth/authorize?client_id=unknown`);
+    expect(badReq.status).toBe(400);
+    const badHtml = await badReq.text();
+    expect(badHtml).toContain("连接请求无效");
+    expect(badHtml).toContain("此客户端或其返回地址未在 Tivano 中注册。");
+
+    const expired = await fetch(`${base}/oauth/authorize/pending?request=${randomUUID()}`);
+    expect(expired.status).toBe(404);
+    const expiredHtml = await expired.text();
+    expect(expiredHtml).toContain("请求已过期");
+    expect(expiredHtml).toContain("请从智能体重新发起连接。");
+
+    const regRes = await fetch(`${base}/oauth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_name: "Synthetic Cloud Agent",
+        redirect_uris: ["http://127.0.0.1:49999/cb"],
+      }),
+    });
+    expect(regRes.status).toBe(201);
+    const reg = (await regRes.json()) as { client_id: string };
+    const challenge = base64Url(createHash("sha256").update(base64Url(randomBytes(32))).digest());
+    const makeAuthUrl = (state: string) => {
+      const u = new URL(`${base}/oauth/authorize`);
+      u.searchParams.set("client_id", reg.client_id);
+      u.searchParams.set("redirect_uri", "http://127.0.0.1:49999/cb");
+      u.searchParams.set("response_type", "code");
+      u.searchParams.set("code_challenge", challenge);
+      u.searchParams.set("code_challenge_method", "S256");
+      u.searchParams.set("state", state);
+      return u;
+    };
+
+    const firstAuth = await fetch(makeAuthUrl("s1"), { redirect: "manual" });
+    expect(firstAuth.status).toBe(302);
+    const pendingRes = await fetch(firstAuth.headers.get("location")!);
+    expect(pendingRes.status).toBe(200);
+    const pendingHtml = await pendingRes.text();
+    expect(pendingHtml).toContain("在你的电脑上批准");
+    expect(pendingHtml).toContain("Tivano 正在等待你在电脑上批准 Synthetic Cloud Agent");
+    expect(pendingHtml).toContain("此页面会自动刷新。智能体提示已连接后，你可以关闭此页面。");
+
+    for (const s of ["s2", "s3", "s4"]) {
+      const r = await fetch(makeAuthUrl(s), { redirect: "manual" });
+      expect(r.status).toBe(302);
+    }
+    const tooMany = await fetch(makeAuthUrl("s5"), { redirect: "manual" });
+    expect(tooMany.status).toBe(429);
+    const tooManyHtml = await tooMany.text();
+    expect(tooManyHtml).toContain("等待中的请求过多");
+    expect(tooManyHtml).toContain("请先在 Tivano 中批准或拒绝等待中的请求，然后重试。");
+  });
 });

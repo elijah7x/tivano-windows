@@ -52,7 +52,7 @@ import {
 } from "./codexRuntimeConfig";
 import type { ProviderAdapter, WorkspaceGrant } from "./provider";
 import type { SpawnSpec } from "./stdioTransport";
-import type { CodexInfo, CodexSetupState, LanguageId } from "../shared/types";
+import type { CodexInfo, CodexSetupState } from "../shared/types";
 import { ProjectRuntimePaths } from "./projectRuntimePaths";
 import { DirectoryOpener } from "./openProjectDirectory";
 import { AttachmentService } from "./attachmentService";
