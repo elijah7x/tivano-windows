@@ -49,6 +49,23 @@ describe("mentionQueryAt (frozen word scan)", () => {
     expect(mentionQueryAt("a\t@f", 4)).toEqual({ start: 2, query: "f" });
     expect(mentionQueryAt("a\n@f", 4)).toEqual({ start: 2, query: "f" });
   });
+  it("a caret inside a chip token never reopens the menu", () => {
+    // Frozen mentionEnds(atModelOffset:): the word under the caret IS
+    // the chipped "@a/b.ts " token, so chipSpans suppress the query.
+    const text = "see @a/b.ts go";
+    const chip = [{ start: 4, end: 12 }];
+    // Without spans the scan would return a query mid-token.
+    expect(mentionQueryAt(text, 8)).toEqual({ start: 4, query: "a/b" });
+    expect(mentionQueryAt(text, 8, chip)).toBeNull();
+    expect(mentionQueryAt(text, 12, chip)).toBeNull(); // on the space
+    // A new "@word" after the chip still queries — its range ends past
+    // the chip's span, so the overlap check leaves it alone.
+    const t2 = "@a/b.ts @re";
+    const c2 = [{ start: 0, end: 8 }]; // "@a/b.ts " incl. trailing space
+    expect(mentionQueryAt(t2, 11, c2)).toEqual({ start: 8, query: "re" });
+    // …while a caret inside that first chip stays closed.
+    expect(mentionQueryAt(t2, 3, c2)).toBeNull();
+  });
 });
 
 describe("scoreMentionPaths (frozen FileIndex.search)", () => {

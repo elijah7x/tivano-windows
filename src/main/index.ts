@@ -969,6 +969,16 @@ bootstrap = app.whenReady().then(async () => {
           const paths = await index.list(dir);
           return { paths: scoreMentionPaths(paths, query) };
         },
+        // P2-44 chip minting resolves the literal string — verbatim
+        // membership, never the fuzzy top-8 (a ≥100-char path ties out
+        // of the score cap even though it IS indexed).
+        resolve: async (threadId: string, path: string) => {
+          const dir = eng.threadDirectory(threadId);
+          if (dir === null || !FileIndexService.exists(dir))
+            return { ok: false };
+          const paths = await index.list(dir);
+          return { ok: paths.includes(path) };
+        },
       };
     })(),
     downloads: (() => {

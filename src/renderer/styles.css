@@ -4922,6 +4922,16 @@ html[data-performance] .sweep-dots { display: none; }
   position: absolute;
   inset: 0;
   pointer-events: none;
+  /* Chip rects are scroll-relative — fragments above/below the
+   * textarea's visible box clip at its edge instead of escaping. */
+  overflow: hidden;
+}
+/* One opaque cover per token line-fragment hides the raw "@path " text
+ * beneath the chip pill — same fill as the textarea so the cover is
+ * invisible; clicks pass through to the textarea like plain text. */
+.mention-cover {
+  position: absolute;
+  background: var(--surface-2);
 }
 .mention-chip {
   position: absolute;
@@ -4935,6 +4945,9 @@ html[data-performance] .sweep-dots { display: none; }
   font: inherit;
   line-height: 1.5;
   overflow: hidden;
+  /* Frozen attachment sizing: the pill fits its icon+name, capped so a
+   * long path ellipsizes instead of flooding the composer width. */
+  max-width: 240px;
   /* Hit-testable so the title (full path) tooltip fires; the mousedown
    * handler forwards the click to the textarea so caret placement and
    * drag-select still behave as if the chip were plain text. */

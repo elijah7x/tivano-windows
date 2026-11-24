@@ -9,6 +9,7 @@
 export function mentionQueryAt(
   text: string,
   caret: number,
+  chipSpans?: readonly { start: number; end: number }[],
 ): { start: number; query: string } | null {
   if (caret <= 0 || caret > text.length) return null;
   let start = caret;
@@ -19,6 +20,10 @@ export function mentionQueryAt(
   }
   const word = text.slice(start, caret);
   if (!word.startsWith("@")) return null;
+  // Frozen mentionEnds(atModelOffset:): a word overlapping a chipped
+  // token IS the chip — never a fresh query, so the Files menu stays
+  // closed while the caret sits inside an existing chip.
+  if (chipSpans?.some((c) => start < c.end && caret > c.start)) return null;
   return { start, query: word.slice(1) };
 }
 

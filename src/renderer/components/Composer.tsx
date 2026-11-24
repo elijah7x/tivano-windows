@@ -17,9 +17,11 @@ import {
 import { mentionQueryAt } from "../../shared/fileMention";
 import {
   chipBeforeCaret,
+  chipLabel,
   chipToken,
   chipsAfterEdit,
-  chipsFromText,
+  chipsFromResolved,
+  mentionCandidates,
   renderableChips,
   type MentionChip,
 } from "../../shared/mentionChips";
@@ -202,84 +204,166 @@ export function Composer(props: {
   // a validated paste minted. The textarea keeps the real "@path " text
   // (copy/send stay verbatim); the mirror overlay renders the chip.
   const [chips, setChips] = useState<MentionChip[]>([]);
+  // One entry per chip: the per-fragment rects of its token's mirror
+  // mark (a wrapped token covers each line fragment, never a union box).
   const [chipRects, setChipRects] = useState<
-    { x: number; y: number; w: number; h: number }[]
+    { x: number; y: number; w: number; h: number }[][]
   >([]);
   const mirrorRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    // Frozen ComposerTextView re-chips a reloaded draft from the file
-    // index — the port re-mints syntactically after exact-match
-    // resolution (drafts persist across thread switches).
-    setChips([]);
-    const draft = clientStore.draft(thread.id);
-    const candidates = [
-      ...new Set(
-        Array.from(draft.matchAll(/@([^\s@]+)(?=\s|$)/g)).map((m) => m[1]!),
-      ),
-    ];
-    if (candidates.length === 0) return;
-    let alive = true;
-    void Promise.all(
+  // Chip-aware undo: pick/delete are programmatic controlled rewrites
+  // the textarea's native undo stack never sees — a {before, after}
+  // stack restores text+chips+caret (frozen textStorage undo registers
+  // attributed string and attachments together). The after.text guard
+  // keeps the interleave honest: a Ctrl+Z applies only while the chip
+  // op is still the newest edit, so typed-text native undos run first
+  // and the chip op undoes when they unwind back to it.
+  interface ChipState {
+    text: string;
+    chips: MentionChip[];
+    caret: number;
+  }
+  interface ChipOp {
+    before: ChipState;
+    after: ChipState;
+  }
+  const undoRef = useRef<ChipOp[]>([]);
+  const redoRef = useRef<ChipOp[]>([]);
+  const threadIdRef = useRef(thread.id);
+  threadIdRef.current = thread.id;
+  const pushChipUndo = (after: ChipState) => {
+    undoRef.current.push({ before: { text, chips, caret }, after });
+    if (undoRef.current.length > 64) undoRef.current.shift();
+    redoRef.current = [];
+  };
+  const applyChipSnapshot = (snap: ChipState) => {
+    setChips(snap.chips);
+    clientStore.setDraft(thread.id, snap.text);
+    setCaret(snap.caret);
+    requestAnimationFrame(() => {
+      const el = taRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(snap.caret, snap.caret);
+      }
+    });
+  };
+  // Exact-match resolution against the raw index — the fuzzy top-8
+  // search can drop a valid path at the 99-char lengthPenalty cap, and
+  // frozen resolves the literal string, never a ranked approximation.
+  const resolvePaths = async (
+    candidates: readonly string[],
+  ): Promise<string[]> => {
+    const rs = await Promise.all(
       candidates.map((path) =>
         api()
-          .invoke("mention:search", { threadId: thread.id, query: path })
-          .then((r) =>
-            ((r as { paths: string[] }).paths ?? []).includes(path)
-              ? path
-              : null,
-          )
+          .invoke("mention:resolve", { threadId: thread.id, path })
+          .then((r) => ((r as { ok: boolean }).ok ? path : null))
           .catch(() => null),
       ),
-    ).then((resolved) => {
-      if (!alive) return;
-      const ok = new Set(resolved.filter((x): x is string => x !== null));
-      if (ok.size > 0)
-        setChips((c) => {
-          // Mint against the live draft — keystrokes during the search
-          // round trip must not leave chips at stale offsets.
-          const live = clientStore.draft(thread.id);
-          const taken = new Set(c.map((x) => x.start));
-          return [
-            ...c,
-            ...chipsFromText(live, ok).filter((m) => !taken.has(m.start)),
-          ];
-        });
+    );
+    return rs.filter((x): x is string => x !== null);
+  };
+  useEffect(() => {
+    // Frozen ComposerTextView re-chips a reloaded draft from the file
+    // index — the port re-mints after exact-match resolution (drafts
+    // persist across thread switches). mentionCandidates joins spaced
+    // forms up to frozen's maxSpacesInPath.
+    setChips([]);
+    undoRef.current = [];
+    redoRef.current = [];
+    const tid = thread.id;
+    const candidates = mentionCandidates(clientStore.draft(tid));
+    if (candidates.length === 0) return;
+    let alive = true;
+    void resolvePaths(candidates).then((resolved) => {
+      if (!alive || threadIdRef.current !== tid || resolved.length === 0) return;
+      const ok = new Set(resolved);
+      setChips((c) => {
+        // Mint against the live draft — keystrokes during the resolve
+        // round trip must not leave chips at stale offsets.
+        const live = clientStore.draft(tid);
+        const taken = new Set(c.map((x) => x.start));
+        return [
+          ...c,
+          ...chipsFromResolved(live, [...ok]).filter((m) => !taken.has(m.start)),
+        ];
+      });
     });
     return () => {
       alive = false;
     };
-  }, [thread.id]);
-  // Measure each token's box in a hidden mirror so the overlay chips sit
-  // exactly over the textarea's real text (wrap + scroll included).
+  }, [thread.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Programmatic draft replacements (send, queue, quick-draft handoff,
+  // beginEdit) bypass onChange — prune chip spans that no longer
+  // validate so a stale chip can never linger over unrelated text.
+  useEffect(() => {
+    setChips((c) => {
+      const r = renderableChips(c, text);
+      return r.length === c.length ? c : r;
+    });
+  }, [text]);
+  // Measure each token's boxes in a hidden mirror so the overlay chips
+  // sit exactly over the textarea's real text (wrap + scroll included).
+  // getClientRects returns per-line fragments — a token wrapping onto
+  // the next line covers each fragment instead of a union box.
   useLayoutEffect(() => {
     const mirror = mirrorRef.current;
     const ta = taRef.current;
     if (!mirror || !ta) return;
+    // A textarea scrollbar narrows the real wrap box while the mirror's
+    // inset:0 keeps the full width — pin the mirror to the client width
+    // so marks wrap where the textarea wraps.
+    mirror.style.width = `${ta.clientWidth}px`;
+    mirror.style.right = "auto";
+    const base = mirror.getBoundingClientRect();
     const rects = Array.from(
       mirror.querySelectorAll<HTMLElement>(".mention-mk"),
-    ).map((mk) => ({
-      x: mk.offsetLeft,
-      y: mk.offsetTop - ta.scrollTop,
-      w: mk.offsetWidth,
-      h: mk.offsetHeight,
-    }));
+    ).map((mk) =>
+      Array.from(mk.getClientRects()).map((r) => ({
+        x: r.left - base.left,
+        // The mirror never scrolls — marks sit at flow positions, so the
+        // chip offset mirrors the textarea's own scroll.
+        y: r.top - base.top - ta.scrollTop,
+        w: r.width,
+        h: r.height,
+      })),
+    );
     setChipRects((prev) =>
       prev.length === rects.length &&
       prev.every(
         (p, i) =>
-          Math.abs(p.x - rects[i]!.x) < 0.5 &&
-          Math.abs(p.y - rects[i]!.y) < 0.5 &&
-          Math.abs(p.w - rects[i]!.w) < 0.5 &&
-          Math.abs(p.h - rects[i]!.h) < 0.5,
+          p.length === rects[i]!.length &&
+          p.every(
+            (f, j) =>
+              Math.abs(f.x - rects[i]![j]!.x) < 0.5 &&
+              Math.abs(f.y - rects[i]![j]!.y) < 0.5 &&
+              Math.abs(f.w - rects[i]![j]!.w) < 0.5 &&
+              Math.abs(f.h - rects[i]![j]!.h) < 0.5,
+          ),
       )
         ? prev
         : rects,
     );
   });
+  // A textarea resize re-lays the mirror spans without a render —
+  // ResizeObserver forces the measure pass like onScroll does.
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setChipRects((r) => [...r]));
+    ro.observe(ta);
+    return () => ro.disconnect();
+  }, []);
   const [selIdx, setSelIdx] = useState(0);
   const [dismissedText, setDismissedText] = useState<string | null>(null);
   const slash = readOnly ? null : slashQueryAt(text, caret);
-  const mention = readOnly || slash ? null : mentionQueryAt(text, caret);
+  // Mirror and overlay index this ONE list — rects never misalign with
+  // tokens even when a chip is minted before an existing one.
+  const renderable = renderableChips(chips, text);
+  // Frozen mentionEnds: a word inside a chip token never reopens the
+  // Files menu — pass the live chip spans so mentionQueryAt skips them.
+  const mention =
+    readOnly || slash ? null : mentionQueryAt(text, caret, renderable);
   const mode = props.mode ?? clientStore.snapshot?.info.mode ?? "mock";
   const recent = clientStore.snapshot?.recentCommands?.[mode] ?? [];
   const slashItems =
@@ -334,13 +418,19 @@ export function Composer(props: {
   const pickFile = (path: string) => {
     if (!mention) return;
     // Frozen pick(): replace the typed "@query" word with "@path " and
-    // mint the chip token at the insertion point.
+    // mint the chip token at the insertion point. The write bypasses
+    // the native undo stack — register a chip-aware undo entry first.
     const next = `${text.slice(0, mention.start)}@${path} ${text.slice(caret)}`;
     const { chip } = chipToken(path, mention.start);
+    const pos = mention.start + path.length + 2;
+    pushChipUndo({
+      text: next,
+      chips: [...chipsAfterEdit(chips, text, next), chip],
+      caret: pos,
+    });
     setChips((c) => [...chipsAfterEdit(c, text, next), chip]);
     clientStore.setDraft(thread.id, next);
     setSelIdx(0);
-    const pos = mention.start + path.length + 2;
     setCaret(pos);
     requestAnimationFrame(() => {
       const el = taRef.current;
@@ -350,9 +440,6 @@ export function Composer(props: {
       }
     });
   };
-  // Mirror and overlay index this ONE list — rects never misalign with
-  // tokens even when a chip is minted before an existing one.
-  const renderable = renderableChips(chips, text);
   const providerName =
     props.mode === "synthetic-stdio"
       ? t("Synthetic stdio")
@@ -550,6 +637,9 @@ export function Composer(props: {
         rows={2}
         disabled={readOnly}
         onChange={(e) => {
+          // A native edit invalidates chip-redo, like the browser's own
+          // redo stack clearing on new input.
+          redoRef.current = [];
           setChips((c) => chipsAfterEdit(c, text, e.target.value));
           clientStore.setDraft(thread.id, e.target.value);
           setCaret(e.target.selectionStart);
@@ -570,53 +660,42 @@ export function Composer(props: {
             return;
           }
           // P2-44: pasted "@path " tokens that name project files land as
-          // chips — resolve them once the text is in.
-          const pasted = e.clipboardData?.getData("text");
+          // chips — resolve them once the text is in. The textarea folds
+          // CRLF/CR to LF on insert while the clipboard string keeps the
+          // raw form — normalize before locating the landing (a CRLF
+          // clipboard never indexOf-matches and the mint silently aborts).
+          const pasted = e.clipboardData
+            ?.getData("text")
+            .replace(/\r\n/g, "\n")
+            .replace(/\r/g, "\n");
           if (pasted?.includes("@")) {
-            const prior = text;
-            // The paste lands at the caret — anchor there, never at the
-            // pasted text's first occurrence in the draft (that text may
-            // already exist earlier).
+            const tid = thread.id;
             const selStart = (e.target as HTMLTextAreaElement).selectionStart;
             requestAnimationFrame(() => {
               const cur = taRef.current?.value;
               if (cur === undefined) return;
+              // The paste lands at the caret — anchor there, never at
+              // the pasted text's first occurrence (which may already
+              // exist earlier in the draft).
               let at = cur.indexOf(pasted, selStart);
               if (at === -1) at = cur.indexOf(pasted);
               if (at === -1) return;
-              const candidates = [
-                ...new Set(
-                  Array.from(pasted.matchAll(/@([^\s@]+)(?=\s|$)/g)).map(
-                    (m) => m[1]!,
-                  ),
-                ),
-              ];
-              void Promise.all(
-                candidates.map((path) =>
-                  api()
-                    .invoke("mention:search", { threadId: thread.id, query: path })
-                    .then(
-                      (r) =>
-                        ((r as { paths: string[] }).paths ?? []).includes(path)
-                          ? path
-                          : null,
-                    )
-                    .catch(() => null),
-                ),
-              ).then((resolved) => {
-                const ok = new Set(resolved.filter((x): x is string => x !== null));
-                if (!ok.size) return;
+              void resolvePaths(mentionCandidates(pasted)).then((resolved) => {
+                // A thread switch or unmount during the resolve must not
+                // write chips into another thread's draft state.
+                if (threadIdRef.current !== tid || resolved.length === 0)
+                  return;
                 setChips((c) => {
-                  // Re-anchor and mint against the live draft — typing
-                  // during the search must not strand chips at offsets
-                  // the paste text no longer sits at. `ok` only names
-                  // pasted paths, so every minted span is a real token.
-                  const live = clientStore.draft(thread.id);
-                  const reanchored = chipsAfterEdit(c, prior, live);
-                  const minted = chipsFromText(live, ok);
-                  const taken = new Set(reanchored.map((x) => x.start));
+                  // onChange already re-anchored the live chips for this
+                  // paste (and every keystroke since) — the callback
+                  // mints only, never shifts a second time.
+                  const minted = chipsFromResolved(
+                    clientStore.draft(tid),
+                    resolved,
+                  );
+                  const taken = new Set(c.map((x) => x.start));
                   return [
-                    ...reanchored,
+                    ...c,
                     ...minted.filter((m) => !taken.has(m.start)),
                   ];
                 });
@@ -627,6 +706,29 @@ export function Composer(props: {
         }}
         onKeyDown={(e) => {
           if (e.nativeEvent.isComposing) return;
+          // P2-44 chip-aware undo/redo (frozen textStorage undo): chip
+          // pick/delete are programmatic writes the textarea's native
+          // stack never sees. The snapshot applies only while the chip
+          // op is still the newest edit — after native typing, Ctrl+Z
+          // falls through to the browser's own undo until it unwinds
+          // back to the chip op, exactly like the frozen model.
+          const mod = e.ctrlKey || e.metaKey;
+          if (
+            mod &&
+            !e.altKey &&
+            (e.key === "z" || e.key === "Z" || e.key === "y" || e.key === "Y")
+          ) {
+            const redo = e.key === "y" || e.key === "Y" || e.shiftKey;
+            const stack = redo ? redoRef.current : undoRef.current;
+            const snap = stack[stack.length - 1];
+            const guard = redo ? snap?.before.text : snap?.after.text;
+            if (!snap || guard !== text) return;
+            e.preventDefault();
+            stack.pop();
+            (redo ? undoRef : redoRef).current.push(snap);
+            applyChipSnapshot(redo ? snap.after : snap.before);
+            return;
+          }
           if (suggestOpen) {
             if (e.key === "ArrowUp") {
               e.preventDefault();
@@ -684,6 +786,15 @@ export function Composer(props: {
             if (hit) {
               e.preventDefault();
               const next = text.slice(0, hit.start) + text.slice(hit.end);
+              pushChipUndo({
+                text: next,
+                chips: chipsAfterEdit(
+                  chips.filter((x) => x !== hit),
+                  text,
+                  next,
+                ),
+                caret: hit.start,
+              });
               setChips((c) =>
                 chipsAfterEdit(
                   c.filter((x) => x !== hit),
@@ -730,9 +841,26 @@ export function Composer(props: {
             })()}
           </div>
           <div className="mention-overlay" aria-hidden="true">
+            {renderable.map((c, i) =>
+              (chipRects[i] ?? []).map((f, j) => (
+                // One cover per line fragment hides the raw "@path "
+                // text — a wrapped token covers each fragment, never a
+                // union box that would blot out adjacent text.
+                <span
+                  key={`cover:${c.start}:${j}`}
+                  className="mention-cover"
+                  style={{
+                    left: f.x,
+                    top: f.y,
+                    width: f.w,
+                    height: f.h,
+                  }}
+                />
+              )),
+            )}
             {renderable.map(
               (c, i) =>
-                chipRects[i] && (
+                chipRects[i]?.[0] && (
                   <span
                     key={`${c.start}:${c.path}`}
                     className="mention-chip"
@@ -751,14 +879,16 @@ export function Composer(props: {
                       ta.setSelectionRange(at, at);
                     }}
                     style={{
-                      left: chipRects[i]!.x,
-                      top: chipRects[i]!.y,
-                      width: chipRects[i]!.w,
-                      height: chipRects[i]!.h,
+                      // The pill sizes to its content (frozen attachment
+                      // sizing) at the token's first fragment — never
+                      // pinned to the raw "@path " box.
+                      left: chipRects[i]![0]!.x,
+                      top: chipRects[i]![0]!.y,
+                      height: chipRects[i]![0]!.h,
                     }}
                   >
                     <span className="mention-chip-name">
-                      📄 {c.path.slice(c.path.lastIndexOf("/") + 1)}
+                      📄 {chipLabel(c.path, renderable)}
                     </span>
                   </span>
                 ),

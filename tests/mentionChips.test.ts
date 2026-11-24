@@ -6,10 +6,13 @@
 import { describe, expect, it } from "vitest";
 import {
   chipBeforeCaret,
+  chipLabel,
   chipText,
   chipToken,
   chipsAfterEdit,
+  chipsFromResolved,
   chipsFromText,
+  mentionCandidates,
   renderableChips,
 } from "../src/shared/mentionChips";
 
@@ -94,6 +97,53 @@ describe("P2-44 mention chips", () => {
     // whitespace or start-of-text before it.
     expect(chipsFromText("mail me@b.md please", ok)).toEqual([]);
     expect(chipsFromText("(x@b.md)", ok)).toEqual([]);
+  });
+
+  it("mentionCandidates yields space-joined forms up to maxSpaces", () => {
+    // Frozen maxSpacesInPath=6: "see @docs/My File.ts" offers
+    // "docs/My", "docs/My File.ts"… — exact resolution picks the hit.
+    const cands = mentionCandidates("see @docs/My File.ts now @b.md");
+    expect(cands).toContain("docs/My");
+    expect(cands).toContain("docs/My File.ts");
+    expect(cands).toContain("b.md");
+    // Seven spaces deep stops at 6 continuations.
+    const deep = mentionCandidates("@a b c d e f g h i");
+    expect(deep).toContain("a b c d e f g");
+    expect(deep).not.toContain("a b c d e f g h");
+    // Mid-word @ never becomes a candidate.
+    expect(mentionCandidates("mail me@b.md please")).toEqual([]);
+  });
+
+  it("chipsFromResolved lets a spaced path claim its start first", () => {
+    // "@a b.ts" resolved — the long form wins the shared start; "@a"
+    // alone still mints at its own later token.
+    const out = chipsFromResolved("use @a b.ts then @a ", ["a b.ts", "a"]);
+    expect(out).toEqual([
+      { path: "a b.ts", start: 4, end: 12 },
+      { path: "a", start: 17, end: 20 },
+    ]);
+    // Whitespace- or start-bounded tokens only — mid-word stays text.
+    expect(chipsFromResolved("me@a b.ts ", ["a b.ts"])).toEqual([]);
+    // An unresolved spaced prefix never mints its first word instead —
+    // only resolved paths produce chips.
+    expect(chipsFromResolved("use @a b.ts ", ["b.ts"])).toEqual([]);
+  });
+
+  it("chipLabel widens a duplicated basename to dir/name", () => {
+    const chips = [
+      { path: "src/a/note.md", start: 0, end: 14 },
+      { path: "docs/b/note.md", start: 15, end: 30 },
+      { path: "src/solo.ts", start: 31, end: 42 },
+    ];
+    expect(chipLabel("src/a/note.md", chips)).toBe("a/note.md");
+    expect(chipLabel("docs/b/note.md", chips)).toBe("b/note.md");
+    expect(chipLabel("src/solo.ts", chips)).toBe("solo.ts");
+    // The same path twice (duplicate tokens) does not self-disambiguate.
+    const same = [
+      { path: "a/x.md", start: 0, end: 7 },
+      { path: "a/x.md", start: 8, end: 15 },
+    ];
+    expect(chipLabel("a/x.md", same)).toBe("x.md");
   });
 
   it("renderableChips returns mirror order and drops stale spans", () => {

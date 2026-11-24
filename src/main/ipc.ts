@@ -102,6 +102,8 @@ export interface IpcOptions {
    *  without the slices. The renderer never sees a path. */
   files?: {
     search(threadId: string, query: string): Promise<{ paths: string[] }>;
+    /** Verbatim membership check for chip minting — P2-44. */
+    resolve?(threadId: string, path: string): Promise<{ ok: boolean }>;
   };
   downloads?: {
     list(): Promise<import("../shared/types").DownloadItem[]>;
@@ -240,6 +242,10 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("mention:search", async (p) => {
     if (!opts.files) return { paths: [] };
     return opts.files.search(p.threadId, p.query);
+  });
+  handle("mention:resolve", async (p) => {
+    if (!opts.files?.resolve) return { ok: false };
+    return opts.files.resolve(p.threadId, p.path);
   });
   handle("downloads:list", async () => {
     if (!opts.downloads) return [];

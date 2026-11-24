@@ -219,6 +219,143 @@ export async function runFileMentionChecks({
     draft7,
   );
 
+  // ---- P2-44 mention chips (frozen FileMentionText) ----------------------
+  // FM-13: the picked "@README.md " mints a chip pill + token covers —
+  // the textarea text itself stays verbatim.
+  await page.locator(".mention-chip").waitFor({ timeout: 8000 });
+  const chipName = await page
+    .locator(".mention-chip .mention-chip-name")
+    .innerText();
+  const chipTitle = await page.locator(".mention-chip").getAttribute("title");
+  const chipCovers = await page.locator(".mention-cover").count();
+  verify(
+    "FM-13 pick mints the chip (name, path tooltip, token covered)",
+    chipName.includes("README.md") &&
+      chipTitle === "README.md" &&
+      chipCovers >= 1 &&
+      (await page.locator(".composer textarea").inputValue()) ===
+        "read @README.md ",
+    { chipName, chipTitle, chipCovers },
+  );
+  await page.screenshot({ path: join(outDir, "mention-chip-en.png") });
+
+  // FM-14: a caret inside the chip token never reopens the Files menu
+  // (frozen mentionEnds); a word typed after it still queries.
+  await page.evaluate(() => {
+    const ta = document.querySelector(".composer textarea");
+    ta.focus();
+    ta.setSelectionRange(9, 9); // inside "@README.md"
+    ta.dispatchEvent(new Event("select", { bubbles: true }));
+  });
+  await page.waitForTimeout(500);
+  verify(
+    "FM-14 caret inside the chip keeps the Files menu closed",
+    (await page.locator(".suggest-menu").count()) === 0,
+  );
+
+  // FM-15: atomic backspace peels the whole token; chip-aware Ctrl+Z
+  // restores text + chip, and a second undo reaches the pre-pick draft.
+  await page.evaluate(() => {
+    const ta = document.querySelector(".composer textarea");
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    ta.dispatchEvent(new Event("select", { bubbles: true }));
+  });
+  await page.locator(".composer textarea").press("Backspace");
+  await page.waitForFunction(
+    () => document.querySelector(".composer textarea").value === "read ",
+    { timeout: 5000 },
+  );
+  verify(
+    "FM-15a backspace peels the chip atomically",
+    (await page.locator(".mention-chip").count()) === 0,
+  );
+  await page.locator(".composer textarea").press("Control+z");
+  await page.waitForSelector(".mention-chip", { timeout: 5000 });
+  const undone = await page.locator(".composer textarea").inputValue();
+  verify(
+    "FM-15b Ctrl+Z restores the chipped draft",
+    undone === "read @README.md ",
+    undone,
+  );
+  await page.locator(".composer textarea").press("Control+z");
+  await page.waitForFunction(
+    () => document.querySelector(".composer textarea").value === "read @read",
+    { timeout: 5000 },
+  );
+  verify("FM-15c second undo reaches the pre-pick draft", true);
+  // Ctrl+Shift+Z redoes the pick — chip and token return together.
+  await page.locator(".composer textarea").press("Control+Shift+z");
+  await page.waitForSelector(".mention-chip", { timeout: 5000 });
+  const redone = await page.locator(".composer textarea").inputValue();
+  verify(
+    "FM-15d Ctrl+Shift+Z redoes the pick",
+    redone === "read @README.md ",
+    redone,
+  );
+  await page.locator(".composer textarea").press("Escape"); // close the "@read" menu if open
+
+  // FM-16: copy carries the verbatim "@path " — the token IS the text.
+  await page.evaluate(() => {
+    const ta = document.querySelector(".composer textarea");
+    ta.focus();
+    ta.select();
+  });
+  await page.keyboard.press("Control+c");
+  const copied = await app.evaluate(({ clipboard }) => clipboard.readText());
+  verify(
+    "FM-16 copy is the verbatim token text",
+    copied === "read @README.md ",
+    copied,
+  );
+
+  // FM-17: pasted "@path " tokens mint chips after exact resolve —
+  // including a CRLF clipboard (textarea value normalization folds it,
+  // so the handler normalizes before locating the landing).
+  for (const [clip, expected, title] of [
+    ["check @README.md now", "check @README.md now", "README.md"],
+    ["a\r\n@src/engine.ts", "a\n@src/engine.ts", "src/engine.ts"],
+  ]) {
+    await setDraft(page, "");
+    await app.evaluate(
+      ({ clipboard }, v) => clipboard.writeText(v),
+      clip,
+    );
+    await page.locator(".composer textarea").click();
+    await page.keyboard.press("Control+v");
+    await page.waitForSelector(`.mention-chip[title="${title}"]`, {
+      timeout: 8000,
+    });
+    const pasted = await page.locator(".composer textarea").inputValue();
+    verify(`FM-17 paste mints a chip (${JSON.stringify(clip)})`, pasted === expected, pasted);
+  }
+
+  // FM-18: an unresolved pasted path stays plain text — no chip.
+  await setDraft(page, "");
+  await app.evaluate(({ clipboard }) =>
+    clipboard.writeText("use @nope/here.txt"),
+  );
+  await page.locator(".composer textarea").click();
+  await page.keyboard.press("Control+v");
+  await page.waitForTimeout(900); // out-wait the resolve round trip
+  verify(
+    "FM-18 unknown path pastes as plain text",
+    (await page.locator(".mention-chip").count()) === 0 &&
+      (await page.locator(".composer textarea").inputValue()) ===
+        "use @nope/here.txt",
+  );
+
+  // FM-19: send a draft that carries a live chip — the wire text stays
+  // verbatim (FM-08's assertion now covers the chipped form).
+  await setDraft(page, "");
+  await app.evaluate(({ clipboard }) =>
+    clipboard.writeText("read @README.md "),
+  );
+  await page.locator(".composer textarea").click();
+  await page.keyboard.press("Control+v");
+  await page.waitForSelector('.mention-chip[title="README.md"]', {
+    timeout: 8000,
+  });
+
   // FM-08: the mention is draft text — send carries "@README.md" to the
   // provider verbatim (frozen: no implicit attach).
   await page.locator("button.primary").click();

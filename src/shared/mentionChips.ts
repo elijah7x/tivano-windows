@@ -137,6 +137,58 @@ export function chipsFromText(
   return out;
 }
 
+/** Frozen FileMentions maxSpacesInPath (6): every `@token` in `text`
+ *  also yields its space-joined continuations so pasted/reloaded
+ *  "see @docs/My File.ts" resolves the full spaced path, not just the
+ *  first word. Whitespace- or start-bounded `@` only — emails/handles
+ *  never become candidates. Longest form is last per token. */
+export function mentionCandidates(text: string, maxSpaces = 6): string[] {
+  const out = new Set<string>();
+  const re = /@([^\s@]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > 0 && !/\s/.test(text[m.index - 1]!)) continue;
+    let span = m[1]!;
+    let rest = m.index + m[0].length;
+    out.add(span);
+    for (let s = 0; s < maxSpaces; s++) {
+      const nm = /^ ([^\s@]+)/.exec(text.slice(rest));
+      if (!nm) break;
+      span += nm[0];
+      rest += nm[0].length;
+      out.add(span);
+    }
+  }
+  return [...out];
+}
+
+/** Mint chips for the index-resolved paths — the spaced-aware twin of
+ *  chipsFromText. Longest paths claim their token start first, so a
+ *  spaced path beats its own first-word prefix ("@a b.ts" wins over
+ *  "@a" at the same offset); later starts of a shorter path still
+ *  mint normally. */
+export function chipsFromResolved(
+  text: string,
+  paths: readonly string[],
+): MentionChip[] {
+  const claimed = new Set<number>();
+  const out: MentionChip[] = [];
+  for (const path of [...paths].sort((a, b) => b.length - a.length)) {
+    const bare = `@${path}`;
+    let i = text.indexOf(bare);
+    while (i !== -1) {
+      const bounded = i === 0 || /\s/.test(text[i - 1]!);
+      const end = bounded ? tokenEndAt(text, i, path) : null;
+      if (end !== null && !claimed.has(i)) {
+        claimed.add(i);
+        out.push({ path, start: i, end });
+      }
+      i = text.indexOf(bare, i + 1);
+    }
+  }
+  return out.sort((a, b) => a.start - b.start);
+}
+
 /** Chips in mirror order — sorted by start, overlapping/stale spans
  *  dropped. The overlay rects index this exact list, so a chip minted
  *  before an existing one (caret moved left, mid-text paste) can never
@@ -156,6 +208,25 @@ export function renderableChips(
     at = c.end;
   }
   return out;
+}
+
+/** The chip's display label — the basename, widened to `dir/name` when
+ *  another live chip shares the basename (frozen disambiguates
+ *  duplicate file names; within a draft the same courtesy applies). */
+export function chipLabel(
+  path: string,
+  all: readonly MentionChip[],
+): string {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dupe = all.some(
+    (c) =>
+      c.path !== path &&
+      c.path.slice(c.path.lastIndexOf("/") + 1) === name,
+  );
+  if (!dupe) return name;
+  const parent = path.slice(0, Math.max(0, path.length - name.length - 1));
+  const dir = parent.slice(parent.lastIndexOf("/") + 1);
+  return dir ? `${dir}/${name}` : name;
 }
 
 /** Every chip token span as "@path " — used to clip a copy selection to

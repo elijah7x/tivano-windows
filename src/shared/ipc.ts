@@ -211,6 +211,7 @@ export const REQUEST_CHANNELS = [
   "attachments:read",
   "attachments:remove",
   "mention:search",
+  "mention:resolve",
   "downloads:list",
   "downloads:attach",
   "downloads:reveal",
@@ -425,6 +426,13 @@ export const requestValidators = {
   "mention:search": vObject({
     threadId: vId,
     query: vMaxString(500),
+  }),
+  // P2-44 chip minting: verbatim membership check against the raw index
+  // — the fuzzy top-8 search can drop a valid path at the lengthPenalty
+  // cap, so chip resolution asks "is this exact path indexed?".
+  "mention:resolve": vObject({
+    threadId: vId,
+    path: vNonEmptyString(500),
   }),
   // F05 downloads popover: listing, id-scoped attach, folder reveal.
   // The renderer never sees or supplies a path.
