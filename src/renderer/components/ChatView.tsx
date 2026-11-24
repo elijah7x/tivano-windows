@@ -218,6 +218,10 @@ export function ChatView(props: {
   // jump) suppress the unexplained-motion release/re-pin for a beat —
   // otherwise a minimap scrollIntoView reads as the reader moving up.
   const timelineProgrammaticUntilRef = useRef(0);
+  // A minimap jump is the one write that can LOWER scrollTop (block:
+  // "start" on a tall block above the current top) — it rides its own
+  // window so that drop never reads as the reader scrolling up.
+  const timelineJumpUntilRef = useRef(0);
   const timelineLastScrollRef = useRef<{
     top: number;
     dist: number;
@@ -328,14 +332,29 @@ export function ChatView(props: {
     // Frozen revives a stale pin: a released reader sitting at the end
     // (within 1pt) and NOT mid-gesture follows new growth again — a
     // wheel-up that started inside the band is never pulled back down.
-    if (
-      el &&
-      !timelineFollowingRef.current &&
-      el.scrollHeight - el.scrollTop - el.clientHeight <= 1 &&
-      !timelineInteractRef.current &&
-      Date.now() > timelineWheelUntilRef.current
-    ) {
-      timelineFollowingRef.current = true;
+    if (el) {
+      // old.distanceFromBottom is the PRE-growth resting distance —
+      // scrollHeight already includes the new row here, so measuring
+      // now never revives a reader who was within 1pt. The last
+      // recorded distance is that truth; silent growth fires no
+      // scroll event, so the record re-measures here for the next
+      // growth to compare (a reader drifted out of the band stays
+      // released, same as frozen).
+      const prevDist =
+        timelineLastScrollRef.current?.dist ?? Number.MAX_VALUE;
+      timelineLastScrollRef.current = {
+        top: el.scrollTop,
+        dist: el.scrollHeight - el.scrollTop - el.clientHeight,
+        h: el.scrollHeight,
+      };
+      if (
+        !timelineFollowingRef.current &&
+        prevDist <= 1 &&
+        !timelineInteractRef.current &&
+        Date.now() > timelineWheelUntilRef.current
+      ) {
+        timelineFollowingRef.current = true;
+      }
     }
     if (
       timelineFollowingRef.current &&
@@ -374,6 +393,7 @@ export function ChatView(props: {
     if (el && jumpId !== null) {
       timelineJumpRef.current = null;
       timelineProgrammaticUntilRef.current = Date.now() + 100;
+      timelineJumpUntilRef.current = Date.now() + 100;
       el
         .querySelector<HTMLElement>(`[data-mid="${jumpId}"]`)
         ?.scrollIntoView({ block: "start" });
@@ -635,14 +655,19 @@ export function ChatView(props: {
           const programmatic =
             Date.now() < timelineProgrammaticUntilRef.current;
           const h = el.scrollHeight;
-          // Our writes only ever RAISE scrollTop (bottom snaps, anchor
-          // shifts) — a drop is never ours, so neither the programmatic
-          // window nor an unchanged document gates UP. Only a shrinking
-          // document is ambiguous (a window collapse can lower scrollTop
-          // on its own). Streaming growth no longer swallows keyboard
-          // paging or native scrollbar drags — that's the whole point of
-          // the release path.
-          const unexplainedUp = h >= (prev?.h ?? h) && delta < -0.1;
+          // Our writes almost only ever RAISE scrollTop (bottom snaps,
+          // anchor shifts) — the one lowering write is a minimap jump,
+          // which rides its own window. Every other drop is reader
+          // motion: neither the programmatic window nor an unchanged
+          // document gates UP. Only a shrinking document is ambiguous
+          // (a window collapse can lower scrollTop on its own).
+          // Streaming growth no longer swallows keyboard paging or
+          // native scrollbar drags — that's the whole point of the
+          // release path.
+          const unexplainedUp =
+            Date.now() > timelineJumpUntilRef.current &&
+            h >= (prev?.h ?? h) &&
+            delta < -0.1;
           // Down keeps both gates: our snaps raise scrollTop, so a rise
           // is reader motion only while the document is quiet.
           const unexplainedDown =
@@ -1126,6 +1151,7 @@ export function ChatView(props: {
           // reply is not unpinned by the port's own scroll (frozen: a
           // jump to the last block keeps isPinnedToBottom).
           timelineProgrammaticUntilRef.current = Date.now() + 100;
+          timelineJumpUntilRef.current = Date.now() + 100;
           const idx = timelineItems.findIndex((it) =>
             it.kind === "lone"
               ? it.message.id === id
