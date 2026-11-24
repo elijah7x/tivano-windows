@@ -27,6 +27,7 @@ import { TokenActivitySection } from "./TokenActivitySection";
 import { ShortcutsSection } from "./ShortcutsSection";
 import { HydraSection } from "./HydraSection";
 import { McpSection } from "./McpSection";
+import { RemoteMcpSection } from "./RemoteMcpSection";
 import { ForgeSection } from "./ForgeSection";
 import { WallpaperSection } from "./WallpaperSection";
 import { ModelListSettings } from "./ModelListSettings";
@@ -512,7 +513,11 @@ export function SettingsModal(props: {
         <h3>{t("Models")}</h3>
         <ModelListSettings />
 
-        <McpSection settings={settings} home={info.home} />
+        <div className="connections-section" data-testid="connections-section">
+          <h3>{t("Connections")}</h3>
+          <McpSection settings={settings} home={info.home} />
+          <RemoteMcpSection settings={settings} />
+        </div>
 
         <h3>{t("Sleep")}</h3>
         <div

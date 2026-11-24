@@ -5121,3 +5121,18 @@ html[data-performance] .sweep-dots { display: none; }
 .whatsnew-releases-link:hover {
   text-decoration: underline;
 }
+
+/* ---- P2-25: Connections / Remote MCP ------------------------------ */
+.connections-section { margin-top: 8px; }
+.remote-mcp-section { margin-top: 14px; }
+.remote-mcp-url-field { margin-top: 6px; }
+.remote-mcp-url-row { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.remote-mcp-url-row .choice { padding: 2px 8px; font-size: 12px; }
+.remote-mcp-grant {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}

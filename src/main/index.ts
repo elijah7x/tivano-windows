@@ -76,6 +76,7 @@ import { GIT_POSIX_EXECUTABLE, resolveGitExecutable } from "./gitRuntimeConfig";
 import { CheckpointService } from "./checkpointService";
 import { WallpaperService } from "./wallpaperService";
 import { LocalControlService } from "./localControl";
+import { RemoteMcpService } from "./remoteMcp";
 import { externalOpenLogPath, recordExternalOpen } from "./externalOpen";
 import { cliBinDir, cliStatus, installCli, uninstallCli } from "./cliInstall";
 import { CheckpointLedger } from "./checkpointLedger";
@@ -436,6 +437,7 @@ let terminals: TerminalService | null = null;
 let git: GitService | null = null;
 let checkpoints: CheckpointCoordinator | null = null;
 let localControl: LocalControlService | null = null;
+let remoteMcp: RemoteMcpService | null = null;
 
 const coordinator = new CloseCoordinator({
   blockNewWork: () => { bootstrapClosing = true; engine?.shutdown(); },
@@ -460,6 +462,7 @@ const coordinator = new CloseCoordinator({
     // F33: the control socket closes with the app — never survives the
     // instance that minted its tickets.
     localControl?.dispose();
+    remoteMcp?.dispose();
     for (const c of result.children) {
       if (!c.confirmed)
         problems.push(`child pid ${c.pid ?? "?"}: ${c.problem ?? "close unconfirmed"}`);
@@ -846,9 +849,20 @@ bootstrap = app.whenReady().then(async () => {
   // closing either gate stops listening and drops live connections.
   localControl = new LocalControlService(eng, dataRoot);
   localControl.refreshListening();
+  // P2-25 Remote MCP: loopback HTTP + OAuth 2.1 outside Alpha.
+  remoteMcp = new RemoteMcpService({
+    engine: eng,
+    localControl,
+    dataRoot,
+    appVersion: app.getVersion(),
+    onChanged: (status) => broadcast({ type: "remote-mcp-changed", status }),
+  });
+  localControl.setRemoteListeningCheck(() => remoteMcp?.listening === true);
+  void remoteMcp.refresh().catch(() => {});
   eng.onEvent((e) => {
     if (e.type === "settings-changed") {
       localControl?.refreshListening();
+      void remoteMcp?.refresh().catch(() => {});
       refreshQuickChord();
     }
   });
@@ -975,6 +989,7 @@ bootstrap = app.whenReady().then(async () => {
     terminals,
     git,
     localControl,
+    remoteMcp,
     cli: cliSurface,
     externalLog: externalLog ?? undefined,
     openDirectory: () => dirOpener.open(),

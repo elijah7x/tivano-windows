@@ -6,7 +6,7 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { api, clientStore, tryCall } from "./client";
 import { setModalCovered } from "./appActivity";
-import type { Snapshot } from "../shared/types";
+import type { RemoteMcpApprovalRequest, RemoteMcpStatus, Snapshot } from "../shared/types";
 import {
   SHORTCUT_COMMANDS,
   chordFromEvent,
@@ -75,6 +75,61 @@ function ArchivePrompt(props: {
   );
 }
 
+/** P2-25: Remote MCP OAuth approval prompt (frozen RootView alert). */
+function RemoteMcpApprovalPrompt(props: {
+  request: RemoteMcpApprovalRequest;
+  onDecide: (decision: "full" | "read" | "deny") => void;
+}): React.JSX.Element {
+  const t = useT();
+  const r = props.request;
+  const offersWrite = r.requestedScopes.includes("tivano.write");
+  return (
+    <div
+      className="modal-veil"
+      role="presentation"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") props.onDecide("deny");
+      }}
+    >
+      <div
+        className="modal"
+        role="alertdialog"
+        aria-modal="true"
+        data-testid="remote-mcp-approval"
+        aria-label={t("Allow %@ to control Tivano?", r.clientName)}
+      >
+        <h2>{t("Allow %@ to control Tivano?", r.clientName)}</h2>
+        <p className="ckpt-note mono">
+          {t("Code: %@ · Redirects to %@", r.code, r.redirectHost || r.clientId)}
+        </p>
+        <div className="modal-actions">
+          {offersWrite && (
+            <button
+              className="primary"
+              data-testid="remote-mcp-allow-full"
+              autoFocus
+              onClick={() => props.onDecide("full")}
+            >
+              {t("Allow full control")}
+            </button>
+          )}
+          <button
+            className={offersWrite ? undefined : "primary"}
+            autoFocus={!offersWrite}
+            data-testid="remote-mcp-allow-read"
+            onClick={() => props.onDecide("read")}
+          >
+            {t("Allow read only")}
+          </button>
+          <button data-testid="remote-mcp-deny" onClick={() => props.onDecide("deny")}>
+            {t("Deny")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Sits inside LanguageContext so the dismiss label localizes correctly. */
 function ErrorBanner(props: { text: string; onDismiss: () => void }): React.JSX.Element {
   const t = useT();
@@ -123,6 +178,7 @@ export function App(): React.JSX.Element {
   /** F27 archiveThread (⌘W): frozen "asks to archive; Delete is a click
    *  away" prompt for the SELECTED thread. */
   const [archivePrompt, setArchivePrompt] = useState(false);
+  const [remoteApproval, setRemoteApproval] = useState<RemoteMcpApprovalRequest | null>(null);
   /** F04 link popover — frozen LinkPopover: one transient menu anchored
    *  under the right-clicked chat link; null = closed. */
   const [linkPop, setLinkPop] = useState<LinkPopoverState | null>(null);
@@ -153,13 +209,26 @@ export function App(): React.JSX.Element {
     ensureTerminalBridge();
     let disposed = false;
     const gen = store.beginHydration();
-    const detach = api().onEvent((e) => store.onBridgeEvent(e));
+    const detach = api().onEvent((e) => {
+      if (e.type === "remote-mcp-changed") {
+        if (!disposed) setRemoteApproval(e.status.pendingApprovals[0] ?? null);
+        return;
+      }
+      store.onBridgeEvent(e);
+    });
     api()
       .invoke("state:get", {})
       .then((s) => {
         if (disposed) return;
         store.hydrate(s as Snapshot, gen);
         setReady(true);
+        void api()
+          .invoke("remoteMcp:status", {})
+          .then((rm) => {
+            if (!disposed && rm)
+              setRemoteApproval((rm as RemoteMcpStatus).pendingApprovals[0] ?? null);
+          })
+          .catch(() => {});
       })
       .catch((e: Error) => {
         if (!disposed) setFatal(e.message);
@@ -649,6 +718,21 @@ export function App(): React.JSX.Element {
               tryCall("threads:delete", { id: selected.id });
             }}
             onClose={() => setArchivePrompt(false)}
+          />
+        )}
+        {remoteApproval && (
+          <RemoteMcpApprovalPrompt
+            request={remoteApproval}
+            onDecide={(decision) => {
+              const id = remoteApproval.id;
+              setRemoteApproval(null);
+              void api()
+                .invoke("remoteMcp:decide", { id, decision })
+                .then((rm) => {
+                  if (rm) setRemoteApproval((rm as RemoteMcpStatus).pendingApprovals[0] ?? null);
+                })
+                .catch(() => {});
+            }}
           />
         )}
         {lastError && <ErrorBanner text={lastError} onDismiss={() => store.clearError()} />}

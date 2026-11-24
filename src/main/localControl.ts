@@ -54,6 +54,8 @@ type FailCode =
   | "persistence" | "conflict" | "continuationUnavailable" | "shutdown"
   | "corruptHistory" | "cursorInvalid" | "providerFailure" | "internalError";
 
+export type ControlSource = "local" | "remote";
+
 export class ControlFailure extends Error {
   constructor(
     readonly code: FailCode,
@@ -117,6 +119,7 @@ export class LocalControlService {
   private ops = new Map<string, Operation>();
   private readonly dir: string;
   private readonly sockPath: string;
+  private remoteListeningCheck?: () => boolean;
   listening = false;
   listenFailure: string | undefined;
 
@@ -127,6 +130,10 @@ export class LocalControlService {
   ) {
     this.dir = join(dataRoot, "control");
     this.sockPath = join(this.dir, "control.sock");
+  }
+
+  setRemoteListeningCheck(check: () => boolean): void {
+    this.remoteListeningCheck = check;
   }
 
   /** Frozen refreshListening — called on settings changes, library load
@@ -280,6 +287,32 @@ export class LocalControlService {
     }
   }
 
+  /** Shared dispatch entry for both local socket and Remote MCP. */
+  async handleExternal(
+    method: string,
+    params: Record<string, unknown> = {},
+    source: ControlSource = "local",
+  ): Promise<Record<string, unknown>> {
+    const s = this.engine.snapshot().settings;
+    if (source === "local") {
+      if (!(s.alphaEnabled === true && s.externalControlEnabled === true) || !this.listening)
+        fail("disabled");
+    } else {
+      if (s.remoteMCPEnabled !== true || this.remoteListeningCheck?.() !== true)
+        fail("disabled");
+      if (method === "settingsGet" || method === "settingsSet") fail("permission");
+    }
+    if (this.active >= MAX_CONNECTIONS) fail("busy");
+    if (!(METHODS as readonly string[]).includes(method))
+      fail("invalidRequest", "unknown-method");
+    this.active++;
+    try {
+      return await this.dispatch(method, params, source);
+    } finally {
+      this.active--;
+    }
+  }
+
   private async handleRequest(conn: Socket, payload: Buffer): Promise<void> {
     let id: string | undefined;
     try {
@@ -310,6 +343,7 @@ export class LocalControlService {
         const result = await this.dispatch(
           cmd.method,
           (cmd.params ?? {}) as Record<string, unknown>,
+          "local",
         );
         this.send(conn, { id, result });
       } finally {
@@ -363,6 +397,7 @@ export class LocalControlService {
   private async dispatch(
     method: string,
     params: Record<string, unknown>,
+    source: ControlSource = "local",
   ): Promise<Record<string, unknown>> {
     const engine = this.engine;
     const snap = engine.snapshot();
@@ -476,9 +511,9 @@ export class LocalControlService {
       case "settingsSet":
         return this.writeSettings(params);
       case "create":
-        return this.createThreadOp(params);
+        return this.createThreadOp(params, source);
       case "submit":
-        return this.submitOp(params);
+        return this.submitOp(params, source);
       case "interrupt":
         return this.interruptOp(params);
       default:
@@ -545,7 +580,7 @@ export class LocalControlService {
     });
   }
 
-  private createThreadOp(params: Record<string, unknown>) {
+  private createThreadOp(params: Record<string, unknown>, source: ControlSource = "local") {
     const provider = str(params, "provider");
     const d = this.engine.providerDescriptor;
     if (provider !== undefined && provider !== d.id && provider !== d.mode)
@@ -568,9 +603,9 @@ export class LocalControlService {
     // UI's per-chat default.
     const hydra = params["hydra"];
     if (hydra !== undefined && typeof hydra !== "boolean") fail("invalidRequest");
+    const s = this.engine.snapshot().settings;
     let pair: HydraPair | undefined;
     if (hydra === true) {
-      const s = this.engine.snapshot().settings;
       if (s.hydraEnabled === false) fail("unsupported", "hydra_disabled");
       pair = hydraPairForProvider(s.hydraPairs ?? [], d.mode, model);
       if (!pair) fail("unsupported", "hydra_pair_missing");
@@ -579,7 +614,12 @@ export class LocalControlService {
     const { op, fresh } = this.acceptWrite(ticket, { method: "create", params });
     if (!fresh) return { operation: outcomeOf(op) };
     try {
+      const runtimeMode =
+        source === "remote"
+          ? (s.remoteMCPFullAccess === true ? "fullAccess" : "supervised")
+          : undefined;
       const thread = this.engine.createThread(projectId ?? null, undefined, {
+        ...(runtimeMode ? { runtimeMode } : {}),
         externalHydra: {
           enabled: hydra === true,
           ...(pair ? { pairId: pair.id } : {}),
@@ -620,7 +660,7 @@ export class LocalControlService {
     }
   }
 
-  private submitOp(params: Record<string, unknown>) {
+  private submitOp(params: Record<string, unknown>, source: ControlSource = "local") {
     const threadId = params["threadId"];
     if (!isUuid(threadId)) fail("invalidRequest");
     const text = params["text"];
@@ -636,6 +676,13 @@ export class LocalControlService {
     // submits fine.
     if (t.hydraHead) fail("unsupported", "hydra-head-target");
     if (t.isArchived) fail("archived");
+    // P2-25: heads always run with full access, so a supervised remote
+    // caller cannot reach them through a Hydra-led chat without Remote
+    // MCP full access (the local CLI runs as the owner already).
+    const s = this.engine.snapshot().settings;
+    const hydraOn = s.hydraEnabled !== false && t.hydraEnabled !== false;
+    if (source === "remote" && hydraOn && s.remoteMCPFullAccess !== true)
+      fail("permission", "hydra_requires_remote_full_access");
     if (t.turn && (t.turn.status === "running" || t.turn.status === "waiting-approval"))
       fail("busy");
     // Frozen sendToThread waits for runningHydraHeads == 0: a lead whose

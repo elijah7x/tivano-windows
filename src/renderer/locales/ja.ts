@@ -1191,4 +1191,33 @@ export const ja: Record<string, string> = {
   "View all releases on GitHub": "GitHub ですべてのリリースを表示",
   "Expanded": "展開済み",
   "Collapsed": "折りたたみ済み",
+  "Connections": "接続",
+  "Remote MCP": "リモート MCP",
+  "Run remote chats without approval": "承認なしでリモートチャットを実行",
+  "Let cloud agents such as Muse or Grok Bot control this edition of Tivano over MCP, through a tunnel you run. Each agent needs your approval here once. Approvals and questions in chats still wait in Tivano.":
+    "Muse や Grok Bot などのクラウドエージェントが、ご自身で実行するトンネル経由で MCP を使ってこの Tivano を制御できるようにします。各エージェントにつき初回のみここで承認が必要です。チャット内の承認や質問は引き続き Tivano で待機します。",
+  "Chats that cloud agents create start in Full access: commands and file changes run without asking. Chats created while this is off, and your own chats, keep their permissions. Questions still wait in Tivano.":
+    "クラウドエージェントが作成するチャットは「フルアクセス」で開始され、コマンドやファイル変更が確認なしで実行されます。この設定がオフの間に作成されたチャットやご自身のチャットは元の権限が維持されます。質問への回答は引き続き Tivano で待機します。",
+  "Public address": "パブリックアドレス",
+  "Paste your tunnel's HTTPS address": "トンネルの HTTPS アドレスをペースト",
+  "Enter an HTTPS address, or leave it empty for this computer only.":
+    "HTTPS アドレスを入力するか、空のままにしてこのコンピューターのみに制限してください。",
+  "Your tunnel's HTTPS address, forwarding to http://127.0.0.1:%d. Leave empty to allow only this computer.":
+    "http://127.0.0.1:%d に転送するトンネルの HTTPS アドレスです。空のままにすると、このコンピューターからのみアクセスできます。",
+  "Server URL": "サーバー URL",
+  "Copy server URL": "サーバー URL をコピー",
+  "Remote MCP status": "リモート MCP の状態",
+  "Listening on 127.0.0.1:%d": "127.0.0.1:%d で待機中",
+  "Remote MCP could not start. Retry after freeing the port.":
+    "リモート MCP を起動できませんでした。ポートを解放してから再試行してください。",
+  "Retry remote MCP": "リモート MCP を再試行",
+  "Revoke access": "アクセスを取り消す",
+  "Revoke all": "すべて取り消す",
+  "Full control": "フルコントロール",
+  "Read only": "読み取り専用",
+  "Last used %@": "最終使用：%@",
+  "Allow %@ to control Tivano?": "%@ に Tivano の制御を許可しますか？",
+  "Allow full control": "フルコントロールを許可",
+  "Allow read only": "読み取り専用で許可",
+  "Code: %@ · Redirects to %@": "コード：%@ · リダイレクト先 %@",
 };
