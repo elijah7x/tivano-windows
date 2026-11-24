@@ -66,6 +66,14 @@ tivano settings [get [KEY]] [set KEY=VALUE]...
 - Provider and control failures carry **stable codes**, never localized
   message text — the same request returns the same `code`/`detail` under
   English and zh-Hans.
+- **Remote MCP (`P2-25`):** hosted outside Alpha under Settings ›
+  Connections on `127.0.0.1` with OAuth 2.1 (`tivano.read` /
+  `tivano.write`). Remote-created chats start in `supervised` unless
+  "Run remote chats without approval" (`remoteMCPFullAccess`) is on;
+  `submit` to a Hydra-led chat via Remote MCP refuses `permission` /
+  `hydra_requires_remote_full_access` unless `remoteMCPFullAccess` is on
+  (local CLI submits remain unaffected), and `settingsGet`/`settingsSet`
+  are refused for remote callers.
 
 ## Write tickets
 

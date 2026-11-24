@@ -2002,4 +2002,26 @@ export const zhHant: Record<string, string> = {
   "Friday": "週五",
   "Saturday": "週六",
   "Sunday": "週日",
+  "Connections": "連線",
+  "Paste your tunnel's HTTPS address": "貼上你的通道 HTTPS 位址",
+  "Enter an HTTPS address, or leave it empty for this computer only.":
+    "請輸入 HTTPS 位址；留空則僅限本機存取。",
+  "Your tunnel's HTTPS address, forwarding to http://127.0.0.1:%d. Leave empty to allow only this computer.":
+    "你的通道 HTTPS 位址，轉發至 http://127.0.0.1:%d。留空則僅允許本機存取。",
+  "Server URL": "伺服器 URL",
+  "Copy server URL": "拷貝伺服器 URL",
+  "Remote MCP status": "遠端 MCP 狀態",
+  "Listening on 127.0.0.1:%d": "正在監聽 127.0.0.1:%d",
+  "Remote MCP could not start. Retry after freeing the port.":
+    "遠端 MCP 無法啟動。請釋放連接埠後再重試。",
+  "Retry remote MCP": "重試遠端 MCP",
+  "Revoke access": "撤銷授權",
+  "Revoke all": "全部撤銷",
+  "Full control": "完全控制",
+  "Read only": "唯讀",
+  "Last used %@": "上次使用：%@",
+  "Allow %@ to control Tivano?": "允許 %@ 控制 Tivano 嗎？",
+  "Allow full control": "允許完全控制",
+  "Allow read only": "僅允許唯讀存取",
+  "Code: %@ · Redirects to %@": "驗證碼：%@ · 重新導向至 %@",
 };

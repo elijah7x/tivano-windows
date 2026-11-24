@@ -2002,4 +2002,26 @@ export const ko: Record<string, string> = {
   "Friday": "금요일",
   "Saturday": "토요일",
   "Sunday": "일요일",
+  "Connections": "연결",
+  "Paste your tunnel's HTTPS address": "터널의 HTTPS 주소 붙여넣기",
+  "Enter an HTTPS address, or leave it empty for this computer only.":
+    "HTTPS 주소를 입력하거나 비워 두어 이 컴퓨터에서만 허용하세요.",
+  "Your tunnel's HTTPS address, forwarding to http://127.0.0.1:%d. Leave empty to allow only this computer.":
+    "http://127.0.0.1:%d 주소로 전달하는 터널의 HTTPS 주소입니다. 비워 두면 이 컴퓨터에서만 연결을 허용합니다.",
+  "Server URL": "서버 URL",
+  "Copy server URL": "서버 URL 복사",
+  "Remote MCP status": "원격 MCP 상태",
+  "Listening on 127.0.0.1:%d": "127.0.0.1:%d에서 수신 대기 중",
+  "Remote MCP could not start. Retry after freeing the port.":
+    "원격 MCP를 시작할 수 없습니다. 포트를 비운 후 다시 시도하세요.",
+  "Retry remote MCP": "원격 MCP 다시 시도",
+  "Revoke access": "접근 권한 취소",
+  "Revoke all": "모두 취소",
+  "Full control": "전체 제어",
+  "Read only": "읽기 전용",
+  "Last used %@": "마지막 사용: %@",
+  "Allow %@ to control Tivano?": "%@에서 Tivano를 제어하도록 허용하시겠습니까?",
+  "Allow full control": "전체 제어 허용",
+  "Allow read only": "읽기 전용 허용",
+  "Code: %@ · Redirects to %@": "코드: %@ · 리디렉션 대상 %@",
 };

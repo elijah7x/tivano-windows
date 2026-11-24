@@ -234,6 +234,11 @@ export interface Settings {
    */
   alphaEnabled?: boolean;
   externalControlEnabled?: boolean;
+  /** P2-25: Remote MCP (outside Alpha, under Settings > Connections). */
+  remoteMCPEnabled?: boolean;
+  remoteMCPFullAccess?: boolean;
+  remoteMCPPublicURL?: string;
+  remoteMCPPort?: number;
   /**
    * F26: frozen uiFontSize/contentFontSize/codeFontSize — absolute point
    * sizes per category (ui 12–18, content 12–18, code 11–17). The offset
@@ -1375,4 +1380,37 @@ export interface GitDiffResult {
   kind: "text" | "binary" | "oversized" | "empty" | "unavailable";
   patch?: string;
   reason?: string;
+}
+
+export type RemoteMcpScope = "tivano.read" | "tivano.write";
+
+export interface RemoteMcpGrantView {
+  id: string;
+  clientId: string;
+  clientName: string;
+  scopes: RemoteMcpScope[];
+  createdAt: number;
+  lastUsedAt?: number;
+}
+
+export interface RemoteMcpApprovalRequest {
+  id: string;
+  clientName: string;
+  clientId: string;
+  redirectHost: string;
+  requestedScopes: RemoteMcpScope[];
+  code: string;
+  createdAt: number;
+}
+
+export interface RemoteMcpStatus {
+  enabled: boolean;
+  listening: boolean;
+  port: number;
+  mcpUrl: string;
+  publicUrl: string;
+  publicUrlValid: boolean;
+  failure: string | null;
+  pendingApprovals: RemoteMcpApprovalRequest[];
+  grants: RemoteMcpGrantView[];
 }

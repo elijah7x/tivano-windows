@@ -2002,4 +2002,26 @@ export const ja: Record<string, string> = {
   "Friday": "金曜日",
   "Saturday": "土曜日",
   "Sunday": "日曜日",
+  "Connections": "接続",
+  "Paste your tunnel's HTTPS address": "トンネルの HTTPS アドレスをペースト",
+  "Enter an HTTPS address, or leave it empty for this computer only.":
+    "HTTPS アドレスを入力するか、空のままにしてこのコンピューターのみに制限してください。",
+  "Your tunnel's HTTPS address, forwarding to http://127.0.0.1:%d. Leave empty to allow only this computer.":
+    "http://127.0.0.1:%d に転送するトンネルの HTTPS アドレスです。空のままにすると、このコンピューターからのみアクセスできます。",
+  "Server URL": "サーバー URL",
+  "Copy server URL": "サーバー URL をコピー",
+  "Remote MCP status": "リモート MCP の状態",
+  "Listening on 127.0.0.1:%d": "127.0.0.1:%d で待機中",
+  "Remote MCP could not start. Retry after freeing the port.":
+    "リモート MCP を起動できませんでした。ポートを解放してから再試行してください。",
+  "Retry remote MCP": "リモート MCP を再試行",
+  "Revoke access": "アクセスを取り消す",
+  "Revoke all": "すべて取り消す",
+  "Full control": "フルコントロール",
+  "Read only": "読み取り専用",
+  "Last used %@": "最終使用：%@",
+  "Allow %@ to control Tivano?": "%@ に Tivano の制御を許可しますか？",
+  "Allow full control": "フルコントロールを許可",
+  "Allow read only": "読み取り専用で許可",
+  "Code: %@ · Redirects to %@": "コード：%@ · リダイレクト先 %@",
 };

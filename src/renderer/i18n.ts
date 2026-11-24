@@ -2192,6 +2192,29 @@ const zhHans: Record<string, string> = {
   "Friday": "周五",
   "Saturday": "周六",
   "Sunday": "周日",
+  // P2-25: Remote MCP under Settings > Connections.
+  "Connections": "连接",
+  "Paste your tunnel's HTTPS address": "粘贴你的隧道 HTTPS 地址",
+  "Enter an HTTPS address, or leave it empty for this computer only.":
+    "请输入 HTTPS 地址；留空则仅限本机访问。",
+  "Your tunnel's HTTPS address, forwarding to http://127.0.0.1:%d. Leave empty to allow only this computer.":
+    "你的隧道的 HTTPS 地址，转发至 http://127.0.0.1:%d。留空则仅允许本机访问。",
+  "Server URL": "服务器 URL",
+  "Copy server URL": "复制服务器 URL",
+  "Remote MCP status": "远程 MCP 状态",
+  "Listening on 127.0.0.1:%d": "正在监听 127.0.0.1:%d",
+  "Remote MCP could not start. Retry after freeing the port.":
+    "远程 MCP 无法启动。请释放端口后重试。",
+  "Retry remote MCP": "重试远程 MCP",
+  "Revoke access": "撤销授权",
+  "Revoke all": "全部撤销",
+  "Full control": "完全控制",
+  "Read only": "只读",
+  "Last used %@": "上次使用：%@",
+  "Allow %@ to control Tivano?": "允许 %@ 控制 Tivano？",
+  "Allow full control": "允许完全控制",
+  "Allow read only": "允许只读访问",
+  "Code: %@ · Redirects to %@": "验证码：%@ · 重定向至 %@",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
