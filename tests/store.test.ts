@@ -199,6 +199,29 @@ describe("store document validation", () => {
     s.close();
   });
 
+  it("persists all supported P2-49 languages and rejects unknown language values", () => {
+    for (const lang of ["zh-Hant", "ja", "ko", "fr"] as const) {
+      const root = fresh();
+      const doc = emptyStore();
+      doc.settings.language = lang;
+      writeFileSync(join(root, "store.json"), JSON.stringify(doc));
+      const s = new Store(root);
+      const res = s.open();
+      expect(res.recoveredFrom).toBeUndefined();
+      expect(res.data.settings.language).toBe(lang);
+      s.close();
+    }
+    const badRoot = fresh();
+    const badDoc = emptyStore() as unknown as { settings: { language: string } };
+    badDoc.settings.language = "de";
+    writeFileSync(join(badRoot, "store.json"), JSON.stringify(badDoc));
+    const badStore = new Store(badRoot);
+    const badRes = badStore.open();
+    expect(badRes.recoveredFrom).toBeTruthy();
+    expect(badRes.data.settings.language).toBe("en");
+    badStore.close();
+  });
+
   it("rejects a thread pointing at an unknown project", () => {
     const root = fresh();
     const doc = emptyStore();

@@ -4,7 +4,15 @@
 // valid and cover light+dark schemes.
 
 import { describe, expect, it } from "vitest";
-import { translate, translateError, translateNotice, zhHansKeys } from "../src/renderer/i18n";
+import {
+  TRANSLATED_LANGUAGES,
+  catalogKeys,
+  translate,
+  translateError,
+  translateNotice,
+  zhHansKeys,
+} from "../src/renderer/i18n";
+import { LANGUAGE_IDS, LANGUAGE_LABELS } from "../src/shared/types";
 import { THEMES } from "../src/renderer/theme";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -19,6 +27,10 @@ const fixture = JSON.parse(
   readFileSync(join(root, "tests/fixtures/zh-hans-upstream.json"), "utf8"),
 ) as { values: Record<string, string> };
 
+const p249Fixture = JSON.parse(
+  readFileSync(join(root, "tests/fixtures/p2-49-upstream.json"), "utf8"),
+) as { values: Record<string, Record<"zh-Hant" | "ja" | "ko" | "fr", string>> };
+
 describe("i18n", () => {
   it("English falls back to the source key", () => {
     expect(translate("en", "Thread list")).toBe("Thread list");
@@ -29,6 +41,49 @@ describe("i18n", () => {
     for (const k of zhHansKeys()) {
       const v = translate("zh-Hans", k);
       expect(v.length, k).toBeGreaterThan(0);
+    }
+  });
+
+  it("ships complete, non-empty translations with matching placeholders for zh-Hant, ja, ko and fr (P2-49)", () => {
+    expect(LANGUAGE_IDS).toEqual(["en", "zh-Hans", "zh-Hant", "ja", "ko", "fr"]);
+    for (const id of LANGUAGE_IDS) {
+      expect(LANGUAGE_LABELS[id].length, id).toBeGreaterThan(0);
+    }
+    const baseKeys = zhHansKeys();
+    const baseSet = new Set(baseKeys);
+    for (const lang of TRANSLATED_LANGUAGES) {
+      const keys = catalogKeys(lang);
+      expect(keys.length, lang).toBe(baseKeys.length);
+      for (const k of keys) {
+        expect(baseSet.has(k), `${lang}: extra key ${k}`).toBe(true);
+        const v = translate(lang, k);
+        expect(v.length, `${lang}: ${k}`).toBeGreaterThan(0);
+        const expectedVars = k.match(/%@|%d/g) ?? [];
+        const actualVars = v.match(/%@|%d/g) ?? [];
+        expect(actualVars, `${lang}: placeholder mismatch for ${k}`).toEqual(expectedVars);
+      }
+    }
+  });
+
+  it("keeps upstream v3.0.0 wording for shared zh-Hant, ja, ko and fr keys", () => {
+    let checked = 0;
+    for (const [k, langs] of Object.entries(p249Fixture.values)) {
+      for (const lang of ["zh-Hant", "ja", "ko", "fr"] as const) {
+        expect(translate(lang, k), `${lang}: ${k}`).toBe(langs[lang]);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(120);
+  });
+
+  it("translates notices and parameters across all four new languages", () => {
+    const en = "Hydra: C:\\Windows is a system folder, so Hank did not start.";
+    for (const lang of ["zh-Hant", "ja", "ko", "fr"] as const) {
+      const t = (k: string, ...v: string[]) => translate(lang, k, v);
+      const out = translateNotice(t, en);
+      expect(out, lang).not.toBe(en);
+      expect(out, lang).toContain("C:\\Windows");
+      expect(out, lang).toContain("Hank");
     }
   });
 
@@ -103,11 +158,13 @@ describe("theme", () => {
     expect(THEMES.find((t) => t.id === "system")!.palette.accent).toBeNull();
   });
 
-  it("every theme detail string is a localizable key with a zh-Hans value", () => {
+  it("every theme detail string is a localizable key with translations in all languages", () => {
     for (const th of THEMES) {
       expect(th.detail.length).toBeGreaterThan(0);
-      const zh = translate("zh-Hans", th.detail);
-      expect(zh, `${th.id}: ${th.detail}`).not.toBe(th.detail);
+      for (const lang of TRANSLATED_LANGUAGES) {
+        const localized = translate(lang, th.detail);
+        expect(localized, `${lang} ${th.id}: ${th.detail}`).not.toBe(th.detail);
+      }
     }
     expect(translate("zh-Hans", "Follows your Mac · Avocado")).toBe("跟随你的 Mac · 牛油果绿");
     expect(translate("zh-Hans", "Dark · Wave blue")).toBe("深色 · 浪蓝");

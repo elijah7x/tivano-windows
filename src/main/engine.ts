@@ -2907,7 +2907,7 @@ export class Engine {
 
   setSettings(patch: {
     theme?: import("../shared/types").ThemeId | undefined;
-    language?: "en" | "zh-Hans" | undefined;
+    language?: import("../shared/types").LanguageId | undefined;
     notifyOnDone?: boolean | undefined;
     chimeWhenFinished?: boolean | undefined;
     autoContinueAfterLimit?: boolean | undefined;
