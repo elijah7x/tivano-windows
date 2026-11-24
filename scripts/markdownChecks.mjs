@@ -114,6 +114,30 @@ export async function runMarkdownChecks({
     "MD-11 copy button flips to the localized copied state",
     (await msg.locator(".msg-copy").innerText()) === "Copied",
   );
+  // P2-46: the scroll wrap — not the table or the message — owns overflow,
+  // and task rows stay flush with body text (the negative margin cancels
+  // the list indent exactly).
+  verify(
+    "MD-12 table lives inside the horizontal scroll wrap",
+    (await msg.locator(".md-table-wrap > table.md-table").count()) === 1 &&
+      (await msg
+        .locator(".md-table-wrap")
+        .evaluate((el) => getComputedStyle(el).overflowX)) === "auto",
+  );
+  const flush = await msg.evaluate((root) => {
+    const p = root.querySelector("p");
+    const task = root.querySelector("li.md-task");
+    if (!p || !task) return null;
+    return {
+      body: p.getBoundingClientRect().left,
+      task: task.getBoundingClientRect().left,
+    };
+  });
+  verify(
+    "MD-13 task rows stay flush with body text",
+    flush !== null && Math.abs(flush.task - flush.body) <= 2,
+    flush,
+  );
   await page.screenshot({ path: join(outDir, "88-markdown.png") });
   let c = await boundedClose(app, proc);
   ledger.exited = c.exited;
@@ -171,7 +195,7 @@ export async function runMarkdownChecks({
   const spread =
     mutLog.length > 1 ? mutLog[mutLog.length - 1] - mutLog[0] : 0;
   verify(
-    "MD-12 long reply painted progressively, not one end-of-turn burst",
+    "MD-14 long reply painted progressively, not one end-of-turn burst",
     mutLog.length >= 5 && spread > 500,
     { mutations: mutLog.length, spreadMs: Math.round(spread) },
   );
@@ -182,7 +206,7 @@ export async function runMarkdownChecks({
   );
   const longText = await page.locator(bodySel).last().innerText();
   verify(
-    "MD-13 head and tail of the long reply both rendered",
+    "MD-15 head and tail of the long reply both rendered",
     longText.includes("LONG-REPLY-HEAD") && longText.includes("LONG-REPLY-TAIL"),
     { len: longText.length },
   );
