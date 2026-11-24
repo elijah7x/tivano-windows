@@ -33,6 +33,11 @@ const EXECUTABLE_EXTS = new Set([
   ".exe", ".bat", ".cmd", ".com", ".msi", ".msp", ".scr", ".pif",
   ".vbs", ".vbe", ".wsf", ".wsh", ".hta", ".cpl", ".msc", ".lnk",
   ".url", ".reg",
+  // Stock-Windows script/launch verbs that RUN on the plain open
+  // action: .js/.jse execute via wscript, .chm can carry shortcut
+  // payloads, and .jar/.ps1 execute wherever their runtime owns the
+  // association — a link must never reach shell.openPath with one.
+  ".js", ".jse", ".chm", ".jar", ".ps1",
 ]);
 
 /** Frozen `resolve`: a scheme-bearing URL that is not `file` opens on

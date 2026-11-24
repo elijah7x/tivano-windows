@@ -1,9 +1,12 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Safe markdown subset renderer: produces React elements directly (never
-// innerHTML), so every byte of source text is escaped by React itself. The
-// only URLs that become real anchors are http/https; script schemes, file:
-// paths, data: blobs and unknown syntax degrade to plain text.
+// innerHTML), so every byte of source text is escaped by React itself.
+// Anchors render for http/https URLs and for local-path candidates —
+// relative names, ~, drives, file:// and slash-less pseudo-schemes like
+// Foo.ts:12 (main's resolver decides whether one names a real file).
+// Dangerous schemes, data: blobs and non-http scheme:// URLs degrade to
+// plain text.
 
 import { createElement, type ReactNode } from "react";
 

@@ -248,6 +248,13 @@ describe("resolveMarkdownLinkTarget (P2-31, frozen MarkdownLinkTarget)", () => {
       abs("tools\\go.lnk"),
       abs("tools\\x.url"),
       abs("tools\\reg.reg"),
+      // Stock open verbs that RUN: .js/.jse go to wscript, .chm to
+      // hh.exe shortcut items, .jar/.ps1 wherever the association runs.
+      abs("tools\\s.js"),
+      abs("tools\\s.jse"),
+      abs("tools\\h.chm"),
+      abs("tools\\a.jar"),
+      abs("tools\\p.ps1"),
     ]) {
       expect(resolve(href, BASE, stat)).toEqual({ kind: "missing" });
     }
