@@ -2744,6 +2744,19 @@ export class Engine {
     // Turning the auto-shelve picker on applies the new window right
     // away — frozen parity, and the exemption set is re-evaluated here.
     if (patch.autoShelveDays !== undefined) this.shelveIdleProjects();
+    // Flipping the helper-panel layout Off folds every open panel back
+    // into the sidebar — like closeHelper, working turns keep running.
+    if (patch.hydraAutoOpensPanels === false) {
+      let folded = false;
+      for (const t of this.store.state.threads) {
+        if (t.isInPanel !== true) continue;
+        t.isInPanel = false;
+        t.updatedAt = Date.now();
+        folded = true;
+        this.emit({ type: "thread-updated", thread: t });
+      }
+      if (folded) this.store.update(() => {});
+    }
   }
 
   /**
@@ -6701,6 +6714,39 @@ export class Engine {
     thread.updatedAt = Date.now();
     this.store.update(() => {});
     this.emit({ type: "thread-updated", thread });
+  }
+
+  /**
+   * F25 frozen `showSubagentPanel`: opens a helper's panel beside its
+   * parent without touching its runtime. The panel shows one plain
+   * helper — any other paneled helper of the same parent returns to
+   * the sidebar, still running; the parent stays the selected chat.
+   */
+  showHelper(threadId: string): void {
+    this.assertMutable();
+    const thread = this.mustThread(threadId);
+    const parentId = thread.parentThreadId;
+    if (!parentId) throw new EngineError("thread is not a helper");
+    const now = Date.now();
+    for (const other of this.store.state.threads) {
+      if (
+        other.id !== threadId &&
+        other.parentThreadId === parentId &&
+        other.isInPanel === true &&
+        !other.hydraHead
+      ) {
+        other.isInPanel = false;
+        other.updatedAt = now;
+        this.emit({ type: "thread-updated", thread: other });
+      }
+    }
+    thread.isInPanel = true;
+    thread.updatedAt = now;
+    this.store.update((d) => {
+      d.ui.selectedThreadId = parentId;
+    });
+    this.emit({ type: "thread-updated", thread });
+    this.emit({ type: "thread-selected", threadId: parentId });
   }
 
   /**

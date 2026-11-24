@@ -261,7 +261,9 @@ export function HelperPanel(props: {
         <div className="helper-head-text">
           <span className="helper-title">{thread.title}</span>
           <span className="helper-sub">
-            {t("Helper for")} {parentTitle}
+            {thread.hydraHead
+              ? `${t("Sub-agent")} · ${parentTitle}`
+              : `${t("Helper for")} ${parentTitle}`}
           </span>
         </div>
         {busy && (
@@ -277,8 +279,8 @@ export function HelperPanel(props: {
         <button
           type="button"
           className="helper-close"
-          title={t("Move to sidebar")}
-          aria-label={t("Move to sidebar")}
+          title={thread.hydraHead ? t("Dismiss") : t("Move to sidebar")}
+          aria-label={thread.hydraHead ? t("Dismiss") : t("Move to sidebar")}
           onClick={onClose}
         >
           ×

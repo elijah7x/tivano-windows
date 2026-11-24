@@ -2,8 +2,8 @@
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F25 helper chat (frozen spawnSubagent/closeSubagent): a merge/PR link
 // hands its brief to the parent's helper — one helper per parent, a
-// busy helper queues the new brief, closing the panel interrupts a
-// running turn and drops the helper into the sidebar; the record never
+// busy helper queues the new brief, closing the panel folds the helper
+// into the sidebar while its turn keeps running; the record never
 // moves or deletes.
 
 import { mkdtempSync, rmSync } from "node:fs";

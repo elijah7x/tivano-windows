@@ -293,6 +293,28 @@ export function ChatView(props: {
     () => props.settings?.hydraAutoOpensPanels === false,
   );
   const headCount = useRef(0);
+  // Frozen HelpersWorkingRow.hidden: this chat's children at work that
+  // no visible panel shows — heads while THEIR panel is hidden (Off, or
+  // dismissed mid-run under Single/Independent), plain helpers while
+  // isInPanel is false (Off, or closed while working). Newest first.
+  const hiddenWorking = useMemo(
+    () =>
+      (props.threads ?? [])
+        .filter(
+          (x) => x.parentThreadId === threadId || x.hydraHead?.leadId === threadId,
+        )
+        .filter((h) => {
+          if (h.isArchived) return false;
+          const running =
+            h.hydraHead?.status === "running" ||
+            (h.turn !== null &&
+              ["running", "waiting-approval", "stopping"].includes(h.turn.status));
+          if (!running) return false;
+          return h.hydraHead ? hydraPanelHidden : h.isInPanel !== true;
+        })
+        .sort((a, b) => b.createdAt - a.createdAt),
+    [props.threads, threadId, hydraPanelHidden],
+  );
   // A84 (frozen StreamVeil): per-message veil bookkeeping — how much text
   // the latest flush added and the EMA of flush gaps that paces the fade.
   const veilRef = useRef(
@@ -324,7 +346,11 @@ export function ChatView(props: {
   };
   useEffect(() => {
     setHydraPanelHidden(props.settings?.hydraAutoOpensPanels === false);
-    headCount.current = 0;
+    // Seed with THIS thread's count — resetting to 0 would count the
+    // existing heads as "new" and reopen a panel the user dismissed
+    // when switching between same-count threads (frozen parity: only
+    // a genuinely new head opens the panel).
+    headCount.current = heads.length;
     setPopHeld(new Set());
     veilRef.current.clear();
     mdCoordRef.current.forEach((c) => c.dispose());
@@ -506,17 +532,27 @@ export function ChatView(props: {
       {thread &&
         !thread.hydraHead &&
         popsOn &&
+        !hydraPanelHidden &&
         heads.length > 1 &&
         heads
           .slice(1)
-          .filter((h) => !h.isArchived && !popHeld.has(h.id))
-          .map((h, i) => (
+          .map((h, i) => ({ h, i }))
+          .filter(
+            ({ h }) =>
+              h.hydraHead?.status === "running" &&
+              !h.isArchived &&
+              !popHeld.has(h.id),
+          )
+          .map(({ h, i }) => (
             <HelperPanel
               key={h.id}
               thread={h}
               parentTitle={thread.title}
               readOnly={!!props.readOnly}
               settings={props.settings}
+              size={props.settings?.helperPanelSize}
+              // Corner + cascade key off the head's roster position —
+              // surviving pops keep their spot when one is dismissed.
               initialCorner={POP_CORNERS[i % POP_CORNERS.length]}
               cascadeIndex={Math.floor(i / POP_CORNERS.length)}
               overlay
@@ -955,22 +991,28 @@ export function ChatView(props: {
             </button>
           </div>
         )}
-        {/* P2-40: with panels Off, running heads surface as a working
-            pill at the end of the chat that opens the panel. */}
-        {props.settings?.hydraAutoOpensPanels === false &&
-          hydraPanelHidden &&
-          heads.some((h) => h.hydraHead?.status === "running") &&
+        {/* P2-40/F25 (frozen HelpersWorkingRow): helpers at work with
+            no panel showing end the timeline as a pill — tapping opens
+            the hidden head panel or re-panels the folded helper. */}
+        {hiddenWorking.length > 0 &&
           (() => {
-            const running = heads.filter((h) => h.hydraHead?.status === "running");
+            const first = hiddenWorking[0]!;
             return (
               <button
                 type="button"
                 className="hydra-working-pill"
-                onClick={() => setHydraPanelHidden(false)}
+                title={t("Show the panel")}
+                onClick={() => {
+                  if (first.hydraHead) setHydraPanelHidden(false);
+                  else
+                    void callApi("threads:show-helper", { id: first.id }).catch(
+                      () => {},
+                    );
+                }}
               >
-                {running.length === 1
-                  ? t("%@ is working", running[0]?.hydraHead?.name ?? t("Sub-agent"))
-                  : t("%d sub-agents working", String(running.length))}
+                {hiddenWorking.length === 1
+                  ? t("%@ is working", first.hydraHead?.name ?? first.title)
+                  : t("%d sub-agents working", String(hiddenWorking.length))}
               </button>
             );
           })()}

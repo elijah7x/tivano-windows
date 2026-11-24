@@ -203,6 +203,7 @@ function ChoiceRow(props: {
 
 function IdentitySection(props: {
   settings: Settings;
+  providers: CatalogProvider[];
   onSave: (presets: ChimeraPreset[]) => void;
   onToggle: (next: boolean) => void;
 }): React.JSX.Element {
@@ -287,7 +288,19 @@ function IdentitySection(props: {
                       onChange={(e) => setEditing({ ...editing, specialty: e.target.value })}
                     />
                   </label>
-                  <label className="kv">
+                  {/* Frozen ChimeraPickPicker (compact form): the pick
+                   *  is model + effort; the provider rides the hover. A
+                   *  saved foreign provider degrades to Follow the lead
+                   *  at spawn (engine pick filter). */}
+                  <label
+                    className="kv"
+                    title={`${t("Provider")}: ${providerLabel(
+                      props.providers,
+                      editing.pick?.provider ??
+                        props.providers.find((p) => p.ready)?.id ??
+                        "",
+                    )}`}
+                  >
                     <span>{t("Model")}</span>
                     <input
                       value={editing.pick?.model ?? ""}
@@ -298,6 +311,23 @@ function IdentitySection(props: {
                           pick: e.target.value.trim()
                             ? { ...editing.pick, model: e.target.value.trim() }
                             : undefined,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="kv">
+                    <span>{t("Effort")}</span>
+                    <input
+                      value={editing.pick?.effort ?? ""}
+                      placeholder={t("Default")}
+                      onChange={(e) =>
+                        setEditing({
+                          ...editing,
+                          pick: e.target.value.trim()
+                            ? { ...editing.pick, effort: e.target.value.trim() }
+                            : editing.pick?.model?.trim()
+                              ? { ...editing.pick, effort: undefined }
+                              : undefined,
                         })
                       }
                     />
@@ -676,14 +706,40 @@ function PairEditor(props: {
         </label>
 
         <span className="hydra-editor-side">{t("Heads")}</span>
-        {/* P2-40: frozen sub-agent pickers show just model + effort —
-         *  the provider rides the model field's hover. A saved
-         *  workerProvider keeps its draft value; the picker stops
-         *  offering the swap (this build binds one provider anyway). */}
-        <label
-          className="wt-field"
-          title={`${t("Provider")}: ${providerLabel(providers, headsProvider)}`}
-        >
+        {/* Frozen ComboSettingsSection: the heads' Provider row offers
+         *  "Same as the lead" plus every other provider (the lead's own
+         *  is the same-as case); a swap clears the worker model/effort,
+         *  which belonged to the old provider. */}
+        <label className="wt-field">
+          <span>{t("Provider")}</span>
+          <select
+            className="model-select"
+            aria-label={t("Heads provider")}
+            value={headsElsewhere ? draft.workerProvider : ""}
+            onChange={(e) =>
+              upd((d) => {
+                const chosen =
+                  e.target.value === "" || e.target.value === d.provider
+                    ? undefined
+                    : e.target.value;
+                if (d.workerProvider === chosen) return;
+                d.workerProvider = chosen;
+                delete d.workerModel;
+                delete d.workerEffort;
+              })
+            }
+          >
+            <option value="">{t("Same as the lead")}</option>
+            {headsOptions
+              .filter((p) => p.id !== draft.provider)
+              .map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+          </select>
+        </label>
+        <label className="wt-field">
           <span>{t("Model")}</span>
           {modelSelect(
             draft.workerModel,
@@ -1110,6 +1166,7 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
 
       <IdentitySection
         settings={settings}
+        providers={providers}
         onSave={(next) => tryCall("settings:set", { chimeraPresets: next })}
         onToggle={(next) => tryCall("settings:set", { chimeraAutoDispatch: next })}
       />

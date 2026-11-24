@@ -206,6 +206,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("threads:spawn-helper", (p) =>
     ({ id: engine.spawnHelper(p.parentId, p.title, p.prompt).id }));
   handle("threads:close-helper", (p) => engine.closeHelper(p.id));
+  handle("threads:show-helper", (p) => engine.showHelper(p.id));
   handle("threads:revert", (p) => engine.revertTurn(p.threadId, p.turnId));
   handle("threads:revert-preview", (p) => engine.revertPreview(p.threadId, p.turnId));
   handle("threads:resend", (p) => engine.resendTurn(p.threadId, p.turnId, p.text));

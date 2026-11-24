@@ -1202,12 +1202,6 @@ const zhHans: Record<string, string> = {
   "Progress": "进度",
   "Every step": "每一步",
   "The head's progress bar, or each of its steps as it goes.": "显示子智能体的进度条，或其执行的每一步。",
-  "Heads' panels": "子智能体面板布局",
-  "One panel": "一个面板",
-  "A panel each": "各自面板",
-  "Each head after the first gets a panel of its own beside the chat while there is room, left and right until each side is full.":
-    "除第一个外，每个子智能体在空间允许时都会在对话旁获得独立面板，先左后右，直到两侧排满。",
-  "One panel over the chat lists every head.": "对话上方用一个面板列出所有子智能体。",
   "Lower the default reasoning effort for heads": "降低子智能体的默认推理强度",
   "Effort set in a pair is unaffected. When no effort is specified and the head uses the same provider as the lead, the head stays at the standard effort (usually medium); if the lead uses a lower effort, the head inherits it.":
     "搭配方案中指定的推理强度不受影响。未指定推理强度、且子智能体与主智能体使用同一服务商时，子智能体使用常规推理强度（通常为“中”）；若主智能体使用更低的推理强度，子智能体则沿用。",

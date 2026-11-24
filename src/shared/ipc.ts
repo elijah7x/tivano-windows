@@ -188,6 +188,7 @@ export const REQUEST_CHANNELS = [
   "threads:select",
   "threads:spawn-helper",
   "threads:close-helper",
+  "threads:show-helper",
   "threads:rename",
   "threads:delete",
   "threads:delete-archived",
@@ -369,6 +370,7 @@ export const requestValidators = {
     prompt: vNonEmptyString(8000),
   }),
   "threads:close-helper": vObject({ id: vId }),
+  "threads:show-helper": vObject({ id: vId }),
   "threads:rename": vObject({ id: vId, title: vNonEmptyString(200) }),
   "threads:delete": vObject({ id: vId }),
   // F02: frozen deleteArchivedThreads(ids:) — the renderer sends the set
