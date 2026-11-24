@@ -621,6 +621,10 @@ const vSettings = vObject({
   // drawer top edge (140–760), frozen SidebarLayout/terminalHeight.
   sidebarWidth: vOptional(vNumber(210, 440)),
   terminalHeight: vOptional(vNumber(140, 760)),
+  // P2-55: version tracking for Settings > Version "What's new".
+  whatsNewInstalledVersion: vOptional(vNonEmptyString(80)),
+  whatsNewPreviousVersion: vOptional(vNonEmptyString(80)),
+  whatsNewSeenVersion: vOptional(vNonEmptyString(80)),
 });
 
 // F05 recent-slash-commands map: provider-keyed, names bounded to the

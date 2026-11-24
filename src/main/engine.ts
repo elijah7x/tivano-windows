@@ -19,6 +19,7 @@ import { probeForgeClis, type ForgeCliStatus } from "./forgeProbe";
 import { antiSlopInstructions } from "./antiSlop";
 import { builtinSlashCommands } from "../shared/slashCommands";
 import { clampFontSize } from "../shared/typeScale";
+import { buildWhatsNewInfo, recordWhatsNewLaunch } from "../shared/whatsNew";
 import {
   canSkipHydraMergeRecovery,
   clampedHydraCap,
@@ -130,6 +131,14 @@ const MAX_MESSAGE_CHARS = 256 * 1024;
 /** v2.2.34 title cadence — one user message == one completed turn sent. */
 function countUserTurns(thread: ChatThread): number {
   return thread.messages.filter((m) => m.role === "user").length;
+}
+
+function readBundledChangelog(): string | undefined {
+  try {
+    return readFileSync(join(__dirname, "..", "..", "CHANGELOG.md"), "utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 function boundedText(text: string): string {
@@ -357,15 +366,37 @@ export class Engine {
   private readonly threadAccessOrder = new Map<string, number>();
   private accessTick = 0;
 
+  private readonly changelogText: string | undefined;
+
   constructor(
     private readonly store: Store,
     private readonly provider: ProviderAdapter = new MockProvider(),
     private readonly dataRoot: string = store.root,
     private readonly appVersion: string = "0.1.0",
     private readonly paths?: ProjectRuntimePaths,
+    changelogMarkdown?: string,
   ) {
     this.tokenLedger = new TokenLedger(this.dataRoot);
+    this.changelogText =
+      changelogMarkdown !== undefined ? changelogMarkdown : readBundledChangelog();
+    this.initWhatsNewLaunch();
     this.armShelveSweep();
+  }
+
+  private initWhatsNewLaunch(): void {
+    const isExistingUser =
+      this.store.hadStoreFileOnOpen ||
+      this.store.state.projects.length > 0 ||
+      this.store.state.threads.length > 0;
+    const probe: import("../shared/types").Settings = { ...this.store.state.settings };
+    if (!recordWhatsNewLaunch(probe, this.appVersion, isExistingUser)) return;
+    if (this.store.ownsWrites) {
+      this.store.update((d) => {
+        recordWhatsNewLaunch(d.settings, this.appVersion, isExistingUser);
+      });
+    } else {
+      recordWhatsNewLaunch(this.store.state.settings, this.appVersion, isExistingUser);
+    }
   }
 
   private touchThreadAccess(threadId: string): void {
@@ -611,6 +642,11 @@ export class Engine {
 
   get info(): AppInfo {
     const desc = this.provider.descriptor;
+    const whatsNew = buildWhatsNewInfo(
+      this.changelogText,
+      this.appVersion,
+      this.store.state.settings.whatsNewPreviousVersion,
+    );
     return {
       appVersion: this.appVersion,
       baselineTag: "v3.0.0",
@@ -627,6 +663,7 @@ export class Engine {
       ...(desc.runtimeInfo ? { syntheticRuntime: desc.runtimeInfo } : {}),
       ...(this.codexInfo ? { codex: this.codexInfo } : {}),
       ...(this.recoveredFrom ? { recoveredFrom: this.recoveredFrom } : {}),
+      ...(whatsNew ? { whatsNew } : {}),
       ...(typeof TIVANO_TERMINAL_CANDIDATE !== "undefined" &&
           TIVANO_TERMINAL_CANDIDATE === true
         ? { terminalCandidate: true as const }
@@ -2930,6 +2967,7 @@ export class Engine {
     helperPanelSize?: { width: number; height: number } | undefined;
     sidebarWidth?: number | undefined;
     terminalHeight?: number | undefined;
+    whatsNewSeenVersion?: string | undefined;
   }): void {
     this.assertMutable();
     this.store.update((d) => {
@@ -3119,6 +3157,9 @@ export class Engine {
           760,
           Math.max(140, Math.round(patch.terminalHeight)),
         );
+      }
+      if (patch.whatsNewSeenVersion !== undefined) {
+        d.settings.whatsNewSeenVersion = patch.whatsNewSeenVersion;
       }
     });
     this.emit({ type: "settings-changed", settings: this.store.state.settings });

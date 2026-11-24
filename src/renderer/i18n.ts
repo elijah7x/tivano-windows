@@ -1359,6 +1359,28 @@ const zhHans: Record<string, string> = {
   "Shown in the picker and the composer": "显示在选择器与输入框中",
   "Finder": "Finder",
   "Unread": "未读",
+
+  // P2-55 Settings > Version What's new (upstream Localizable.xcstrings).
+  "Version information": "版本信息",
+  "Version %@": "版本 %@",
+  "Updated to %@": "已更新到 %@",
+  "What's new in %@": "%@ 更新内容",
+  "View": "查看",
+  "New features": "新功能",
+  "Bug fixes": "问题修复",
+  "Refinements": "优化改进",
+  "%d versions": "%d 个版本",
+  "1 new feature": "1 项新功能",
+  "%d new features": "%d 项新功能",
+  "1 fix": "1 项修复",
+  "%d fixes": "%d 项修复",
+  "1 refinement": "1 项优化",
+  "%d refinements": "%d 项优化",
+  "Includes %d versions since %@": "包含 %d 个版本（自 %@ 起）",
+  "All release notes": "全部发行说明",
+  "View all releases on GitHub": "在 GitHub 上查看所有版本",
+  "Expanded": "已展开",
+  "Collapsed": "已收起",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {

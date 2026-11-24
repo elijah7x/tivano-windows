@@ -360,6 +360,27 @@ export interface Settings {
   /** A81: top-edge-dragged terminal drawer height — absent = the
    *  frozen 260; bounds 140–760. */
   terminalHeight?: number;
+  /** P2-55: version tracking for Settings > Version "What's new" (mirrors
+   *  upstream WhatsNew Keys: installedVersion / previousVersion / seenVersion). */
+  whatsNewInstalledVersion?: string;
+  whatsNewPreviousVersion?: string;
+  whatsNewSeenVersion?: string;
+}
+
+export interface WhatsNewDigest {
+  displayVersion: string;
+  versionCount: number;
+  oldestIncludedVersion?: string;
+  categories: {
+    newFeatures: string[];
+    bugFixes: string[];
+    refinements: string[];
+  };
+}
+
+export interface WhatsNewInfo {
+  en: WhatsNewDigest;
+  "zh-Hans": WhatsNewDigest;
 }
 
 export type TaskSleepMode = "off" | "system" | "display";
@@ -1095,6 +1116,9 @@ export interface AppInfo {
    *  (and revealed) by the Source-control settings rows. Main-computed;
    *  the renderer can display it but never writes to it directly. */
   worktreesDir: string;
+  /** P2-55: release notes since the previous installed version, read from
+   *  CHANGELOG.md in main for en + zh-Hans. */
+  whatsNew?: WhatsNewInfo;
 }
 
 /** Per-turn checkpoint record as the renderer may see it — ledger

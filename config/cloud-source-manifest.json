@@ -8,6 +8,7 @@
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "TRADEMARK.md",
+    "CHANGELOG.md",
     "config/windows-dev-builder.cjs",
     "scripts/build.mjs",
     "scripts/closeBound.mjs",

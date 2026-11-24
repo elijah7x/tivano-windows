@@ -21,10 +21,10 @@ import { createHash } from 'node:crypto';
 const HELPER_CONTENT='fixture-helper';
 const HELPER_SHA=createHash('sha256').update(HELPER_CONTENT).digest('hex');
 const HELPER_MANIFEST=JSON.stringify({schema:'tivano-windows-job-helper-manifest/1',file:'tivano-job-helper.exe',sha256:HELPER_SHA,bytes:HELPER_CONTENT.length,specVersion:1,helperVersion:'1.1.0'});
-async function fixture(extra?:string,opts?:{helper?:'valid'|'missing'|'tampered'}){
+async function fixture(extra?:string,opts?:{helper?:'valid'|'missing'|'tampered';omitAsarEntry?:string}){
  const base=mkdtempSync(join(tmpdir(),'tivano-asar-probe-'));dirs.push(base);
  const app=join(base,'app'),out=join(base,'out'),unpacked=join(out,'win-unpacked');mkdirSync(app);mkdirSync(unpacked,{recursive:true});
- for(const p of REQUIRED_ASAR_ENTRIES){if(p==='dist/job-helper-manifest.json')write(app,p,HELPER_MANIFEST);else write(app,p);}
+ for(const p of REQUIRED_ASAR_ENTRIES){if(p===opts?.omitAsarEntry)continue;if(p==='dist/job-helper-manifest.json')write(app,p,HELPER_MANIFEST);else write(app,p);}
  if(extra)write(app,extra);
  write(unpacked,'Tivano Windows Dev.exe');write(out,'Tivano-Windows-Dev-test-setup.exe');
  for(const p of REQUIRED_WIN_PTY_FILES)write(unpacked,'resources/app.asar.unpacked/'+p);
@@ -72,6 +72,11 @@ it('reads the exact UTF-8 BOM format emitted by Windows PowerShell 5.1',()=>{
 it('rejects a second executable hidden inside ASAR',async()=>{
  const {out}=await fixture('dist/job-helper/tivano-job-helper.exe');
  expect(inspectBuiltOutput(out,process.cwd()).problems.join(' ')).toMatch(/helper.*asar/i);
+});
+
+it('rejects an ASAR missing CHANGELOG.md',async()=>{
+ const {out}=await fixture(undefined,{omitAsarEntry:'CHANGELOG.md'});
+ expect(inspectBuiltOutput(out,process.cwd()).problems.join(' ')).toMatch(/missing required entry: CHANGELOG\.md/);
 });
 
 it('Windows smoke refuses executor failure and mismatched non-repository UI',()=>{
