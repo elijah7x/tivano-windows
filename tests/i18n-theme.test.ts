@@ -321,6 +321,17 @@ describe("i18n", () => {
     expect(translateNotice(t, "question request questions is empty — declined")).toBe(
       "提问请求questions is empty — 已拒绝",
     );
+    expect(
+      translateNotice(
+        t,
+        "⚠ Automatic continue failed: CODEX_CONNECTION_CLOSED: process closed (code 1, signal null) — stderr tail: line1\nline2",
+      ),
+    ).toBe(
+      "⚠ 自动继续失败：Codex 连接已关闭: 进程已关闭（退出码 1，信号 null）— stderr 末尾：line1\nline2",
+    );
+    expect(
+      translateNotice(t, "Codex error (retrying): transient failure\nline 2"),
+    ).toBe("Codex 错误（正在重试）：transient failure\nline 2");
   });
 
   it("translateError preserves colon-containing catalog keys and translates Codex/openIn errors", () => {
@@ -362,6 +373,14 @@ describe("i18n", () => {
     ).toContain("TIVANO_PROVIDER=mock");
     expect(translateError(t, "editor is not available: terminal")).toBe("编辑器不可用：terminal");
     expect(translateError(t, "could not open Terminal: missing")).toBe("无法打开 终端：missing");
+    expect(
+      translateError(
+        t,
+        "CODEX_CONNECTION_CLOSED: process closed (code 1, signal SIGTERM) — stderr tail: err line 1\nerr line 2",
+      ),
+    ).toBe(
+      "Codex 连接已关闭: 进程已关闭（退出码 1，信号 SIGTERM）— stderr 末尾：err line 1\nerr line 2",
+    );
     expect(translateError(t, "UNLISTED_THING: happened")).toBe("UNLISTED_THING: happened");
   });
 

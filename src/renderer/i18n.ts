@@ -2277,7 +2277,7 @@ function buildErrorTemplates(): { key: string; re: RegExp }[] {
     )
     .map((key) => ({
       key,
-      re: new RegExp("^" + key.split(/%@|%d/).map(escapeRe).join("(.+?)") + "$"),
+      re: new RegExp("^" + key.split(/%@|%d/).map(escapeRe).join("(.+?)") + "$", "s"),
     }));
 }
 
@@ -2352,6 +2352,14 @@ const EXTRA_NOTICE_KEYS = [
 
 const PATCH_LANDING_KEY =
   "%@'s work did not land and was kept as a patch.\n%@\n\n%@Apply it with `git apply --3way %@` and settle what conflicts.";
+const SINGLE_LINE_DETAIL_KEYS = new Set<string>([
+  "cwd: %@",
+  "requested write root: %@",
+  "read: %@",
+  "write: %@",
+  "deny: %@",
+  "glob scan depth %@",
+]);
 
 function buildNoticeTemplates(): { key: string; re: RegExp }[] {
   const keys = new Set(
@@ -2384,7 +2392,7 @@ function buildNoticeTemplates(): { key: string; re: RegExp }[] {
           re: new RegExp(`^${WEEKDAY_PATTERN} at (.+?)$`),
         };
       }
-      const flags = key.includes("\n") ? "s" : "";
+      const flags = SINGLE_LINE_DETAIL_KEYS.has(key) ? "" : "s";
       return {
         key,
         re: new RegExp(
