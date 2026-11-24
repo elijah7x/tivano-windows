@@ -77,7 +77,7 @@ function LimitWaitRow({ threadId, resumeAt }: { threadId: string; resumeAt: numb
   return (
     <div ref={rowRef} className="limit-wait" role="status">
       <span className="limit-wait-text">
-        {t("Usage limit reached — continuing at")} {when}
+        {t("Usage limit reached — continuing at")} {translateNotice(t, when)}
         {seconds > 0 ? ` (${seconds}s)` : ""}
       </span>
       <button
@@ -798,7 +798,9 @@ export function ChatView(props: {
                       <span className="quote-chip-text">{quoteExcerpt(q.text)}</span>
                     </span>
                   ))}
-                  {peeled?.body ?? m.content}
+                  {m.role === "system"
+                    ? translateNotice(t, peeled?.body ?? m.content)
+                    : (peeled?.body ?? m.content)}
                 </div>
               )}
               {m.role === "user" && m.attachments && m.attachments.length > 0 && (

@@ -52,7 +52,7 @@ import {
 } from "./codexRuntimeConfig";
 import type { ProviderAdapter, WorkspaceGrant } from "./provider";
 import type { SpawnSpec } from "./stdioTransport";
-import type { CodexInfo, CodexSetupState, LanguageId } from "../shared/types";
+import type { CodexInfo, CodexSetupState } from "../shared/types";
 import { ProjectRuntimePaths } from "./projectRuntimePaths";
 import { DirectoryOpener } from "./openProjectDirectory";
 import { AttachmentService } from "./attachmentService";
@@ -84,62 +84,7 @@ import { CheckpointCoordinator } from "./checkpointTurns";
 
 import { resolveDataRoot } from "./appDataPaths";
 import { probeAndAttestPackagedJobHelper, disposeJobHelperProbes } from "./packagedJobHelper";
-
-const MAIN_STRINGS = {
-  "Tivano Windows Dev — Terminal validation candidate": {
-    "zh-Hans": "Tivano Windows Dev — 终端验证候选版",
-    "zh-Hant": "Tivano Windows Dev — 終端機驗證候選版",
-    ja: "Tivano Windows Dev — ターミナル検証候補版",
-    ko: "Tivano Windows Dev — 터미널 검증 후보 버전",
-    fr: "Tivano Windows Dev — version candidate de validation du terminal",
-  },
-  "Open folder": {
-    "zh-Hans": "打开文件夹",
-    "zh-Hant": "開啟資料夾",
-    ja: "フォルダーを開く",
-    ko: "폴더 열기",
-    fr: "Ouvrir un dossier",
-  },
-  "Choose Codex executable": {
-    "zh-Hans": "选择 Codex 程序",
-    "zh-Hant": "選擇 Codex 執行檔",
-    ja: "Codex 実行ファイルを選択",
-    ko: "Codex 실행 파일 선택",
-    fr: "Choisir l’exécutable Codex",
-  },
-  "Choose a path": {
-    "zh-Hans": "选择路径",
-    "zh-Hant": "選擇路徑",
-    ja: "パスを選択",
-    ko: "경로 선택",
-    fr: "Choisir un chemin",
-  },
-  Attach: {
-    "zh-Hans": "添加附件",
-    "zh-Hant": "加入附件",
-    ja: "ファイルを添付",
-    ko: "파일 첨부",
-    fr: "Joindre",
-  },
-  "Choose picture": {
-    "zh-Hans": "选择图片",
-    "zh-Hant": "選擇圖片",
-    ja: "画像を選択",
-    ko: "사진 선택",
-    fr: "Choisir une image",
-  },
-  Images: {
-    "zh-Hans": "图片",
-    "zh-Hant": "圖片",
-    ja: "画像",
-    ko: "이미지",
-    fr: "Images",
-  },
-} as const satisfies Record<string, Record<Exclude<LanguageId, "en">, string>>;
-
-function mainT(lang: LanguageId, key: keyof typeof MAIN_STRINGS): string {
-  return lang === "en" ? key : MAIN_STRINGS[key][lang];
-}
+import { mainT } from "./mainStrings";
 
 function resolveDataRootArg(): string {
   return resolveDataRoot({
@@ -481,11 +426,12 @@ const coordinator = new CloseCoordinator({
     if (process.env.TIVANO_TEST_ASK === "keep") return "keep";
     if (process.env.TIVANO_TEST_ASK === "retry") return "retry";
     if (!win || win.isDestroyed()) return "keep";
+    const lang = store.state.settings.language ?? "en";
     const r = await dialog.showMessageBox(win, {
       type: "error",
-      message: "Could not finish closing cleanly",
-      detail: `${failure}\n\nNothing was deleted; the data file and child processes were left untouched where their state was uncertain.`,
-      buttons: ["Retry", "Keep open (read-only)"],
+      message: mainT(lang, "Could not finish closing cleanly"),
+      detail: `${failure}\n\n${mainT(lang, "Nothing was deleted; the data file and child processes were left untouched where their state was uncertain.")}`,
+      buttons: [mainT(lang, "Retry"), mainT(lang, "Keep open (read-only)")],
       defaultId: 0,
       cancelId: 1,
     });

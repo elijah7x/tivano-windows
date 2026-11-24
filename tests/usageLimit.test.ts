@@ -136,6 +136,12 @@ describe("F20 UsageLimitSignal parsing", () => {
     tomorrow.setDate(tomorrow.getDate() + 1);
     tomorrow.setHours(9, 0, 0, 0);
     expect(formatReset(tomorrow.getTime())).toContain("tomorrow at");
+    const inThreeDays = new Date();
+    inThreeDays.setDate(inThreeDays.getDate() + 3);
+    inThreeDays.setHours(9, 0, 0, 0);
+    expect(formatReset(inThreeDays.getTime())).toMatch(
+      /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday) at .+$/,
+    );
     const later = new Date();
     later.setDate(later.getDate() + 30);
     expect(formatReset(later.getTime())).not.toContain("tomorrow");

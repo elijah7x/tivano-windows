@@ -11,7 +11,9 @@ import { isIP } from "node:net";
 import { join } from "node:path";
 import type { Engine } from "./engine";
 import { ControlFailure, type LocalControlService } from "./localControl";
+import { mainT } from "./mainStrings";
 import type {
+  LanguageId,
   RemoteMcpApprovalRequest,
   RemoteMcpGrantView,
   RemoteMcpScope,
@@ -89,9 +91,9 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function htmlPage(title: string, content: string, refresh = false): HttpReply {
+function htmlPage(title: string, content: string, refresh = false, lang: LanguageId = "en"): HttpReply {
   const body =
-    `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+    `<!doctype html><html lang="${escapeHtml(lang)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
     (refresh ? `<meta http-equiv="refresh" content="2">` : "") +
     `<title>${escapeHtml(title)}</title><style>` +
     `:root{color-scheme:light dark}body{font-family:system-ui,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#fafafa;color:#202020}main{max-width:30rem;padding:2rem;text-align:center}h1{font-size:1.6rem}p{line-height:1.6}strong{display:block;font-size:2.4rem;letter-spacing:.15em;margin:1.5rem 0}@media(prefers-color-scheme:dark){body{background:#181818;color:#eee}}` +
@@ -256,6 +258,7 @@ export class RemoteMcpAuthority {
   constructor(
     dataRoot: string,
     private readonly onChanged: () => void,
+    private readonly getLanguage: () => LanguageId = () => "en",
   ) {
     this.statePath = join(dataRoot, "remote-mcp.json");
     this.state = this.loadState();
@@ -479,10 +482,13 @@ export class RemoteMcpAuthority {
     if (target !== null && target !== this.resourceUrl) return errRedir("invalid_target");
     this.expirePending();
     if ([...this.pending.values()].filter((p) => !p.decision).length >= MAX_PENDING_APPROVALS) {
+      const lang = this.getLanguage();
       return {
         ...htmlPage(
-          "Too many requests waiting",
-          "<p>Approve or deny the requests already waiting in Tivano, then try again.</p>",
+          mainT(lang, "Too many requests waiting"),
+          `<p>${escapeHtml(mainT(lang, "Approve or deny the requests already waiting in Tivano, then try again."))}</p>`,
+          false,
+          lang,
         ),
         status: 429,
       };
@@ -531,19 +537,34 @@ export class RemoteMcpAuthority {
     this.expirePending();
     const id = req.query.get("request");
     const entry = id ? this.pending.get(id) : undefined;
+    const lang = this.getLanguage();
     if (!entry) {
       return {
-        ...htmlPage("Request expired", "<p>Start the connection again from your agent.</p>"),
+        ...htmlPage(
+          mainT(lang, "Request expired"),
+          `<p>${escapeHtml(mainT(lang, "Start the connection again from your agent."))}</p>`,
+          false,
+          lang,
+        ),
         status: 404,
       };
     }
     if (!entry.decision) {
-      const title = "Approve on your computer";
-      const msg = `Tivano is waiting for you to approve ${entry.client.name} on your computer. Check that Tivano shows this code:`;
+      const title = mainT(lang, "Approve on your computer");
+      const msg = mainT(
+        lang,
+        "Tivano is waiting for you to approve %@ on your computer. Check that Tivano shows this code:",
+        [entry.client.name],
+      );
+      const footer = mainT(
+        lang,
+        "This page refreshes by itself. You can close it after your agent says it is connected.",
+      );
       return htmlPage(
         title,
-        `<p>${escapeHtml(msg)}</p><strong>${escapeHtml(entry.approval.code)}</strong><p>This page refreshes by itself. You can close it after your agent says it is connected.</p>`,
+        `<p>${escapeHtml(msg)}</p><strong>${escapeHtml(entry.approval.code)}</strong><p>${escapeHtml(footer)}</p>`,
         true,
+        lang,
       );
     }
     this.pending.delete(id!);
@@ -751,10 +772,13 @@ export class RemoteMcpAuthority {
   }
 
   private invalidPage(): HttpReply {
+    const lang = this.getLanguage();
     return {
       ...htmlPage(
-        "Connection request not valid",
-        "<p>This client or its return address is not registered with Tivano.</p>",
+        mainT(lang, "Connection request not valid"),
+        `<p>${escapeHtml(mainT(lang, "This client or its return address is not registered with Tivano."))}</p>`,
+        false,
+        lang,
       ),
       status: 400,
     };
@@ -1238,7 +1262,11 @@ export class RemoteMcpService {
       onChanged?: (status: RemoteMcpStatus) => void;
     },
   ) {
-    this.authority = new RemoteMcpAuthority(opts.dataRoot, () => this.notify());
+    this.authority = new RemoteMcpAuthority(
+      opts.dataRoot,
+      () => this.notify(),
+      () => this.opts.engine.snapshot().settings.language ?? "en",
+    );
     this.endpoint = new RemoteMcpEndpoint(opts.localControl, opts.appVersion);
   }
 

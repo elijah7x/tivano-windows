@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import type { BranchListResult, BranchOpResult, GitBranchRow } from "../../shared/types";
 import { callApi } from "../client";
 import { useT } from "../locale";
+import { translateError } from "../i18n";
 
 type Naming = "none" | "create" | "rename";
 
@@ -102,7 +103,7 @@ export function BranchMenu(props: {
       // Frozen: an empty/unchanged name closes quietly, no alert.
       setNote(res.reason === "" ? null : rejectionText(t, res.reason));
     } else if (res.kind === "unavailable") {
-      setNote(`${title}: ${res.reason}`);
+      setNote(`${title}: ${translateError(t, res.reason)}`);
     }
   };
 
@@ -116,7 +117,7 @@ export function BranchMenu(props: {
           refresh();
         } else fail(t("Could not switch branch"), res);
       })
-      .catch((e) => setNote(`${t("Could not switch branch")}: ${e instanceof Error ? e.message : e}`));
+      .catch((e) => setNote(`${t("Could not switch branch")}: ${translateError(t, e instanceof Error ? e.message : String(e))}`));
   };
 
   const doCreate = (): void => {
@@ -130,7 +131,7 @@ export function BranchMenu(props: {
           refresh();
         } else fail(t("Could not create branch"), res);
       })
-      .catch((e) => setNote(`${t("Could not create branch")}: ${e instanceof Error ? e.message : e}`));
+      .catch((e) => setNote(`${t("Could not create branch")}: ${translateError(t, e instanceof Error ? e.message : String(e))}`));
   };
 
   const doRename = (confirmedPushed: boolean, name: string): void => {
@@ -147,7 +148,7 @@ export function BranchMenu(props: {
           setPushed({ name: res.name, upstream: res.upstream });
         } else fail(t("Could not rename branch"), res);
       })
-      .catch((e) => setNote(`${t("Could not rename branch")}: ${e instanceof Error ? e.message : e}`));
+      .catch((e) => setNote(`${t("Could not rename branch")}: ${translateError(t, e instanceof Error ? e.message : String(e))}`));
   };
 
   return (
