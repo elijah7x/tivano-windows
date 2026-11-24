@@ -4918,28 +4918,46 @@ html[data-performance] .sweep-dots { display: none; }
  * blanket cursor:text would paint the I-beam over whole boxes. */
 .timeline .msg-body,
 .timeline .notice-text,
-.timeline .status-line { cursor: auto; }
+.timeline .status-line,
+.timeline .tool-detail,
+.timeline .plan-body,
+.timeline .work-thinking,
+.timeline .hr-body,
+.git-patch,
+.git-diff,
+.ckpt-diff-wrap { cursor: auto; }
 .timeline .msg-body :where(button) { cursor: default; }
 .timeline a[href] { cursor: pointer; }
 .timeline button,
 .timeline .turn-steps > summary,
 .chat-head,
 .stave-bar,
+.sidebar,
 .approval,
 .approval.question,
-.git-patch,
-.git-diff,
-.ckpt-diff-wrap,
 .suggest-menu,
 .git-menu,
-.row-menu,
+.git-panel,
+.term-head,
 .ctx-pop,
 .cook-pop,
-.hb-pop,
 .attach-pop,
+.link-pop,
+.openin-menu,
+.icon-pop,
+.info-pop,
+.hydra-brief-pop,
+.hydra-report-pop,
+.hydra-mark-pop,
+.thread-changes-pop,
+.palette,
 .modal,
 .helper-panel,
 .hydra-panel { cursor: default; }
+/* Popover bodies that render markdown text resolve the cursor per hit
+ * the same way — the arrow stays on their chrome. */
+.hydra-brief-pop .hb-pop-body,
+.hydra-report-pop .hr-body { cursor: auto; }
 /* The helper timeline's message text resolves per hit the same way;
  * its buttons carve back out. */
 .helper-timeline .md,
