@@ -8,7 +8,7 @@
 // (0 same, 1 differs, >1 error); its `a/`+`b/` prefixes are the
 // cosmetic difference, and a real empty file stands in for /dev/null.
 
-import { promises as fsp, lstatSync, realpathSync } from "node:fs";
+import { constants, promises as fsp, lstatSync, realpathSync } from "node:fs";
 import {
   basename,
   dirname,
@@ -242,11 +242,16 @@ export async function copyHydraOwnedFiles(
       }
       try {
         await fsp.mkdir(dirname(destination), { recursive: true });
-        await fsp.copyFile(source, destination);
+        // Frozen copyItem refuses to overwrite — an earlier round's
+        // capture stays the original the report diffs and restores,
+        // so an overlapping continuation path is a no-op, not a
+        // clobber or a second backedUpFiles entry.
+        await fsp.copyFile(source, destination, constants.COPYFILE_EXCL);
         total += st.size;
         copied.push(relative);
-      } catch {
-        skipped.push(relative);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException)?.code !== "EEXIST")
+          skipped.push(relative);
       }
       return;
     }

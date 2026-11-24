@@ -372,6 +372,9 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     // case, so a lower-cased spelling must still bind the same project
     // and grant — not re-register a mismatched one.
     const { engine, projectId } = rig();
+    // The stub's worktreeCheck passes and worktreeAdd fails "stub" —
+    // reaching it proves the project's directoryStatusFor gate passed.
+    engine.attachWorktrees(fakeWorktreesStub());
     const dir = engine
       .snapshot()
       .projects.find((p) => p.id === projectId)!.directory!;
@@ -391,7 +394,40 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
         (p) => p.directory !== undefined && norm(p.directory) === norm(dir),
       );
     expect(matches.length).toBe(1);
-    expect(engine.threadDirectory(head.id)).toBe(dir);
+    // The LEAD's directory resolves through directoryStatusFor — a
+    // grant/directory spelling split would come back null here, and the
+    // same gate must let a worktree bind past project-directory-unavailable.
+    expect(engine.threadDirectory(lead.id)).toBe(dir);
+    const wt = await engine.createThreadWorktree(lead.id);
+    expect(wt.kind === "unavailable" ? wt.reason : "created").not.toBe(
+      "project-directory-unavailable",
+    );
+  }, 20_000);
+
+  // Win32-only: Acceptance (2) — the lost-grant re-attach branch keeps
+  // the project's stored spelling, not the typed letter case.
+  it.skipIf(process.platform !== "win32")(
+    "a listed project that lost its grant re-attaches on the stored spelling", async () => {
+    const { engine, projectId, paths } = rig();
+    const dir = engine
+      .snapshot()
+      .projects.find((p) => p.id === projectId)!.directory!;
+    const lowered = dir.replace(/^([A-Za-z]):/, (m) => m.toLowerCase());
+    expect(lowered).not.toBe(dir);
+    // Lose the grant while the project stays listed — the route must
+    // re-attach it, like openUserDirectory does.
+    paths.revoke(projectId);
+    expect(paths.findProjectByDirectory(dir)).toBeUndefined();
+    const lead = engine.createThread(projectId, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]${lowered}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe("completed");
+    // Re-attached against the stored spelling — case-folded lookup
+    // finds the project again and the bound directory reports it.
+    expect(paths.findProjectByDirectory(dir)).toBe(projectId);
+    expect(engine.threadDirectory(lead.id)).toBe(dir);
   }, 20_000);
 
   it("a routed folder whose repo top is protected is still refused", async () => {
