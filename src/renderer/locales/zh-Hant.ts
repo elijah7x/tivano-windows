@@ -1262,6 +1262,8 @@ export const zhHant: Record<string, string> = {
   "Codex did not confirm the requested conversation rollback.": "Codex 未確認所要求的對話回溯。",
   "Codex did not create a conversation at the revert point.": "Codex 未在回復點建立對話。",
   "Codex did not confirm the reverted conversation history.": "Codex 未確認已還原的對話歷史紀錄。",
+  "The original Codex conversation is unavailable.": "原始的 Codex 對話無法使用。",
+  "The selected message has no Codex turn ID, so its history cannot be safely reverted.": "所選訊息沒有 Codex 回合 ID，因此無法安全地還原其歷史紀錄。",
   "permissions": "權限",
   "The sub-agent is no longer eligible for archiving.": "此子代理已不符合封存條件。",
   "archived": "已封存",
