@@ -169,9 +169,6 @@ export async function runFinishSignalChecks({
   );
 
   // CH-05: notification silent flag follows the chime. Unseen thread B.
-  await page.evaluate(() =>
-    window.tivano.invoke("settings:set", { notifyOnDone: true }),
-  );
   await sleep(150);
   const n0 = (await notes(page)).length;
   await sendAndWait(page, tidB);
@@ -286,7 +283,7 @@ export async function runFinishSignalChecks({
   await page.screenshot({ path: `${outDir}/chime-setting-zh.png` });
   await page.keyboard.press("Escape");
   await page.evaluate(() =>
-    window.tivano.invoke("settings:set", { language: "en", notifyOnDone: false }),
+    window.tivano.invoke("settings:set", { language: "en" }),
   );
 
   const c = await boundedClose(app, proc);

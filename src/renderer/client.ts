@@ -18,9 +18,9 @@ import { clearMarkdownCache } from "./markdown";
 
 /** F28: OS notification on a turn's completion — only for an UNSEEN
  *  result: the finished thread isn't the one on screen, or the window
- *  isn't focused. Opt-in via settings; never fires while the user is
- *  watching the thread complete. `silent` when the finish chime already
- *  sounded (frozen: the chime replaces the notification's own sound). */
+ *  isn't focused. Never fires while the user is watching the thread
+ *  complete. `silent` when the finish chime already sounded (frozen: the
+ *  chime replaces the notification's own sound). */
 const NOTIFY_BODY = {
   done: "Turn finished",
   stopped: "Stopped.",
@@ -34,7 +34,7 @@ function maybeNotifyDone(
   silent: boolean,
 ): void {
   const s = store.snapshot;
-  if (!s || s.settings.notifyOnDone !== true) return;
+  if (!s) return;
   const unseen = s.selectedThreadId !== thread.id || !document.hasFocus();
   if (!unseen) return;
   if (typeof Notification === "undefined") return;

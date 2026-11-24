@@ -243,7 +243,6 @@ const zhHans: Record<string, string> = {
   "Reveal worktree in Finder": "在 Finder 中显示 worktree",
   "Reveal worktree in File Explorer": "在文件资源管理器中显示 worktree",
   "Notifications": "通知",
-  "Notify when a turn finishes": "轮次完成时通知我",
   "Chime when a turn finishes": "本轮完成时播放提示音",
   "A soft chime, whether or not the thread is in view": "无论是否正在查看该对话，都会播放轻柔的提示音",
   "Continue after the usage limit resets": "用量限额重置后继续",
@@ -289,22 +288,16 @@ const zhHans: Record<string, string> = {
   "Keep computer awake": "保持电脑唤醒",
   "Keep computer and screen awake": "保持电脑与屏幕唤醒",
   "While tasks run, the computer won't doze off. Keep computer awake lets the screen turn off on its own; Keep computer and screen awake leaves it lit too, which helps when an agent needs to see a front end. Manual sleep and closing the lid still work.": "任务运行时，电脑不会休眠。「保持电脑唤醒」允许屏幕自行熄灭；「保持电脑与屏幕唤醒」会让屏幕保持点亮，便于 Agent 查看前端界面。手动睡眠与合上盖子仍然有效。",
-  "A system notification posts only for a turn you are not looking at — a different thread or an unfocused window.":
-    "仅在你未查看的轮次完成时发送系统通知 —— 其他对话或窗口未聚焦。",
   "Copy": "复制",
   "Copied": "已复制",
   "Copy path": "复制路径",
-  // F04 link popover + F26 Performance Mode (frozen verbatim).
+  // F04 link popover (frozen verbatim).
   "Link": "链接",
   "Open Link": "打开链接",
   "Copy Link": "复制链接",
-  "Performance Mode": "性能模式",
-  "Disable window transparency, blurs, glows and background effects for lowest GPU usage":
-    "关闭窗口透明度、模糊、光晕和背景效果，以最大程度降低 GPU 占用",
   // F26 Skylight (frozen verbatim zh-Hans).
   "Skylight": "晴天窗",
   "Skylight — start a new thread": "晴天窗——新建线程",
-  "Unavailable in Performance Mode": "性能模式下不可用",
   "A teru teru bozu at the top of the sidebar keeps you company while agents work, and its weather shows how your threads are doing: it sways in the wind while they run, turns overcast when one needs you, brightens when a reply lands and rains when one fails. It animates only while visible.":
     "侧栏顶部挂着一只晴天娃娃，陪你等代理干活，也用天气提示对话状态：运行时随风摆动，等你处理时转阴，有新回复时放晴，出错时落雨。只在可见时才会动。",
   "No working directory": "没有可用的工作目录",
@@ -422,7 +415,6 @@ const zhHans: Record<string, string> = {
   "That file isn't a supported image.": "该文件不是受支持的图片。",
   "That image is too large (25 MB max).": "图片过大（上限 25 MB）。",
   "Could not use that picture.": "无法使用该图片。",
-  "Wallpaper is paused while Performance Mode is on.": "性能模式开启期间壁纸暂停显示。",
   "Transparency": "透明度",
   "Backdrop opacity": "背景不透明度",
   "This window stays opaque — the slider controls how strongly the wallpaper shows through the interface, not the desktop behind it.":
@@ -853,11 +845,6 @@ const zhHans: Record<string, string> = {
   "Commit": "提交",
   "Committing": "正在提交",
   "Commit failed": "提交失败",
-  "Commit message instructions": "提交信息要求",
-  "For example: use conventional commit prefixes": "例如：使用约定式提交前缀",
-  "Appended to the prompt when a commit message is drafted for you.": "为你撰写提交信息时附加到提示词中。",
-  "Concise AI replies": "简洁的 AI 回复",
-  "Built-in guidance for shorter replies, useful code comments, and focused work. Changes apply on the next message.": "通过内置指引，让回复更简短、代码注释更有用、工作更专注。更改从下一条消息开始生效。",
   "Font sizes": "字号",
   "Reset font sizes": "重置字号",
   "Interface font size": "界面字号",

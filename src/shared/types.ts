@@ -73,12 +73,6 @@ export interface Settings {
   language: LanguageId;
   /** Mock-scope "always allow" grants, keyed by synthetic action kind. */
   alwaysAllow: string[];
-  /**
-   * F28: system-notification opt-in — a completed turn posts an OS
-   * notification ONLY for an unseen result (different thread on screen
-   * or unfocused window). Absent on old stores = off.
-   */
-  notifyOnDone?: boolean;
   /** F28: frozen chimeWhenFinished (default TRUE) — a soft chime when a
    *  turn finishes, whether or not the thread is in view. Optional so
    *  pre-A49 stores load verbatim; absent means the frozen default. */
@@ -131,17 +125,7 @@ export interface Settings {
    */
   showsWorkingCard?: boolean;
   /**
-   * F26: frozen performanceMode (default false) — disables window
-   * transparency, blurs, glows and background effects for lowest GPU
-   * usage. This build's window is already opaque: the honest port
-   * strips the effects it actually renders (drop shadows, glows,
-   * transitions, animations, filters). Optional so pre-A48 stores
-   * load verbatim.
-   */
-  performanceMode?: boolean;
-  /**
    * F26: frozen showsSkylight (default true) — the sidebar's weather hero.
-   * Effective only when performanceMode is off (frozen showsSkylightNow).
    * Absent on old stores = on.
    */
   showsSkylight?: boolean;
@@ -212,20 +196,6 @@ export interface Settings {
    * primary, ctrl = literal Control on macOS).
    */
   shortcuts?: Record<string, KeyChord | null>;
-  /**
-   * F13: frozen commitInstructions — free-form guidance appended to the
-   * generated-commit-message prompt ("use conventional prefixes"). Empty
-   * string = no extra instructions (frozen default).
-   */
-  commitInstructions?: string;
-  /**
-   * F31: frozen antiSlopEnabled — "Concise AI replies". The built-in
-   * guidance block rides the first ordinary message of each provider
-   * session once; "off" delivers the disregard notice instead (a
-   * resumed conversation may still hold the enabled guidance). Absent
-   * on old stores = enabled (frozen default true).
-   */
-  antiSlopEnabled?: boolean;
   /**
    * F33: the frozen double gate — alpha master switch AND the separate
    * local-control switch must both be on before the control socket

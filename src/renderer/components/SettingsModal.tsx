@@ -380,30 +380,10 @@ export function SettingsModal(props: {
         <div className="choice-row">
           <button
             role="switch"
-            aria-checked={settings.performanceMode === true}
-            className={`choice${settings.performanceMode === true ? " active" : ""}`}
-            title={t(
-              "Disable window transparency, blurs, glows and background effects for lowest GPU usage",
-            )}
-            onClick={() =>
-              tryCall("settings:set", {
-                performanceMode: settings.performanceMode !== true,
-              })
-            }
-          >
-            {t("Performance Mode")}
-          </button>
-        </div>
-        <div className="choice-row">
-          <button
-            role="switch"
             aria-checked={settings.showsSkylight !== false}
             className={`choice${settings.showsSkylight !== false ? " active" : ""}`}
-            disabled={settings.performanceMode === true}
             title={t(
-              settings.performanceMode === true
-                ? "Unavailable in Performance Mode"
-                : "A teru teru bozu at the top of the sidebar keeps you company while agents work, and its weather shows how your threads are doing: it sways in the wind while they run, turns overcast when one needs you, brightens when a reply lands and rains when one fails. It animates only while visible.",
+              "A teru teru bozu at the top of the sidebar keeps you company while agents work, and its weather shows how your threads are doing: it sways in the wind while they run, turns overcast when one needs you, brightens when a reply lands and rains when one fails. It animates only while visible.",
             )}
             onClick={() =>
               tryCall("settings:set", {
@@ -450,19 +430,6 @@ export function SettingsModal(props: {
             {t("Recent downloads")}
           </button>
         </div>
-        <div className="choice-row">
-          <button
-            role="switch"
-            aria-checked={settings.notifyOnDone === true}
-            className={`choice${settings.notifyOnDone === true ? " active" : ""}`}
-            onClick={() => tryCall("settings:set", { notifyOnDone: settings.notifyOnDone !== true })}
-          >
-            {t("Notify when a turn finishes")}
-          </button>
-        </div>
-        <p className="codex-note">
-          {t("A system notification posts only for a turn you are not looking at — a different thread or an unfocused window.")}
-        </p>
         <div className="choice-row">
           <button
             role="switch"
@@ -600,42 +567,6 @@ export function SettingsModal(props: {
             ))}
           </div>
         </label>
-        <label className="wt-field commit-instructions">
-          <span>{t("Commit message instructions")}</span>
-          <input
-            className="wt-input"
-            defaultValue={settings.commitInstructions ?? ""}
-            key={settings.commitInstructions ?? ""}
-            placeholder={t("For example: use conventional commit prefixes")}
-            spellCheck={false}
-            onBlur={(e) => {
-              const v = e.target.value;
-              if (v !== (settings.commitInstructions ?? ""))
-                tryCall("settings:set", { commitInstructions: v });
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-            }}
-          />
-        </label>
-        <p className="codex-note">
-          {t("Appended to the prompt when a commit message is drafted for you.")}
-        </p>
-        <div className="choice-row">
-          <button
-            role="switch"
-            aria-checked={settings.antiSlopEnabled !== false}
-            className={`choice${settings.antiSlopEnabled !== false ? " active" : ""}`}
-            onClick={() =>
-              tryCall("settings:set", { antiSlopEnabled: settings.antiSlopEnabled === false })
-            }
-          >
-            {t("Concise AI replies")}
-          </button>
-        </div>
-        <p className="codex-note">
-          {t("Built-in guidance for shorter replies, useful code comments, and focused work. Changes apply on the next message.")}
-        </p>
 
         <div className="fs-head">
           <h3>{t("Font sizes")}</h3>

@@ -2,10 +2,8 @@
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // A48 e2e — F04 link popover (frozen LinkPopover: right-click →
 // transient Open Link / Copy Link menu under the link; the frozen
-// Merge row needs a forge target, intentionally absent) and F26
-// performanceMode (frozen: strips rendered effects — html flag → CSS
-// kills shadows/glows/filters/transitions/animations, persisted,
-// zh-Hans).
+// Merge row needs a forge target, intentionally absent) and P2-62
+// retired Performance Mode absence.
 
 export async function runAppearanceChecks({
   launch,
@@ -109,104 +107,13 @@ export async function runAppearanceChecks({
   );
   await page.keyboard.press("Escape");
 
-  // ---- F26 performanceMode --------------------------------------------
-  // PM-01: the switch renders in the Appearance block, default off.
+  // ---- P2-62: Performance Mode switch is retired -----------------------
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 8000 });
   const pmBtn = page.locator('button[role="switch"]', { hasText: "Performance Mode" });
-  await pmBtn.waitFor();
-  verify("PM-01 switch present, default off", (await pmBtn.getAttribute("aria-checked")) === "false");
-
-  // PM-02: on → html flag + a real effect stripped. The theme picker's
-  // menu (.openin-menu) carries a real drop shadow — observable in both
-  // directions while the modal stays open.
-  await page.locator(".theme-btn").click();
-  await page.waitForSelector(".theme-menu");
-  const before = await page.evaluate(
-    () => getComputedStyle(document.querySelector(".theme-menu")).boxShadow,
-  );
-  await page.locator(".theme-btn").click(); // close the menu
-  await pmBtn.click();
-  await page.waitForFunction(
-    () => document.documentElement.dataset.performance === "1",
-    { timeout: 5000 },
-  );
-  await page.locator(".theme-btn").click();
-  await page.waitForSelector(".theme-menu");
-  const after = await page.evaluate(
-    () => getComputedStyle(document.querySelector(".theme-menu")).boxShadow,
-  );
-  verify(
-    "PM-02 on strips the menu shadow",
-    before !== "none" && after === "none",
-    { before, after },
-  );
-  await page.screenshot({ path: `${outDir}/performance-on.png` });
-  await page.locator(".theme-btn").click(); // close the menu
-
-  // PM-03: off → flag removed, the effect returns.
-  await pmBtn.click();
-  await page.waitForFunction(
-    () => document.documentElement.dataset.performance === undefined,
-    { timeout: 5000 },
-  );
-  await page.locator(".theme-btn").click();
-  await page.waitForSelector(".theme-menu");
-  const back = await page.evaluate(
-    () => getComputedStyle(document.querySelector(".theme-menu")).boxShadow,
-  );
-  verify("PM-03 off restores effects", back !== "none", back);
-  await page.locator(".theme-btn").click();
-  await page.keyboard.press("Escape"); // close settings
-
-  // PM-04: on persists across a real restart.
-  await page.locator(".sidebar-foot button.row").click();
-  await page.waitForSelector(".modal", { timeout: 8000 });
-  await page.locator('button[role="switch"]', { hasText: "Performance Mode" }).click();
-  await page.waitForFunction(
-    () => document.documentElement.dataset.performance === "1",
-    { timeout: 5000 },
-  );
+  verify("PM-01 retired Performance Mode switch absent", (await pmBtn.count()) === 0);
   await page.keyboard.press("Escape");
+
   const c1 = await boundedClose(app, proc);
   verify("appearance-main exited cleanly", c1.outcome === "resolved", c1);
-  const s2 = await launch({}, "appearance-restart");
-  instances.push(s2);
-  const page2 = await s2.app.firstWindow();
-  await page2.waitForSelector(".sidebar-head", { timeout: 15000 });
-  const persisted = await page2.evaluate(
-    () => document.documentElement.dataset.performance,
-  );
-  verify("PM-04 flag persisted across restart", persisted === "1", persisted);
-  const stored = await page2.evaluate(() =>
-    window.tivano.invoke("state:get", {}).then((s) => s.settings.performanceMode),
-  );
-  verify("PM-05 settings store holds true", stored === true, stored);
-
-  // PM-06: zh-Hans — the switch label localizes.
-  await page2.evaluate(() =>
-    window.tivano.invoke("settings:set", { language: "zh-Hans" }),
-  );
-  await page2.locator(".sidebar-foot button.row").click();
-  await page2.waitForSelector(".modal", { timeout: 8000 });
-  const zhBtn = page2.locator('button[role="switch"]', { hasText: "性能模式" });
-  await zhBtn.waitFor();
-  verify("PM-06 zh label 性能模式", true);
-  verify(
-    "PM-06b zh detail",
-    (await zhBtn.getAttribute("title")) ===
-      "关闭窗口透明度、模糊、光晕和背景效果，以最大程度降低 GPU 占用",
-    await zhBtn.getAttribute("title"),
-  );
-  // Restore en + off for the next module.
-  await zhBtn.click();
-  await page2.waitForFunction(
-    () => document.documentElement.dataset.performance === undefined,
-    { timeout: 5000 },
-  );
-  await page2.evaluate(() =>
-    window.tivano.invoke("settings:set", { language: "en" }),
-  );
-  const c2 = await boundedClose(s2.app, s2.proc);
-  verify("appearance-restart exited cleanly", c2.outcome === "resolved", c2);
 }

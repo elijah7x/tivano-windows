@@ -496,12 +496,29 @@ const vMcpServer = vObject({
   headers: vOptional(vMcpHeaders),
 });
 
+const RETIRED_SETTING_KEYS = [
+  "performanceMode",
+  "notifyOnDone",
+  "commitInstructions",
+  "antiSlopEnabled",
+] as const;
+
+/** Drop v2.x settings retired in v3.0.0 (P2-62) so existing stores migrate
+ *  cleanly without failing strict schema validation. */
+function stripRetiredSettings(raw: Record<string, unknown>): Record<string, unknown> {
+  const s = raw.settings;
+  if (typeof s !== "object" || s === null || Array.isArray(s)) return raw;
+  const rec = s as Record<string, unknown>;
+  if (!RETIRED_SETTING_KEYS.some((k) => k in rec)) return raw;
+  const nextSettings = { ...rec };
+  for (const k of RETIRED_SETTING_KEYS) delete nextSettings[k];
+  return { ...raw, settings: nextSettings };
+}
+
 const vSettings = vObject({
   theme: vEnum(THEME_IDS),
   language: vEnum(LANGUAGE_IDS),
   alwaysAllow: vArray(vString, PERSIST_MAX_GRANTS),
-  // Optional so every pre-A18 store loads verbatim — absent means off.
-  notifyOnDone: vOptional(vBoolean),
   // Optional so every pre-A49 store loads verbatim — absent means the
   // frozen default (on).
   chimeWhenFinished: vOptional(vBoolean),
@@ -522,7 +539,6 @@ const vSettings = vObject({
   defaultWorkspaceMode: vOptional(vEnum(["local", "worktree", "auto"] as const)),
   showReasoning: vOptional(vBoolean),
   showsWorkingCard: vOptional(vBoolean),
-  performanceMode: vOptional(vBoolean),
   showsSkylight: vOptional(vBoolean),
   // F33: CLI install receipt — path of the client our shim points at.
   cliInstallationTarget: vOptional(vNonEmptyString(4000)),
@@ -535,12 +551,6 @@ const vSettings = vObject({
   // Optional so every pre-A35 store loads verbatim — overrides only;
   // a stored null chord means the shortcut was cleared (frozen Override).
   shortcuts: vOptional(vShortcuts),
-  // Optional so every pre-A36 store loads verbatim — frozen
-  // commitInstructions is a free-form string (empty = none).
-  commitInstructions: vOptional(vMaxString(4096)),
-  // Optional so every pre-A37 store loads verbatim — absent = enabled
-  // (frozen antiSlopEnabled defaults true).
-  antiSlopEnabled: vOptional(vBoolean),
   // Optional so every pre-A39 store loads verbatim — absent = both
   // gates off (the control socket never listens without them).
   alphaEnabled: vOptional(vBoolean),
@@ -933,7 +943,7 @@ export function validateStoreHead(parsed: unknown): StoreHead {
     checkCapacity((raw.settings as Record<string, unknown>).alwaysAllow, PERSIST_MAX_GRANTS, "grants");
   let doc: StoreHead;
   try {
-    doc = vStoreHead(parsed) as StoreHead;
+    doc = vStoreHead(stripRetiredSettings(raw)) as StoreHead;
   } catch (e) {
     throw new CorruptStoreError(
       `invalid store document: ${e instanceof Error ? e.message : String(e)}`,
@@ -1009,7 +1019,7 @@ export function validateStoreFile(parsed: unknown): StoreFile {
 
   let doc: StoreFile;
   try {
-    doc = vStoreFile(parsed) as StoreFile;
+    doc = vStoreFile(stripRetiredSettings(raw)) as StoreFile;
   } catch (e) {
     throw new CorruptStoreError(
       `invalid store document: ${e instanceof Error ? e.message : String(e)}`,

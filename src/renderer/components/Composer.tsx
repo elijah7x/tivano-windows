@@ -643,8 +643,7 @@ export function Composer(props: {
         </button>
       )}
       {/* F22/F26 frozen ComposerWorkingDots — accent dots wave along the
-          pill's bottom while a turn runs; performanceMode and reduced
-          motion take it out in CSS. */}
+          pill's bottom while a turn runs; reduced motion takes it out in CSS. */}
       {running && <div className="work-dots" aria-hidden="true" />}
     </div>
   );

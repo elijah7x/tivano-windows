@@ -163,21 +163,6 @@ export async function runWallpaperChecks({
       (await snap(page)).settings.wallpaper?.file === file,
   );
 
-  // ---- WP-13: Performance Mode = frozen solid fallback ----------------
-  await page.evaluate(() =>
-    window.tivano.invoke("settings:set", { performanceMode: true }),
-  );
-  await waitSnap(page, (s) => s.settings.performanceMode === true);
-  verify(
-    "WP-13 performance mode paints the solid fallback (no layer, setting kept)",
-    (await page.locator(".wp-backdrop").count()) === 0 &&
-      (await snap(page)).settings.wallpaper?.file === file,
-  );
-  await page.evaluate(() =>
-    window.tivano.invoke("settings:set", { performanceMode: false }),
-  );
-  await waitFor(page.locator(".wp-backdrop"));
-
   // ---- WP-14: remove deletes the copy + clears the slot ---------------
   await page.locator(".wp-card .wp-btn.danger").click();
   await waitSnap(page, (s) => s.settings.wallpaper === undefined);
