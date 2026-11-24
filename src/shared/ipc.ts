@@ -562,6 +562,8 @@ export const requestValidators = {
     sidebarWidth: vOptional(vNumber(210, 440)),
     // A81: top-edge-dragged terminal drawer height (frozen 140–760).
     terminalHeight: vOptional(vNumber(140, 760)),
+    // P2-55: marks the current version's What's new banner as seen.
+    whatsNewSeenVersion: vOptional(vNonEmptyString(80)),
   }),
   "links:open-external": vObject({ url: vNonEmptyString(2048) }),
   // Embedded terminal. No shell/command/path keys exist anywhere in these

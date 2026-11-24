@@ -156,6 +156,7 @@ export const REQUIRED_DIST_FILES = [
 /** Files that must exist INSIDE the packaged app.asar. */
 export const REQUIRED_ASAR_ENTRIES = [
   "package.json",
+  "CHANGELOG.md",
   "LICENSE",
   "THIRD_PARTY_NOTICES.md",
   "TRADEMARK.md",
@@ -244,7 +245,7 @@ export function validateBuilderConfig(cfg) {
     "asar-unpack",
     "node-pty must be fully unpacked from the ASAR",
   );
-  for (const rel of [...REQUIRED_DIST_FILES, ...REQUIRED_WIN_PTY_FILES, JOB_HELPER_ASAR_MANIFEST]) {
+  for (const rel of [...REQUIRED_ASAR_ENTRIES, ...REQUIRED_WIN_PTY_FILES]) {
     if (!coveredByAllowlist(rel, cfg.files ?? []))
       problems.push({ code: "allowlist-gap", message: `required path not covered by files allowlist: ${rel}` });
   }
