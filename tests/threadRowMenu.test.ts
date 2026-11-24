@@ -47,22 +47,35 @@ describe("P2-34 selection residue repaint", () => {
     const INSIDE = {} as Node;
     const OUTSIDE = {} as Node;
     let handler: (() => void) | null = null;
+    let blurHandler: (() => void) | null = null;
+    const removed: string[] = [];
+    const frames: Array<() => void> = [];
     const sel = { isCollapsed: false, anchorNode: INSIDE as Node, focusNode: INSIDE as Node };
+    const win = {
+      requestAnimationFrame: (f: () => void) => frames.push(f),
+      addEventListener: (_t: string, f: () => void) => (blurHandler = f),
+      removeEventListener: (t: string) => removed.push(`win:${t}`),
+    } as unknown as Window;
     const doc = {
+      defaultView: win,
       getSelection: () => sel as unknown as Selection,
       addEventListener: (_t: string, f: () => void) => (handler = f),
-      removeEventListener: () => {},
+      removeEventListener: (t: string) => removed.push(`doc:${t}`),
     } as unknown as Document;
     const el = {
       ownerDocument: doc,
       contains: (n: unknown) => n === INSIDE,
       style,
-      offsetHeight: 1,
     } as unknown as HTMLElement;
-    return { el, sel, INSIDE, OUTSIDE, writes, fire: () => handler?.() };
+    return {
+      el, sel, INSIDE, OUTSIDE, writes, removed,
+      fire: () => handler?.(),
+      blur: () => blurHandler?.(),
+      paintFrame: () => frames.splice(0).forEach((f) => f()),
+    };
   }
 
-  it("forces one paint pass when a selection that touched the element clears", async () => {
+  it("holds a promoted layer across one frame when a touched selection clears", async () => {
     const { watchSelectionResidue } = await import("../src/renderer/selectionRepaint");
     const h = harness();
     watchSelectionResidue(h.el);
@@ -70,7 +83,26 @@ describe("P2-34 selection residue repaint", () => {
     expect(h.writes).toEqual([]);
     h.sel.anchorNode = h.OUTSIDE;
     h.sel.focusNode = h.OUTSIDE;
-    h.fire(); // had → cleared: write + reflow + reset
+    h.fire();
+    // The layer stays promoted until the next painted frame — a same-task
+    // reset would collapse to none→none and repaint nothing.
+    expect(h.writes).toEqual(["translateZ(0)"]);
+    h.paintFrame();
+    expect(h.writes).toEqual(["translateZ(0)", ""]);
+  });
+
+  it("repaints on window blur while a touched selection is live (frozen resign)", async () => {
+    const { watchSelectionResidue } = await import("../src/renderer/selectionRepaint");
+    const h = harness();
+    watchSelectionResidue(h.el);
+    h.fire(); // live selection inside
+    h.blur();
+    expect(h.writes).toEqual(["translateZ(0)"]);
+    h.paintFrame();
+    expect(h.writes).toEqual(["translateZ(0)", ""]);
+    // A second blur without a new inside-selection is a no-op.
+    h.blur();
+    h.paintFrame();
     expect(h.writes).toEqual(["translateZ(0)", ""]);
   });
 
@@ -87,15 +119,25 @@ describe("P2-34 selection residue repaint", () => {
     expect(h.writes).toEqual([]);
   });
 
-  it("a collapsed caret counts as no selection", async () => {
+  it("a collapsed caret inside the element counts as no selection", async () => {
     const { watchSelectionResidue } = await import("../src/renderer/selectionRepaint");
     const h = harness();
     watchSelectionResidue(h.el);
-    h.fire();
+    h.fire(); // real selection inside
+    // Caret stays INSIDE but collapses — only !isCollapsed distinguishes
+    // this from a still-live selection (anchor position alone cannot).
     h.sel.isCollapsed = true;
-    h.sel.anchorNode = h.OUTSIDE;
-    h.sel.focusNode = h.OUTSIDE;
     h.fire();
+    expect(h.writes).toEqual(["translateZ(0)"]);
+    h.paintFrame();
     expect(h.writes).toEqual(["translateZ(0)", ""]);
+  });
+
+  it("removes both listeners on cleanup", async () => {
+    const { watchSelectionResidue } = await import("../src/renderer/selectionRepaint");
+    const h = harness();
+    const unwatch = watchSelectionResidue(h.el);
+    unwatch();
+    expect(h.removed).toEqual(["doc:selectionchange", "win:blur"]);
   });
 });

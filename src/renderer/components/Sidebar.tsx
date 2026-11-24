@@ -4,7 +4,7 @@
 // Electron has no window.prompt/confirm, so rename/create use inline fields
 // and delete uses a two-tap armed confirmation on the row itself.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ChatThread, OpenDirectoryResult, Snapshot } from "../../shared/types";
 import { compareThreads } from "../../shared/threadOrder";
@@ -107,6 +107,17 @@ export function Sidebar(props: {
       window.removeEventListener("mousedown", down);
       window.removeEventListener("keydown", key);
     };
+  }, [threadMenu]);
+  // The align-end transform can push the painted left edge off-screen on
+  // a narrow sidebar or a wide menu — clamp after mount using the real
+  // rect, like HydraPanel's menu does.
+  useLayoutEffect(() => {
+    const el = threadMenuRef.current;
+    if (!threadMenu || !el) return;
+    const r = el.getBoundingClientRect();
+    if (r.left < 8) el.style.left = `${parseFloat(el.style.left) + (8 - r.left)}px`;
+    const overY = r.bottom - window.innerHeight;
+    if (overY > 0) el.style.top = `${Math.max(8, threadMenu.y - overY - 8)}px`;
   }, [threadMenu]);
   // F15: frozen "Reveal in Finder" — the platform's file manager name.
   const fileManagerReveal =
