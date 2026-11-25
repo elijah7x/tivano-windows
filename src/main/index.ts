@@ -35,6 +35,7 @@ import { pathToFileURL } from "node:url";
 import { Store } from "./store";
 import { Engine, EngineError } from "./engine";
 import { effectiveChord } from "../shared/shortcuts";
+import { StorageService } from "./storageUsage";
 import { MockProvider } from "./mockProvider";
 import {
   SyntheticStdioProvider,
@@ -936,6 +937,13 @@ bootstrap = app.whenReady().then(async () => {
     git,
     localControl,
     remoteMcp,
+    storage: new StorageService({
+      dataRoot,
+      engine: eng,
+      gitExe: gitBoot.gitExe || GIT_POSIX_EXECUTABLE,
+      platform: gitBoot.platform,
+      ...(gitBoot.runner ? { runner: gitBoot.runner } : {}),
+    }),
     cli: cliSurface,
     externalLog: externalLog ?? undefined,
     openDirectory: () => dirOpener.open(),

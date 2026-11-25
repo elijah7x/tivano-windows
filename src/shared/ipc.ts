@@ -292,6 +292,11 @@ export const REQUEST_CHANNELS = [
   "limit:cancel",
   "limit:handoff",
   "forge:probe",
+  "storage:measure",
+  "storage:clean",
+  "storage:remove-worktree",
+  "storage:review-prompt",
+  "storage:start-worktree-review",
 ] as const;
 
 export type RequestChannel = (typeof REQUEST_CHANNELS)[number];
@@ -666,6 +671,21 @@ export const requestValidators = {
   // binary, argv or env. Presence + --version only; sign-in state is
   // never probed and no credential command (`gh auth token`…) is run.
   "forge:probe": vObject({}),
+  // P2-54 Storage management: app-owned measurements, regenerable cleanup,
+  // safe worktree removal (relative id only), and read-only review chat.
+  "storage:measure": vObject({}),
+  "storage:clean": vObject({
+    idleWorktrees: vBoolean,
+    activeWorktrees: vBoolean,
+    diagnostics: vBoolean,
+    updates: vBoolean,
+  }),
+  "storage:remove-worktree": vObject({
+    id: vNonEmptyString(300),
+    buildFilesOnly: vOptional(vBoolean),
+  }),
+  "storage:review-prompt": vObject({}),
+  "storage:start-worktree-review": vObject({}),
   // Codex setup — every payload deliberately EMPTY: the renderer can ask
   // for the chooser/save/clear but can never name a path, argv or env.
   // The selected path arrives only from main's native dialog result.

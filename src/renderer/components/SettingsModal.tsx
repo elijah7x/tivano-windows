@@ -32,7 +32,7 @@ import { RemoteMcpSection } from "./RemoteMcpSection";
 import { ForgeSection } from "./ForgeSection";
 import { WallpaperSection } from "./WallpaperSection";
 import { ModelListSettings } from "./ModelListSettings";
-import { ArchiveSection } from "./ArchiveSection";
+import { StorageSection } from "./StorageSection";
 import { VersionSection } from "./WhatsNewViews";
 import {
   RUNTIME_MODES,
@@ -189,11 +189,11 @@ export function SettingsModal(props: {
     };
   }, [run]);
 
-  // Either gate changing reruns refreshListening in main — re-read the
-  // real socket state instead of assuming a toggle meant success.
+  // Local control left Alpha in v2.3.0 / v3.0.0 — only externalControlEnabled
+  // gates the socket now, so re-read status when it changes.
   useEffect(() => {
     void refreshControl();
-  }, [settings.alphaEnabled, settings.externalControlEnabled, refreshControl]);
+  }, [settings.externalControlEnabled, refreshControl]);
 
   const close = () => {
     mounted.current = false;
@@ -484,7 +484,122 @@ export function SettingsModal(props: {
         <div className="connections-section" data-testid="connections-section">
           <h3>{t("Connections")}</h3>
           <McpSection settings={settings} home={info.home} />
+
+          <div className="local-control-section" data-testid="local-control-section">
+            <h4 className="sub-head">{t("Local control")}</h4>
+            <div className="choice-row">
+              <button
+                role="switch"
+                aria-checked={settings.externalControlEnabled === true}
+                className={`choice${settings.externalControlEnabled === true ? " active" : ""}`}
+                onClick={() =>
+                  tryCall("settings:set", {
+                    externalControlEnabled: settings.externalControlEnabled !== true,
+                  })
+                }
+              >
+                {t("Local control")}
+              </button>
+            </div>
+            <p className="codex-note" data-testid="local-control-detail">
+              {t("Let a command-line client control this running edition of Tivano. Other processes in your account can use this access. Approvals stay in Tivano. No network listener or automatic app launch.")}
+            </p>
+            <div className="kv control-status" data-testid="local-control-status">
+              <span>{t("Local control status")}</span>
+              <span>
+                {!control || !control.enabled
+                  ? t("Disabled")
+                  : control.listening
+                    ? t("Listening for this account only")
+                    : t("Local control could not start. Retry after resolving the socket or permission conflict.")}
+                {control?.enabled && !control.listening && (
+                  <button
+                    className="choice control-retry"
+                    onClick={() =>
+                      void api()
+                        .invoke("control:retry", {})
+                        .then(() => refreshControl())
+                    }
+                  >
+                    {t("Retry")}
+                  </button>
+                )}
+              </span>
+            </div>
+
+            <h4 className="sub-head">{t("CLI command")}</h4>
+            <p className="codex-note" data-testid="cli-detail">
+              {t("Install the command in a user-owned bin directory on your request only. Installation never enables local control. Add that directory to PATH yourself if needed; Tivano does not edit shell configuration.")}
+            </p>
+            <div className="kv control-status" data-testid="cli-status">
+              <span>{t("CLI command")}</span>
+              <span>
+                {!cli || cli.state === "unavailable"
+                  ? t("unavailable in this build")
+                  : cli.state === "absent"
+                    ? t("Not installed")
+                    : cli.state === "foreign"
+                      ? t("Another tivano command exists — Tivano will not replace it")
+                      : cli.state === "repair"
+                        ? t("Installed, but it points to an older copy of Tivano. Repair it to use this one.")
+                        : t("Installed")}
+                {cli?.dir && cli.state !== "unavailable" && (
+                  <span className="mono dim"> {cli.dir}</span>
+                )}
+              </span>
+            </div>
+            <div className="choice-row">
+              <button
+                className="choice"
+                data-testid="cli-install"
+                onClick={() =>
+                  void api()
+                    .invoke("cli:install", {})
+                    .then((r) => {
+                      if (mounted.current) setCli(r as CliState);
+                      if ((r as { state?: string }).state !== "installed")
+                        setCliErr(t("Could not change the CLI command"));
+                    })
+                    .catch(async () => {
+                      if (!mounted.current) return;
+                      setCliErr(t("Could not change the CLI command"));
+                      await refreshCli();
+                    })
+                }
+              >
+                {cli?.state === "installed"
+                  ? t("Reinstall CLI")
+                  : cli?.state === "repair"
+                    ? t("Repair CLI")
+                    : t("Install CLI")}
+              </button>
+              <button
+                className="choice"
+                data-testid="cli-uninstall"
+                disabled={!cli || (cli.state !== "installed" && cli.state !== "repair")}
+                onClick={() =>
+                  void api()
+                    .invoke("cli:uninstall", {})
+                    .then((r) => {
+                      if (mounted.current) setCli(r as CliState);
+                    })
+                    .catch(async () => {
+                      if (!mounted.current) return;
+                      setCliErr(t("Could not change the CLI command"));
+                      await refreshCli();
+                    })
+                }
+              >
+                {t("Uninstall CLI")}
+              </button>
+            </div>
+            {cliErr && (
+              <p className="codex-note" data-testid="cli-error">{cliErr}</p>
+            )}
+          </div>
+
           <RemoteMcpSection settings={settings} />
+          <ForgeSection />
         </div>
 
         <h3>{t("Sleep")}</h3>
@@ -625,11 +740,9 @@ export function SettingsModal(props: {
 
         <HydraSection settings={settings} />
 
-        <ForgeSection worktreesDir={info.worktreesDir} />
-
         <h3>{t("Alpha")}</h3>
         <p className="codex-note">
-          {t("Features here are early versions and may be unstable. Turning Alpha off disables local control. Individual feature choices are kept.")}
+          {t("Features here are early versions and may be unstable. Turning Alpha off disables them. Individual feature choices are kept.")}
         </p>
         <div className="choice-row">
           <button
@@ -646,122 +759,6 @@ export function SettingsModal(props: {
         <p className="codex-note">
           {t("Switch Alpha on to try its features.")}
         </p>
-        <div className="choice-row">
-          <button
-            role="switch"
-            aria-checked={settings.externalControlEnabled === true}
-            className={`choice${settings.externalControlEnabled === true ? " active" : ""}`}
-            onClick={() =>
-              tryCall("settings:set", {
-                externalControlEnabled: settings.externalControlEnabled !== true,
-              })
-            }
-          >
-            {t("Local control")}
-          </button>
-        </div>
-        <p className="codex-note" data-testid="local-control-detail">
-          {t("Let a command-line client control this running edition of Tivano. Other processes in your account can use this access. Approvals stay in Tivano. No network listener or automatic app launch.")}
-        </p>
-        <div className="kv control-status" data-testid="local-control-status">
-          <span>{t("Local control status")}</span>
-          <span>
-            {!control || !control.enabled
-              ? t("Disabled")
-              : control.listening
-                ? t("Listening for this account only")
-                : t("Local control could not start. Retry after resolving the socket or permission conflict.")}
-            {control?.enabled && !control.listening && (
-              <button
-                className="choice control-retry"
-                onClick={() =>
-                  void api()
-                    .invoke("control:retry", {})
-                    .then(() => refreshControl())
-                }
-              >
-                {t("Retry")}
-              </button>
-            )}
-          </span>
-        </div>
-
-        {/* F33 frozen CLIInstallationSettings — available regardless of
-            the gates (installing a command never enables control). */}
-        <h4 className="sub-head">{t("CLI command")}</h4>
-        <p className="codex-note" data-testid="cli-detail">
-          {t("Install the command in a user-owned bin directory on your request only. Installation never enables local control. Add that directory to PATH yourself if needed; Tivano does not edit shell configuration.")}
-        </p>
-        <div className="kv control-status" data-testid="cli-status">
-          <span>{t("CLI command")}</span>
-          <span>
-            {!cli || cli.state === "unavailable"
-              ? t("unavailable in this build")
-              : cli.state === "absent"
-                ? t("Not installed")
-                : cli.state === "foreign"
-                  ? t("Another tivano command exists — Tivano will not replace it")
-                  : cli.state === "repair"
-                    ? t("Installed, but it points to an older copy of Tivano. Repair it to use this one.")
-                    : t("Installed")}
-            {cli?.dir && cli.state !== "unavailable" && (
-              <span className="mono dim"> {cli.dir}</span>
-            )}
-          </span>
-        </div>
-        <div className="choice-row">
-          <button
-            className="choice"
-            data-testid="cli-install"
-            onClick={() =>
-              void api()
-                .invoke("cli:install", {})
-                .then((r) => {
-                  if (mounted.current) setCli(r as CliState);
-                  if ((r as { state?: string }).state !== "installed")
-                    setCliErr(t("Could not change the CLI command"));
-                })
-                .catch(async () => {
-                  if (!mounted.current) return;
-                  setCliErr(t("Could not change the CLI command"));
-                  // The fs truth wins — a refused install still reports
-                  // the real (foreign/absent) state, never stale.
-                  await refreshCli();
-                })
-            }
-          >
-            {/* Frozen CLIInstallationSettings: Install CLI when absent
-                or foreign, Reinstall CLI when healthy, Repair CLI when
-                our shim points at a stale or missing client. */}
-            {cli?.state === "installed"
-              ? t("Reinstall CLI")
-              : cli?.state === "repair"
-                ? t("Repair CLI")
-                : t("Install CLI")}
-          </button>
-          <button
-            className="choice"
-            data-testid="cli-uninstall"
-            disabled={!cli || (cli.state !== "installed" && cli.state !== "repair")}
-            onClick={() =>
-              void api()
-                .invoke("cli:uninstall", {})
-                .then((r) => {
-                  if (mounted.current) setCli(r as CliState);
-                })
-                .catch(async () => {
-                  if (!mounted.current) return;
-                  setCliErr(t("Could not change the CLI command"));
-                  await refreshCli();
-                })
-            }
-          >
-            {t("Uninstall CLI")}
-          </button>
-        </div>
-        {cliErr && (
-          <p className="codex-note" data-testid="cli-error">{cliErr}</p>
-        )}
 
         <h3>{t("Codex CLI")}</h3>
         <div className="about codex-setup" aria-busy={busy !== null}>
@@ -880,11 +877,13 @@ export function SettingsModal(props: {
           quickChatEnabled={settings.quickChatEnabled === true}
         />
 
-        <h3>{t("Archive")}</h3>
-        <ArchiveSection
+        <h3>{t("Storage")}</h3>
+        <StorageSection
           threads={props.threads}
           projects={props.projects}
           settings={settings}
+          worktreesDir={info.worktreesDir}
+          onClose={close}
         />
 
         <VersionSection

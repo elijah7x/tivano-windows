@@ -43,6 +43,8 @@ export async function runArchiveChecks({
   };
   const openSettings = async (page) => {
     await page.locator(".sidebar-foot button.row").click();
+    await page.waitForSelector('[data-testid="storage-section"]', { timeout: 10000 });
+    await page.locator('[data-testid="storage-show-all-archived"]').click();
     await page.waitForSelector(".archive-section", { timeout: 10000 });
     await page.waitForSelector(".archive-picker", { timeout: 10000 });
   };

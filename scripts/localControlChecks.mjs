@@ -82,12 +82,12 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   const status = () => page.evaluate(() => window.tivano.invoke("control:status", {}));
 
   // ---- gates ----------------------------------------------------------
-  verify("LC-01 default gates off, no socket", !(await status()).enabled && !existsSync(sock));
+  verify("LC-01 default gate off, no socket", !(await status()).enabled && !existsSync(sock));
   await page.evaluate(() =>
-    window.tivano.invoke("settings:set", { alphaEnabled: true, externalControlEnabled: true }));
+    window.tivano.invoke("settings:set", { alphaEnabled: false, externalControlEnabled: true }));
   await wait(150);
   const st1 = await status();
-  verify("LC-02 both gates on -> listening", st1.enabled && st1.listening === true, st1);
+  verify("LC-02 externalControlEnabled on (outside Alpha) -> listening", st1.enabled && st1.listening === true, st1);
   verify("LC-03 socket file exists", existsSync(sock));
 
   // ---- handshake -------------------------------------------------------
@@ -301,8 +301,8 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 10000 });
   await page.waitForSelector(".control-status", { timeout: 10000 });
-  const alphaSwitch = page.locator('.choice-row button[role="switch"]', { hasText: "Alpha" }).first();
-  verify("LC-23 Alpha switch rendered", (await alphaSwitch.count()) === 1);
+  const lcInConnections = await page.locator('[data-testid="connections-section"] [data-testid="local-control-section"]').count();
+  verify("LC-23 Local control consolidated inside Connections", lcInConnections === 1);
   const statusLine = await page.locator('[data-testid="local-control-status"]').textContent();
   verify("LC-24 status shows listening", statusLine?.includes("Listening for this account only"), statusLine);
   const localSwitch = page.locator('.choice-row button[role="switch"]', { hasText: "Local control" }).first();

@@ -5405,3 +5405,218 @@ html[data-paused="1"] .md-veil { animation: none !important; }
   padding: 8px 0;
   border-top: 1px solid var(--border);
 }
+
+/* ---- P2-54: Connections chips & Storage reorganization -------------- */
+.mcp-lead {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 12px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  font-size: 12.5px;
+}
+.mcp-lead-icon { color: var(--accent); font-weight: 700; line-height: 1.4; }
+.mcp-lead-text { color: var(--fg-muted, var(--muted)); line-height: 1.4; }
+.mcp-lead-text strong { color: var(--fg); }
+.mcp-connected-list { margin-bottom: 12px; }
+.mcp-row-mark { display: inline-block; margin-right: 6px; vertical-align: middle; }
+.mcp-add-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mcp-add-card .sub-head { margin: 0; }
+.mcp-cat-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.mcp-cat-chip {
+  border: none;
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 12px;
+  font-weight: 500;
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+}
+.mcp-cat-chip.active {
+  background: var(--fg);
+  color: var(--bg);
+}
+.mcp-chip-wall { display: flex; flex-wrap: wrap; gap: 7px; }
+.mcp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 5px 10px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg);
+  font-size: 12.5px;
+  cursor: pointer;
+  max-width: 100%;
+}
+.mcp-chip.selected { border-color: var(--accent); }
+.mcp-chip.mcp-chip-oauth { opacity: 0.72; }
+.mcp-chip-custom {
+  border: 1px dashed color-mix(in srgb, var(--muted) 55%, transparent);
+  background: transparent;
+  color: var(--muted);
+}
+.mcp-chip-text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+.mcp-chip-name { font-weight: 500; white-space: nowrap; }
+.mcp-chip-summary {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.mcp-detail-panel {
+  border-radius: 10px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mcp-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mcp-detail-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.mcp-detail-actions { display: inline-flex; align-items: center; gap: 6px; }
+.mcp-detail-tools { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.mcp-tool-pill {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.local-control-section { margin-top: 14px; }
+
+.storage-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 4px 0 18px;
+}
+.storage-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.storage-card .sub-head { margin: 0; }
+.storage-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.storage-total { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.storage-subtitle { font-size: 12.5px; color: var(--muted); }
+.storage-bar {
+  display: flex;
+  gap: 2px;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+.storage-bar-seg { height: 100%; display: block; }
+.tone-blue { background: #3b82f6; }
+.tone-green { background: #22c55e; }
+.tone-accent { background: var(--accent); }
+.tone-gray { background: #8e8e93; }
+.storage-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 16px;
+}
+.storage-part { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
+.storage-part-label { display: inline-flex; align-items: center; gap: 6px; }
+.storage-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.storage-part-bytes { color: var(--muted); padding-left: 14px; font-size: 12px; }
+.storage-clean-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.storage-clean-text { flex: 1; min-width: 0; }
+.storage-clean-panel {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.storage-opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+}
+.storage-opt small { display: block; color: var(--muted); font-size: 11.5px; }
+.storage-opt-right { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.storage-clean-ops { display: flex; justify-content: flex-end; gap: 8px; }
+.storage-row-sub { color: var(--muted); font-size: 12px; font-weight: 400; }
+.storage-show-all-btn, .storage-fold-btn { align-self: flex-start; }
+.storage-back-row { display: flex; align-items: center; gap: 10px; }
+.storage-sub-title { font-weight: 600; }
+.storage-wt-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  font-size: 13px;
+}
+.storage-wt-review {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.storage-wt-review-text { flex: 1; min-width: 0; }
+.storage-wt-review-ops { display: inline-flex; gap: 8px; flex-shrink: 0; }
+.storage-wt-list, .storage-adv-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.storage-wt-row, .storage-adv-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.storage-wt-info { min-width: 0; flex: 1; }
+.storage-wt-ops { display: inline-flex; gap: 6px; flex-shrink: 0; }
+.storage-err { color: var(--danger, #e5484d); }

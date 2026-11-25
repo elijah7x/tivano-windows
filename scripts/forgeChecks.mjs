@@ -134,11 +134,11 @@ export async function runForgeChecks({
     window.tivano.invoke("settings:set", { language: "en" }),
   );
 
-  // FG-06/07: the frozen "Worktrees · Reveal" row — the shown path is
-  // the app-owned <dataRoot>/worktrees (main-computed), and Reveal
-  // rides the main-owned shell.openPath end-to-end (a real open on the
-  // isolated data root, matching FOLDER-04/DL-07 precedent).
+  // FG-06/07: the frozen "Worktrees · Reveal" row lives in Storage > Worktrees.
+  await page.locator('[data-testid="storage-worktrees"]').scrollIntoViewIfNeeded();
+  await page.locator('[data-testid="storage-show-worktrees"]').click();
   const wtRow = page.locator(".forge-row[data-cli='worktrees']");
+  await wtRow.waitFor({ timeout: 8000 });
   const wtText = await wtRow.innerText();
   const info = (await snap(page)).info;
   verify(

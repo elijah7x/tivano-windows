@@ -18,6 +18,7 @@ import type {
 } from "../shared/types";
 import { isHttpUrl, isTrustedSender } from "./security";
 import { probeMcpServer } from "./mcpService";
+import { StorageService } from "./storageUsage";
 
 export interface IpcOptions {
   engine: Engine;
@@ -48,6 +49,8 @@ export interface IpcOptions {
   localControl?: import("./localControl").LocalControlService;
   /** P2-25 Remote MCP — absent only in builds without the slice. */
   remoteMcp?: import("./remoteMcp").RemoteMcpService;
+  /** P2-54 Storage usage & cleanup — lazily created from engine.info.dataRoot when omitted. */
+  storage?: StorageService;
   /** Embedded terminal service — absent only in builds without the slice. */
   terminals?: import("./terminalService").TerminalService;
   /** F26 wallpaper library — absent only in builds without the slice. */
@@ -392,7 +395,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   // reports the real socket state — never an optimistic flag.
   handle("control:status", () => {
     const s = engine.snapshot().settings;
-    const enabled = s.alphaEnabled === true && s.externalControlEnabled === true;
+    const enabled = s.externalControlEnabled === true;
     return {
       enabled,
       listening: opts.localControl?.listening === true,
@@ -402,7 +405,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("control:retry", () => {
     opts.localControl?.refreshListening();
     const s = engine.snapshot().settings;
-    const enabled = s.alphaEnabled === true && s.externalControlEnabled === true;
+    const enabled = s.externalControlEnabled === true;
     return {
       enabled,
       listening: opts.localControl?.listening === true,
@@ -579,6 +582,19 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("limit:handoff", (p) => engine.handoffLimit(p.threadId));
   // F13 detection slice — empty payload; presence + --version only.
   handle("forge:probe", () => engine.probeForgeClis());
+  // P2-54 Storage measurement, regenerable cleanup, worktree removal, review prompt.
+  const storageSvc =
+    opts.storage ??
+    new StorageService({ dataRoot: engine.info.dataRoot, engine });
+  handle("storage:measure", () => storageSvc.measure());
+  handle("storage:clean", (p) => storageSvc.clean(p));
+  handle("storage:remove-worktree", (p) =>
+    storageSvc.removeWorktree(p.id, p.buildFilesOnly === true),
+  );
+  handle("storage:review-prompt", async () => ({
+    text: await storageSvc.reviewPrompt(),
+  }));
+  handle("storage:start-worktree-review", () => storageSvc.startWorktreeReview());
 
   const detach = engine.onEvent(opts.broadcast);
   return () => {

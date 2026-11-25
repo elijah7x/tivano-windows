@@ -56,13 +56,12 @@ export async function runMcpChecks({
   };
   await openSettings();
 
-  // ---- MC-01/02: section + empty state -------------------------------
-  verify("MC-01 Add server button", await page.locator(".mcp-add").count() === 1);
+  // ---- MC-01/02: chip wall + empty connected state --------------------
+  verify("MC-01 Custom last chip", await page.locator(".mcp-add").count() === 1);
   verify(
-    "MC-02 empty state",
-    (await page.locator(".mcp-section .kv").first().textContent()).includes(
-      "No tools listed yet.",
-    ),
+    "MC-02 empty connected state + chip wall",
+    (await page.locator('[data-testid="mcp-connected-list"]').count()) === 0 &&
+      (await page.locator('[data-testid="mcp-chip-wall"] .mcp-chip').count()) > 5,
   );
 
   // ---- MC-03: form validation ----------------------------------------
@@ -221,8 +220,8 @@ export async function runMcpChecks({
     await row2.locator(".mcp-st").textContent(),
   );
   verify(
-    "MC-15b zh add button",
-    (await page2.locator(".mcp-add").textContent()) === "添加服务器",
+    "MC-15b zh custom chip",
+    (await page2.locator(".mcp-add").textContent())?.includes("自定义"),
   );
   await page2.screenshot({ path: join(outDir, "69-mcp-zh.png") });
   await boundedClose(s2.app, s2.proc);
@@ -314,29 +313,26 @@ export async function runMcpChecks({
     );
     await page3.locator(".mcp-form-ops .choice:not(.active)").click();
 
-    // ---- MC-19..23: A73 catalog picker -------------------------------
-    // Frozen MCPCatalog ported: grouped registry, OAuth rows honestly
-    // disabled, no-field entries add straight, keyed entries take a
-    // field form whose {key} templates resolve into env/headers.
-    await page3.locator(".mcp-browse").click();
-    await waitFor(page3.locator(".mcp-catalog"));
+    // ---- MC-19..23: A73/P2-54 compact chips + category filters -------
+    const catTexts = (await page3.locator(".mcp-cat-chip").allTextContents()).map((s) => s.trim().toLowerCase());
     verify(
-      "MC-19 catalog grouped by the frozen categories",
-      (await page3.locator(".mcp-cat-head").allTextContents()).join("|")
-        .toLowerCase() === "developer|browser|search|work|data|cloud|knowledge",
-      await page3.locator(".mcp-cat-head").allTextContents(),
+      "MC-19 category filter chips rendered",
+      catTexts.join("|") === "all|developer|browser|search|work|data|cloud|knowledge",
+      catTexts,
     );
+    await page3.locator('.mcp-chip[data-entry="notion"]').click();
+    await waitFor(page3.locator('[data-testid="mcp-detail-panel"]'));
     verify(
       "MC-19b OAuth entries disabled with the honest note",
-      (await page3.locator('.mcp-cat-row[data-entry="notion"]').count()) === 1 &&
-        (await page3.locator('.mcp-cat-row[data-entry="notion"]').isDisabled()) &&
-        (await page3.locator('.mcp-cat-row[data-entry="notion"] .mcp-cat-side').textContent()) ===
-          "Needs sign-in",
-      await page3.locator('.mcp-cat-row[data-entry="notion"] .mcp-cat-side').textContent(),
+      (await page3.locator(".mcp-cat-oauth-btn").isDisabled()) &&
+        (await page3.locator(".mcp-cat-oauth-btn").textContent()) === "Needs sign-in",
+      await page3.locator(".mcp-cat-oauth-btn").textContent(),
     );
 
-    // MC-20: a no-field stdio entry adds straight from the list.
-    await page3.locator('.mcp-cat-row[data-entry="fetch"]').click();
+    // MC-20: a no-field stdio chip opens inline detail and Connect adds it on top.
+    await page3.locator('.mcp-chip[data-entry="fetch"]').click();
+    await waitFor(page3.locator('[data-testid="mcp-detail-panel"]'));
+    await page3.locator(".mcp-cat-save").click();
     await waitFor(page3.locator(".mcp-row", { hasText: "Fetch" }));
     const rFetch = page3.locator(".mcp-row", { hasText: "Fetch" }).first();
     verify(
@@ -345,9 +341,9 @@ export async function runMcpChecks({
       await rFetch.locator(".mcp-cmd").textContent(),
     );
 
-    // MC-21: a required-field entry opens its field form (save gated);
+    // MC-21: a required-field chip opens its inline field form (save gated);
     // the typed token resolves into the Authorization header.
-    await page3.locator('.mcp-cat-row[data-entry="github"]').click();
+    await page3.locator('.mcp-chip[data-entry="github"]').click();
     await waitFor(page3.locator(".mcp-cat-form"));
     verify(
       "MC-21 keyed entry opens the field form with key links + gate",
@@ -400,7 +396,7 @@ export async function runMcpChecks({
 
     // MC-23: a required-field entry gates its save until typed (slack's
     // token field is required), and the docs/key links are offered.
-    await page3.locator('.mcp-cat-row[data-entry="slack"]').click();
+    await page3.locator('.mcp-chip[data-entry="slack"]').click();
     await waitFor(page3.locator(".mcp-cat-form"));
     verify(
       "MC-23 save stays disabled until the required token is typed",
@@ -410,10 +406,6 @@ export async function runMcpChecks({
     await page3.locator(".mcp-form-ops .choice:not(.active)").click();
 
     // ---- MC-24..26: A74 frozen MCPKeyPanel parity --------------------
-    // The key page opens in the browser as the form appears (recorded
-    // via the main-owned test seam — never a real shell.openExternal),
-    // numbered steps describe the flow, and a path field's browse button
-    // rides the main-owned native chooser.
     const opened = existsSync(openLog)
       ? readFileSync(openLog, "utf8").trim().split("\n").filter(Boolean)
       : [];
@@ -423,7 +415,7 @@ export async function runMcpChecks({
         opened.includes("https://api.slack.com/apps"),
       opened,
     );
-    await page3.locator('.mcp-cat-row[data-entry="github"]').click();
+    await page3.locator('.mcp-chip[data-entry="slack"]').click();
     await waitFor(page3.locator(".mcp-cat-form"));
     verify(
       "MC-24b frozen numbered steps render",
@@ -438,15 +430,13 @@ export async function runMcpChecks({
 
     // MC-25: filesystem's root is a path field → folder browse, test
     // pick returns /tmp/e2e-mcp-root, save resolves args with it.
-    await page3.locator('.mcp-cat-row[data-entry="filesystem"]').click();
+    await page3.locator('.mcp-chip[data-entry="filesystem"]').click();
     await waitFor(page3.locator(".mcp-cat-form"));
     verify(
       "MC-25 path field offers the browse button",
       (await page3.locator(".mcp-cat-browse").count()) === 1,
     );
     await page3.locator(".mcp-cat-browse").click();
-    // The pick rides the real IPC — poll for the filled value rather
-    // than reading in the same tick.
     let pickedVal = "";
     {
       const deadline = Date.now() + 5000;
@@ -483,8 +473,7 @@ export async function runMcpChecks({
       ghText,
     );
 
-    await page3.screenshot({ path: join(outDir, "73-mcp-catalog.png") });
-    await page3.locator(".mcp-browse").click();
+    await page3.screenshot({ path: join(outDir, "73-mcp-chips.png") });
   } finally {
     fx.kill();
   }
