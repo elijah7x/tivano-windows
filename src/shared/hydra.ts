@@ -114,6 +114,79 @@ export function pairSendsHeadsElsewhere(pair: HydraPair): boolean {
   return pair.workerProvider !== undefined && pair.workerProvider !== pair.provider;
 }
 
+/** P2-42 (frozen NewThreadDefault): what Settings › Conversation's
+ *  "Default model" row saves — a fixed model, a sub-agent preset (the
+ *  saved pair), or nothing for "Last selection". */
+export type NewThreadDefault =
+  | { kind: "model"; model: string; effort?: string | undefined }
+  | { kind: "pair"; pairId: string };
+
+/** Frozen makeThread's `modelSelection` switch, seeded as thread fields.
+ *  `.pair` applies only when Hydra is on for new chats and the pair still
+ *  exists on this build's one provider — a deleted/unavailable preset
+ *  falls through to Last selection, as frozen does. `.model` is sent
+ *  verbatim unless `availableModels` is supplied by a catalog that already
+ *  loaded and no longer lists it: then the saved pick cannot resolve and
+ *  the seed falls back to Last selection, matching the Settings row's
+ *  "(unavailable)" state. An unloaded catalog is never grounds for
+ *  fallback (F17 codexModel semantics: never silently substituted).
+ *  Returns null for Last selection. */
+export function newThreadDefaultSeed(
+  choice: NewThreadDefault | undefined,
+  pairs: HydraPair[],
+  hydraOn: boolean,
+  providerId: string,
+  availableModels?: readonly string[],
+): {
+  codexModel?: string;
+  codexEffort?: string;
+  hydraPairId?: string;
+  subagentMode?: "preset";
+  hydraEnabled?: boolean;
+} | null {
+  if (!choice) return null;
+  if (choice.kind === "model") {
+    if (availableModels !== undefined && !availableModels.includes(choice.model))
+      return null;
+    return {
+      codexModel: choice.model,
+      ...(choice.effort !== undefined ? { codexEffort: choice.effort } : {}),
+    };
+  }
+  if (!hydraOn) return null;
+  const pair = pairs.find(
+    (p) => p.id === choice.pairId && p.provider === providerId,
+  );
+  if (!pair) return null;
+  // Frozen: a pair with no lead model keeps the chat's model ("any model"),
+  // so only a configured lead fixes codexModel.
+  return {
+    ...(pair.orchestratorModel !== undefined
+      ? { codexModel: pair.orchestratorModel }
+      : {}),
+    ...(pair.orchestratorEffort !== undefined
+      ? { codexEffort: pair.orchestratorEffort }
+      : {}),
+    hydraPairId: pair.id,
+    subagentMode: "preset",
+    // Frozen: seeding a preset marks the thread hydraEnabled even when the
+    // app-wide per-chat default (hydraDefaultEnabled) is off.
+    hydraEnabled: true,
+  };
+}
+
+/** Frozen AppSettings pair removal — deleting the pair the default names
+ *  resets it to Last selection. Returns the default to keep — undefined
+ *  clears it. */
+export function newThreadDefaultAfterPairChange(
+  choice: NewThreadDefault | undefined,
+  pairs: HydraPair[],
+): NewThreadDefault | undefined {
+  if (choice?.kind === "pair" && !pairs.some((p) => p.id === choice.pairId))
+    return undefined;
+  return choice;
+}
+
 /** The user's name for the pair, trimmed, or undefined when there is none. */
 export function pairCustomName(pair: HydraPair): string | undefined {
   const trimmed = (pair.name ?? "").trim();

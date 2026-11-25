@@ -899,6 +899,7 @@ const zhHans: Record<string, string> = {
   "Opens or hides the quick chat box.": "呼出或收起快速对话框。",
   "Model for this message": "本条消息使用的模型",
   "Carry draft into Tivano": "将草稿带入 Tivano",
+  "Open in Tivano": "在 Tivano 中展开完整对话",
   "Hide quick chat": "收起快速对话",
   "Message Tivano": "向 Tivano 发送消息",
   "↩ send · ⌘↩ open Tivano · Esc hide": "↩ 发送 · ⌘↩ 打开 Tivano · Esc 收起",
@@ -1101,6 +1102,16 @@ const zhHans: Record<string, string> = {
   "First choice": "首选",
   "Second choice": "次选",
   "Default model": "默认模型",
+  // P2-42: new-chat default picker — frozen verbatim zh-Hans.
+  "Last selection": "上一次选择",
+  "Preset": "模型搭配",
+  "%@ (unavailable)": "%@（不可用）",
+  "Project combos take priority. Otherwise, Last selection uses the current or most recent model; a selected model stays fixed.":
+    "项目指定的模型搭配优先；否则，“上一次选择”沿用当前或最近的模型；“指定模型”则固定使用该模型。",
+  "The selected model is unavailable. New chats will use Last selection.":
+    "指定的模型当前不可用，新对话将沿用上一次选择。",
+  "The selected pairing is unavailable. New chats will use Last selection.":
+    "所选模型搭配不可用，新对话将沿用“上一次选择”。",
   "The fallback reviews when the first cannot run. Grok, Pi and Antigravity appear here once this build supports them.":
     "首选模型无法运行时由备用模型审查。此版本支持 Grok、Pi 和 Antigravity 后，它们会出现在这里。",
   "Independent review by %@": "由 %@ 独立审查",

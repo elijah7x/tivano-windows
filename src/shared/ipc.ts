@@ -50,6 +50,15 @@ const vHydraPair = vObject({
   headProfiles: vArray(vHydraHeadProfile, 32),
 });
 
+// P2-42: frozen NewThreadDefault — a fixed model or a preset pair; the
+// settings patch also accepts null to reset to Last selection.
+const vNewThreadDefault = vObject({
+  kind: vEnum(["model", "pair"] as const),
+  model: vOptional(vNonEmptyString(200)),
+  effort: vOptional(vNonEmptyString(100)),
+  pairId: vOptional(vNonEmptyString(120)),
+});
+
 // P1-37 Chimera presets — same persisted shape as storeDoc.
 const vChimeraPick = vObject({
   provider: vOptional(vNonEmptyString(100)),
@@ -349,8 +358,25 @@ export const requestValidators = {
     text: vNonEmptyString(4000),
     openApp: vBoolean,
     model: vOptional(vNullable(vNonEmptyString(160))),
+    // P2-42: an explicit model pick may carry the saved default's effort
+    // — an untouched chip sends no model at all so the saved default
+    // (or plain Last selection) resolves verbatim.
+    effort: vOptional(vNullable(vNonEmptyString(100))),
+    // P2-42: the chip also offers presets — the pair the new chat starts on.
+    pairId: vOptional(vNullable(vNonEmptyString(120))),
+    // P2-42: an explicit Last-selection pick — overrides even a saved
+    // default with a plain last-seeded chat.
+    last: vOptional(vBoolean),
   }),
-  "quick:expand": vObject({ text: vString }),
+  "quick:expand": vObject({
+    text: vString,
+    // P2-42/frozen QuickChatPanelController.expand: the chip's own pick
+    // creates the thread the draft lands in.
+    model: vOptional(vNullable(vNonEmptyString(160))),
+    effort: vOptional(vNullable(vNonEmptyString(100))),
+    pairId: vOptional(vNullable(vNonEmptyString(120))),
+    last: vOptional(vBoolean),
+  }),
   "projects:delete": vObject({ id: vId }),
   "threads:create": vObject({
     projectId: vNullable(vId),
@@ -537,6 +563,7 @@ export const requestValidators = {
     subagentModeDefault: vOptional(
       vEnum(["same", "preset", "adaptive"] as const),
     ),
+    newThreadDefault: vOptional(vNullable(vNewThreadDefault)),
     chimeraPresets: vOptional(vArray(vChimeraPreset, 64)),
     chimeraAutoDispatch: vOptional(vBoolean),
     // P1-12: "How much sub-agents take on" — the delegation level.

@@ -41,7 +41,10 @@ export interface IpcOptions {
   quick?: {
     show: () => void;
     hide: () => void;
-    expand: (text: string) => void;
+    expand: (
+      text: string,
+      pick?: import("../shared/hydra").NewThreadDefault | null,
+    ) => void;
     isVisible: () => boolean;
   };
   /** F33 local control — absent only in builds without the slice. */
@@ -282,14 +285,49 @@ export function registerIpc(opts: IpcOptions): () => void {
     visible: opts.quick?.isVisible() ?? false,
   }));
   handle("quick:send", (p) => {
-    const thread = engine.createThread(null);
-    if (p.model) engine.setThreadModel(thread.id, p.model, null, null);
+    // P2-42: a picked preset resolves through the same seeding as the
+    // saved default — a pair that no longer exists falls back to Last
+    // selection rather than erroring the send. P2-43/frozen: an explicit
+    // MODEL pick is an overriding choice too — it returns a pair-less
+    // chat, so the saved preset default must not seed sub-agents onto
+    // it (the old create-then-setThreadModel path left the pair bound
+    // and dropped the lead effort).
+    const thread = engine.createThread(null, undefined, {
+      ...(p.last
+        ? { newThreadDefault: null }
+        : p.pairId
+          ? { newThreadDefault: { kind: "pair" as const, pairId: p.pairId } }
+          : p.model
+            ? {
+                newThreadDefault: {
+                  kind: "model" as const,
+                  model: p.model,
+                  ...(p.effort ? { effort: p.effort } : {}),
+                },
+              }
+            : {}),
+    });
     engine.sendTurn(thread.id, p.text);
     opts.quick?.hide();
     if (p.openApp) opts.focusWindow?.();
     return { threadId: thread.id };
   });
-  handle("quick:expand", (p) => opts.quick?.expand(p.text));
+  handle("quick:expand", (p) =>
+    opts.quick?.expand(
+      p.text,
+      p.last
+        ? null
+        : p.pairId
+          ? { kind: "pair" as const, pairId: p.pairId }
+          : p.model
+            ? {
+                kind: "model" as const,
+                model: p.model,
+                ...(p.effort ? { effort: p.effort } : {}),
+              }
+            : undefined,
+    ),
+  );
   handle("projects:set-shelved", (p) => {
     engine.setProjectShelved(p.id, p.shelved);
     return { ok: true };
@@ -387,7 +425,26 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("questions:answer", (p) =>
     engine.answerQuestion(p.threadId, p.providerKey, p.answers),
   );
-  handle("settings:set", (p) => engine.setSettings(p));
+  handle("settings:set", (p) =>
+    engine.setSettings({
+      ...p,
+      // P2-42: narrow the loose validated shape into the discriminated
+      // union — a member missing its required id falls back to null
+      // (Last selection) rather than seeding a half-pick.
+      newThreadDefault:
+        p.newThreadDefault == null
+          ? p.newThreadDefault
+          : p.newThreadDefault.kind === "pair" && p.newThreadDefault.pairId
+            ? { kind: "pair", pairId: p.newThreadDefault.pairId }
+            : p.newThreadDefault.kind === "model" && p.newThreadDefault.model
+              ? {
+                  kind: "model",
+                  model: p.newThreadDefault.model,
+                  effort: p.newThreadDefault.effort,
+                }
+              : null,
+    }),
+  );
   // F33: status read + retry for the Settings surface. The response
   // reports the real socket state — never an optimistic flag.
   handle("control:status", () => {

@@ -26,7 +26,11 @@ import { themeById } from "../theme";
 import { ThemePicker } from "./ThemePicker";
 import { TokenActivitySection } from "./TokenActivitySection";
 import { ShortcutsSection } from "./ShortcutsSection";
-import { HydraSection } from "./HydraSection";
+import {
+  HydraSection,
+  modelsTitle,
+  type CatalogProvider,
+} from "./HydraSection";
 import { McpSection } from "./McpSection";
 import { RemoteMcpSection } from "./RemoteMcpSection";
 import { ForgeSection } from "./ForgeSection";
@@ -340,6 +344,7 @@ export function SettingsModal(props: {
         <p className="codex-note">
           {t("A card with the turn's progress bar, or a plain line")}
         </p>
+        <DefaultModelRow settings={settings} providerId={info.providerId} />
         {/* v2.2.x frozen "Shelve projects" — idle days before a project
             shelves itself; running/unread/open chats keep it put. */}
         <label className="wt-field commit-instructions">
@@ -1041,5 +1046,120 @@ export function SettingsModal(props: {
         </div>
       </div>
     </div>
+  );
+}
+
+/** P2-42 (frozen ConversationSettingsPage "Default model" row): the
+ *  choice new chats and Quick chat start from — Last selection, a fixed
+ *  model, or a sub-agent preset. A saved pick that no longer resolves
+ *  shows "(unavailable)": its seeding falls back to Last selection
+ *  until it returns. */
+function DefaultModelRow({
+  settings,
+  providerId,
+}: {
+  settings: Settings;
+  providerId: string;
+}) {
+  const t = useT();
+  const [models, setModels] = useState<string[] | null>(null);
+  const [catalogReady, setCatalogReady] = useState(false);
+  const [providers, setProviders] = useState<CatalogProvider[]>([]);
+  useEffect(() => {
+    void api()
+      .invoke("models:list", {})
+      .then((r) => {
+        const cat = r as import("../../shared/types").CodexModelCatalog;
+        setCatalogReady(cat.state === "ready");
+        setModels(cat.state === "ready" ? cat.models.map((m) => m.id) : []);
+      })
+      .catch(() => setModels([]));
+    void api()
+      .invoke("hydra:catalog", {})
+      .then((c) =>
+        setProviders((c as { providers?: CatalogProvider[] }).providers ?? []),
+      )
+      .catch(() => undefined);
+  }, []);
+  const pairs = settings.hydraPairs ?? [];
+  // Frozen ConversationSettingsPage only lists presets usable here —
+  // the app-wide Hydra switch on and the pair's provider matching the
+  // active provider; the same rules decide a saved default's
+  // "(unavailable)" mark (frozen newThreadDefaultSeed).
+  const usablePairs = pairs.filter(
+    (p) => settings.hydraEnabled !== false && p.provider === providerId,
+  );
+  const saved = settings.newThreadDefault;
+  const value =
+    saved === undefined
+      ? ""
+      : saved.kind === "pair"
+        ? `pair:${saved.pairId}`
+        : `model:${saved.model}`;
+  // A saved model is only "unavailable" when a loaded catalog provably
+  // lacks it — a pending/failed list must not condemn the pick. A saved
+  // pair is unavailable whenever it fails the usable-preset rules:
+  // Hydra off, a foreign provider, or deleted.
+  const resolved =
+    saved === undefined ||
+    (saved.kind === "pair" && usablePairs.some((p) => p.id === saved.pairId)) ||
+    (saved.kind === "model" &&
+      !(catalogReady && !(models ?? []).includes(saved.model)));
+  const unavailable = !resolved;
+  return (
+    <label className="wt-field commit-instructions">
+      <span>{t("Default model")}</span>
+      <select
+        aria-label={t("Default model")}
+        value={unavailable ? "saved" : value}
+        onChange={(e) => {
+          const v = e.target.value;
+          tryCall("settings:set", {
+            newThreadDefault:
+              v === ""
+                ? null
+                : v.startsWith("pair:")
+                  ? { kind: "pair" as const, pairId: v.slice(5) }
+                  : { kind: "model" as const, model: v.slice(6) },
+          });
+        }}
+      >
+        <option value="">{t("Last selection")}</option>
+        {models?.map((id) => (
+          <option key={`m:${id}`} value={`model:${id}`}>
+            {id}
+          </option>
+        ))}
+        {usablePairs.map((p) => (
+          <option key={`p:${p.id}`} value={`pair:${p.id}`}>
+            {(p.name ?? "").trim() || modelsTitle(t, p, providers)}
+          </option>
+        ))}
+        {unavailable && (
+          <option value="saved" disabled>
+            {saved?.kind === "pair"
+              ? t("%@ (unavailable)").replace("%@", t("Preset"))
+              : t("%@ (unavailable)").replace(
+                  "%@",
+                  saved?.kind === "model" ? saved.model : "",
+                )}
+          </option>
+        )}
+        {saved?.kind === "model" &&
+          !unavailable &&
+          !(models ?? []).includes(saved.model) && (
+            <option value={`model:${saved.model}`}>{saved.model}</option>
+          )}
+      </select>
+      <p className="codex-note">
+        {t(
+          "Project combos take priority. Otherwise, Last selection uses the current or most recent model; a selected model stays fixed.",
+        )}
+        {unavailable &&
+          (saved?.kind === "pair"
+            ? ` ${t("The selected pairing is unavailable. New chats will use Last selection.")}`
+            : ` ${t("The selected model is unavailable. New chats will use Last selection.")}`)}
+      </p>
+    </label>
   );
 }

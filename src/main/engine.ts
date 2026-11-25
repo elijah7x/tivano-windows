@@ -25,6 +25,8 @@ import {
   clampedHydraCap,
   headProfileMatches,
   hydraPairForLead,
+  newThreadDefaultAfterPairChange,
+  newThreadDefaultSeed,
   resolveHydraLaunch,
   HYDRA_BUDGET,
   HYDRA_PERSONAS,
@@ -248,6 +250,11 @@ export class Engine {
   private sleepBlocker?: SleepBlocker;
   private sleepBlockerId: number | undefined;
   private sleepModeActive: "off" | "system" | "display" = "off";
+  /** P2-42: model ids from the last `codexModels()` call that returned
+   *  `ready`. Lets `createThread` fall a saved default-model pick back to
+   *  Last selection only when a loaded catalog provably lacks it; an
+   *  unloaded catalog never grounds the fallback. */
+  private readyModelIds: string[] | undefined;
   /**
    * F22: Hydra runtime (bounded frozen slice). Parsers/sent watermarks
    * are keyed per lead turn; delegation rounds and pending reports per
@@ -1168,6 +1175,12 @@ export class Engine {
        *  resolved choice is handed in explicitly: `enabled` plus the
        *  pair `--hydra on` resolved to. */
       externalHydra?: { enabled: boolean; pairId?: string };
+      /** P2-42: a one-off resolved default for this create (Quick chat's
+       *  preset chip) — applied like the saved newThreadDefault, never
+       *  persisted back to it. An explicit null overrides the saved
+       *  default with Last selection (the chip's own "Last selection"
+       *  entry). */
+      newThreadDefault?: import("../shared/hydra").NewThreadDefault | null;
     },
   ): ChatThread {
     this.assertMutable();
@@ -1175,6 +1188,26 @@ export class Engine {
     // Frozen: starting a thread in a shelved project wakes it.
     if (projectId) this.wakeShelvedProject(projectId);
     const settings = this.store.state.settings;
+    // P2-42: frozen newThreadDefault resolves BEFORE the Last-selection
+    // seeds below — a resolved pick replaces them wholesale (frozen
+    // makeThread: an explicit model pick is a pair-less chat, a preset
+    // pick binds its own pair/mode); only a null seed (no choice or an
+    // unavailable one) keeps the saved last-pair/sub-agent defaults.
+    const choice =
+      opts?.newThreadDefault === undefined
+        ? settings.newThreadDefault
+        : (opts.newThreadDefault ?? undefined);
+    const defaultSeed = opts?.externalHydra
+      ? null
+      : newThreadDefaultSeed(
+          choice,
+          settings.hydraPairs ?? [],
+          // Frozen gates the preset default on the app-wide Hydra
+          // switch (settings.hydraEnabled), not the per-chat default.
+          settings.hydraEnabled !== false,
+          this.provider.descriptor.mode,
+          this.readyModelIds,
+        );
     const thread: ChatThread = {
       id: randomUUID(),
       projectId,
@@ -1199,19 +1232,38 @@ export class Engine {
       // inherits the saved default or last pair.
       hydraEnabled: opts?.externalHydra
         ? opts.externalHydra.enabled
-        : settings.hydraDefaultEnabled !== false,
+        : defaultSeed?.hydraEnabled ?? settings.hydraDefaultEnabled !== false,
       ...(opts?.externalHydra
         ? opts.externalHydra.pairId
           ? { hydraPairId: opts.externalHydra.pairId }
           : {}
-        : settings.lastHydraPairId
-          ? { hydraPairId: settings.lastHydraPairId }
-          : {}),
+        : defaultSeed !== null
+          ? defaultSeed.hydraPairId !== undefined
+            ? { hydraPairId: defaultSeed.hydraPairId }
+            : {}
+          : settings.lastHydraPairId
+            ? { hydraPairId: settings.lastHydraPairId }
+            : {}),
       ...(opts?.externalHydra
         ? {}
-        : settings.subagentModeDefault
-          ? { subagentMode: settings.subagentModeDefault }
-          : {}),
+        : defaultSeed?.subagentMode
+          ? { subagentMode: defaultSeed.subagentMode }
+          : defaultSeed === null && settings.subagentModeDefault
+            ? { subagentMode: settings.subagentModeDefault }
+            : {}),
+      // P2-42: frozen newThreadDefault — the resolved seed's lead
+      // model/effort (an explicit model pick or a preset's lead) wins
+      // over Last selection; pair/mode/enabled are applied above.
+      ...(defaultSeed === null
+        ? {}
+        : {
+            ...(defaultSeed.codexModel !== undefined
+              ? { codexModel: defaultSeed.codexModel }
+              : {}),
+            ...(defaultSeed.codexEffort !== undefined
+              ? { codexEffort: defaultSeed.codexEffort }
+              : {}),
+          }),
     };
     this.store.update((d) => {
       d.threads.push(thread);
@@ -2966,6 +3018,10 @@ export class Engine {
     hydraPairs?: import("../shared/hydra").HydraPair[] | undefined;
     lastHydraPairId?: string | null | undefined;
     subagentModeDefault?: SubagentMode | undefined;
+    newThreadDefault?:
+      | import("../shared/hydra").NewThreadDefault
+      | null
+      | undefined;
     chimeraPresets?: import("../shared/chimera").ChimeraPreset[] | undefined;
     chimeraAutoDispatch?: boolean | undefined;
     hydraTilt?: import("../shared/hydraDelegation").HydraTilt | undefined;
@@ -3109,6 +3165,14 @@ export class Engine {
             ...p,
             maxHeads: clampedHydraCap(p.maxHeads),
           }));
+        // P2-42 (frozen): removing the pair the new-chat default names
+        // resets it to Last selection.
+        const kept = newThreadDefaultAfterPairChange(
+          d.settings.newThreadDefault,
+          d.settings.hydraPairs ?? [],
+        );
+        if (kept === undefined) delete d.settings.newThreadDefault;
+        else d.settings.newThreadDefault = kept;
       }
       if (patch.lastHydraPairId !== undefined) {
         if (patch.lastHydraPairId === null) delete d.settings.lastHydraPairId;
@@ -3116,6 +3180,10 @@ export class Engine {
       }
       if (patch.subagentModeDefault !== undefined)
         d.settings.subagentModeDefault = patch.subagentModeDefault;
+      if (patch.newThreadDefault !== undefined) {
+        if (patch.newThreadDefault === null) delete d.settings.newThreadDefault;
+        else d.settings.newThreadDefault = patch.newThreadDefault;
+      }
       if (patch.chimeraPresets !== undefined) {
         if (patch.chimeraPresets.length === 0) delete d.settings.chimeraPresets;
         else d.settings.chimeraPresets = patch.chimeraPresets;
@@ -3904,6 +3972,7 @@ export class Engine {
           state: "pending",
           reason: "no Codex session is bound yet — send a turn, then reopen",
         };
+      this.readyModelIds = models.map((m) => m.id);
       return { state: "ready", models };
     } catch (err) {
       return { state: "unavailable", reason: (err as Error)?.message ?? String(err) };

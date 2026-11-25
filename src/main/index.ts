@@ -964,9 +964,13 @@ bootstrap = app.whenReady().then(async () => {
       hide: hideQuick,
       isVisible: () => quickWin?.isVisible() ?? false,
       // Expand carries the text into the main composer's selected thread
-      // (frozen quickDraft → full chat handoff).
-      expand: (text) => {
+      // (frozen quickDraft → full chat handoff). Frozen
+      // QuickChatPanelController.expand: the chip's own pick creates the
+      // thread the draft lands in — creating first selects it, so the
+      // announce reaches the right composer.
+      expand: (text, pick) => {
         if (!win || win.isDestroyed()) return;
+        if (pick) eng.createThread(null, undefined, { newThreadDefault: pick });
         if (win.isMinimized()) win.restore();
         win.show();
         win.focus();

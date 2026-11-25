@@ -496,3 +496,39 @@ describe("checkpoints:diff payload (F10/A32)", () => {
       );
   });
 });
+
+// P2-42/43: Quick chat narrows to the chip's pick — `model` or `pairId`,
+// bounded optional strings, no other routing field is reachable.
+describe("quick:send narrowing (P2-42/43)", () => {
+  it("accepts text alone, an explicit model, or an explicit pair", () => {
+    expect(
+      requestValidators["quick:send"]({ text: "hi", openApp: false }),
+    ).toEqual({ text: "hi", openApp: false });
+    const m = requestValidators["quick:send"]({
+      text: "hi",
+      openApp: true,
+      model: "m1",
+    });
+    expect(m.model).toBe("m1");
+    expect(m.pairId).toBeUndefined();
+    const p = requestValidators["quick:send"]({
+      text: "hi",
+      openApp: false,
+      pairId: "p1",
+    });
+    expect(p.pairId).toBe("p1");
+  });
+  it("rejects empty text, non-string picks and foreign routing fields", () => {
+    for (const bad of [
+      { text: "", openApp: false },
+      { text: "hi", openApp: false, model: 42 },
+      { text: "hi", openApp: false, pairId: {} },
+      { text: "hi", openApp: false, providerId: "x" },
+      { text: "hi", openApp: false, newThreadDefault: {} },
+      { text: "hi", openApp: false, subagentMode: "preset" },
+    ])
+      expect(() => requestValidators["quick:send"](bad), JSON.stringify(bad)).toThrow(
+        ValidationError,
+      );
+  });
+});

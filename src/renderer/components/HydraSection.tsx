@@ -45,7 +45,7 @@ import { api, tryCall } from "../client";
 
 type T = (key: string, ...vars: string[]) => string;
 
-interface CatalogProvider {
+export interface CatalogProvider {
   id: string;
   label: string;
   ready: boolean;
@@ -102,7 +102,7 @@ function modelName(
 
 /** Frozen HydraPairSummary.modelsTitle — "Fable + Opus", "Any X model +
  *  itself". */
-function modelsTitle(t: T, pair: HydraPair, providers: CatalogProvider[]): string {
+export function modelsTitle(t: T, pair: HydraPair, providers: CatalogProvider[]): string {
   const lead =
     modelName(providers, pair.provider, pair.orchestratorModel) ??
     t("Any %@ model", providerLabel(providers, pair.provider));
