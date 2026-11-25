@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { defaultSettings } from "../src/main/store";
 import { clientStore } from "../src/renderer/client";
 import { ChatView } from "../src/renderer/components/ChatView";
+import { OpenInItems } from "../src/renderer/components/OpenInMenu";
 import { SETTINGS_PAGES, SettingsModal } from "../src/renderer/components/SettingsModal";
 import { Sidebar } from "../src/renderer/components/Sidebar";
 import { translate } from "../src/renderer/i18n";
@@ -210,6 +211,23 @@ describe("P2-53 window chrome simplification", () => {
       }),
     );
     expect(aboutHtml).toContain("Droppy Code by Jordy Spruit");
+    expect(aboutHtml).toContain('aria-controls="settings-panel-about"');
+    expect(aboutHtml).toContain('id="settings-panel-about"');
+    expect(aboutHtml).toContain('aria-labelledby="settings-tab-about"');
+
+    const openInHtml = renderInLang(
+      "en",
+      createElement(OpenInItems, {
+        threadId: thread.id,
+        hasDirectory: true,
+        open: true,
+        onClose: () => {},
+        itemProps: { "data-openin-item": "true" },
+      }),
+    );
+    expect(openInHtml).toContain('data-openin-item="true"');
+    expect(openInHtml).toContain("File Explorer");
+    expect(openInHtml).toContain("Copy path");
   });
 
   it("localizes Settings pages and top-bar strings in zh-Hans", () => {

@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Sidebar: project groups, thread rows with status marks, search, Settings.
 // Electron has no window.prompt/confirm, so rename/create use inline fields

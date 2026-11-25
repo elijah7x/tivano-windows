@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-02.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F18 bounded slice: MCP settings — stdio + streamable-HTTP servers. A
 // server here is a saved configuration plus an on-demand real probe

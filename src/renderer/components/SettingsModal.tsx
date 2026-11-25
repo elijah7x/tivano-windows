@@ -1020,15 +1020,32 @@ export function SettingsModal(props: {
             aria-orientation="vertical"
             aria-label={t("Settings pages")}
           >
-            {SETTINGS_PAGES.map((item) => (
+            {SETTINGS_PAGES.map((item, idx) => (
               <button
                 key={item.id}
+                id={`settings-tab-${item.id}`}
                 type="button"
                 role="tab"
                 aria-selected={page === item.id}
+                aria-controls={`settings-panel-${item.id}`}
+                tabIndex={page === item.id ? 0 : -1}
                 data-settings-page={item.id}
                 className={`settings-nav-item${page === item.id ? " active" : ""}`}
                 onClick={() => setPage(item.id)}
+                onKeyDown={(e) => {
+                  let nextIdx: number | null = null;
+                  if (e.key === "ArrowDown") nextIdx = (idx + 1) % SETTINGS_PAGES.length;
+                  else if (e.key === "ArrowUp")
+                    nextIdx = (idx - 1 + SETTINGS_PAGES.length) % SETTINGS_PAGES.length;
+                  else if (e.key === "Home") nextIdx = 0;
+                  else if (e.key === "End") nextIdx = SETTINGS_PAGES.length - 1;
+                  if (nextIdx === null) return;
+                  e.preventDefault();
+                  const nextPage = SETTINGS_PAGES[nextIdx]!;
+                  setPage(nextPage.id);
+                  const nav = e.currentTarget.parentElement;
+                  nav?.querySelector<HTMLButtonElement>(`#settings-tab-${nextPage.id}`)?.focus();
+                }}
               >
                 {t(item.label)}
               </button>
@@ -1037,8 +1054,10 @@ export function SettingsModal(props: {
 
           <div
             ref={paneRef}
+            id={`settings-panel-${page}`}
             className="settings-pane"
             role="tabpanel"
+            aria-labelledby={`settings-tab-${page}`}
             data-page={page}
           >
             {renderPage()}

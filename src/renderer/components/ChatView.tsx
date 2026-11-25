@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-22.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Chat area: header with the labelled mock badge, message timeline with
 // streaming/approval/error/interruption states, and the composer.
@@ -27,6 +27,7 @@ import { BranchMenu } from "./BranchMenu";
 import { HydraMark } from "./HydraMark";
 import { HydraPanel } from "./HydraPanel";
 import { HelperPanel } from "./HelperPanel";
+import { OpenInItems } from "./OpenInMenu";
 import { ScriptsDialog } from "./ScriptsDialog";
 import { Composer } from "./Composer";
 import { TimelineMinimap } from "./TimelineMinimap";
@@ -198,7 +199,6 @@ export function ChatView(props: {
   const [worktreeOpen, setWorktreeOpen] = useState(false);
   const [scriptsOpen, setScriptsOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
-  const [moreEditors, setMoreEditors] = useState<{ id: string; name: string }[]>([]);
   const moreRef = useRef<HTMLDivElement>(null);
   const [msgMenu, setMsgMenu] = useState<MessagePopoverState | null>(null);
   const ckptGen = useRef(0);
@@ -405,9 +405,6 @@ export function ChatView(props: {
     };
     window.addEventListener("mousedown", down);
     window.addEventListener("keydown", key);
-    callApi("openin:editors", {})
-      .then((r) => setMoreEditors((r as { editors: { id: string; name: string }[] }).editors))
-      .catch(() => setMoreEditors([]));
     return () => {
       window.removeEventListener("mousedown", down);
       window.removeEventListener("keydown", key);
@@ -540,7 +537,6 @@ export function ChatView(props: {
       : t("Synthetic provider — no real model, tools or commands");
 
   const hasDirectory = props.directory !== undefined && props.directory !== null;
-  const fileManager = api().platform === "win32" ? t("File Explorer") : t("Finder");
 
   return (
     <main className="chat">
@@ -652,47 +648,13 @@ export function ChatView(props: {
                   </button>
                 )}
                 <div className="openin-divider" aria-hidden="true" />
-                <div className="openin-section">{t("Open in")}</div>
-                <button
-                  type="button"
-                  role="menuitem"
-                  data-openin-item="true"
-                  disabled={!hasDirectory}
-                  onClick={() => {
-                    setMoreOpen(false);
-                    void callApi("folder:reveal", { threadId: thread.id }).catch(() => {});
-                  }}
-                >
-                  {fileManager}
-                </button>
-                {moreEditors.map((ed) => (
-                  <button
-                    key={ed.id}
-                    type="button"
-                    role="menuitem"
-                    data-openin-item="true"
-                    disabled={!hasDirectory}
-                    data-editor={ed.id}
-                    onClick={() => {
-                      setMoreOpen(false);
-                      void callApi("openin:open", { threadId: thread.id, editorId: ed.id }).catch(() => {});
-                    }}
-                  >
-                    {t(ed.name)}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  role="menuitem"
-                  data-openin-item="true"
-                  disabled={!hasDirectory}
-                  onClick={() => {
-                    setMoreOpen(false);
-                    void callApi("folder:copy", { threadId: thread.id }).catch(() => {});
-                  }}
-                >
-                  {t("Copy path")}
-                </button>
+                <OpenInItems
+                  threadId={thread.id}
+                  hasDirectory={hasDirectory}
+                  open={moreOpen}
+                  onClose={() => setMoreOpen(false)}
+                  itemProps={{ "data-openin-item": "true" }}
+                />
               </div>
             )}
           </div>
