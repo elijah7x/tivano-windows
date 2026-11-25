@@ -89,11 +89,13 @@ export function ScriptsDialog(props: {
   onClose: () => void;
   /** A script terminal was created — surface the terminal dock. */
   onRan: () => void;
+  /** Test seam: render the dialog initially in edit mode for saved scripts. */
+  initialEditing?: boolean;
 }): React.JSX.Element {
   const t = useT();
   const { thread, project } = props;
   const scripts = project.scripts ?? [];
-  const [editing, setEditing] = useState(scripts.length === 0);
+  const [editing, setEditing] = useState(props.initialEditing ?? scripts.length === 0);
   const [drafts, setDrafts] = useState<Draft[]>(scripts.map(toScriptDraft));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

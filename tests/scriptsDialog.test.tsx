@@ -94,7 +94,7 @@ const sampleProject: Project = {
 };
 
 describe("ScriptsDialog & ScriptDraftList (P2-33 remove-while-editing)", () => {
-  it("renders ScriptsDialog in view and empty-project edit modes in en and zh-Hans", () => {
+  it("renders ScriptsDialog in view and edit modes (including saved drafts keyed via ScriptDraftList) in en and zh-Hans", () => {
     const viewHtml = renderInLang(
       "en",
       createElement(ScriptsDialog, {
@@ -106,6 +106,20 @@ describe("ScriptsDialog & ScriptDraftList (P2-33 remove-while-editing)", () => {
     );
     expect(viewHtml).toContain("Build");
     expect(viewHtml).toContain("Edit scripts");
+
+    const savedEditHtml = renderInLang(
+      "en",
+      createElement(ScriptsDialog, {
+        thread: sampleThread,
+        project: sampleProject,
+        onClose: () => {},
+        onRan: () => {},
+        initialEditing: true,
+      }),
+    );
+    expect(savedEditHtml).toContain('data-script-key="saved-1"');
+    expect(savedEditHtml).toContain("Build");
+    expect(savedEditHtml).toContain("npm run build");
 
     const editHtml = renderInLang(
       "zh-Hans",

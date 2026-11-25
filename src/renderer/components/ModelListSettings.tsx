@@ -206,11 +206,16 @@ export function createModelListController(ctx: ModelListControllerContext) {
   const commitRename = (id: string) => {
     const name = ctx.getDraft().trim();
     const f = freshLists();
-    const cur = f.sections.find((s) => s.id === id);
+    const pending = ctx.pendingRenameRef.current;
+    const baseSections =
+      pending !== null && pending.id !== id
+        ? applyDraftRename(f.sections, pending.id, pending.name)
+        : f.sections;
+    const cur = baseSections.find((s) => s.id === id);
     if (cur && name !== "" && name !== cur.name) {
       ctx.pendingRenameRef.current = { id, name };
-      ctx.write({ modelSections: renameSection(f.sections, id, name) });
-    } else if (ctx.pendingRenameRef.current?.id === id) {
+      ctx.write({ modelSections: renameSection(baseSections, id, name) });
+    } else if (pending?.id === id) {
       ctx.pendingRenameRef.current = null;
     }
     ctx.setEditingId(null);
@@ -239,8 +244,9 @@ export function createModelListController(ctx: ModelListControllerContext) {
 
   const removePinAction = (pin: ModelPin) => {
     const f = freshLists();
+    const folded = foldRename(f.sections);
     ctx.setEditingId(null);
-    writeItems(removePin(f.pins, foldRename(f.sections), pin));
+    writeItems(removePin(f.pins, folded, pin));
   };
 
   const removeSectionAction = (sectionId: string) => {

@@ -337,7 +337,7 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
     };
   }
 
-  it("renders rename input cleanly in group detail and keeps maxLength=200 bound", () => {
+  it("renders group detail rename and ungroup actions cleanly", () => {
     setMockSettings({});
     const html = renderLang(
       "en",
@@ -350,9 +350,10 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
     expect(html).toContain("Ungroup. Models stay in the list.");
   });
 
-  it("preserves a blur-committed rename when removePin runs before IPC echo", () => {
+  it("preserves both live and blur-committed renames across removePin, commitRename, cancelRename, and startRename", () => {
     const rig = setupControllerRig();
     const secA = clientStore.snapshot!.settings.modelSections![0]!;
+    const secB = clientStore.snapshot!.settings.modelSections![1]!;
     rig.ctrl.startRename(secA);
     rig.setDraftVal("Reasoning v2");
 
@@ -361,22 +362,49 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
     expect(rig.getState().editingId).toBeNull();
     expect(rig.getState().pendingRename).toEqual({ id: "sec-a", name: "Reasoning v2" });
 
-    // Immediate removePin click before settings-changed echoes must fold the pending rename.
+    // Switching straight to rename secB and committing must fold secA's un-echoed pendingRename.
+    rig.ctrl.startRename(secB);
+    rig.setDraftVal("Small v2");
+    rig.ctrl.commitRename("sec-b");
+    const secondCommit = rig.writes[1] as { modelSections: ModelSection[] };
+    expect(secondCommit.modelSections.find((s) => s.id === "sec-a")?.name).toBe("Reasoning v2");
+    expect(secondCommit.modelSections.find((s) => s.id === "sec-b")?.name).toBe("Small v2");
+
+    // Start renaming secA without blurring, then removePin directly -> live draft folds before editingId clears.
+    rig.ctrl.startRename(secA);
+    rig.setDraftVal("Reasoning Live Remove");
     rig.ctrl.removePin({ provider: "codex", modelID: "gpt-a1" });
-    expect(rig.writes).toHaveLength(2);
-    const removeWrite = rig.writes[1] as {
+    expect(rig.getState().editingId).toBeNull();
+    const removeWrite = rig.writes[2] as {
       modelList: ModelPin[];
       modelSections: ModelSection[];
     };
     expect(removeWrite.modelList.map((p) => p.modelID)).toEqual(["gpt-u", "gpt-b1"]);
-    expect(removeWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe("Reasoning v2");
+    expect(removeWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe(
+      "Reasoning Live Remove",
+    );
+
+    // startRename while already editing another section commits the first before switching, and cancelRename clears editing + pending.
+    rig.ctrl.startRename(secA);
+    rig.setDraftVal("Reasoning Before Switch");
+    rig.ctrl.startRename(secB);
+    expect(rig.getState().editingId).toBe("sec-b");
+    expect(rig.getState().pendingRename).toEqual({ id: "sec-a", name: "Reasoning Before Switch" });
+    rig.ctrl.cancelRename("sec-b");
+    expect(rig.getState().editingId).toBeNull();
 
     // Once the store echoes the new name, pendingRename clears.
     rig.echoSnapshot({
       modelList: removeWrite.modelList,
-      modelSections: removeWrite.modelSections,
+      modelSections: removeWrite.modelSections.map((s) =>
+        s.id === "sec-a" ? { ...s, name: "Reasoning Before Switch" } : s,
+      ),
     });
-    rig.ctrl.syncEffects(removeWrite.modelList, removeWrite.modelSections, null);
+    rig.ctrl.syncEffects(
+      removeWrite.modelList,
+      clientStore.snapshot!.settings.modelSections!,
+      null,
+    );
     expect(rig.getState().pendingRename).toBeNull();
   });
 
@@ -406,7 +434,7 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
     expect(rig.getState().pendingRename).toBeNull();
   });
 
-  it("folds pending rename into reorder operations (rail drop, pin drop, moveSection, movePinToSection)", () => {
+  it("folds pending and live renames into reorder and catalog operations (rail drop, pin drop, wall drop, moveSection, movePinToSection, toggleCatalogPin)", () => {
     const rig = setupControllerRig();
     const secA = clientStore.snapshot!.settings.modelSections![0]!;
     rig.ctrl.startRename(secA);
@@ -425,11 +453,33 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
       "Reasoning Reordered",
     );
 
-    // Move pin while editing (context-menu path keeps editingId active).
+    // Drop a pin onto another pin and onto a wall group while editing (folds live draft).
     rig.ctrl.startRename(secA);
+    rig.setDraftVal("Reasoning Pin Drop");
+    rig.setDrag("codex/gpt-u");
+    rig.ctrl.dropOnPin({ provider: "codex", modelID: "gpt-a1" }, false);
+    const pinDropWrite = rig.writes[2] as {
+      modelList: ModelPin[];
+      modelSections: ModelSection[];
+    };
+    expect(pinDropWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe(
+      "Reasoning Pin Drop",
+    );
+
+    rig.setDrag("codex/gpt-b1");
+    rig.ctrl.dropOnWallGroup("sec-a", false);
+    const wallDropWrite = rig.writes[3] as {
+      modelList: ModelPin[];
+      modelSections: ModelSection[];
+    };
+    expect(wallDropWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe(
+      "Reasoning Pin Drop",
+    );
+
+    // Move pin while editing (context-menu path keeps editingId active).
     rig.setDraftVal("Reasoning Menu");
     rig.ctrl.movePinToSection({ provider: "codex", modelID: "gpt-u" }, "sec-a");
-    const movePinWrite = rig.writes[2] as {
+    const movePinWrite = rig.writes[4] as {
       modelList: ModelPin[];
       modelSections: ModelSection[];
     };
@@ -441,9 +491,20 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
 
     // Move section up while editing.
     rig.ctrl.moveSection("sec-b", -1);
-    const moveSecWrite = rig.writes[3] as { modelSections: ModelSection[] };
+    const moveSecWrite = rig.writes[5] as { modelSections: ModelSection[] };
     expect(moveSecWrite.modelSections[0]?.id).toBe("sec-b");
     expect(moveSecWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe(
+      "Reasoning Menu",
+    );
+
+    // Unpin via catalog toggle while editing also folds the active rename.
+    rig.ctrl.toggleCatalogPin({ provider: "codex", modelID: "gpt-a1" }, true);
+    const catUnpinWrite = rig.writes[6] as {
+      modelList: ModelPin[];
+      modelSections: ModelSection[];
+    };
+    expect(catUnpinWrite.modelList.some((p) => p.modelID === "gpt-a1")).toBe(false);
+    expect(catUnpinWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe(
       "Reasoning Menu",
     );
   });
