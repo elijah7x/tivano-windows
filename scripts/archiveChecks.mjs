@@ -43,6 +43,8 @@ export async function runArchiveChecks({
   };
   const openSettings = async (page) => {
     await page.locator(".sidebar-foot button.row").click();
+    await page.waitForSelector(".modal", { timeout: 10000 });
+    await page.locator('[data-settings-page="storage"]').click();
     await page.waitForSelector(".archive-section", { timeout: 10000 });
     await page.waitForSelector(".archive-picker", { timeout: 10000 });
   };
@@ -259,7 +261,14 @@ export async function runArchiveChecks({
   await page.evaluate((id) => window.tivano.invoke("threads:select", { id }), live.id);
   await waitSnap(page, (s) => s.selectedThreadId === live.id);
   await liveRow.hover();
-  await liveRow.locator('button[title="Archive thread"]').click();
+  // P2-34: archiving lives in the ⋯/context menu now — a hovered row
+  // must NOT grow back a dedicated Archive button (frozen parity).
+  verify("ARCH-15-menu",
+    (await liveRow.locator('button[title="Archive thread"]').count()) === 0);
+  await liveRow.locator('button[title="Thread actions"]').click();
+  await page
+    .locator('.row-menu button[role="menuitem"]', { hasText: "Archive" })
+    .click();
   const afterArch = await waitSnap(
     page,
     (s) => s.threads.find((t) => t.id === live.id)?.isArchived === true,

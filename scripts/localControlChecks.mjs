@@ -300,6 +300,7 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   await wait(200);
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="connections"]').click();
   await page.waitForSelector(".control-status", { timeout: 10000 });
   const alphaSwitch = page.locator('.choice-row button[role="switch"]', { hasText: "Alpha" }).first();
   verify("LC-23 Alpha switch rendered", (await alphaSwitch.count()) === 1);
@@ -355,6 +356,8 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   await page.locator(".modal-actions .primary").click();
   await page.waitForSelector(".modal", { state: "detached", timeout: 10000 });
   await page.locator(".sidebar-foot button.row").click();
+  await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="connections"]').click();
   await page.waitForSelector('[data-testid="cli-status"]', { timeout: 10000 });
   await waitCliText("older copy");
   verify("LC-28a stale shim reports needs-repair, reads Repair CLI",

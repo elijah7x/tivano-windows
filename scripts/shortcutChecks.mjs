@@ -55,6 +55,7 @@ export async function runShortcutChecks({
   // --- settings section renders all 17 rows with chord labels ----------
   await press("Meta+,");
   await page.locator(".modal").waitFor({ timeout: 8000 });
+  await page.locator('[data-settings-page="shortcuts"]').click();
   await page.evaluate(() => {
     const h = [...document.querySelectorAll(".modal h3")].find((x) => x.textContent === "Keyboard shortcuts");
     h?.scrollIntoView();
@@ -116,6 +117,7 @@ export async function runShortcutChecks({
   // --- record again then verify it actually DISPATCHES ------------------
   await press("Meta+,");
   await page.locator(".modal").waitFor({ timeout: 8000 });
+  await page.locator('[data-settings-page="shortcuts"]').click();
   await page.evaluate(() => {
     const h = [...document.querySelectorAll(".modal h3")].find((x) => x.textContent === "Keyboard shortcuts");
     h?.scrollIntoView();
@@ -246,6 +248,7 @@ export async function runShortcutChecks({
   await pageB.evaluate(() => window.tivano.invoke("settings:set", { language: "zh-Hans" }));
   await pageB.keyboard.press("Meta+,");
   await pageB.locator(".modal").waitFor({ timeout: 8000 });
+  await pageB.locator('[data-settings-page="shortcuts"]').click();
   await pageB.evaluate(() => {
     const h = [...document.querySelectorAll(".modal h3")].find((x) => x.textContent?.includes("快捷键"));
     h?.scrollIntoView();

@@ -107,6 +107,7 @@ export async function runNotifyChecks({
   );
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="conversation"]').click();
   verify(
     "NOTIFY-04 retired switches absent in Settings",
     (await page.getByRole("switch", { name: "Chime when a turn finishes" }).count()) === 1 &&

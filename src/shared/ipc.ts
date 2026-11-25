@@ -21,7 +21,7 @@ import {
   ValidationError,
   type Validator,
 } from "./validate";
-import { LANGUAGE_IDS, THEME_IDS } from "./types";
+import { APPEARANCE_MODES, LANGUAGE_IDS, THEME_IDS, WEATHER_WINDOW_MODES } from "./types";
 import { SHORTCUT_COMMANDS, type KeyChord } from "./shortcuts";
 import type { ModelPreference } from "./modelList";
 
@@ -188,6 +188,7 @@ export const REQUEST_CHANNELS = [
   "threads:select",
   "threads:spawn-helper",
   "threads:close-helper",
+  "threads:show-helper",
   "threads:rename",
   "threads:delete",
   "threads:delete-archived",
@@ -374,6 +375,7 @@ export const requestValidators = {
     prompt: vNonEmptyString(8000),
   }),
   "threads:close-helper": vObject({ id: vId }),
+  "threads:show-helper": vObject({ id: vId }),
   "threads:rename": vObject({ id: vId, title: vNonEmptyString(200) }),
   "threads:delete": vObject({ id: vId }),
   // F02: frozen deleteArchivedThreads(ids:) — the renderer sends the set
@@ -465,6 +467,7 @@ export const requestValidators = {
   "approvals:resolve": vObject({ threadId: vId, approvalId: vId, optionId: vString }),
   "settings:set": vObject({
     theme: vOptional(vTheme),
+    appearanceMode: vOptional(vEnum(APPEARANCE_MODES)),
     language: vOptional(vLanguage),
     // F28: frozen chimeWhenFinished (default on) — a soft chime when a
     // turn finishes, whether or not the thread is in view.
@@ -483,7 +486,8 @@ export const requestValidators = {
     defaultWorkspaceMode: vOptional(vEnum(["local", "worktree", "auto"] as const)),
     showReasoning: vOptional(vBoolean),
     showsWorkingCard: vOptional(vBoolean),
-    // F26: sidebar weather hero (frozen showsSkylight, default true).
+    // P2-47: Weather window mode (porthole / full / off) + legacy showsSkylight alias.
+    weatherWindowMode: vOptional(vEnum(WEATHER_WINDOW_MODES)),
     showsSkylight: vOptional(vBoolean),
     // F33: CLI install receipt (frozen cliInstallationTarget) — the shim
     // target path; the settings:set patch clears it with null.
@@ -522,6 +526,7 @@ export const requestValidators = {
     hydraAutoMerge: vOptional(vBoolean),
     hydraArchivesCodexHeads: vOptional(vBoolean),
     hydraShowsHeadDetails: vOptional(vBoolean),
+    hydraAutoOpensPanels: vOptional(vBoolean),
     hydraAutoPopsHeads: vOptional(vBoolean),
     hydraTempersHeadEffort: vOptional(vBoolean),
     hasSeenHydraIntro: vOptional(vBoolean),

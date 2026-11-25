@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-02.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F17 model-list e2e — OFFLINE Codex fixture only. Pins/sections/prefs
 // persist through settings:set; the picker restricts to the pinned set
@@ -47,6 +47,7 @@ export async function runModelListChecks({
       await page.locator(".sidebar-foot button.row").click();
       await page.waitForSelector(".modal", { timeout: 8000 });
     }
+    await page.locator('[data-settings-page="models"]').click();
     await page.locator(".ml-settings").scrollIntoViewIfNeeded();
     await page.waitForSelector(".ml-head-title", { timeout: 8000 });
   };
@@ -58,7 +59,7 @@ export async function runModelListChecks({
   };
   const optionValues = async (page) =>
     page.evaluate(() =>
-      [...document.querySelectorAll(".model-select option")].map((o) => o.value),
+      [...document.querySelectorAll(".model-picker .model-select option")].map((o) => o.value),
     );
 
   let s = await launch({}, "s-modellist-a");
@@ -130,9 +131,9 @@ export async function runModelListChecks({
     vals,
   );
 
-  // ML-04: New group → section card appears, rename inline.
+  // ML-04: New group → rail + detail card appear, rename inline.
   await openSettings(page);
-  await page.locator(".ml-newgroup").click();
+  await page.locator(".ml-newgroup-rail").click();
   await page.waitForSelector(".ml-rename", { timeout: 5000 });
   await page.locator(".ml-rename").fill("Fast lane");
   await page.keyboard.press("Enter");
@@ -145,10 +146,10 @@ export async function runModelListChecks({
     (await page.locator(".ml-group-name").innerText()) === "Fast lane",
   );
 
-  // ML-05: right-click a pin → Move to Group → the group. The new group
-  // was appended at the list's end, so the layout becomes
-  // [pin, section, pin].
-  await page.locator(".ml-pin:not(.static)").first().click({ button: "right" });
+  // ML-05: All chip wall → right-click a chip → Move to Group → Fast lane.
+  await page.locator(".ml-rail-card", { hasText: "All" }).first().click();
+  await page.waitForSelector(".ml-chip", { timeout: 5000 });
+  await page.locator(".ml-chip").first().click({ button: "right" });
   await page.waitForSelector(".msg-menu", { timeout: 5000 });
   await page.locator(".msg-menu .msg-row", { hasText: "Fast lane" }).click();
   await waitSnapshot(page, async () => {
@@ -162,51 +163,82 @@ export async function runModelListChecks({
     layout,
   );
 
-  // ML-06: collapse hides the group's pins; header shows count.
-  await page.locator(".ml-group-head").click();
-  await waitSnapshot(page, async () => {
-    const st = await settingsOf(page);
-    return st.collapsedModelSections?.length === 1;
-  });
+  // ML-06: switching rail group filters the detail card; All shows chip wall.
+  const firstSectionId = (await settingsOf(page)).modelSections[0].id;
+  await page.locator(`.ml-rail-card[data-rail-target="${firstSectionId}"]`).click();
   verify(
-    "ML-06 collapsed group hides its rows",
-    (await page.locator(".ml-group .ml-pin").count()) === 0 &&
-      (await page.locator(".ml-chev.closed").count()) === 1,
+    "ML-06 selecting group in rail filters detail rows",
+    (await page.locator(".ml-pin:not(.static)").count()) === 1,
   );
-  await page.locator(".ml-group-head").click(); // expand again
-  await waitSnapshot(page, async () => {
-    const st = await settingsOf(page);
-    return (st.collapsedModelSections ?? []).length === 0;
-  });
+  await page.locator(".ml-rail-card", { hasText: "All" }).first().click();
+  verify(
+    "ML-06b All view renders chip wall",
+    (await page.locator(".ml-chip").count()) === 2,
+  );
 
-  // ML-07: second group → move the ungrouped pin into it, then
+  // ML-07: second group → drag ungrouped chip onto rail group card, then
   // Move Up swaps the two group blocks (with their models).
-  await page.locator(".ml-newgroup").click();
+  await page.locator(".ml-newgroup-rail").click();
   await page.waitForSelector(".ml-rename");
   await page.locator(".ml-rename").fill("Pit stop");
-  await page.keyboard.press("Enter"); // commits the name (Escape would close the modal)
+  await page.keyboard.press("Enter");
   await page.waitForTimeout(120);
   const secondSectionId = (await settingsOf(page)).modelSections.at(-1).id;
-  await page.locator(".ml-card:not(.ml-group) .ml-pin").first().click({ button: "right" });
-  await page.locator(".msg-menu .msg-row", { hasText: "Pit stop" }).click();
+  await page.locator(".ml-rail-card", { hasText: "All" }).first().click();
+  await page
+    .locator('[data-wall-group="ungrouped"] .ml-chip')
+    .first()
+    .dragTo(page.locator(`.ml-rail-card[data-rail-target="${secondSectionId}"]`));
   await waitSnapshot(page, async () => {
     const st = await settingsOf(page);
     return modelLayout(st).join() === "section,pin,section,pin";
   });
-  await page.locator(".ml-group-head").nth(1).click({ button: "right" });
+  // Drag chip from first group onto second group's chip, then drag first chip of
+  // second group onto empty group space in second group to move it to the end.
+  const firstGroupChip = page.locator(`[data-wall-group="${firstSectionId}"] .ml-chip`).first();
+  const secondGroupChip = page.locator(`[data-wall-group="${secondSectionId}"] .ml-chip`).first();
+  await firstGroupChip.dragTo(secondGroupChip);
+  await waitSnapshot(page, async () => {
+    const st = await settingsOf(page);
+    return modelLayout(st).join() === "section,section,pin,pin";
+  });
+  const beforeEndDrag = (await settingsOf(page)).modelList.map((p) => p.modelID);
+  const wallBox = await page.locator(`[data-wall-group="${secondSectionId}"]`).boundingBox();
+  await page
+    .locator(`[data-wall-group="${secondSectionId}"] .ml-chip`)
+    .first()
+    .dragTo(page.locator(`[data-wall-group="${secondSectionId}"]`), {
+      targetPosition: { x: Math.max(20, (wallBox?.width ?? 200) - 16), y: 12 },
+    });
+  await waitSnapshot(page, async () => {
+    const st = await settingsOf(page);
+    return st.modelList.map((p) => p.modelID).join() === [...beforeEndDrag].reverse().join();
+  });
+  await page
+    .locator(`[data-wall-group="${secondSectionId}"] .ml-chip`)
+    .first()
+    .dragTo(page.locator(`.ml-rail-card[data-rail-target="${firstSectionId}"]`));
+  await waitSnapshot(page, async () => {
+    const st = await settingsOf(page);
+    return modelLayout(st).join() === "section,pin,section,pin";
+  });
+  await page.locator(`.ml-rail-card[data-rail-target="${secondSectionId}"]`).click({ button: "right" });
   await page.locator(".msg-menu .msg-row", { hasText: "Move Up" }).click();
   await waitSnapshot(page, async () => {
     const st = await settingsOf(page);
     return st.modelSections?.[0]?.id === secondSectionId;
   });
   verify(
-    "ML-07 Move Up swaps the two groups",
+    "ML-07 drag chip + Move Up swaps the two groups",
     (await settingsOf(page)).modelSections[0].id === secondSectionId,
   );
 
-  // ML-08/09: effort popover on fixture-model (nth(1) — the only pin
-  // whose catalog entry advertises a fast tier) sets effort + fast.
-  await page.locator(".ml-pin:not(.static)").nth(1).click();
+  // ML-08/09: click fixture-model chip in All view to jump to its group,
+  // then set effort + fast via effort popover.
+  await page.locator(".ml-rail-card", { hasText: "All" }).first().click();
+  await page.locator('.ml-chip[data-pin-id="codex/fixture-model"]').click();
+  await page.waitForSelector(".ml-pin:not(.static)", { timeout: 5000 });
+  await page.locator(".ml-pin:not(.static)").first().click();
   await page.waitForSelector(".effort-pop", { timeout: 5000 });
   await page.locator(".effort-pop .msg-row", { hasText: /^High/ }).click();
   await waitSnapshot(page, async () => {
@@ -232,17 +264,20 @@ export async function runModelListChecks({
   // ML-10: the pinned row's summary carries the stored defaults.
   verify(
     "ML-10 pin summary shows the stored defaults",
-    (await page.locator(".ml-pin:not(.static) .ml-summary").nth(1).innerText()).includes(
+    (await page.locator(".ml-pin:not(.static) .ml-summary").first().innerText()).includes(
       "Fast",
     ),
   );
 
-  // ML-11: picking the pinned model seeds its stored defaults.
+  // ML-11: group-aware model picker popover picks the pinned model + seeds defaults.
   await closeSettings(page);
   const pinnedWithPref = Object.entries(
     (await settingsOf(page)).modelPreferences,
   )[0][0].split("/")[1];
-  await page.locator(".model-select").selectOption(pinnedWithPref);
+  await page.locator(".model-groups-btn").click();
+  await page.waitForSelector(".model-picker-pop", { timeout: 5000 });
+  await page.locator('.model-pop-cat[data-picker-cat="all"]').click();
+  await page.locator(".model-pop-row", { hasText: "Fixture Model" }).click();
   await waitSnapshot(page, async () => {
     const st = await snap(page);
     const t = st.threads.find((x) => x.id === threadId);
@@ -253,16 +288,17 @@ export async function runModelListChecks({
     );
   });
   verify(
-    "ML-11 selecting a pinned model applies its stored effort+fast",
+    "ML-11 selecting a pinned model from group picker applies its stored effort+fast",
     true,
   );
 
-  // ML-12: search filters the pinned rows (query hits the model id).
+  // ML-12: search filters the All chip wall (query hits the model id).
   await openSettings(page);
+  await page.locator(".ml-rail-card", { hasText: "All" }).first().click();
   await page.locator(".ml-search").fill("fixture-mo");
   await page.waitForTimeout(150);
   const visibleNames = await page
-    .locator(".ml-pin:not(.static) .ml-name")
+    .locator(".ml-chip .ml-chip-name")
     .allInnerTexts();
   verify(
     "ML-12 search narrows pins",
@@ -271,9 +307,9 @@ export async function runModelListChecks({
   );
   await page.locator(".ml-search").fill("");
 
-  // ML-13: right-click → Remove from the picker drops the pin.
+  // ML-13: right-click chip → Remove from the picker drops the pin.
   const before = (await settingsOf(page)).modelList.length;
-  await page.locator(".ml-pin:not(.static)").first().click({ button: "right" });
+  await page.locator(".ml-chip").first().click({ button: "right" });
   await page
     .locator(".msg-menu .msg-row", { hasText: "Remove from the picker" })
     .click();
@@ -283,11 +319,67 @@ export async function runModelListChecks({
   });
   verify("ML-13 pin removed", (await settingsOf(page)).modelList.length === before - 1);
 
-  // ML-14: Remove group heading keeps the models (they join the top).
-  const sectionsBefore = (await settingsOf(page)).modelSections.length;
-  await page.locator(".ml-group-head").first().click({ button: "right" });
+  // ML-13b (P2-33): rename a group inline, then immediately remove a pin /
+  // reorder a group while editing — both the rename and mutation persist.
+  // Note: ML-13 removed secondSectionId's pin (since Move Up placed it first),
+  // so firstSectionId still holds its pin for blur-commit + immediate remove.
+  await page.locator(`.ml-rail-card[data-rail-target="${firstSectionId}"]`).click();
+  await page.waitForSelector('.ml-icobtn[aria-label="Rename group"]', { timeout: 5000 });
+  await page.locator('.ml-icobtn[aria-label="Rename group"]').click();
+  await page.waitForSelector(".ml-rename", { timeout: 5000 });
+  await page.locator(".ml-rename").fill("Fast lane v2");
+  verify(
+    "ML-13b-pre target group holds a removable pin",
+    (await page.locator(".ml-pin:not(.static) .ml-remove").count()) === 1,
+  );
+  // Click remove directly without pressing Enter first (blur + remove in one click).
+  await page.locator(".ml-pin:not(.static) .ml-remove").first().click();
+  await waitSnapshot(page, async () => {
+    const st = await settingsOf(page);
+    return (
+      st.modelSections?.some((x) => x.id === firstSectionId && x.name === "Fast lane v2") &&
+      (st.modelList ?? []).length === before - 2
+    );
+  });
+  verify(
+    "ML-13b blur-commit rename + immediate pin remove both landed",
+    (await settingsOf(page)).modelSections.some(
+      (x) => x.id === firstSectionId && x.name === "Fast lane v2",
+    ) && ((await settingsOf(page)).modelList ?? []).length === before - 2,
+  );
+
+  // ML-13c (P2-33): select secondSectionId (at index 0, not in edit mode),
+  // start inline rename, then reorder via rail context menu without pressing Enter.
+  await page.locator(`.ml-rail-card[data-rail-target="${secondSectionId}"]`).click();
+  await page.waitForSelector('.ml-icobtn[aria-label="Rename group"]', { timeout: 5000 });
+  await page.locator('.ml-icobtn[aria-label="Rename group"]').click();
+  await page.waitForSelector(".ml-rename", { timeout: 5000 });
+  await page.locator(".ml-rename").fill("Pit lane v3");
   await page
-    .locator(".msg-menu .msg-row", { hasText: "Remove group heading" })
+    .locator(`.ml-rail-card[data-rail-target="${secondSectionId}"]`)
+    .click({ button: "right" });
+  await page.locator(".msg-menu .msg-row", { hasText: "Move Down" }).click();
+  await waitSnapshot(page, async () => {
+    const st = await settingsOf(page);
+    return (
+      st.modelSections?.at(-1)?.id === secondSectionId &&
+      st.modelSections?.at(-1)?.name === "Pit lane v3"
+    );
+  });
+  verify(
+    "ML-13c reorder-while-editing preserves rename and moves group",
+    (await settingsOf(page)).modelSections.at(-1)?.name === "Pit lane v3",
+  );
+  const afterRemoveCount = ((await settingsOf(page)).modelList ?? []).length;
+
+  // ML-14: Ungroup keeps the models (they join the top).
+  await page.locator(".ml-rail-card", { hasText: "All" }).first().click();
+  const sectionsBefore = (await settingsOf(page)).modelSections.length;
+  await page
+    .locator(`.ml-rail-card[data-rail-target="${secondSectionId}"]`)
+    .click({ button: "right" });
+  await page
+    .locator(".msg-menu .msg-row", { hasText: "Ungroup" })
     .click();
   await waitSnapshot(page, async () => {
     const st = await settingsOf(page);
@@ -295,8 +387,8 @@ export async function runModelListChecks({
   });
   verify(
     "ML-14 heading removed, models stay",
-    (await settingsOf(page)).modelList.length === before - 1 &&
-      (await page.locator(".ml-pin:not(.static)").count()) === before - 1,
+    ((await settingsOf(page)).modelList ?? []).length === afterRemoveCount &&
+      (await page.locator(".ml-chip").count()) === afterRemoveCount,
   );
 
   // ML-15: zh-Hans labels + screenshot.
@@ -306,7 +398,7 @@ export async function runModelListChecks({
   verify(
     "ML-15 zh-Hans section labels",
     zhHead === "你的模型" &&
-      (await page.locator(".ml-newgroup").innerText()) === "新建分组",
+      (await page.locator(".ml-newgroup-rail").innerText()).includes("新建分组"),
     zhHead,
   );
   await page.locator(".ml-settings").scrollIntoViewIfNeeded();
@@ -331,11 +423,11 @@ export async function runModelListChecks({
   const afterRestart = await settingsOf(page);
   verify(
     "ML-16b layout + prefs survive restart",
-    afterRestart.modelList?.length === before - 1 &&
+    (afterRestart.modelList ?? []).length === afterRemoveCount &&
       afterRestart.modelSections?.length === sectionsBefore - 1 &&
       Object.keys(afterRestart.modelPreferences ?? {}).length === 1,
     {
-      pins: afterRestart.modelList?.length,
+      pins: (afterRestart.modelList ?? []).length,
       sections: afterRestart.modelSections?.length,
       prefs: Object.keys(afterRestart.modelPreferences ?? {}).length,
     },

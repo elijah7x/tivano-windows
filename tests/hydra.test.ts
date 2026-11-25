@@ -267,6 +267,7 @@ describe("F21 Hydra settings persistence", () => {
       hydraArchivesCodexHeads: true,
       hydraShowsHeadDetails: true,
       hydraAutoPopsHeads: true,
+      hydraAutoOpensPanels: false,
       hydraTempersHeadEffort: false,
       hasSeenHydraIntro: true,
       lastHydraPairId: "pair-1",
@@ -281,6 +282,7 @@ describe("F21 Hydra settings persistence", () => {
     expect(s.hydraAutoMerge).toBe(true);
     expect(s.hydraArchivesCodexHeads).toBe(true);
     expect(s.hydraAutoPopsHeads).toBe(true);
+    expect(s.hydraAutoOpensPanels).toBe(false);
     expect(s.hydraTempersHeadEffort).toBe(false);
     expect(s.lastHydraPairId).toBe("pair-1");
   });

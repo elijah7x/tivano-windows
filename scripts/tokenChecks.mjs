@@ -38,6 +38,7 @@ export async function runTokenChecks({
   const openSettings = async (page) => {
     await page.locator(".sidebar-foot button.row").click();
     await page.waitForSelector(".modal", { timeout: 8000 });
+    await page.locator('[data-settings-page="conversation"]').click();
   };
 
   const s1 = await launch("tokens-main");

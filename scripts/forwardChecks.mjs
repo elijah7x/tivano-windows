@@ -54,7 +54,24 @@ export async function runForwardChecks({
   const srcId = src.id;
   await send(page, srcId, "FWD-SOURCE unique question text");
 
-  await page.locator('button[title="Forward to new thread"]').click();
+  // FWD-00: More controls (…) keeps its expanded state across chat switches.
+  await page.locator(".more-controls-btn").click();
+  await page.waitForSelector('.more-controls-menu [role="menuitem"]', { timeout: 5000 });
+  const tempThread = await page.evaluate(() =>
+    window.tivano.invoke("threads:create", { projectId: null, title: "fwd-temp" }),
+  );
+  await page.evaluate((id) => window.tivano.invoke("threads:select", { id }), tempThread.id);
+  await page.waitForFunction(
+    () => document.querySelector(".chat-head h1")?.textContent === "fwd-temp",
+    { timeout: 5000 },
+  );
+  verify(
+    "FWD-00 More controls stays expanded across chat switch",
+    (await page.locator('.more-controls-btn[aria-expanded="true"]').count()) === 1 &&
+      (await page.locator(".more-controls-menu").count()) === 1,
+  );
+  await page.evaluate((id) => window.tivano.invoke("threads:select", { id }), srcId);
+  await page.locator('.more-controls-menu [role="menuitem"]', { hasText: "Forward to new thread" }).click();
   const s1 = await waitSnapshot(
     page,
     (x) => x.threads.some((t) => t.title.startsWith("Continued: ")),
@@ -139,9 +156,12 @@ export async function runForwardChecks({
   );
 
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "zh-Hans" }));
+  if (await page.locator('.more-controls-btn[aria-expanded="false"]').count()) {
+    await page.locator(".more-controls-btn").click();
+  }
   verify(
     "FWD-10 zh-Hans forward title renders",
-    (await page.locator('button[title="转发到新对话"]').count()) === 1,
+    (await page.locator('.more-controls-menu [role="menuitem"]', { hasText: "转发到新对话" }).count()) === 1,
   );
   await page.screenshot({ path: join(outDir, "86-forward-zh.png") });
   c = await boundedClose(app, proc);

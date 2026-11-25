@@ -33,6 +33,7 @@ import {
   type ResolvedHydraLaunch,
 } from "../shared/hydra";
 import { visibleThreads } from "../shared/threadOrder";
+import { resolveWeatherWindowMode } from "../shared/skylight";
 import {
   HydraDelegationStreamParser,
   MAX_DELEGATED_TASKS,
@@ -81,7 +82,7 @@ import type {
   ToolActivity,
   WorkspaceGrant,
 } from "./provider";
-import type { ProjectRuntimePaths } from "./projectRuntimePaths";
+import { sameDirectoryPath, type ProjectRuntimePaths } from "./projectRuntimePaths";
 import type { CheckpointCoordinator } from "./checkpointTurns";
 import { TokenLedger, TokenSpendTracker } from "./tokenLedger";
 import {
@@ -989,7 +990,7 @@ export class Engine {
   private directoryStatusFor(p: Project): "available" | "unavailable" {
     const grant = p.directory !== undefined ? this.paths?.lookup(p.id) : undefined;
     return grant !== undefined &&
-      grant.directory === p.directory &&
+      sameDirectoryPath(grant.directory, p.directory!) &&
       this.paths!.dirLive(p.directory!)
       ? "available"
       : "unavailable";
@@ -1038,9 +1039,11 @@ export class Engine {
 
     // A project that DISPLAYS this directory but lost its grant (an
     // unrestored or dropped binding) is re-attached, not duplicated.
-    const displaying = this.store.state.projects.find((p) => p.directory === canonical);
+    const displaying = this.store.state.projects.find(
+      (p) => p.directory !== undefined && sameDirectoryPath(p.directory, canonical),
+    );
     if (displaying) {
-      this.paths.registerUser(displaying.id, canonical);
+      this.paths.registerUser(displaying.id, displaying.directory!);
       if (!displaying.expanded) displaying.expanded = true;
       this.store.update(() => {});
       const project = this.withDirectoryStatus(displaying);
@@ -1208,7 +1211,7 @@ export class Engine {
         ? opts.externalHydra.pairId
           ? { hydraPairId: opts.externalHydra.pairId }
           : {}
-        : settings.lastHydraPairId
+        : settings.lastHydraPairId && settings.subagentModeDefault !== "same"
           ? { hydraPairId: settings.lastHydraPairId }
           : {}),
       ...(opts?.externalHydra
@@ -1496,6 +1499,13 @@ export class Engine {
       if (k.startsWith(id + "")) this.hydraTouched.delete(k);
     for (const k of [...this.hydraFallbackNoted])
       if (k.startsWith(id + ":")) this.hydraFallbackNoted.delete(k);
+    for (const k of [...this.hydraQueueNoted])
+      if (k.startsWith(id + ":")) this.hydraQueueNoted.delete(k);
+    this.hydraRounds.delete(id);
+    for (const k of [...this.hydraRounds.keys()])
+      if (k.startsWith(id + ":")) this.hydraRounds.delete(k);
+    this.hydraRefunds.delete(id);
+    this.hydraBudgetGen.delete(id);
     for (const k of [...this.hydraCaptures.keys()])
       if (k.startsWith(id + ":")) this.hydraCaptures.delete(k);
     // F11: an app-created worktree leaves the thread — best-effort
@@ -2904,6 +2914,7 @@ export class Engine {
 
   setSettings(patch: {
     theme?: import("../shared/types").ThemeId | undefined;
+    appearanceMode?: import("../shared/types").AppearanceMode | undefined;
     language?: import("../shared/types").LanguageId | undefined;
     chimeWhenFinished?: boolean | undefined;
     autoContinueAfterLimit?: boolean | undefined;
@@ -2914,6 +2925,7 @@ export class Engine {
     defaultWorkspaceMode?: "local" | "worktree" | "auto" | undefined;
     showReasoning?: boolean | undefined;
     showsWorkingCard?: boolean | undefined;
+    weatherWindowMode?: import("../shared/types").WeatherWindowMode | undefined;
     showsSkylight?: boolean | undefined;
     cliInstallationTarget?: string | null | undefined;
     taskSleepMode?: "off" | "system" | "display" | undefined;
@@ -2940,6 +2952,7 @@ export class Engine {
     hydraAutoMerge?: boolean | undefined;
     hydraArchivesCodexHeads?: boolean | undefined;
     hydraShowsHeadDetails?: boolean | undefined;
+    hydraAutoOpensPanels?: boolean | undefined;
     hydraAutoPopsHeads?: boolean | undefined;
     hydraTempersHeadEffort?: boolean | undefined;
     hasSeenHydraIntro?: boolean | undefined;
@@ -2969,6 +2982,7 @@ export class Engine {
     this.assertMutable();
     this.store.update((d) => {
       if (patch.theme) d.settings.theme = patch.theme;
+      if (patch.appearanceMode !== undefined) d.settings.appearanceMode = patch.appearanceMode;
       if (patch.language) d.settings.language = patch.language;
       if (patch.chimeWhenFinished !== undefined)
         d.settings.chimeWhenFinished = patch.chimeWhenFinished;
@@ -2989,7 +3003,28 @@ export class Engine {
         d.settings.showReasoning = patch.showReasoning;
       if (patch.showsWorkingCard !== undefined)
         d.settings.showsWorkingCard = patch.showsWorkingCard;
-      if (patch.showsSkylight !== undefined) d.settings.showsSkylight = patch.showsSkylight;
+      if (patch.weatherWindowMode !== undefined) {
+        if (patch.weatherWindowMode !== "off") {
+          d.settings.lastWeatherWindowMode = patch.weatherWindowMode;
+        } else if (
+          d.settings.weatherWindowMode &&
+          d.settings.weatherWindowMode !== "off"
+        ) {
+          d.settings.lastWeatherWindowMode = d.settings.weatherWindowMode;
+        }
+        d.settings.weatherWindowMode = patch.weatherWindowMode;
+        d.settings.showsSkylight = patch.weatherWindowMode !== "off";
+      } else if (patch.showsSkylight !== undefined) {
+        d.settings.showsSkylight = patch.showsSkylight;
+        if (!patch.showsSkylight) {
+          if (d.settings.weatherWindowMode && d.settings.weatherWindowMode !== "off") {
+            d.settings.lastWeatherWindowMode = d.settings.weatherWindowMode;
+          }
+          d.settings.weatherWindowMode = "off";
+        } else if (resolveWeatherWindowMode(d.settings) === "off") {
+          d.settings.weatherWindowMode = d.settings.lastWeatherWindowMode ?? "porthole";
+        }
+      }
       // F33: null clears the install receipt (frozen uninstall path).
       if (patch.cliInstallationTarget !== undefined) {
         if (patch.cliInstallationTarget === null) delete d.settings.cliInstallationTarget;
@@ -3065,6 +3100,8 @@ export class Engine {
         d.settings.hydraArchivesCodexHeads = patch.hydraArchivesCodexHeads;
       if (patch.hydraShowsHeadDetails !== undefined)
         d.settings.hydraShowsHeadDetails = patch.hydraShowsHeadDetails;
+      if (patch.hydraAutoOpensPanels !== undefined)
+        d.settings.hydraAutoOpensPanels = patch.hydraAutoOpensPanels;
       if (patch.hydraAutoPopsHeads !== undefined)
         d.settings.hydraAutoPopsHeads = patch.hydraAutoPopsHeads;
       if (patch.hydraTempersHeadEffort !== undefined)
@@ -3169,6 +3206,19 @@ export class Engine {
     // Turning the auto-shelve picker on applies the new window right
     // away — frozen parity, and the exemption set is re-evaluated here.
     if (patch.autoShelveDays !== undefined) this.shelveIdleProjects();
+    // Flipping the helper-panel layout Off folds every open panel back
+    // into the sidebar — like closeHelper, working turns keep running.
+    if (patch.hydraAutoOpensPanels === false) {
+      let folded = false;
+      for (const t of this.store.state.threads) {
+        if (t.isInPanel !== true) continue;
+        t.isInPanel = false;
+        t.updatedAt = Date.now();
+        folded = true;
+        this.emit({ type: "thread-updated", thread: t });
+      }
+      if (folded) this.store.update(() => {});
+    }
   }
 
   /**
@@ -4922,21 +4972,26 @@ export class Engine {
     if (this.readOnly) return;
     const sent = this.hydraSent.get(key) ?? 0;
     const news = parser.delegations.slice(sent);
-    if (!news.length) return;
-    this.hydraSent.set(key, sent + news.length);
-    // A ```hydra-sent block records heads that already went out —
-    // advancing the watermark only (frozen parity).
-    if (parser.isSentBlock) return;
-    // Frozen HydraPrompts.maxDelegatedTasks: a block's entries are
-    // bounded; overflow is refused, never dropped silently.
-    const room = Math.max(0, MAX_DELEGATED_TASKS - sent);
-    news.forEach((d, i) => {
-      if (i >= room) {
-        this.refuseDelegation(thread, `a delegation block holds at most ${MAX_DELEGATED_TASKS} tasks`);
-        return;
+    if (news.length) {
+      this.hydraSent.set(key, sent + news.length);
+      // A ```hydra-sent block records heads that already went out —
+      // advancing the watermark only (frozen parity).
+      if (!parser.isSentBlock) {
+        // Frozen HydraPrompts.maxDelegatedTasks: a block's entries are
+        // bounded; overflow is refused, never dropped silently.
+        const room = Math.max(0, MAX_DELEGATED_TASKS - sent);
+        news.forEach((d, i) => {
+          if (i >= room) {
+            this.refuseDelegation(thread, `a delegation block holds at most ${MAX_DELEGATED_TASKS} tasks`);
+            return;
+          }
+          this.dispatchDelegation(thread, d);
+        });
       }
-      this.dispatchDelegation(thread, d);
-    });
+    }
+    if (parser.isComplete && !parser.isSentBlock) {
+      this.noteQueuedHeads(thread, [thread.turn?.id ?? "batch"]);
+    }
   }
 
   /** A refused delegation is TOLD to the lead — a queued message the
@@ -5135,6 +5190,9 @@ export class Engine {
   /** Pairs whose heads-provider note this lead already heard once per
    *  job (frozen hydraFallbackNoted, per lead+pair). */
   private readonly hydraFallbackNoted = new Set<string>();
+  /** Batches whose concurrency-cap notice already reached the lead's
+   *  chat (frozen hydraQueueNoted, per lead+batchId). */
+  private readonly hydraQueueNoted = new Set<string>();
   /** Frozen HydraTreeCache: heads of one delegation block share ONE
    *  capture of the same checkout — keyed batchId:checkout, dropped when
    *  the batch's reports flush. */
@@ -5148,6 +5206,38 @@ export class Engine {
   /** Frozen hydraLanding queue — landings into one lead's checkout
    *  serialize, so two returning heads never merge onto each other. */
   private readonly hydraLandings = new Map<string, Promise<void>>();
+
+  /** P1-36 (frozen noteQueuedHeads): announce once per dispatch in the
+   *  lead's chat when tasks wait on the concurrency cap. */
+  private noteQueuedHeads(lead: ChatThread, batchIds: Iterable<string>): void {
+    if (lead.hydraHead) return;
+    const launch = this.hydraLaunchFor(lead);
+    if (!launch) return;
+    const queue = this.hydraWaiting.get(lead.id);
+    if (!queue?.length) return;
+    const fresh = new Set<string>();
+    for (const id of batchIds) {
+      const key = `${lead.id}:${id}`;
+      if (this.hydraQueueNoted.has(key)) continue;
+      if (queue.some((w) => w.batchId === id)) {
+        this.hydraQueueNoted.add(key);
+        fresh.add(id);
+      }
+    }
+    if (!fresh.size) return;
+    const queuedCount = queue.filter((w) => fresh.has(w.batchId)).length;
+    const cap = launch.maxHeads ?? HYDRA_UNCAPPED_CONCURRENCY;
+    const hasCap = launch.maxHeads !== undefined;
+    const msg =
+      queuedCount === 1
+        ? hasCap
+          ? `Sub-agent limit reached (${cap})\n1 task is queued: at most ${cap} sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.`
+          : `Sub-agent limit reached (${cap})\n1 task is queued: at most ${cap} sub-agents run at once. It goes out on its own as a running sub-agent finishes.`
+        : hasCap
+          ? `Sub-agent limit reached (${cap})\n${queuedCount} tasks are queued: at most ${cap} sub-agents run at once (Settings › Hydra). They go out on their own as running sub-agents finish.`
+          : `Sub-agent limit reached (${cap})\n${queuedCount} tasks are queued: at most ${cap} sub-agents run at once. They go out on their own as running sub-agents finish.`;
+    this.appendNotice(lead, msg, "info");
+  }
 
   /** Frozen spawnWaitingHeads: send out queued delegations as far as the
    *  launch's cap has room — after every spawn and every head finish. */
@@ -5810,13 +5900,11 @@ export class Engine {
    *  both the durable grant and the display path (frozen
    *  `projects.filter { HydraPaths.same($0.path, canonical) }`). */
   private projectForDirectory(canonical: string): Project | undefined {
-    const norm = (p: string) =>
-      p.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
     const bound = this.paths?.findProjectByDirectory(canonical);
     const listed = this.store.state.projects.filter(
       (p) =>
         p.id === bound ||
-        (p.directory !== undefined && norm(p.directory) === norm(canonical)),
+        (p.directory !== undefined && sameDirectoryPath(p.directory, canonical)),
     );
     // A grant-bound match outranks a stale directory field — grant
     // identity decides binding, like openUserDirectory's boundId check.
@@ -6017,21 +6105,20 @@ export class Engine {
       canonical = probe.root;
     }
     const info = head.hydraHead!;
-    info.targetCheckout = canonical;
     info.isNonGitCheckout = probe.state === "none";
     // Frozen applyHydraRoute + the slice's sidebar rule: an exact-dir
     // match reuses its project; an unlisted routed folder joins the
     // sidebar as a bound project so the head's work is visible there.
     let project = this.projectForDirectory(canonical);
+    const existingBound = this.paths.findProjectByDirectory(canonical);
     if (
-      project === undefined &&
-      this.paths &&
-      this.paths.findProjectByDirectory(canonical) !== undefined
+      existingBound !== undefined &&
+      !this.store.state.projects.some((p) => p.id === existingBound)
     ) {
       // openUserDirectory's orphan rule: a grant for a project the store
       // no longer lists is revoked so the fresh bind stays clean.
       try {
-        this.paths.revoke(this.paths.findProjectByDirectory(canonical)!);
+        this.paths.revoke(existingBound);
       } catch {
         /* nothing to undo */
       }
@@ -6042,9 +6129,16 @@ export class Engine {
       this.paths.findProjectByDirectory(canonical) !== project.id
     ) {
       // A listed project that lost its grant is re-attached like
-      // openUserDirectory does — without it the exec gate refuses.
+      // openUserDirectory does — without it the exec gate refuses. Keep
+      // the stored directory spelling when it matches case-insensitively
+      // so the grant stays aligned with the sidebar record.
+      const attachDir =
+        project.directory !== undefined &&
+        sameDirectoryPath(project.directory, canonical)
+          ? project.directory
+          : canonical;
       try {
-        this.paths.registerUser(project.id, canonical);
+        this.paths.registerUser(project.id, attachDir);
       } catch {
         return refuse(
           `Hydra: ${personaName} did not start because its checkout could not be read.`,
@@ -6093,6 +6187,12 @@ export class Engine {
         );
       }
     }
+    const grantDir =
+      project !== undefined ? this.paths.lookup(project.id)?.directory : undefined;
+    info.targetCheckout =
+      grantDir !== undefined && sameDirectoryPath(grantDir, canonical)
+        ? grantDir
+        : canonical;
     if (project !== undefined) {
       head.projectId = project.id;
       // openUserDirectory wakes a shelved project its folder is re-added
@@ -6673,7 +6773,10 @@ export class Engine {
         }
         const gen = this.hydraBudgetGen.get(leadId) ?? 0;
         const refunds = this.hydraRefunds.get(leadId) ?? 0;
-        if (this.hydraBatchGen.get(batchId) !== gen) continue;
+        if (this.hydraBatchGen.get(batchId) !== gen) {
+          this.hydraBatchGen.delete(batchId);
+          continue;
+        }
         this.hydraBatchGen.delete(batchId);
         if (refunds >= MAX_REFUNDED_ROUNDS) continue;
         const rounds = this.hydraRounds.get(leadId) ?? 0;
@@ -6866,6 +6969,7 @@ export class Engine {
         this.emit({ type: "thread-updated", thread });
       }
     }
+    this.noteQueuedHeads(thread, [turn.id]);
     this.flushHydraReports(thread.id);
     if (!thread.hydraHead) this.maybeReviewHydra(thread);
   }
@@ -7252,7 +7356,10 @@ export class Engine {
         ? { interactionMode: parent.interactionMode }
         : {}),
       parentThreadId: parentId,
-      isInPanel: true,
+      // P2-40: helpers are sub-agents too — the Off layout keeps them
+      // out of floating panels the same as Hydra heads (frozen
+      // AppModel.swift:1999 sets isInPanel from the setting).
+      isInPanel: this.store.state.settings.hydraAutoOpensPanels !== false,
     };
     this.store.update((d) => {
       d.threads.push(thread);
@@ -7263,22 +7370,53 @@ export class Engine {
   }
 
   /**
-   * F25 frozen `closeSubagent`: the panel closes — a running turn is
-   * interrupted (frozen releases the session once it finishes; ours ends
-   * the turn the same way through cancelTurn) and the helper drops into
-   * the sidebar under its parent as a smaller row.
+   * F25 frozen `closeSubagent`: the panel only folds — a working helper
+   * keeps its turn running (frozen AppModel.swift:2012-2021) and drops
+   * into the sidebar under its parent as a smaller row. Closing never
+   * stops work.
    */
   closeHelper(threadId: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
     this.ensureThreadLoaded(threadId);
-    if (thread.turn?.status === "running" || thread.turn?.status === "waiting-approval")
-      this.cancelTurn(threadId);
     if (thread.isInPanel !== true) return;
     thread.isInPanel = false;
     thread.updatedAt = Date.now();
     this.store.update(() => {});
     this.emit({ type: "thread-updated", thread });
+  }
+
+  /**
+   * F25 frozen `showSubagentPanel`: opens a helper's panel beside its
+   * parent without touching its runtime. The panel shows one plain
+   * helper — any other paneled helper of the same parent returns to
+   * the sidebar, still running; the parent stays the selected chat.
+   */
+  showHelper(threadId: string): void {
+    this.assertMutable();
+    const thread = this.mustThread(threadId);
+    const parentId = thread.parentThreadId;
+    if (!parentId) throw new EngineError("thread is not a helper");
+    const now = Date.now();
+    for (const other of this.store.state.threads) {
+      if (
+        other.id !== threadId &&
+        other.parentThreadId === parentId &&
+        other.isInPanel === true &&
+        !other.hydraHead
+      ) {
+        other.isInPanel = false;
+        other.updatedAt = now;
+        this.emit({ type: "thread-updated", thread: other });
+      }
+    }
+    thread.isInPanel = true;
+    thread.updatedAt = now;
+    this.store.update((d) => {
+      d.ui.selectedThreadId = parentId;
+    });
+    this.emit({ type: "thread-updated", thread });
+    this.emit({ type: "thread-selected", threadId: parentId });
   }
 
   /**

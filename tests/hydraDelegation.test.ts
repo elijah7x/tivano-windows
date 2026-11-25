@@ -19,6 +19,7 @@ import {
   hydraTeamStatus,
   hydraTurnNote,
   markingDelegationBlockSent,
+  mayOpenHydraFence,
   personaAt,
   personaIndex,
   personaNamed,
@@ -394,6 +395,15 @@ describe("markingDelegationBlockSent / hasSentDelegationBlock (frozen)", () => {
     expect(markingDelegationBlockSent("plain reply")).toBe("plain reply");
     expect(hasSentDelegationBlock("plain reply")).toBe(false);
   });
+
+  it("mayOpenHydraFence pre-check gates non-hydra replies and allows indented/4-backtick openers", () => {
+    expect(mayOpenHydraFence("plain reply")).toBe(false);
+    expect(mayOpenHydraFence("```ts\nconst x = 1;\n```")).toBe(false);
+    expect(mayOpenHydraFence("trailing ```")).toBe(false);
+    expect(mayOpenHydraFence("```  \tHydra\n[]\n```")).toBe(true);
+    expect(mayOpenHydraFence("````hydra\n[]\n```")).toBe(true);
+    expect(mayOpenHydraFence("```hydra-sent\n[]\n```")).toBe(true);
+  });
 });
 
 describe("withoutVerificationSteps (frozen)", () => {
@@ -433,6 +443,8 @@ describe("lead policy + turn notes (frozen HydraPrompts slice)", () => {
     expect(p).toContain("Hank, Walter, Ada, Otto");
     expect(p).toContain("a team of helper agents");
     expect(p).toContain("The heads work in your checkout");
+    expect(p).toContain("enclosing repository root");
+    expect(p).toContain("copy and landing scope");
     expect(p).not.toContain("merge request");
     expect(p).not.toContain("copy of its project");
   });

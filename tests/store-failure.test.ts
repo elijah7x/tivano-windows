@@ -68,7 +68,7 @@ describe("injected failures", () => {
     const s = new Store(root);
     s.open();
     s.update((d) => {
-      d.settings.theme = "dark";
+      d.settings.theme = "nord";
     });
     // Next writeFileSync call is the temp-file write inside atomicWrite.
     vi.mocked(writeFileSync).mockImplementationOnce(() => {
@@ -92,7 +92,7 @@ describe("injected failures", () => {
     const after = JSON.parse(readFileSync(join(root, "store.json"), "utf8")) as {
       settings: { theme: string };
     };
-    expect(after.settings.theme).toBe("dark");
+    expect(after.settings.theme).toBe("nord");
     s.close();
   });
 
@@ -101,7 +101,7 @@ describe("injected failures", () => {
     const s = new Store(root);
     s.open();
     s.update((d) => {
-      d.settings.theme = "dark";
+      d.settings.theme = "nord";
     });
 
     vi.mocked(writeFileSync).mockImplementationOnce(() => {
@@ -121,7 +121,7 @@ describe("injected failures", () => {
     const stored = JSON.parse(readFileSync(join(root, "store.json"), "utf8")) as {
       settings: { theme: string };
     };
-    expect(stored.settings.theme).toBe("dark");
+    expect(stored.settings.theme).toBe("nord");
     expect(s.ownsWrites).toBe(false);
     // Idempotent after success.
     expect(() => s.close()).not.toThrow();
@@ -140,9 +140,9 @@ describe("injected failures", () => {
     expect(() => s.close()).toThrow(/ENOSPC/);
     expect(s.ownsWrites).toBe(true);
     vi.mocked(writeFileSync).mockImplementation(original);
-    s.update((d) => { d.settings.theme = "dark"; });
+    s.update((d) => { d.settings.theme = "nord"; });
     s.close();
-    expect(JSON.parse(readFileSync(join(root, "store.json"), "utf8")).settings.theme).toBe("dark");
+    expect(JSON.parse(readFileSync(join(root, "store.json"), "utf8")).settings.theme).toBe("nord");
     expect(existsSync(join(root, "store.lock"))).toBe(false);
   });
 
@@ -181,7 +181,7 @@ describe("injected failures", () => {
       });
       expect(() =>
         s.update((d) => {
-          d.settings.theme = "dark";
+          d.settings.theme = "nord";
         }),
       ).not.toThrow();
       vi.advanceTimersByTime(200);

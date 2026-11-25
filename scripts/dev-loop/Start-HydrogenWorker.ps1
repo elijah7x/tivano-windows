@@ -11,7 +11,7 @@ param(
   [ValidatePattern('^[A-Za-z0-9._:/-]+$')][string]$Model = 'gemini-4-hydrogen-high',
   [ValidatePattern('^[A-Za-z0-9_.-]+$')][string]$Label = 'nyx-auto',
   [ValidateRange(1, 10)][int]$MaxOpenPrs = 2,
-  [ValidateRange(1, 200)][int]$DailyMergeCap = 20,
+  [ValidateRange(1, 200)][int]$DailyMergeCap = 40,
   [ValidateRange(5, 480)][int]$PrintTimeoutMinutes = 150,
   [ValidateRange(10, 600)][int]$HardKillMinutes = 170,
   [ValidateRange(1, 48)][int]$CooldownHours = 6,
@@ -1185,7 +1185,7 @@ try {
   if (-not $gitCmd) { throw 'git was not found on PATH.' }
   $script:GitPath = $gitCmd.Source
 
-  # Daily merge cap (20 merges per local day across nyx/ PRs, same count as watchdog).
+  # Daily merge cap (40 merges per local day across nyx/ PRs, same count as watchdog).
   $mergedToday = Get-TodayMergedNyxPrCount
   if ($null -eq $mergedToday) {
     Write-Log 'could not count today merged nyx/ PRs; exiting'

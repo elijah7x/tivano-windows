@@ -867,8 +867,17 @@ describe("P1-36 sub-agent modes and the delegation budget", () => {
         heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
     );
     await waitFor(() => thread(engine, lead.id).turn?.status === "done");
-    // Two delegations wait under cap 1 — the next lead prompt opens
-    // with the frozen queued-heads note.
+    // Two delegations wait under cap 1 — the chat receives one in-timeline
+    // limit notice announcing the queued tasks, and the next lead prompt
+    // opens with the frozen queued-heads note.
+    const notices = thread(engine, lead.id).messages.filter(
+      (m) =>
+        m.kind === "notice" &&
+        m.content.includes("Sub-agent limit reached (1)"),
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.content).toContain("2 tasks are queued");
+    expect(notices[0]!.content).toContain("at most 1 sub-agents run at once (Settings › Hydra)");
     engine.sendTurn(lead.id, "keep going");
     await waitFor(() =>
       thread(engine, lead.id).messages.some(
@@ -882,6 +891,53 @@ describe("P1-36 sub-agent modes and the delegation budget", () => {
     )!;
     expect(reply.content).toContain("2 of your tasks are queued");
     expect(reply.content).toContain("the cap allows 1 head at once");
+    store.close();
+  });
+
+  it("Same-model default skips lastHydraPairId on new chats and deleteThread/mismatch clean budget maps", async () => {
+    const { engine, store } = make();
+    const pair = { ...newHydraPair("mock"), maxHeads: 1 };
+    engine.setSettings({
+      hydraPairs: [pair],
+      lastHydraPairId: pair.id,
+      subagentModeDefault: "same",
+    });
+    const lead = engine.createThread(null, "lead");
+    expect(lead.subagentMode).toBe("same");
+    expect(lead.hydraPairId).toBeUndefined();
+    // Switching a Same-model chat to Preset later does not resurrect the old pair.
+    engine.setSubagentMode(lead.id, "preset");
+    expect(thread(engine, lead.id).hydraPairId).toBeUndefined();
+
+    // Stale-generation batch entries are deleted on flush, and deleteThread
+    // drops all per-thread budget maps.
+    const e = engine as any;
+    budget(engine).hydraRounds.set(lead.id, 2);
+    budget(engine).hydraRounds.set(`${lead.id}:turn-1`, 1);
+    budget(engine).hydraRefunds.set(lead.id, 1);
+    budget(engine).hydraBudgetGen.set(lead.id, 2);
+    e.hydraBatchGen.set("stale-batch", 1);
+    e.hydraPendingReports.set(lead.id, [
+      {
+        headIndex: 0,
+        task: "probe",
+        status: "failed",
+        text: "boom",
+        batchId: "stale-batch",
+        copyPath: join(tmp(), "stale"),
+      },
+    ]);
+    e.flushHydraReports(lead.id);
+    expect(e.hydraBatchGen.has("stale-batch")).toBe(false);
+    expect(budget(engine).hydraRounds.get(lead.id)).toBe(2);
+
+    e.hydraQueueNoted.add(`${lead.id}:b-q`);
+    engine.deleteThread(lead.id);
+    expect(budget(engine).hydraRounds.has(lead.id)).toBe(false);
+    expect(budget(engine).hydraRounds.has(`${lead.id}:turn-1`)).toBe(false);
+    expect(budget(engine).hydraRefunds.has(lead.id)).toBe(false);
+    expect(budget(engine).hydraBudgetGen.has(lead.id)).toBe(false);
+    expect(e.hydraQueueNoted.has(`${lead.id}:b-q`)).toBe(false);
     store.close();
   });
 

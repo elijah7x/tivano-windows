@@ -67,6 +67,25 @@ function stripNsPrefix(p: string): string {
     .replace(/^\\\\[?.]\\/i, "");
 }
 
+/**
+ * Compare two canonical directory paths with the platform's casing rules:
+ * Windows paths are case-insensitive (model-emitted routes often differ in
+ * drive-letter or folder case from stored grants), while POSIX paths
+ * compare case-sensitively.
+ */
+export function sameDirectoryPath(
+  a: string,
+  b: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const pa = stripNsPrefix(a);
+  const pb = stripNsPrefix(b);
+  if (platform !== "win32") return pa === pb;
+  const norm = (s: string) =>
+    s.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+  return norm(pa) === norm(pb);
+}
+
 function markerPath(dir: string): string {
   return join(dir, PROJECT_MARKER_FILE);
 }
@@ -271,11 +290,10 @@ export class ProjectRuntimePaths {
    *  grant kinds count: selecting a dir another project owns re-opens
    *  THAT project instead of minting a second binding. Grants written
    *  before the NT-prefix strip may hold the resolved form — both
-   *  sides compare stripped. */
+   *  sides compare stripped, and case-insensitively on Windows. */
   findProjectByDirectory(canonicalDir: string): string | undefined {
-    const want = stripNsPrefix(canonicalDir);
     for (const [id, g] of this.grants)
-      if (stripNsPrefix(g.directory) === want) return id;
+      if (sameDirectoryPath(g.directory, canonicalDir)) return id;
     return undefined;
   }
 

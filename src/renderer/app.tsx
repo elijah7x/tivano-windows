@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Shell: hydrates the snapshot, subscribes to the event channel, applies
 // theme + language, and delegates link clicks to the http/https gate.
@@ -21,7 +21,7 @@ import { applyTheme } from "./theme";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { CommandPalette } from "./components/CommandPalette";
-import { SettingsModal } from "./components/SettingsModal";
+import { SettingsModal, type SettingsPageId } from "./components/SettingsModal";
 import { LinkPopover, type LinkPopoverState } from "./components/LinkPopover";
 import { HelperPanel } from "./components/HelperPanel";
 import { ensureTerminalBridge, setCodeFontOffset } from "./terminalRegistry";
@@ -29,6 +29,8 @@ import { fontSizeOffsets, resolveFontSizes, TYPE_DEFAULT } from "../shared/typeS
 import { wallpaperBlurPx, wallpaperOpacity } from "../shared/wallpaper";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { GitPanel } from "./components/GitPanel";
+import { WeatherWindowLayer } from "./components/Skylight";
+import { resolveWeatherWindowMode } from "../shared/skylight";
 
 const store = clientStore;
 
@@ -149,10 +151,12 @@ function SidebarEdge(props: {
   onBegin: (e: React.MouseEvent) => void;
 }): React.JSX.Element {
   const t = useT();
+  const isOpen = props.live > 0;
   return (
     <div
       className="sidebar-edge"
-      style={{ left: `${Math.max(0, props.live - 3)}px` }}
+      data-open={isOpen ? "true" : "false"}
+      style={{ left: `${isOpen ? props.live + 5 : 0}px` }}
       onMouseDown={props.onBegin}
       role="separator"
       aria-orientation="vertical"
@@ -164,10 +168,13 @@ function SidebarEdge(props: {
 export function App(): React.JSX.Element {
   const [ready, setReady] = useState(false);
   const [fatal, setFatal] = useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPage, setSettingsPage] = useState<SettingsPageId | null>(null);
+  const settingsOpen = settingsPage !== null;
+  const openSettings = (page: SettingsPageId = "appearance") => setSettingsPage(page);
   /** One dock slot shared by the terminal and Git panels — hiding the
    *  terminal never stops its sessions (they live in the registry pool). */
   const [dock, setDock] = useState<"terminal" | "git" | null>(null);
+  const [changesToggleSeq, setChangesToggleSeq] = useState(0);
   const [paletteOpen, setPaletteOpen] = useState(false);
   /** F27: sidebar visibility is a window-level toggle (frozen
    *  toggleSidebar, ⌘B) — collapsing never touches thread state. */
@@ -178,6 +185,8 @@ export function App(): React.JSX.Element {
   /** F27 archiveThread (⌘W): frozen "asks to archive; Delete is a click
    *  away" prompt for the SELECTED thread. */
   const [archivePrompt, setArchivePrompt] = useState(false);
+  /** P2-51: chat header More controls (…) expanded state shared across chats. */
+  const [topControlsExpanded, setTopControlsExpanded] = useState(false);
   const [remoteApproval, setRemoteApproval] = useState<RemoteMcpApprovalRequest | null>(null);
   /** F04 link popover — frozen LinkPopover: one transient menu anchored
    *  under the right-clicked chat link; null = closed. */
@@ -192,7 +201,7 @@ export function App(): React.JSX.Element {
     side: "left" | "right";
     px: number;
   } | null>(null);
-  const { snapshot, lastError } = useSyncExternalStore(
+  const { snapshot, lastError, weatherFlashes } = useSyncExternalStore(
     (fn) => store.subscribe(fn),
     () => store.view,
   );
@@ -255,7 +264,7 @@ export function App(): React.JSX.Element {
           setPaletteOpen((v) => !v);
           return;
         case "openSettings":
-          setSettingsOpen(true);
+          openSettings();
           return;
         case "toggleSidebar":
           setSidebarCollapsed((v) => !v);
@@ -264,7 +273,7 @@ export function App(): React.JSX.Element {
           setDock((d) => (d === "terminal" ? null : "terminal"));
           return;
         case "toggleChanges":
-          setDock((d) => (d === "git" ? null : "git"));
+          if (sel) setChangesToggleSeq((n) => n + 1);
           return;
         case "showMainWindow":
           tryCall("window:focus", {});
@@ -424,17 +433,18 @@ export function App(): React.JSX.Element {
     }
   }, [snapshot?.settings.language]);
 
-  // F26: frozen AppTheme — resolve the palette onto :root; themes with no
-  // fixed scheme (Breeze, System) follow the OS and re-resolve live.
+  // P2-51 / F26: resolve the 12 accent families + appearanceMode onto :root;
+  // "system" follows the OS prefers-color-scheme and re-resolves live.
   useEffect(() => {
     if (!snapshot) return;
     const theme = snapshot.settings.theme;
+    const appearanceMode = snapshot.settings.appearanceMode ?? "system";
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => applyTheme(document.documentElement, theme, mq.matches);
+    const apply = () => applyTheme(document.documentElement, theme, mq.matches, appearanceMode);
     apply();
     mq.addEventListener("change", apply);
     return () => mq.removeEventListener("change", apply);
-  }, [snapshot?.settings.theme]);
+  }, [snapshot?.settings.theme, snapshot?.settings.appearanceMode]);
 
   // F26: push the frozen TypeScale offsets into the three CSS vars; the
   // code offset also reaches live xterm instances (terminals scale with
@@ -600,10 +610,18 @@ export function App(): React.JSX.Element {
             }}
           />
         )}
+        {resolveWeatherWindowMode(snapshot.settings) === "full" && (
+          <WeatherWindowLayer
+            threads={snapshot.threads}
+            projects={snapshot.projects}
+            finishFlashes={weatherFlashes}
+          />
+        )}
         {sidebarLive > 0 && (
           <Sidebar
             snapshot={snapshot}
-            onOpenSettings={() => setSettingsOpen(true)}
+            finishFlashes={weatherFlashes}
+            onOpenSettings={() => openSettings()}
             onOpenPalette={() => setPaletteOpen(true)}
           />
         )}
@@ -637,15 +655,22 @@ export function App(): React.JSX.Element {
             providerLabel={snapshot.info.providerLabel}
             mode={snapshot.info.mode}
             {...(snapshot.info.codex ? { codex: snapshot.info.codex } : {})}
+            info={snapshot.info}
+            settingsOpen={settingsOpen}
             readOnly={!!snapshot.readOnly}
             projects={snapshot.projects}
             dock={dock}
             onToggleDock={(name) => setDock((cur) => (cur === name ? null : name))}
+            changesToggleSeq={changesToggleSeq}
+            sidebarCollapsed={sidebarLive === 0}
+            onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
             {...(selected && store.limitResumes[selected.id]
               ? { limitResumeAt: store.limitResumes[selected.id] }
               : {})}
             settings={snapshot.settings}
-            onOpenSettings={() => setSettingsOpen(true)}
+            topControlsExpanded={topControlsExpanded}
+            onSetTopControlsExpanded={setTopControlsExpanded}
+            onOpenSettings={(page) => openSettings(page)}
           />
           </div>
           {helper && (
@@ -670,14 +695,15 @@ export function App(): React.JSX.Element {
             <GitPanel key={selected.id} thread={selected} readOnly={!!snapshot.readOnly} />
           )}
         </div>
-        {settingsOpen && (
+        {settingsPage && (
           <SettingsModal
             settings={snapshot.settings}
             info={snapshot.info}
             threads={snapshot.threads}
             projects={snapshot.projects}
             tokenActivity={snapshot.tokenActivity}
-            onClose={() => setSettingsOpen(false)}
+            initialPage={settingsPage}
+            onClose={() => setSettingsPage(null)}
           />
         )}
         {paletteOpen && (
@@ -686,9 +712,10 @@ export function App(): React.JSX.Element {
             selectedThreadId={snapshot.selectedThreadId}
             onClose={() => setPaletteOpen(false)}
             onToggleDock={(name) => setDock((cur) => (cur === name ? null : name))}
+            onToggleChanges={() => setChangesToggleSeq((n) => n + 1)}
             onOpenSettings={() => {
               setPaletteOpen(false);
-              setSettingsOpen(true);
+              openSettings();
             }}
           />
         )}

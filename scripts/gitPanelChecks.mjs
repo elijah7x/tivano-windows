@@ -6,7 +6,7 @@ import { join } from "node:path";
 export async function runGitPanelChecks({ app, page, projectId, outDir, check }) {
  const verify=(name,ok,detail)=>{check(name,ok,detail===undefined?"":JSON.stringify(detail));if(!ok)throw new Error(name);};
  const settle=page=>page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
- await page.evaluate(()=>window.tivano.invoke("settings:set",{language:"en",theme:"light"}));
+ await page.evaluate(()=>window.tivano.invoke("settings:set",{language:"en",theme:"system",appearanceMode:"light"}));
  if(await page.locator(".git-panel").count()) await page.locator(".term-toggle").filter({hasText:"Git"}).click();
  const snapshot=(n,label)=>({projectId:projectId,snapshotId:`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`,capturedAt:Date.now(),kind:'ready',branch:{name:label,detached:false,unborn:false},limitations:[],entries:[{id:`10000000-0000-4000-8000-${String(n).padStart(12,'0')}`,path:'alpha.txt',kind:'modified',staged:'M',unstaged:'M',unmerged:false,untracked:false,canDiffStaged:true,canDiffWorktree:true},{id:`20000000-0000-4000-8000-${String(n).padStart(12,'0')}`,path:'untracked.txt',kind:'untracked',staged:'?',unstaged:'?',unmerged:false,untracked:true,canDiffStaged:false,canDiffWorktree:false}]});
  await app.evaluate(({ipcMain})=>{
@@ -48,14 +48,14 @@ export async function runGitPanelChecks({ app, page, projectId, outDir, check })
  await page.locator('.git-row[title="alpha.txt"]').first().click();await waitCalls('diff',7);
  await patch(6,'diff --git a/alpha.txt b/alpha.txt\n--- a/alpha.txt\n+++ b/alpha.txt\n@@ -1,2 +1,2 @@\n-old value\n+new value 中文\n+<img src=x onerror="alert(1)">\n context\n');await page.locator('.git-patch').waitFor();
  verify('diff markup is escaped',await page.locator('.git-patch img').count()===0 && (await page.locator('.git-patch').innerText()).includes('<img'));
- for(const theme of ['light','dark']){
-  await page.evaluate(theme=>window.tivano.invoke('settings:set',{theme}),theme);await settle(page);
+ for(const appearanceMode of ['light','dark']){
+  await page.evaluate(appearanceMode=>window.tivano.invoke('settings:set',{theme:'system',appearanceMode}),appearanceMode);await settle(page);
   const contrast=await page.evaluate(()=>{
    const c=document.createElement('canvas');c.width=c.height=1;const ctx=c.getContext('2d');const panel=getComputedStyle(document.querySelector('.git-panel')).backgroundColor;
    const lum=rgb=>rgb.map(v=>{v/=255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4}).reduce((s,v,i)=>s+v*[.2126,.7152,.0722][i],0);
    return ['pl','mi','hn','ctx'].map(cls=>{const el=document.querySelector('.git-patch .'+cls),style=getComputedStyle(el);ctx.clearRect(0,0,1,1);ctx.fillStyle=panel;ctx.fillRect(0,0,1,1);ctx.fillStyle=style.backgroundColor;ctx.fillRect(0,0,1,1);const bg=Array.from(ctx.getImageData(0,0,1,1).data).slice(0,3);ctx.fillStyle=style.color;ctx.fillRect(0,0,1,1);const fg=Array.from(ctx.getImageData(0,0,1,1).data).slice(0,3);const a=lum(bg),b=lum(fg);return {cls,ratio:(Math.max(a,b)+.05)/(Math.min(a,b)+.05)};});
   });
-  verify(theme+' diff contrast',contrast.every(x=>x.ratio>=4.5),contrast);await page.screenshot({path:join(outDir,'32-git-ui-'+theme+'-en.png')});
+  verify(appearanceMode+' diff contrast',contrast.every(x=>x.ratio>=4.5),contrast);await page.screenshot({path:join(outDir,'32-git-ui-'+appearanceMode+'-en.png')});
  }
  await page.evaluate(()=>window.tivano.invoke('settings:set',{language:'zh-Hans'}));await page.waitForFunction(()=>document.querySelector('.git-panel')?.textContent.includes('已暂存'));await page.screenshot({path:join(outDir,'33-git-ui-dark-zh.png')});verify('Chinese diff controls visible',true);
 }

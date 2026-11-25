@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P2-33 (frozen row identity): a script row's React key is its own —
 // removing or reordering a sibling mid-edit must not remount this row.
@@ -32,4 +32,42 @@ export const toScriptDraft = (s: ProjectScript): ScriptDraft => ({
 export function makeScriptDraftKeyGen(): () => string {
   let n = 0;
   return () => `new-${++n}`;
+}
+
+export function createScriptDraft(
+  keyGen: () => string,
+  name: string,
+): ScriptDraft {
+  return {
+    key: keyGen(),
+    name,
+    command: "",
+    icon: "play",
+    runOnWorktreeCreate: false,
+  };
+}
+
+export function patchScriptDraft(
+  drafts: readonly ScriptDraft[],
+  key: string,
+  patch: Partial<ScriptDraft>,
+): ScriptDraft[] {
+  return drafts.map((d) => (d.key === key ? { ...d, ...patch } : d));
+}
+
+export function removeScriptDraft(
+  drafts: readonly ScriptDraft[],
+  key: string,
+): ScriptDraft[] {
+  return drafts.filter((d) => d.key !== key);
+}
+
+export function serializeScriptDrafts(drafts: readonly ScriptDraft[]) {
+  return drafts.map((d) => ({
+    ...(d.id ? { id: d.id } : {}),
+    name: d.name,
+    command: d.command,
+    icon: d.icon || "play",
+    runOnWorktreeCreate: d.runOnWorktreeCreate,
+  }));
 }
