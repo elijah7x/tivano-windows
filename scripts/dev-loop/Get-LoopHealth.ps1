@@ -136,7 +136,7 @@ if (-not [string]::IsNullOrWhiteSpace($Root)) {
   try {
     $gateRoot = Join-Path (Join-Path $Root 'autopilot') 'gate'
     if (Test-Path -LiteralPath $gateRoot -PathType Container) {
-      $timeoutPattern = '(?i)timed out|timeout|ETIMEDOUT'
+      $timeoutPattern = '(?i)timed out|ETIMEDOUT'
       $gateDirs = @(Get-ChildItem -LiteralPath $gateRoot -Directory -ErrorAction SilentlyContinue)
       foreach ($dir in $gateDirs) {
         if ($dir.LastWriteTimeUtc -lt $cutoffUtc) { continue }
@@ -155,21 +155,11 @@ if (-not [string]::IsNullOrWhiteSpace($Root)) {
 
         if ($verdict -eq 'pass') {
           $gatePass++
-        } elseif ($verdict -eq 'fail') {
-          $gateFail++
-          $isTimeout = $false
-          if (-not [string]::IsNullOrEmpty($summaryText) -and $summaryText -match $timeoutPattern) {
-            $isTimeout = $true
-          } else {
-            $gateLogPath = Join-Path $dir.FullName 'gate.log'
-            $gateLogText = Read-TextSafe $gateLogPath
-            if (-not [string]::IsNullOrEmpty($gateLogText) -and $gateLogText -match $timeoutPattern) {
-              $isTimeout = $true
-            }
-          }
-          if ($isTimeout) { $gateTimeoutFails++ }
         } else {
-          $gateOther++
+          if ($verdict -eq 'fail') { $gateFail++ } else { $gateOther++ }
+          # A timeout counts for any non-pass outcome (fail or unavailable), judged from the
+          # gate's own reported outcome in summary.json rather than the noisy full gate.log.
+          if (-not [string]::IsNullOrEmpty($summaryText) -and $summaryText -match $timeoutPattern) { $gateTimeoutFails++ }
         }
       }
     }

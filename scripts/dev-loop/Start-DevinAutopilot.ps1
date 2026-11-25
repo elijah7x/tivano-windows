@@ -1141,8 +1141,8 @@ function Write-HealthSample {
 
     $hungWindows = 0
     $notRespondingDialogs = 0
-    if ($pidList.Count -gt 0) {
-      [int[]]$pidArr = $pidList.ToArray()
+    if ($treeIds.Count -gt 0) {
+      [int[]]$pidArr = @($treeIds)
       $counts = [DevLoopWindows]::GetHealthWindowCounts($pidArr)
       if ($null -ne $counts) {
         $hungWindows = [int]$counts.HungWindows

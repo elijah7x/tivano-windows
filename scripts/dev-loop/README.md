@@ -145,7 +145,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Get-Loo
   -Root C:\tivano\dev-loop -Hours 24
 ```
 
-- Reads `<Root>\state\health.jsonl`, `<Root>\autopilot\gate\*\summary.json` (and `gate.log` for timeout detection), and `<Root>\state\logs\autopilot-*.log`.
+- Reads `<Root>\state\health.jsonl`, `<Root>\autopilot\gate\*\summary.json` (any non-pass run whose summary reports a timeout counts in `gates.timeoutFails`), and `<Root>\state\logs\autopilot-*.log`.
 - Emits one compact JSON object (`windowHours`, `health`, `gates`, `watchdog`) and exits `0`; missing files report zeros without errors.
 
 ### Guarded paths and trust model
