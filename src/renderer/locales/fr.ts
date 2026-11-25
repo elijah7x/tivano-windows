@@ -2047,4 +2047,23 @@ export const fr: Record<string, string> = {
     "Une petite fenêtre au-dessus de la liste des conversations : du vent lorsqu’elle attend votre réponse, du soleil quand un tour se termine, de la pluie en cas d’échec.",
   "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
     "Affiche une brise légère lorsqu’une réponse ou une confirmation est attendue, du soleil lorsqu’un tour se termine et de la pluie en cas d’échec.",
+  // P2-50
+  "Where shall we begin today?": "Par où commençons-nous aujourd’hui ?",
+  "Work in a project": "Travailler dans un projet",
+  "Agents read and edit this folder, and can run in parallel worktrees.":
+    "Les agents lisent et modifient ce dossier, et peuvent fonctionner en parallèle dans des worktrees.",
+  "Add a project folder": "Ajouter un dossier de projet",
+  "Just chat": "Simplement discuter",
+  "No project folder needed. Good for questions and drafts.":
+    "Aucun dossier de projet requis. Idéal pour les questions et les brouillons.",
+  "Start a chat": "Démarrer une discussion",
+  "Install a coding agent first": "Installez d’abord un agent de code",
+  "1 provider ready": "1 fournisseur prêt",
+  "%lld providers ready": "%lld fournisseurs prêts",
+  "Manage": "Gérer",
+  "Install": "Installer",
+  "Ready": "Prêt",
+  "ChatGPT plan or API key": "Forfait ChatGPT ou clé API",
+  "Synthetic provider": "Fournisseur synthétique",
+  "Provider checklist": "Liste des fournisseurs",
 };

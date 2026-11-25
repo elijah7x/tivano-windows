@@ -2047,4 +2047,23 @@ export const ko: Record<string, string> = {
     "스레드 목록 위의 작은 창입니다. 사용자의 응답을 기다릴 때는 바람이 불고, 턴이 끝나면 햇살이 비치며, 실패하면 비가 내립니다.",
   "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
     "응답이나 승인을 기다릴 때는 산들바람을, 턴이 완료되면 햇살을, 실패하면 비를 은은하게 표시합니다.",
+  // P2-50
+  "Where shall we begin today?": "오늘은 어디서부터 시작할까요?",
+  "Work in a project": "프로젝트에서 작업",
+  "Agents read and edit this folder, and can run in parallel worktrees.":
+    "에이전트가 이 폴더를 읽고 편집하며, 병렬 worktree에서 실행할 수 있습니다.",
+  "Add a project folder": "프로젝트 폴더 추가",
+  "Just chat": "바로 대화",
+  "No project folder needed. Good for questions and drafts.":
+    "프로젝트 폴더가 필요 없습니다. 질문이나 초안 작성에 적합합니다.",
+  "Start a chat": "대화 시작",
+  "Install a coding agent first": "먼저 코딩 에이전트를 설치하세요",
+  "1 provider ready": "제공자 1개 사용 가능",
+  "%lld providers ready": "제공자 %lld개 사용 가능",
+  "Manage": "관리",
+  "Install": "설치",
+  "Ready": "준비됨",
+  "ChatGPT plan or API key": "ChatGPT 플랜 또는 API 키",
+  "Synthetic provider": "합성 제공자",
+  "Provider checklist": "제공자 목록",
 };

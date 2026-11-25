@@ -2238,6 +2238,25 @@ const zhHans: Record<string, string> = {
     "对话列表上方的一扇小窗：等你回复时起风，回合完成时出太阳，失败时下雨。",
   "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
     "在等待你回答或确认时拂过微风、完成时洒下暖阳、失败时落下细雨。",
+  // P2-50: first-launch page (Work in a project / Just chat + provider checklist).
+  "Where shall we begin today?": "今天从哪里开始？",
+  "Work in a project": "在项目里工作",
+  "Agents read and edit this folder, and can run in parallel worktrees.":
+    "智能体读写这个文件夹，可开 worktree 并行",
+  "Add a project folder": "添加项目文件夹",
+  "Just chat": "直接对话",
+  "No project folder needed. Good for questions and drafts.":
+    "无需项目文件夹，适合提问和草稿",
+  "Start a chat": "开始对话",
+  "Install a coding agent first": "先安装一个编程智能体",
+  "1 provider ready": "1 个服务商可用",
+  "%lld providers ready": "%lld 个服务商可用",
+  "Manage": "管理",
+  "Install": "安装",
+  "Ready": "已就绪",
+  "ChatGPT plan or API key": "ChatGPT 套餐或 API 密钥",
+  "Synthetic provider": "合成提供方",
+  "Provider checklist": "服务商列表",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {

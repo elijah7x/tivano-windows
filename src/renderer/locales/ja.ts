@@ -2047,4 +2047,23 @@ export const ja: Record<string, string> = {
     "スレッド一覧の上にある小さな窓。返信待ちのときは風、ターン完了時は日差し、失敗時は雨が表れます。",
   "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
     "応答や承認を待っているときはそよ風、完了時は日差し、失敗時は雨をさりげなく表示します。",
+  // P2-50
+  "Where shall we begin today?": "今日はどこから始めましょうか？",
+  "Work in a project": "プロジェクトで作業する",
+  "Agents read and edit this folder, and can run in parallel worktrees.":
+    "エージェントはこのフォルダーを読み書きし、複数の worktree で並列実行できます。",
+  "Add a project folder": "プロジェクトフォルダーを追加",
+  "Just chat": "そのままチャット",
+  "No project folder needed. Good for questions and drafts.":
+    "プロジェクトフォルダーは不要です。質問や下書きに向いています。",
+  "Start a chat": "チャットを開始",
+  "Install a coding agent first": "先にコーディングエージェントをインストールしてください",
+  "1 provider ready": "1 件のプロバイダーが利用可能",
+  "%lld providers ready": "%lld 件のプロバイダーが利用可能",
+  "Manage": "管理",
+  "Install": "インストール",
+  "Ready": "準備完了",
+  "ChatGPT plan or API key": "ChatGPT プランまたは API キー",
+  "Synthetic provider": "合成プロバイダー",
+  "Provider checklist": "プロバイダー一覧",
 };
