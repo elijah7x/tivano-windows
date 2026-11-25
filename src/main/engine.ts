@@ -82,7 +82,7 @@ import type {
   ToolActivity,
   WorkspaceGrant,
 } from "./provider";
-import type { ProjectRuntimePaths } from "./projectRuntimePaths";
+import { sameDirectoryPath, type ProjectRuntimePaths } from "./projectRuntimePaths";
 import type { CheckpointCoordinator } from "./checkpointTurns";
 import { TokenLedger, TokenSpendTracker } from "./tokenLedger";
 import {
@@ -990,7 +990,7 @@ export class Engine {
   private directoryStatusFor(p: Project): "available" | "unavailable" {
     const grant = p.directory !== undefined ? this.paths?.lookup(p.id) : undefined;
     return grant !== undefined &&
-      grant.directory === p.directory &&
+      sameDirectoryPath(grant.directory, p.directory!) &&
       this.paths!.dirLive(p.directory!)
       ? "available"
       : "unavailable";
@@ -1039,9 +1039,11 @@ export class Engine {
 
     // A project that DISPLAYS this directory but lost its grant (an
     // unrestored or dropped binding) is re-attached, not duplicated.
-    const displaying = this.store.state.projects.find((p) => p.directory === canonical);
+    const displaying = this.store.state.projects.find(
+      (p) => p.directory !== undefined && sameDirectoryPath(p.directory, canonical),
+    );
     if (displaying) {
-      this.paths.registerUser(displaying.id, canonical);
+      this.paths.registerUser(displaying.id, displaying.directory!);
       if (!displaying.expanded) displaying.expanded = true;
       this.store.update(() => {});
       const project = this.withDirectoryStatus(displaying);
@@ -5898,13 +5900,11 @@ export class Engine {
    *  both the durable grant and the display path (frozen
    *  `projects.filter { HydraPaths.same($0.path, canonical) }`). */
   private projectForDirectory(canonical: string): Project | undefined {
-    const norm = (p: string) =>
-      p.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
     const bound = this.paths?.findProjectByDirectory(canonical);
     const listed = this.store.state.projects.filter(
       (p) =>
         p.id === bound ||
-        (p.directory !== undefined && norm(p.directory) === norm(canonical)),
+        (p.directory !== undefined && sameDirectoryPath(p.directory, canonical)),
     );
     // A grant-bound match outranks a stale directory field — grant
     // identity decides binding, like openUserDirectory's boundId check.
@@ -6105,21 +6105,20 @@ export class Engine {
       canonical = probe.root;
     }
     const info = head.hydraHead!;
-    info.targetCheckout = canonical;
     info.isNonGitCheckout = probe.state === "none";
     // Frozen applyHydraRoute + the slice's sidebar rule: an exact-dir
     // match reuses its project; an unlisted routed folder joins the
     // sidebar as a bound project so the head's work is visible there.
     let project = this.projectForDirectory(canonical);
+    const existingBound = this.paths.findProjectByDirectory(canonical);
     if (
-      project === undefined &&
-      this.paths &&
-      this.paths.findProjectByDirectory(canonical) !== undefined
+      existingBound !== undefined &&
+      !this.store.state.projects.some((p) => p.id === existingBound)
     ) {
       // openUserDirectory's orphan rule: a grant for a project the store
       // no longer lists is revoked so the fresh bind stays clean.
       try {
-        this.paths.revoke(this.paths.findProjectByDirectory(canonical)!);
+        this.paths.revoke(existingBound);
       } catch {
         /* nothing to undo */
       }
@@ -6130,9 +6129,16 @@ export class Engine {
       this.paths.findProjectByDirectory(canonical) !== project.id
     ) {
       // A listed project that lost its grant is re-attached like
-      // openUserDirectory does — without it the exec gate refuses.
+      // openUserDirectory does — without it the exec gate refuses. Keep
+      // the stored directory spelling when it matches case-insensitively
+      // so the grant stays aligned with the sidebar record.
+      const attachDir =
+        project.directory !== undefined &&
+        sameDirectoryPath(project.directory, canonical)
+          ? project.directory
+          : canonical;
       try {
-        this.paths.registerUser(project.id, canonical);
+        this.paths.registerUser(project.id, attachDir);
       } catch {
         return refuse(
           `Hydra: ${personaName} did not start because its checkout could not be read.`,
@@ -6181,6 +6187,12 @@ export class Engine {
         );
       }
     }
+    const grantDir =
+      project !== undefined ? this.paths.lookup(project.id)?.directory : undefined;
+    info.targetCheckout =
+      grantDir !== undefined && sameDirectoryPath(grantDir, canonical)
+        ? grantDir
+        : canonical;
     if (project !== undefined) {
       head.projectId = project.id;
       // openUserDirectory wakes a shelved project its folder is re-added
