@@ -32,6 +32,42 @@ export const CODEX_PROVIDER_ID = "codex";
 /** Protocol freeze for this implementation — see docs/phase-2b-codex.md. */
 export const CODEX_SCHEMA_PIN = "0.164.0+6aaac694";
 
+/**
+ * Config overrides for one-shot / background Codex runs that need no plugins,
+ * apps, or telemetry (frozen CodexSession.oneShotConfigArguments).
+ * Keeps cold background starts from downloading the remote plugin catalog.
+ */
+export const CODEX_ONE_SHOT_CONFIG_ARGS: readonly string[] = [
+  "-c",
+  "features.plugins=false",
+  "-c",
+  "features.apps=false",
+  "-c",
+  "analytics.enabled=false",
+  "-c",
+  'otel.metrics_exporter="none"',
+];
+
+export interface CodexLaunchOptions {
+  /**
+   * Lightweight / one-shot launch for background tasks: disables plugins,
+   * apps, and telemetry while keeping regular chat launches unchanged.
+   */
+  lightweight?: boolean;
+}
+
+/**
+ * Build the argv for a Codex launch from a pinned base argv.
+ * Regular chat launches omit `lightweight` and keep `baseArgs` untouched;
+ * background launches append `CODEX_ONE_SHOT_CONFIG_ARGS`.
+ */
+export function codexAppServerArgs(
+  baseArgs: readonly string[],
+  opts: CodexLaunchOptions = {},
+): string[] {
+  return opts.lightweight ? [...baseArgs, ...CODEX_ONE_SHOT_CONFIG_ARGS] : [...baseArgs];
+}
+
 export type CodexMode = "fixture" | "real" | "unconfigured";
 
 export interface CodexRuntimeConfig {
