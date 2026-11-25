@@ -1086,11 +1086,11 @@ const zhHans: Record<string, string> = {
     "新对话使用该模式；每个对话可在模型选择器中切换。没有保存的组合时，“模型搭配”回退为“同模型”。",
   "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
     "已达子代理并发上限（%d）\n1 个任务在排队：同时最多运行 %d 个子代理（设置 › Hydra）。正在运行的子代理完成后会自动派出。",
-  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on its own as running sub-agents finish.":
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on their own as running sub-agents finish.":
     "已达子代理并发上限（%d）\n%d 个任务在排队：同时最多运行 %d 个子代理（设置 › Hydra）。正在运行的子代理完成后会自动派出。",
   "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once. It goes out on its own as a running sub-agent finishes.":
     "已达子代理并发上限（%d）\n1 个任务在排队：同时最多运行 %d 个子代理。正在运行的子代理完成后会自动派出。",
-  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on its own as running sub-agents finish.":
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "已达子代理并发上限（%d）\n%d 个任务在排队：同时最多运行 %d 个子代理。正在运行的子代理完成后会自动派出。",
   // P1-12: delegation level picker — titles use the upstream canonical
   // zh-Hans verbatim.
@@ -2378,9 +2378,9 @@ const EXTRA_NOTICE_KEYS = [
   "%@ is waiting for your answer. Open it from the Hydra panel to reply.",
   "%@ is waiting for your answer. Open it from the sub-agents panel to reply.",
   "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.",
-  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on its own as running sub-agents finish.",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on their own as running sub-agents finish.",
   "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once. It goes out on its own as a running sub-agent finishes.",
-  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on its own as running sub-agents finish.",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.",
   "The head could not start: %@",
   "%@ sent nothing for 10 minutes, so Tivano stopped the turn.",
   "%@ sent nothing for 30 minutes while a tool ran, so Tivano stopped the turn.",

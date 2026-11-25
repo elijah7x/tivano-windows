@@ -459,7 +459,7 @@ describe("theme", () => {
 
   it("translates the P1-36 concurrency-limit chat notice in all languages", () => {
     const en =
-      "Sub-agent limit reached (1)\n2 tasks are queued: at most 1 sub-agents run at once (Settings › Hydra). They go out on its own as running sub-agents finish.";
+      "Sub-agent limit reached (1)\n2 tasks are queued: at most 1 sub-agents run at once (Settings › Hydra). They go out on their own as running sub-agents finish.";
     for (const lang of TRANSLATED_LANGUAGES) {
       const t = (k: string, ...v: string[]) => translate(lang, k, v);
       const out = translateNotice(t, en);

@@ -5232,8 +5232,8 @@ export class Engine {
           ? `Sub-agent limit reached (${cap})\n1 task is queued: at most ${cap} sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.`
           : `Sub-agent limit reached (${cap})\n1 task is queued: at most ${cap} sub-agents run at once. It goes out on its own as a running sub-agent finishes.`
         : hasCap
-          ? `Sub-agent limit reached (${cap})\n${queuedCount} tasks are queued: at most ${cap} sub-agents run at once (Settings › Hydra). They go out on its own as running sub-agents finish.`
-          : `Sub-agent limit reached (${cap})\n${queuedCount} tasks are queued: at most ${cap} sub-agents run at once. They go out on its own as running sub-agents finish.`;
+          ? `Sub-agent limit reached (${cap})\n${queuedCount} tasks are queued: at most ${cap} sub-agents run at once (Settings › Hydra). They go out on their own as running sub-agents finish.`
+          : `Sub-agent limit reached (${cap})\n${queuedCount} tasks are queued: at most ${cap} sub-agents run at once. They go out on their own as running sub-agents finish.`;
     this.appendNotice(lead, msg, "info");
   }
 

@@ -2069,10 +2069,10 @@ export const zhHant: Record<string, string> = {
   // P1-36
   "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
     "已達子代理並行上限（%d）\n1 個任務正在排隊：同時最多執行 %d 個子代理（設定 › Hydra）。執行中的子代理完成後會自動派出。",
-  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on its own as running sub-agents finish.":
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on their own as running sub-agents finish.":
     "已達子代理並行上限（%d）\n%d 個任務正在排隊：同時最多執行 %d 個子代理（設定 › Hydra）。執行中的子代理完成後會自動派出。",
   "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once. It goes out on its own as a running sub-agent finishes.":
     "已達子代理並行上限（%d）\n1 個任務正在排隊：同時最多執行 %d 個子代理。執行中的子代理完成後會自動派出。",
-  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on its own as running sub-agents finish.":
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "已達子代理並行上限（%d）\n%d 個任務正在排隊：同時最多執行 %d 個子代理。執行中的子代理完成後會自動派出。",
 };
