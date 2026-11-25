@@ -279,7 +279,8 @@ export class StorageService {
         const records = statusRes.stdout.split("\0").filter(Boolean);
         for (const rec of records) {
           if (rec.startsWith("!! ")) {
-            const rel = rec.slice(3).replace(/\/+$/, "");
+            if (!rec.endsWith("/")) continue;
+            const rel = rec.slice(3, -1);
             const name = basename(rel);
             if (BUILD_FOLDER_NAMES.has(name)) {
               buildFolders.push(join(item.absPath, rel));
@@ -463,7 +464,11 @@ export class StorageService {
       if (!BUILD_FOLDER_NAMES.has(basename(folder))) continue;
       let realFolder: string;
       try {
+        const lst = await lstat(folder);
+        if (!lst.isDirectory() || lst.isSymbolicLink()) continue;
         realFolder = await realpath(folder);
+        const fst = await lstat(realFolder);
+        if (!fst.isDirectory() || fst.isSymbolicLink()) continue;
       } catch {
         continue;
       }

@@ -111,6 +111,7 @@ describe("StorageService (P2-54)", () => {
     writeFileSync(join(wtActiveDir, "src.ts"), "code");
     writeFileSync(join(wtActiveDir, "node_modules", "pkg.js"), "a".repeat(200));
     writeFileSync(join(wtIdleDir, "keep.ts"), "source");
+    writeFileSync(join(wtIdleDir, "build"), "regular-file-not-a-dir");
     writeFileSync(join(wtIdleDir, "dist", "bundle.js"), "b".repeat(500));
 
     // Attach wt-active to activeThread via store mutation
@@ -139,7 +140,7 @@ describe("StorageService (P2-54)", () => {
       runGit: async (cwd, args) => {
         if (args[0] === "status") {
           const out = cwd.endsWith("wt-idle")
-            ? "!! dist/\0"
+            ? "!! build\0!! dist/\0"
             : " M src.ts\0!! node_modules/\0";
           return { code: 0, signal: null, stdout: out, stderr: "", timedOut: false, overflowed: false, cancelled: false };
         }
@@ -180,6 +181,7 @@ describe("StorageService (P2-54)", () => {
     });
     expect(cleaned.error).toBeUndefined();
     expect(existsSync(join(wtIdleDir, "dist"))).toBe(false);
+    expect(existsSync(join(wtIdleDir, "build"))).toBe(true);
     expect(existsSync(join(wtIdleDir, "keep.ts"))).toBe(true);
     expect(existsSync(join(wtActiveDir, "node_modules"))).toBe(true);
     expect(existsSync(join(diagDir, "hang-2026-01-01.txt"))).toBe(false);
