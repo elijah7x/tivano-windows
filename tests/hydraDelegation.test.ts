@@ -433,6 +433,8 @@ describe("lead policy + turn notes (frozen HydraPrompts slice)", () => {
     expect(p).toContain("Hank, Walter, Ada, Otto");
     expect(p).toContain("a team of helper agents");
     expect(p).toContain("The heads work in your checkout");
+    expect(p).toContain("enclosing repository root");
+    expect(p).toContain("copy and landing scope");
     expect(p).not.toContain("merge request");
     expect(p).not.toContain("copy of its project");
   });
