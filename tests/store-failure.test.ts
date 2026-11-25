@@ -5,7 +5,10 @@
 // failed flush keeps the lock and the previous file contents.
 
 import {
+  copyFileSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   writeFileSync,
   readFileSync,
   existsSync,
@@ -22,6 +25,7 @@ vi.mock("node:fs", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs")>();
   return {
     ...real,
+    copyFileSync: vi.fn(real.copyFileSync),
     writeFileSync: vi.fn(real.writeFileSync),
     renameSync: vi.fn(real.renameSync),
   };
@@ -194,5 +198,100 @@ describe("injected failures", () => {
     });
     expect(() => s.flushNow()).toThrow(/ENOSPC/);
     s.close();
+  });
+
+  it("copies stubborn segments to durable turns.corrupt-* backup when renames fail", async () => {
+    const realFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(copyFileSync).mockImplementation(realFs.copyFileSync);
+    vi.mocked(writeFileSync).mockImplementation(realFs.writeFileSync);
+    vi.mocked(renameSync).mockImplementation(realFs.renameSync);
+
+    const root = fresh();
+    const tid = "11111111-1111-4111-8111-111111111111";
+    const turnsDir = join(root, "turns");
+    mkdirSync(turnsDir, { recursive: true });
+    const segPayload = JSON.stringify({
+      schemaVersion: 1,
+      threadId: tid,
+      messages: [{ id: "m1", role: "user", content: "preserve across restarts", status: "done", ts: 1 }],
+      turn: null,
+    });
+    writeFileSync(join(turnsDir, `${tid}.json`), segPayload);
+    writeFileSync(join(root, "store.json"), "{ corrupt json");
+
+    // 1st renameSync: store.json -> store.corrupt-*.json (succeeds)
+    // 2nd renameSync: turns -> turns.corrupt-* (fails)
+    // 3rd renameSync: turns/<tid>.json -> turns/<tid>.corrupt-*.json (fails)
+    let renameCalls = 0;
+    vi.mocked(renameSync).mockImplementation((from, to) => {
+      renameCalls++;
+      if (renameCalls === 2 || renameCalls === 3) {
+        throw new Error("EBUSY injected");
+      }
+      return realFs.renameSync(from, to);
+    });
+
+    const s1 = new Store(root);
+    const r1 = s1.open();
+    expect(r1.recoveredFrom).toBeTruthy();
+    vi.mocked(renameSync).mockImplementation(realFs.renameSync);
+    s1.flushNow();
+    s1.close();
+
+    // Reopen and flush again as a normal post-recovery launch: the durable
+    // turns.corrupt-* copy must still survive.
+    const s2 = new Store(root);
+    s2.open();
+    s2.flushNow();
+    s2.close();
+
+    const backupDirs = readdirSync(root).filter((f) => f.startsWith("turns.corrupt-"));
+    expect(backupDirs.length).toBe(1);
+    expect(readFileSync(join(root, backupDirs[0]!, `${tid}.json`), "utf8")).toBe(segPayload);
+  });
+
+  it("fails closed and restores store.json if segment backup also fails", async () => {
+    const realFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(copyFileSync).mockImplementation(realFs.copyFileSync);
+    vi.mocked(writeFileSync).mockImplementation(realFs.writeFileSync);
+    vi.mocked(renameSync).mockImplementation(realFs.renameSync);
+
+    const root = fresh();
+    const tid = "22222222-2222-4222-8222-222222222222";
+    const turnsDir = join(root, "turns");
+    mkdirSync(turnsDir, { recursive: true });
+    const segPayload = JSON.stringify({
+      schemaVersion: 1,
+      threadId: tid,
+      messages: [{ id: "m1", role: "user", content: "must not lose", status: "done", ts: 1 }],
+      turn: null,
+    });
+    const corruptHead = "{ corrupt json";
+    writeFileSync(join(turnsDir, `${tid}.json`), segPayload);
+    writeFileSync(join(root, "store.json"), corruptHead);
+
+    let renameCalls = 0;
+    vi.mocked(renameSync).mockImplementation((from, to) => {
+      renameCalls++;
+      if (renameCalls === 2 || renameCalls === 3) {
+        throw new Error("EBUSY injected");
+      }
+      return realFs.renameSync(from, to);
+    });
+    vi.mocked(copyFileSync).mockImplementationOnce(() => {
+      throw new Error("EACCES injected");
+    });
+
+    const s = new Store(root);
+    try {
+      expect(() => s.open()).toThrow(/turn segments could not be preserved aside/i);
+      expect(readFileSync(join(root, "store.json"), "utf8")).toBe(corruptHead);
+      expect(readFileSync(join(turnsDir, `${tid}.json`), "utf8")).toBe(segPayload);
+      expect(existsSync(join(root, "store.lock"))).toBe(false);
+    } finally {
+      vi.mocked(renameSync).mockImplementation(realFs.renameSync);
+      vi.mocked(copyFileSync).mockImplementation(realFs.copyFileSync);
+      s.close();
+    }
   });
 });
