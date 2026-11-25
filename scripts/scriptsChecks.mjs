@@ -182,7 +182,8 @@ export async function runScriptsChecks({
   verify("SCR-06 unknown script id reports unavailable", unknown.unavailable === "unknown-script", unknown);
 
   // --- dialog lists scripts and runs them -----------------------------------
-  await page.locator("button.head-action", { hasText: "Scripts" }).click();
+  await page.locator(".more-controls-btn").click();
+  await page.locator('.more-controls-menu [role="menuitem"]', { hasText: "Scripts" }).click();
   await page.locator(".scripts-dialog").waitFor({ timeout: 10000 });
   const rows = await page.locator(".scripts-dialog .script-row").count();
   verify("SCR-07 dialog lists both scripts", rows === 2, rows);

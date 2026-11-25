@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-22.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Chat area: header with the labelled mock badge, message timeline with
 // streaming/approval/error/interruption states, and the composer.
@@ -27,7 +27,7 @@ import { BranchMenu } from "./BranchMenu";
 import { HydraMark } from "./HydraMark";
 import { HydraPanel } from "./HydraPanel";
 import { HelperPanel } from "./HelperPanel";
-import { OpenInMenu } from "./OpenInMenu";
+import { OpenInItems } from "./OpenInMenu";
 import { ScriptsDialog } from "./ScriptsDialog";
 import { Composer } from "./Composer";
 import { TimelineMinimap } from "./TimelineMinimap";
@@ -171,6 +171,11 @@ export function ChatView(props: {
   /** Which dock panel is open — terminal and Git share one slot. */
   dock?: "terminal" | "git" | null;
   onToggleDock?: (name: "terminal" | "git") => void;
+  /** P2-53: toggled by Cmd/Ctrl+D or Command Palette to open the top-bar changes popover. */
+  changesToggleSeq?: number;
+  /** P2-53: collapsed tray sidebar can be reopened from the top bar. */
+  sidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
   /** F20: scheduled auto-resume for a usage-limit wait, epoch ms. */
   limitResumeAt?: number;
   /** F01: snapshot settings — showReasoning gates the thinking blocks,
@@ -193,6 +198,8 @@ export function ChatView(props: {
   const [previewTurn, setPreviewTurn] = useState<string | null>(null);
   const [worktreeOpen, setWorktreeOpen] = useState(false);
   const [scriptsOpen, setScriptsOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement>(null);
   const [msgMenu, setMsgMenu] = useState<MessagePopoverState | null>(null);
   const ckptGen = useRef(0);
   const threadId = thread?.id ?? null;
@@ -370,6 +377,7 @@ export function ChatView(props: {
   };
   useEffect(() => {
     setHydraPanelHidden(props.settings?.hydraAutoOpensPanels === false);
+    setMoreOpen(false);
     // Seed with THIS thread's count — resetting to 0 would count the
     // existing heads as "new" and reopen a panel the user dismissed
     // when switching between same-count threads (frozen parity: only
@@ -387,6 +395,21 @@ export function ChatView(props: {
     if (props.settings?.hydraAutoOpensPanels === false)
       setHydraPanelHidden(true);
   }, [props.settings?.hydraAutoOpensPanels]);
+  useEffect(() => {
+    if (!moreOpen) return;
+    const down = (e: MouseEvent): void => {
+      if (!moreRef.current?.contains(e.target as Node)) setMoreOpen(false);
+    };
+    const key = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") setMoreOpen(false);
+    };
+    window.addEventListener("mousedown", down);
+    window.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("mousedown", down);
+      window.removeEventListener("keydown", key);
+    };
+  }, [moreOpen]);
   useEffect(() => {
     return subscribeMemoryPressure(() => {
       veilRef.current.clear();
@@ -458,6 +481,19 @@ export function ChatView(props: {
   if (!thread) {
     return (
       <main className="chat">
+        {props.sidebarCollapsed && props.onToggleSidebar && (
+          <header className="chat-head chat-head-empty">
+            <button
+              type="button"
+              className="head-action sidebar-reopen"
+              title={t("Toggle sidebar")}
+              aria-label={t("Toggle sidebar")}
+              onClick={props.onToggleSidebar}
+            >
+              ☰
+            </button>
+          </header>
+        )}
         <div className="center-state">
           <p>{t("Pick a thread or start a new one")}</p>
         </div>
@@ -500,9 +536,22 @@ export function ChatView(props: {
           : t("Codex app-server — real launch not yet verified")
       : t("Synthetic provider — no real model, tools or commands");
 
+  const hasDirectory = props.directory !== undefined && props.directory !== null;
+
   return (
     <main className="chat">
       <header className="chat-head">
+        {props.sidebarCollapsed && props.onToggleSidebar && (
+          <button
+            type="button"
+            className="head-action sidebar-reopen"
+            title={t("Toggle sidebar")}
+            aria-label={t("Toggle sidebar")}
+            onClick={props.onToggleSidebar}
+          >
+            ☰
+          </button>
+        )}
         <h1>{thread.title}</h1>
         <span className="badge mock" title={badgeTitle}>
           {badgeText}
@@ -513,87 +562,103 @@ export function ChatView(props: {
             {!waiting && <span className="dots" aria-hidden="true" />}
           </span>
         )}
-        <HydraMark
-          thread={thread}
-          heads={heads}
-          readOnly={props.readOnly === true}
-          panelHidden={hydraPanelHidden}
-          onTogglePanel={() => setHydraPanelHidden((h) => !h)}
-          {...(props.onOpenSettings ? { onOpenSettings: props.onOpenSettings } : {})}
-        />
-        {thread && (
-          <>
-            <button
-              className="head-action"
-              title={t("Forward to new thread")}
-              aria-label={t("Forward to new thread")}
-              disabled={props.readOnly === true}
-              onClick={() =>
-                void callApi("threads:forward", { threadId: thread.id }).catch(() => {})
-              }
-            >
-              {t("Forward")}
-            </button>
-            <OpenInMenu
+        <div className="chat-top-controls">
+          <HydraMark
+            thread={thread}
+            heads={heads}
+            readOnly={props.readOnly === true}
+            panelHidden={hydraPanelHidden}
+            onTogglePanel={() => setHydraPanelHidden((h) => !h)}
+            {...(props.onOpenSettings ? { onOpenSettings: props.onOpenSettings } : {})}
+          />
+          {hasDirectory && (
+            <BranchMenu
               threadId={thread.id}
-              hasDirectory={props.directory !== undefined && props.directory !== null}
+              worktree={thread.worktreeDir !== undefined}
+              running={turn?.status === "running" || turn?.status === "waiting-approval"}
               readOnly={props.readOnly === true}
             />
-            {(props.directory !== undefined && props.directory !== null) && (
-              <BranchMenu
-                threadId={thread.id}
-                worktree={thread.worktreeDir !== undefined}
-                running={turn?.status === "running" || turn?.status === "waiting-approval"}
-                readOnly={props.readOnly === true}
-              />
-            )}
-            <button
-              className="head-action"
-              title={
-                thread.worktreeDir
-                  ? `${t("Thread worktree")} — ${thread.worktreeDir}`
-                  : t("Run this thread in its own git worktree")
-              }
-              aria-label={t("Thread worktree")}
-              disabled={props.readOnly === true}
-              onClick={() => setWorktreeOpen(true)}
-            >
-              {thread.worktreeDir ? `⎇ ${t("Worktree")}` : t("Worktree")}
-            </button>
-            {props.project && (
+          )}
+          {props.onToggleDock && (
+            <div className="chrome-capsule">
               <button
-                className="head-action"
-                title={t("Run or edit project scripts")}
-                aria-label={t("Scripts")}
-                disabled={props.readOnly === true}
-                onClick={() => setScriptsOpen(true)}
+                className={`term-toggle ${props.dock === "terminal" ? "on" : ""}`}
+                onClick={() => props.onToggleDock!("terminal")}
+                aria-pressed={props.dock === "terminal"}
+                title={t("Terminal")}
               >
-                ▶ {t("Scripts")}
+                {t("Terminal")}
               </button>
+              <button
+                className={`term-toggle ${props.dock === "git" ? "on" : ""}`}
+                onClick={() => props.onToggleDock!("git")}
+                aria-pressed={props.dock === "git"}
+                title={t("Git")}
+              >
+                {t("Git")}
+              </button>
+            </div>
+          )}
+          <ThreadChangesTab threadId={thread.id} toggleSeq={props.changesToggleSeq} />
+          <div className="openin more-controls" ref={moreRef}>
+            <button
+              type="button"
+              className="head-action more-controls-btn"
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
+              aria-label={t("More controls")}
+              title={t("More controls")}
+              disabled={props.readOnly === true}
+              onClick={() => setMoreOpen((o) => !o)}
+            >
+              ⋯
+            </button>
+            {moreOpen && (
+              <div className="openin-menu more-controls-menu" role="menu" aria-label={t("More controls")}>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMoreOpen(false);
+                    void callApi("threads:forward", { threadId: thread.id }).catch(() => {});
+                  }}
+                >
+                  {t("Forward to new thread")}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMoreOpen(false);
+                    setWorktreeOpen(true);
+                  }}
+                >
+                  {thread.worktreeDir ? `⎇ ${t("Thread worktree")}` : t("Thread worktree")}
+                </button>
+                {props.project && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMoreOpen(false);
+                      setScriptsOpen(true);
+                    }}
+                  >
+                    ▶ {t("Scripts")}
+                  </button>
+                )}
+                <div className="openin-divider" aria-hidden="true" />
+                <OpenInItems
+                  threadId={thread.id}
+                  hasDirectory={hasDirectory}
+                  open={moreOpen}
+                  onClose={() => setMoreOpen(false)}
+                  itemProps={{ "data-openin-item": "true" }}
+                />
+              </div>
             )}
-            {/* Copy path lives inside the Open-in menu (frozen OpenInMenu). */}
-          </>
-        )}
-        {props.onToggleDock && (
-          <>
-            <button
-              className={`term-toggle ${props.dock === "terminal" ? "on" : ""}`}
-              onClick={() => props.onToggleDock!("terminal")}
-              aria-pressed={props.dock === "terminal"}
-              title={t("Terminal")}
-            >
-              {t("Terminal")}
-            </button>
-            <button
-              className={`term-toggle ${props.dock === "git" ? "on" : ""}`}
-              onClick={() => props.onToggleDock!("git")}
-              aria-pressed={props.dock === "git"}
-              title={t("Git")}
-            >
-              {t("Git")}
-            </button>
-          </>
-        )}
+          </div>
+        </div>
       </header>
       {thread && props.threads && (!hydraPanelHidden || !!thread.hydraHead) && (
         <HydraPanel
@@ -1120,7 +1185,6 @@ export function ChatView(props: {
         }}
       />
       </div>
-      <ThreadChangesTab threadId={thread.id} />
       <Composer
         key={thread.id}
         thread={thread}

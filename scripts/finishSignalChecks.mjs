@@ -234,6 +234,7 @@ export async function runFinishSignalChecks({
   // CH-08: the settings switch renders ON by default, preview plays on ON.
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="conversation"]').click();
   const sw = page.getByRole("switch", { name: "Chime when a turn finishes" });
   await sw.waitFor();
   verify(
@@ -272,6 +273,7 @@ export async function runFinishSignalChecks({
   );
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="conversation"]').click();
   const zhSw = page.getByRole("switch", { name: "本轮完成时播放提示音" });
   await zhSw.waitFor();
   verify(

@@ -51,6 +51,7 @@ export async function runMcpChecks({
       await page.locator(".sidebar-foot button.row").click();
       await page.waitForSelector(".modal", { timeout: 8000 });
     }
+    await page.locator('[data-settings-page="connections"]').click();
     await page.locator(".mcp-section").scrollIntoViewIfNeeded();
     await page.waitForSelector(".mcp-add, .mcp-form", { timeout: 8000 });
   };
@@ -202,6 +203,7 @@ export async function runMcpChecks({
   await page2.waitForSelector(".sidebar-head", { timeout: 15000 });
   await page2.locator(".sidebar-foot button.row").click();
   await page2.waitForSelector(".modal", { timeout: 8000 });
+  await page2.locator('[data-settings-page="connections"]').click();
   await page2.locator(".mcp-section").scrollIntoViewIfNeeded();
   verify(
     "MC-14b servers survive restart",
@@ -285,6 +287,7 @@ export async function runMcpChecks({
 
     await page3.locator(".sidebar-foot button.row").click();
     await page3.waitForSelector(".modal", { timeout: 8000 });
+    await page3.locator('[data-settings-page="connections"]').click();
     await page3.locator(".mcp-section").scrollIntoViewIfNeeded();
     const rHttp = page3.locator(".mcp-row", { hasText: "httpx" }).first();
     verify(

@@ -33,6 +33,7 @@ export async function runRemoteMcpChecks({ launch: launchApp, instances, snap, c
   // Open Settings -> Connections -> Remote MCP (outside Alpha).
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="connections"]').click();
   await page.locator('[data-testid="remote-mcp-section"]').scrollIntoViewIfNeeded();
 
   const connBox = await page.locator('[data-testid="connections-section"]').count();
@@ -164,6 +165,7 @@ export async function runRemoteMcpChecks({ launch: launchApp, instances, snap, c
   // Enable Run remote chats without approval in Settings UI and retry send.
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="connections"]').click();
   await page.locator('[data-testid="remote-mcp-full-access-toggle"]').click();
   await wait(200);
   const allowed = await callMcp(

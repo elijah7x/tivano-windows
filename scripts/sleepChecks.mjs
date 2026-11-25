@@ -32,6 +32,7 @@ export async function runSleepChecks({ launch: launchApp, instances, snap, outDi
   // SLP-01: the settings picker renders the three frozen modes.
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector('.modal', { timeout: 8000 });
+  await page.locator('[data-settings-page="conversation"]').click();
   const modes = await page
     .locator('.modal [role="radiogroup"][aria-label="Prevent sleep while tasks are running"] .choice')
     .allInnerTexts();
@@ -107,6 +108,7 @@ export async function runSleepChecks({ launch: launchApp, instances, snap, outDi
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "zh-Hans" }));
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector('.modal', { timeout: 8000 });
+  await page.locator('[data-settings-page="conversation"]').click();
   const zhModes = await page
     .locator('.modal [role="radiogroup"][aria-label="任务运行时阻止睡眠"] .choice')
     .allInnerTexts();

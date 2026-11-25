@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Shell: hydrates the snapshot, subscribes to the event channel, applies
 // theme + language, and delegates link clicks to the http/https gate.
@@ -149,10 +149,12 @@ function SidebarEdge(props: {
   onBegin: (e: React.MouseEvent) => void;
 }): React.JSX.Element {
   const t = useT();
+  const isOpen = props.live > 0;
   return (
     <div
       className="sidebar-edge"
-      style={{ left: `${Math.max(0, props.live - 3)}px` }}
+      data-open={isOpen ? "true" : "false"}
+      style={{ left: `${isOpen ? props.live + 5 : 0}px` }}
       onMouseDown={props.onBegin}
       role="separator"
       aria-orientation="vertical"
@@ -168,6 +170,7 @@ export function App(): React.JSX.Element {
   /** One dock slot shared by the terminal and Git panels — hiding the
    *  terminal never stops its sessions (they live in the registry pool). */
   const [dock, setDock] = useState<"terminal" | "git" | null>(null);
+  const [changesToggleSeq, setChangesToggleSeq] = useState(0);
   const [paletteOpen, setPaletteOpen] = useState(false);
   /** F27: sidebar visibility is a window-level toggle (frozen
    *  toggleSidebar, ⌘B) — collapsing never touches thread state. */
@@ -264,7 +267,7 @@ export function App(): React.JSX.Element {
           setDock((d) => (d === "terminal" ? null : "terminal"));
           return;
         case "toggleChanges":
-          setDock((d) => (d === "git" ? null : "git"));
+          if (sel) setChangesToggleSeq((n) => n + 1);
           return;
         case "showMainWindow":
           tryCall("window:focus", {});
@@ -641,6 +644,9 @@ export function App(): React.JSX.Element {
             projects={snapshot.projects}
             dock={dock}
             onToggleDock={(name) => setDock((cur) => (cur === name ? null : name))}
+            changesToggleSeq={changesToggleSeq}
+            sidebarCollapsed={sidebarLive === 0}
+            onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
             {...(selected && store.limitResumes[selected.id]
               ? { limitResumeAt: store.limitResumes[selected.id] }
               : {})}
@@ -686,6 +692,7 @@ export function App(): React.JSX.Element {
             selectedThreadId={snapshot.selectedThreadId}
             onClose={() => setPaletteOpen(false)}
             onToggleDock={(name) => setDock((cur) => (cur === name ? null : name))}
+            onToggleChanges={() => setChangesToggleSeq((n) => n + 1)}
             onOpenSettings={() => {
               setPaletteOpen(false);
               setSettingsOpen(true);

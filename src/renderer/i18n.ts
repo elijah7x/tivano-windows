@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-22.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // English source is the key (upstream convention). zh-Hans values follow the
 // frozen baseline's Localizable.xcstrings where the key exists upstream;
@@ -2223,6 +2223,21 @@ const zhHans: Record<string, string> = {
   "Allow full control": "允许完全控制",
   "Allow read only": "允许只读访问",
   "Code: %@ · Redirects to %@": "验证码：%@ · 重定向至 %@",
+  // P2-53: floating sidebar tray, lean top bar, anchored changes popover, consolidated Settings pages.
+  "Appearance": "外观",
+  "Models & Providers": "模型与服务商",
+  "Shortcuts": "快捷键",
+  "Storage": "存储空间",
+  "Version & About": "版本与关于",
+  "Settings pages": "设置页面",
+  "More controls": "更多控件",
+  "Hide changes": "隐藏改动",
+  "No changes yet": "暂无改动",
+  "Files the agent changes appear here after each turn.": "智能体每轮修改的文件会显示在这里。",
+  "%@ files": "%@ 个文件",
+  "1 file changed, %@ lines added, %@ lines removed": "1 个文件已更改，新增 %@ 行，删除 %@ 行",
+  "%@ files changed, %@ lines added, %@ lines removed": "%@ 个文件已更改，新增 %@ 行，删除 %@ 行",
+  "Show this thread's changes": "显示此对话的改动",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {

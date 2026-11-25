@@ -47,6 +47,7 @@ export async function runModelListChecks({
       await page.locator(".sidebar-foot button.row").click();
       await page.waitForSelector(".modal", { timeout: 8000 });
     }
+    await page.locator('[data-settings-page="models"]').click();
     await page.locator(".ml-settings").scrollIntoViewIfNeeded();
     await page.waitForSelector(".ml-head-title", { timeout: 8000 });
   };
