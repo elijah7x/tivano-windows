@@ -286,7 +286,7 @@ export function McpSection(props: { settings: Settings; home: string }): React.J
               </div>
               {tools.length > 0 && (
                 <button
-                  className="mcp-tools-toggle"
+                  className="mcp-tools-toggle settings-btn-compact"
                   onClick={() => setRow(s.id, { showTools: !rows[s.id]?.showTools })}
                 >
                   {rows[s.id]?.showTools ? t("Hide tools") : t("Show tools")}

@@ -71,6 +71,7 @@ export async function runHydraChecks({
     await page.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
     await page.locator(".sidebar-foot button.row").click();
     await page.waitForSelector(".modal", { timeout: 10000 });
+    await page.locator('[data-settings-page="hydra"]').click();
     await page.waitForSelector(".hydra-section", { timeout: 10000 });
     await waitIdle(page);
   };
@@ -281,6 +282,8 @@ export async function runHydraChecks({
   // HY-09: zh rendering — the frozen copy is translated, not left English.
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "zh-Hans" }));
   await page.locator(".sidebar-foot button.row").click();
+  await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="hydra"]').click();
   await page.waitForSelector(".hydra-section", { timeout: 10000 });
   const zhTitle = await page.locator(".hydra-section h3").first().textContent();
   const zhNote = await page.locator('[data-testid="hydra-status"]').textContent();

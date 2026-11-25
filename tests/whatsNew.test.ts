@@ -486,6 +486,7 @@ describe("VersionSection, WhatsNewBanner, WhatsNewRow, and SettingsModal compone
           threads: [],
           projects: [],
           tokenActivity: {},
+          initialPage: "about",
           onClose: () => {},
         }),
       );

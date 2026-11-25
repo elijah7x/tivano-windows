@@ -536,7 +536,7 @@ export function Sidebar(props: {
   );
 
   return (
-    <nav className="sidebar" aria-label={t("Thread list")}>
+    <nav className="sidebar sidebar-tray" aria-label={t("Thread list")}>
       <div className="sidebar-head">
         <span className="grow">
           {t("Thread list")}

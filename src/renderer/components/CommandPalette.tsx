@@ -26,6 +26,7 @@ export function CommandPalette(props: {
   selectedThreadId: string | null;
   onClose: () => void;
   onToggleDock: (name: "terminal" | "git") => void;
+  onToggleChanges?: () => void;
   onOpenSettings: () => void;
 }): React.JSX.Element {
   const t = useT();
@@ -88,7 +89,7 @@ export function CommandPalette(props: {
           id: "changes",
           kind: "action",
           title: t("Toggle changes"),
-          run: () => props.onToggleDock("git"),
+          run: () => (props.onToggleChanges ? props.onToggleChanges() : props.onToggleDock("git")),
         },
         {
           id: "plan-mode",

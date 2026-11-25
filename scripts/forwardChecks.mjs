@@ -54,7 +54,8 @@ export async function runForwardChecks({
   const srcId = src.id;
   await send(page, srcId, "FWD-SOURCE unique question text");
 
-  await page.locator('button[title="Forward to new thread"]').click();
+  await page.locator(".more-controls-btn").click();
+  await page.locator('.more-controls-menu [role="menuitem"]', { hasText: "Forward to new thread" }).click();
   const s1 = await waitSnapshot(
     page,
     (x) => x.threads.some((t) => t.title.startsWith("Continued: ")),
@@ -139,9 +140,10 @@ export async function runForwardChecks({
   );
 
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "zh-Hans" }));
+  await page.locator(".more-controls-btn").click();
   verify(
     "FWD-10 zh-Hans forward title renders",
-    (await page.locator('button[title="转发到新对话"]').count()) === 1,
+    (await page.locator('.more-controls-menu [role="menuitem"]', { hasText: "转发到新对话" }).count()) === 1,
   );
   await page.screenshot({ path: join(outDir, "86-forward-zh.png") });
   c = await boundedClose(app, proc);

@@ -168,7 +168,7 @@ export function ShortcutsSection(props: {
                       </button>
                       {chord && (
                         <button
-                          className="shortcut-mini"
+                          className="shortcut-mini settings-btn-compact"
                           title={t("Remove shortcut")}
                           onClick={() => clear(id)}
                         >
@@ -177,7 +177,7 @@ export function ShortcutsSection(props: {
                       )}
                       {customizedOne && (
                         <button
-                          className="shortcut-mini"
+                          className="shortcut-mini settings-btn-compact"
                           title={t("Reset to default")}
                           onClick={() => resetOne(id)}
                         >
