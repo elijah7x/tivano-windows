@@ -33,6 +33,10 @@ describe("IPC request validators", () => {
       requestValidators["approvals:resolve"]({ threadId: uuid, approvalId: uuid, optionId: "once" }),
     ).toBeTruthy();
     expect(requestValidators["settings:set"]({ theme: "dark" }).theme).toBe("dark");
+    for (const lang of ["en", "zh-Hans", "zh-Hant", "ja", "ko", "fr"] as const) {
+      expect(requestValidators["settings:set"]({ language: lang }).language).toBe(lang);
+    }
+    expect(() => requestValidators["settings:set"]({ language: "de" })).toThrow(ValidationError);
     expect(
       requestValidators["settings:set"]({ notifyOnDone: true }).notifyOnDone,
     ).toBe(true);

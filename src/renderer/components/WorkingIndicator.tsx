@@ -182,6 +182,19 @@ export function WorkingLabel({
   );
 }
 
+const FIXED_TOOL_LABELS = new Set([
+  "Tool",
+  "Web search",
+  "Image",
+  "Send out a head",
+  "Brief a head",
+  "Wait for heads",
+  "Recall a head",
+  "Resume a head",
+  "List heads",
+  "Agent",
+]);
+
 /** One tool step — the same row in the timeline and inside the running
  *  indicator's WorkSteps disclosure (frozen WorkSteps entries). */
 export function ToolMsgRow({ m }: { m: Message }): React.JSX.Element | null {
@@ -190,7 +203,13 @@ export function ToolMsgRow({ m }: { m: Message }): React.JSX.Element | null {
   if (!note) return null;
   const title = note.titleKey
     ? t(note.titleKey, ...(note.titleParams ?? []).map(String))
-    : (note.title ?? "");
+    : note.title && FIXED_TOOL_LABELS.has(note.title)
+      ? t(note.title)
+      : (note.title ?? "");
+  const detail =
+    note.detail && FIXED_TOOL_LABELS.has(note.detail)
+      ? t(note.detail)
+      : note.detail;
   const stateLabel =
     note.state === "running" ? t("Running")
     : note.state === "completed" ? t("Completed")
@@ -215,7 +234,7 @@ export function ToolMsgRow({ m }: { m: Message }): React.JSX.Element | null {
         <span className="tool-title">{title}</span>
         <span className="tool-state">{stateLabel}</span>
       </summary>
-      {note.detail && <pre className="tool-detail">{note.detail}</pre>}
+      {detail && <pre className="tool-detail">{detail}</pre>}
     </details>
   );
 }

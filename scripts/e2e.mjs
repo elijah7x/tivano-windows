@@ -84,6 +84,7 @@ import { runNewThreadPromptChecks } from "./newThreadPromptChecks.mjs";
 import { runGeneralSettingsChecks } from "./generalSettingsChecks.mjs";
 import { runWorkingIndicatorChecks } from "./workingIndicatorChecks.mjs";
 import { runLayoutChecks, runShelfChecks, runQuickChecks } from "./layoutChecks.mjs";
+import { runRemoteMcpChecks } from "./remoteMcpChecks.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "package.json"));
@@ -2069,6 +2070,15 @@ try {
     instances,
     snap,
     outDir,
+    check,
+    boundedClose,
+  });
+
+  // ---- session 32: P2-25 Remote MCP — Connections, OAuth, full-access gate --
+  await runRemoteMcpChecks({
+    launch,
+    instances,
+    snap,
     check,
     boundedClose,
   });

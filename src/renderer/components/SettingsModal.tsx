@@ -6,17 +6,20 @@
 // block carrying the AGPL attribution this derivative owes upstream.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  AppInfo,
-  ChatThread,
-  CodexSetupState,
-  CodexChooseResult,
-  CodexWriteResult,
-  LanguageId,
-  Project,
-  Settings,
+import {
+  LANGUAGE_IDS,
+  LANGUAGE_LABELS,
+  type AppInfo,
+  type ChatThread,
+  type CodexSetupState,
+  type CodexChooseResult,
+  type CodexWriteResult,
+  type LanguageId,
+  type Project,
+  type Settings,
 } from "../../shared/types";
 import { useT } from "../locale";
+import { translateError } from "../i18n";
 import { api, tryCall } from "../client";
 import { playFinishChime } from "../finishChime";
 import { themeById } from "../theme";
@@ -25,10 +28,12 @@ import { TokenActivitySection } from "./TokenActivitySection";
 import { ShortcutsSection } from "./ShortcutsSection";
 import { HydraSection } from "./HydraSection";
 import { McpSection } from "./McpSection";
+import { RemoteMcpSection } from "./RemoteMcpSection";
 import { ForgeSection } from "./ForgeSection";
 import { WallpaperSection } from "./WallpaperSection";
 import { ModelListSettings } from "./ModelListSettings";
 import { ArchiveSection } from "./ArchiveSection";
+import { VersionSection } from "./WhatsNewViews";
 import {
   RUNTIME_MODES,
   RUNTIME_MODE_TITLE,
@@ -417,7 +422,7 @@ export function SettingsModal(props: {
 
         <h3>{t("Language")}</h3>
         <div className="choice-row" role="radiogroup" aria-label={t("Language")}>
-          {(["en", "zh-Hans"] as const).map((l) => (
+          {LANGUAGE_IDS.map((l) => (
             <button
               key={l}
               role="radio"
@@ -425,7 +430,7 @@ export function SettingsModal(props: {
               className={`choice${settings.language === l ? " active" : ""}`}
               onClick={() => setLanguage(l)}
             >
-              {l === "en" ? "English" : "简体中文"}
+              {LANGUAGE_LABELS[l]}
             </button>
           ))}
         </div>
@@ -509,7 +514,11 @@ export function SettingsModal(props: {
         <h3>{t("Models")}</h3>
         <ModelListSettings />
 
-        <McpSection settings={settings} home={info.home} />
+        <div className="connections-section" data-testid="connections-section">
+          <h3>{t("Connections")}</h3>
+          <McpSection settings={settings} home={info.home} />
+          <RemoteMcpSection settings={settings} />
+        </div>
 
         <h3>{t("Sleep")}</h3>
         <div
@@ -846,7 +855,7 @@ export function SettingsModal(props: {
                 {codex.runtime.reason && (
                   <>
                     <span>{t("Runtime reason")}</span>
-                    <span className="mono">{codex.runtime.reason}</span>
+                    <span className="mono">{translateError(t, codex.runtime.reason)}</span>
                   </>
                 )}
               </>
@@ -864,7 +873,7 @@ export function SettingsModal(props: {
             {codex?.savedInvalidReason && (
               <>
                 <span>{t("Saved path status")}</span>
-                <span className="mono">{codex.savedInvalidReason}</span>
+                <span className="mono">{translateError(t, codex.savedInvalidReason)}</span>
               </>
             )}
             {codex && codex.savedEffect !== "none" && (
@@ -875,7 +884,9 @@ export function SettingsModal(props: {
                     ? t("In effect for this launch")
                     : codex.savedEffect === "pending-restart"
                       ? t("Takes effect on next launch")
-                      : codex.savedBlockReason ?? t("Blocked by an explicit override")}
+                      : codex.savedBlockReason
+                        ? translateError(t, codex.savedBlockReason)
+                        : t("Blocked by an explicit override")}
                 </span>
               </>
             )}
@@ -899,10 +910,10 @@ export function SettingsModal(props: {
           </p>
           {codexErr && (
             <p className="codex-setup-error" role="alert">
-              {t(codexErr)}
+              {translateError(t, codexErr)}
             </p>
           )}
-          {loadErr && <p className="codex-setup-error" role="alert">{loadErr}</p>}
+          {loadErr && <p className="codex-setup-error" role="alert">{translateError(t, loadErr)}</p>}
           <div className="choice-row">
             <button
               className="choice"
@@ -943,6 +954,12 @@ export function SettingsModal(props: {
           threads={props.threads}
           projects={props.projects}
           settings={settings}
+        />
+
+        <VersionSection
+          appVersion={info.appVersion}
+          settings={settings}
+          whatsNew={info.whatsNew}
         />
 
         <h3>{t("About")}</h3>
@@ -990,7 +1007,7 @@ export function SettingsModal(props: {
                 {info.codex.reason && (
                   <>
                     <span>{t("Codex status")}</span>
-                    <span className="mono">{info.codex.reason}</span>
+                    <span className="mono">{translateError(t, info.codex.reason)}</span>
                   </>
                 )}
               </>

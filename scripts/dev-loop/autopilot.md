@@ -140,18 +140,38 @@ if (-not $ok) {
   - Never add, remove, or change dependencies in `package.json`, and never change the technology stack.
   - Never set any `docs/parity.md` row to `done` (update to `partial` or leave it, with Notes).
   - One change does one thing; use synthetic data only; add the two-line license header to every new source file; add English + Simplified Chinese (`src/renderer/i18n.ts`) for every new user-visible string; leave no stray or build files in the worktree (`dist/` and `.devdata/` are ignored).
+- **Keep each PR small:** one parity row, and about 600 changed lines in `src/` at most (tests and translation catalogs excluded). If an issue needs more, implement the smallest slice that delivers the row's core behavior first, leave the row `partial` with Notes naming what is left, and say so in one issue comment so the planner opens a follow-up. Large PRs cost many gate rounds: every fix round re-reviews the whole diff and tends to surface new findings.
 - Put PR body files, commit message files, and any evidence under `C:\tivano\dev-loop\autopilot\runs\<n>\`, never inside the worktree.
 - Self-test in the worktree: run `npm ci` if `node_modules` is missing, then run `npm run verify`, and stop leftover worktree processes afterward.
 
 ### Pre-PR self-check
 
-Run this self-check before every push of a new head (initial PR creation and every fix push):
+Run this self-check before every push of a new head (initial PR creation and every fix push).
+
+First run the trusted copy of the mechanical check (never the copy inside your worktree, which the PR can change):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\tivano\audit\tool\scripts\dev-loop\Invoke-PrePrSelfCheck.ps1 -Worktree <worktree> -Issue <n> -BodyFile C:\tivano\dev-loop\autopilot\runs\<n>\pr-body.md -RunChecks
+```
+
+Fix every `FAIL` and re-run until it exits 0; do not push while it fails. Read every `WARN` and either fix it or say in the PR body why it does not apply. It checks conflicts with `origin/main`, guarded paths, dependency changes, parity rows newly set to `done` or more than one row touched, new strings without zh-Hans, license headers, attribution, `Closes #<n>`, stray files, and (with `-RunChecks`) typecheck plus the changed test files. On this Windows host `npm run verify` has known baseline failures (symlink `EPERM`, Unix-socket and POSIX child tests), so do not read its failures as "pre-existing" without comparing against `origin/main`; the self-check's `typecheck` and `changed-tests` results must pass outright (`changed-tests` reruns failing files on the merge base and only fails on tests that pass there).
+
+Findings the gate and audit raise most often; check them by reading your diff:
+
+- Every new user-visible string, engine notices included, has an exact zh-Hans entry, and notices start with `Hydra:`, `Hydra settings:` or `Sub-agents:` so `translateNotice` localizes them. Reuse frozen baseline i18n keys verbatim; never invent near-duplicates.
+- One parity row per PR; never set a row to `done`; Notes cite the upstream file that actually holds the behavior.
+- Never edit guarded paths, `CONTRIBUTING.md` included; put new documentation under `docs/`.
+- When UI text or selectors change, update the e2e checks in `scripts/*Checks.mjs` in the same PR.
+- For every new code path that can throw or be cancelled (`await`, child processes, timers), check what state is left behind when it fails.
+- Merge `origin/main` and resolve conflicts before pushing.
+
+Then:
 
 - Re-read the issue and the full `git diff` against `origin/main` to confirm every requirement is satisfied and no unintended edits remain.
 - Treat every path from the renderer, model output, or files as untrusted: make no blocking `fs`/`stat` calls on UNC (`\\host`), `//host`, or `file://host` paths in the main process.
 - Ensure tests that touch paths use `node:path` `win32`/`posix` explicitly so they pass on any OS.
-- Confirm `npm run verify` passes cleanly on the exact head you are pushing (and stop leftover worktree processes).
-- Confirm the PR body includes `Closes #<n>` and has no AI/agent attribution (and commits/comments contain no `Co-authored-by:` or `Generated with` lines).
+- Confirm `npm run verify` on the exact head you are pushing shows no failure that does not also occur on `origin/main` (and stop leftover worktree processes).
+- Confirm the PR body includes `Closes #<n>` and has no AI/agent attribution (and new commits/comments contain no `Co-authored-by:` or `Generated with` lines).
 - Confirm the change scope is strictly limited to the issue (no unrelated refactors, guarded paths, or dependency changes).
 
 ### Commit, push, and PR
@@ -174,6 +194,7 @@ Run this self-check before every push of a new head (initial PR creation and eve
   ```powershell
   powershell -NoProfile -ExecutionPolicy Bypass -File C:\tivano\pr-bot\tool\scripts\dev-loop\Invoke-AutopilotGate.ps1 -PrNumber <pr>
   ```
+- **Bring the branch up to date before every gate run, including re-gates of an unchanged head.** In the PR worktree run `git fetch origin` and `git merge-base --is-ancestor origin/main HEAD`; if `origin/main` is not already contained, run `git merge origin/main` (never rebase or force-push), resolve any conflicts, run the **Pre-PR self-check**, then commit and push before the gate. A branch behind `origin/main` misses fixes already on main (for example the flaky-test fixes) and fails the gate for reasons unrelated to the PR; re-gating it unchanged wastes a full gate run.
 - Do **not** start edits or commits for review findings while `Invoke-AutopilotGate.ps1` is still running; wait for its exit code and act on the full result once.
 - The gate runs two independent reviewers on the same head: the isolated Devin PR reviewer and GLM-5.4 (which posts its own PR comment; GLM `unavailable` never blocks by itself). If GLM-5.4 fails, the gate falls back once to Gemini 4 Neon for that review, and its blocking items are prefixed with `Gemini 4 Neon (fallback): ` and handled exactly like `GLM-5.4: ` (the second-reviewer advisory carve-out rule below applies to both prefixes, never to `nyx/audit`).
 - Its last stdout line is JSON `{"pr":n,"headSha":"...","verdict":"pass|fail|unavailable","failures":["..."],"gatePath":"...","glm":{"status":"ok|unavailable|skipped","verdict":"pass|changes","blocking":<count>,"runDir":"..."},"notes":[...]}`; exit code `0` = pass, `1` = fail, `2` = unavailable.
@@ -258,6 +279,7 @@ Run this self-check before every push of a new head (initial PR creation and eve
   - The issue fails its own gate after Devin's first fix round and up to 2 Gemini 4 Neon fix runs on that head lineage (or Neon returns `no-change`/`unavailable`).
   - A `nyx/audit` block survives Devin's fix round and up to 2 Gemini 4 Neon fix runs on that head lineage (or Neon returns `no-change`/`unavailable`) with no valid rebuttal.
   - The gate stays `unavailable` after 3 retries, or the same `npm run verify` test still fails after Neon escalation (or Neon returns `no-change`/`unavailable`).
+  - **Long-running PR:** the PR is listed in `C:\tivano\dev-loop\autopilot\stale-prs.json` (the watchdog writes it every tick: open for at least 48 hours and at least 5 gate runs). Park it right away instead of running another gate; the revisit (below) restarts it from current `origin/main` as a smaller change.
 - **How to park (initial failure or revisit failure):**
   1. **Leave the PR open.** Remove the issue from `awaitingAudit` if present.
   2. Read `C:\tivano\dev-loop\autopilot\parked.json` (default `[]`).
@@ -275,6 +297,7 @@ Run this self-check before every push of a new head (initial PR creation and eve
     gh pr close <oldPr> -R elijah7x/tivano-windows --comment "Closing to retry #<n> from current main with a different approach informed by audit feedback."
     ```
   - Remove the old worktree (`git -C C:\tivano\dev-loop\repo worktree remove --force <oldWorktree>`) and fetch `origin --prune`.
+  - **Revisit as a smaller change:** if the old PR changed more than one parity row or more than about 600 lines in `src/` (tests and translation catalogs excluded), implement only the smallest slice that delivers the row's core behavior; record what is left in the row's `Notes` as `partial` and in one issue comment, so the planner opens a follow-up.
   - Start a fresh branch from current `origin/main`:
     ```powershell
     git -C C:\tivano\dev-loop\repo worktree add -b nyx/<n>-<slug>-r<k> C:\tivano\dev-loop\work\<n>-<slug>-r<k> origin/main

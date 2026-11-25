@@ -172,6 +172,16 @@ describe("tivano.mjs client (real socket round trip)", () => {
     // enable listening then the request is refused (rc 4).
     svc.refreshListening();
     expect(svc.listening).toBe(false);
-    await expect(run(sock, "info")).rejects.toMatchObject({ code: 3 });
+    await expect(run(sock, "info")).rejects.toMatchObject({
+      code: 3,
+      stderr: expect.stringContaining("Settings › Connections"),
+    });
+  });
+
+  it("--help prints syntax pointing to Local control in Settings › Connections", async () => {
+    const { stdout } = await exec(process.execPath, [CLI, "--help"]);
+    expect(stdout).toContain("Local control");
+    expect(stdout).toContain("Settings › Connections");
+    expect(stdout).toContain("usage: tivano");
   });
 });

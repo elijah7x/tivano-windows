@@ -26,6 +26,8 @@ The owner does **not** participate during development, review, or audit, and ent
 | Quality gate: escalation fixer | Gemini 4 Neon (`agy`) | Fixes escalations via `Invoke-NeonFix.ps1` inside the PR worktree when an audit block survives Devin's fix round, when the gate fails after Devin's first fix round, or at the start of a parked-issue revisit. Never commits or pushes. |
 | Final arbiter | Claude Opus | Settles post-rebuttal `nyx/audit` disputes inside the independent auditor. |
 
+Both implementers run `Invoke-PrePrSelfCheck.ps1` (the trusted copy under `C:\tivano\audit\tool`) before every push: it checks conflicts with `origin/main`, guarded paths, dependency changes, parity status, missing zh-Hans strings, license headers, attribution, `Closes #<n>` and stray files, and with `-RunChecks` runs typecheck and the changed test files. It never changes the worktree; exit 0 means no `FAIL`, 1 means at least one `FAIL`, 2 means bad parameters.
+
 The watchdog remains the only merger. Implementers are Devin (SWE) and Gemini 4 Hydrogen; quality gates are GLM-5.4 and Gemini 4 Neon; Claude Opus is the final arbiter for `nyx/audit` disputes.
 
 ## Hydrogen lane

@@ -156,6 +156,7 @@ export const REQUIRED_DIST_FILES = [
 /** Files that must exist INSIDE the packaged app.asar. */
 export const REQUIRED_ASAR_ENTRIES = [
   "package.json",
+  "CHANGELOG.md",
   "LICENSE",
   "THIRD_PARTY_NOTICES.md",
   "TRADEMARK.md",
@@ -244,7 +245,7 @@ export function validateBuilderConfig(cfg) {
     "asar-unpack",
     "node-pty must be fully unpacked from the ASAR",
   );
-  for (const rel of [...REQUIRED_DIST_FILES, ...REQUIRED_WIN_PTY_FILES, JOB_HELPER_ASAR_MANIFEST]) {
+  for (const rel of [...REQUIRED_ASAR_ENTRIES, ...REQUIRED_WIN_PTY_FILES]) {
     if (!coveredByAllowlist(rel, cfg.files ?? []))
       problems.push({ code: "allowlist-gap", message: `required path not covered by files allowlist: ${rel}` });
   }
@@ -296,12 +297,17 @@ export function validateBuilderConfig(cfg) {
  * arbitrary unknown/typo'd properties the policy check above does not
  * enumerate. Returns [{instancePath,message}]; empty means schema-valid.
  */
+// Compiling the scheme takes seconds; compile it once per process.
+let builderSchemaValidator = null;
 export function validateBuilderSchema(cfg) {
-  const ablRequire = createRequire(createRequire(import.meta.url).resolve("app-builder-lib/package.json"));
-  const Ajv = ablRequire("ajv");
-  const schema = ablRequire("app-builder-lib/scheme.json");
-  const ajv = new Ajv({ allErrors: true, strict: false });
-  const validate = ajv.compile(schema);
+  if (!builderSchemaValidator) {
+    const ablRequire = createRequire(createRequire(import.meta.url).resolve("app-builder-lib/package.json"));
+    const Ajv = ablRequire("ajv");
+    const schema = ablRequire("app-builder-lib/scheme.json");
+    const ajv = new Ajv({ allErrors: true, strict: false });
+    builderSchemaValidator = ajv.compile(schema);
+  }
+  const validate = builderSchemaValidator;
   if (validate(cfg)) return [];
   return (validate.errors ?? []).map((e) => ({
     instancePath: e.instancePath,

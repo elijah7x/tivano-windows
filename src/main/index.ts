@@ -27,7 +27,7 @@ import {
   powerSaveBlocker,
   shell,
 } from "electron";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
@@ -76,6 +76,7 @@ import { GIT_POSIX_EXECUTABLE, resolveGitExecutable } from "./gitRuntimeConfig";
 import { CheckpointService } from "./checkpointService";
 import { WallpaperService } from "./wallpaperService";
 import { LocalControlService } from "./localControl";
+import { RemoteMcpService } from "./remoteMcp";
 import { externalOpenLogPath, recordExternalOpen } from "./externalOpen";
 import { cliBinDir, cliStatus, installCli, uninstallCli } from "./cliInstall";
 import { CheckpointLedger } from "./checkpointLedger";
@@ -83,6 +84,7 @@ import { CheckpointCoordinator } from "./checkpointTurns";
 
 import { resolveDataRoot } from "./appDataPaths";
 import { probeAndAttestPackagedJobHelper, disposeJobHelperProbes } from "./packagedJobHelper";
+import { mainT } from "./mainStrings";
 
 function resolveDataRootArg(): string {
   return resolveDataRoot({
@@ -380,6 +382,7 @@ let terminals: TerminalService | null = null;
 let git: GitService | null = null;
 let checkpoints: CheckpointCoordinator | null = null;
 let localControl: LocalControlService | null = null;
+let remoteMcp: RemoteMcpService | null = null;
 
 const coordinator = new CloseCoordinator({
   blockNewWork: () => { bootstrapClosing = true; engine?.shutdown(); },
@@ -404,6 +407,7 @@ const coordinator = new CloseCoordinator({
     // F33: the control socket closes with the app — never survives the
     // instance that minted its tickets.
     localControl?.dispose();
+    remoteMcp?.dispose();
     for (const c of result.children) {
       if (!c.confirmed)
         problems.push(`child pid ${c.pid ?? "?"}: ${c.problem ?? "close unconfirmed"}`);
@@ -422,11 +426,12 @@ const coordinator = new CloseCoordinator({
     if (process.env.TIVANO_TEST_ASK === "keep") return "keep";
     if (process.env.TIVANO_TEST_ASK === "retry") return "retry";
     if (!win || win.isDestroyed()) return "keep";
+    const lang = store.state.settings.language ?? "en";
     const r = await dialog.showMessageBox(win, {
       type: "error",
-      message: "Could not finish closing cleanly",
-      detail: `${failure}\n\nNothing was deleted; the data file and child processes were left untouched where their state was uncertain.`,
-      buttons: ["Retry", "Keep open (read-only)"],
+      message: mainT(lang, "Could not finish closing cleanly"),
+      detail: `${failure}\n\n${mainT(lang, "Nothing was deleted; the data file and child processes were left untouched where their state was uncertain.")}`,
+      buttons: [mainT(lang, "Retry"), mainT(lang, "Keep open (read-only)")],
       defaultId: 0,
       cancelId: 1,
     });
@@ -452,7 +457,14 @@ bootstrap = app.whenReady().then(async () => {
   // helper attestation (started at module load) — everything downstream
   // (store recovery, grants restore, IPC) only exists after this.
   adapter = await makeProvider();
-  engine = new Engine(store, adapter, store.root, app.getVersion(), paths);
+  const changelogMarkdown = (() => {
+    try {
+      return readFileSync(join(app.getAppPath(), "CHANGELOG.md"), "utf8");
+    } catch {
+      return undefined;
+    }
+  })();
+  engine = new Engine(store, adapter, store.root, app.getVersion(), paths, changelogMarkdown);
   // F20 test hook: shrink the post-reset margin so e2e/vitest can watch a
   // real auto-resume inside seconds — the frozen 5s floor never moves.
   if (process.env.TIVANO_LIMIT_MARGIN_MS)
@@ -476,9 +488,7 @@ bootstrap = app.whenReady().then(async () => {
   const eng = engine;
 
   const validationTitle = typeof TIVANO_TERMINAL_CANDIDATE !== "undefined" && TIVANO_TERMINAL_CANDIDATE === true
-    ? eng.snapshot().settings.language === "zh-Hans"
-      ? "Tivano Windows Dev — 终端验证候选版"
-      : "Tivano Windows Dev — Terminal validation candidate"
+    ? mainT(eng.snapshot().settings.language, "Tivano Windows Dev — Terminal validation candidate")
     : null;
   win = new BrowserWindow({
     width: 1180,
@@ -554,8 +564,7 @@ bootstrap = app.whenReady().then(async () => {
       if (!win || win.isDestroyed())
         return Promise.resolve({ canceled: true, filePaths: [] });
       return dialog.showOpenDialog(win, {
-        title:
-          eng.snapshot().settings.language === "zh-Hans" ? "打开文件夹" : "Open folder",
+        title: mainT(eng.snapshot().settings.language, "Open folder"),
         properties: ["openDirectory", "multiSelections"],
       });
     },
@@ -636,10 +645,7 @@ bootstrap = app.whenReady().then(async () => {
     if (!win || win.isDestroyed())
       return Promise.resolve({ canceled: true, filePaths: [] as string[] });
     return dialog.showOpenDialog(win, {
-      title:
-        eng.snapshot().settings.language === "zh-Hans"
-          ? "选择 Codex 程序"
-          : "Choose Codex executable",
+      title: mainT(eng.snapshot().settings.language, "Choose Codex executable"),
       properties: ["openFile"],
       filters:
         process.platform === "win32"
@@ -789,9 +795,20 @@ bootstrap = app.whenReady().then(async () => {
   // closing either gate stops listening and drops live connections.
   localControl = new LocalControlService(eng, dataRoot);
   localControl.refreshListening();
+  // P2-25 Remote MCP: loopback HTTP + OAuth 2.1 outside Alpha.
+  remoteMcp = new RemoteMcpService({
+    engine: eng,
+    localControl,
+    dataRoot,
+    appVersion: app.getVersion(),
+    onChanged: (status) => broadcast({ type: "remote-mcp-changed", status }),
+  });
+  localControl.setRemoteListeningCheck(() => remoteMcp?.listening === true);
+  void remoteMcp.refresh().catch(() => {});
   eng.onEvent((e) => {
     if (e.type === "settings-changed") {
       localControl?.refreshListening();
+      void remoteMcp?.refresh().catch(() => {});
       refreshQuickChord();
     }
   });
@@ -918,6 +935,7 @@ bootstrap = app.whenReady().then(async () => {
     terminals,
     git,
     localControl,
+    remoteMcp,
     cli: cliSurface,
     externalLog: externalLog ?? undefined,
     openDirectory: () => dirOpener.open(),
@@ -929,9 +947,8 @@ bootstrap = app.whenReady().then(async () => {
       const test = process.env.TIVANO_TEST_MCP_PICK;
       if (test !== undefined) return test === "" ? null : test;
       if (!win || win.isDestroyed() || eng.readOnly) return null;
-      const zh = eng.snapshot().settings.language === "zh-Hans";
       const r = await dialog.showOpenDialog(win, {
-        title: zh ? "选择路径" : "Choose a path",
+        title: mainT(eng.snapshot().settings.language, "Choose a path"),
         properties: dirs ? ["openDirectory"] : ["openFile"],
       });
       return r.canceled ? null : (r.filePaths[0] ?? null);
@@ -1062,8 +1079,7 @@ bootstrap = app.whenReady().then(async () => {
           if (!win || win.isDestroyed())
             return Promise.resolve({ canceled: true, filePaths: [] });
           return dialog.showOpenDialog(win, {
-            title:
-              eng.snapshot().settings.language === "zh-Hans" ? "添加附件" : "Attach",
+            title: mainT(eng.snapshot().settings.language, "Attach"),
             properties: ["openFile", "multiSelections"],
           });
         },
@@ -1092,12 +1108,11 @@ bootstrap = app.whenReady().then(async () => {
       if (!win || win.isDestroyed()) return Promise.resolve(null);
       return dialog
         .showOpenDialog(win, {
-          title:
-            eng.snapshot().settings.language === "zh-Hans" ? "选择图片" : "Choose picture",
+          title: mainT(eng.snapshot().settings.language, "Choose picture"),
           properties: ["openFile"],
           filters: [
             {
-              name: eng.snapshot().settings.language === "zh-Hans" ? "图片" : "Images",
+              name: mainT(eng.snapshot().settings.language, "Images"),
               extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"],
             },
           ],

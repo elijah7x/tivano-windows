@@ -578,7 +578,7 @@ html[data-performance] .sky-doll.sway { animation: none; }
   padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .msg {
@@ -625,14 +625,14 @@ html[data-performance] .sky-doll.sway { animation: none; }
 }
 
 .msg p {
-  margin: 0.4em 0;
+  margin: 0.55em 0;
 }
 
 .msg h1,
 .msg h2,
 .msg h3,
 .msg h4 {
-  margin: 0.6em 0 0.3em;
+  margin: 0.85em 0 0.35em;
 }
 
 .msg pre,
@@ -640,15 +640,16 @@ html[data-performance] .sky-doll.sway { animation: none; }
   background: var(--surface-3);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 10px;
+  padding: 0.7em 0.85em;
   overflow-x: auto;
+  line-height: 1.55;
 }
 
 .md-preblock {
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
-  margin: 0.4em 0;
+  margin: 0.55em 0;
 }
 
 .md-preblock .md-pre {
@@ -726,21 +727,26 @@ html[data-performance] .sky-doll.sway { animation: none; }
 }
 
 .msg blockquote {
-  margin: 0.4em 0;
-  padding-left: 10px;
+  margin: 0.55em 0;
+  padding: 0.1em 0 0.1em 0.85em;
   border-left: 3px solid var(--border);
   color: var(--text-2);
 }
 
 .msg ul,
 .msg ol {
-  margin: 0.3em 0;
-  padding-left: 1.4em;
+  margin: 0.45em 0;
+  padding-left: 1.5em;
+}
+
+.msg li ul,
+.msg li ol {
+  margin: 0.15em 0;
 }
 
 .msg li.md-task {
   list-style: none;
-  margin-left: -1.4em;
+  margin-left: -1.5em;
 }
 
 .msg .md-taskbox {
@@ -754,17 +760,29 @@ html[data-performance] .sky-doll.sway { animation: none; }
   margin: 0.7em 0;
 }
 
+/* P2-46: cells wrap to chat width; only a genuinely too-wide table
+   scrolls inside its wrap (frozen "wrap long cells … less horizontal
+   scrolling"). */
+.msg .md-table-wrap {
+  overflow-x: auto;
+  margin: 0.55em 0;
+}
+
 .msg .md-table {
   border-collapse: collapse;
-  margin: 0.4em 0;
   font-size: calc(13px + var(--fs-content-off));
 }
 
 .msg .md-table th,
 .msg .md-table td {
   border: 1px solid var(--border);
-  padding: 4px 8px;
+  padding: 0.4em 0.65em;
   text-align: left;
+  overflow-wrap: anywhere;
+  /* Frozen: only a table whose columns would each fall below seven
+   * resolved sizes scrolls sideways — the floor keeps a genuinely wide
+   * table scrolling instead of squeezing cells to unreadable ribbons. */
+  min-width: 7em;
 }
 
 .msg .md-table .md-al-center {
@@ -4907,4 +4925,214 @@ html[data-performance] .sweep-dots { display: none; }
 .quick-hint {
   font-size: 10px; opacity: 0.45; text-align: right;
   -webkit-app-region: drag;
+}
+
+/* P2-55: Settings > Version What's new banner and expandable card */
+.version-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.whatsnew-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px 11px 14px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.whatsnew-banner-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--surface-1);
+  color: var(--accent);
+}
+
+.whatsnew-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.whatsnew-banner-title {
+  font-size: calc(13px + var(--fs-ui-off));
+  font-weight: 500;
+  color: var(--text-1);
+}
+
+.whatsnew-banner-summary {
+  font-size: calc(11.5px + var(--fs-ui-off));
+  color: var(--text-2);
+  margin-top: 2px;
+}
+
+.whatsnew-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.whatsnew-dismiss {
+  width: 24px;
+  height: 24px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.version-card {
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.version-card-head {
+  padding: 12px 14px;
+}
+
+.version-card-name {
+  font-size: calc(14px + var(--fs-ui-off));
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.version-card-ver {
+  font-size: calc(12px + var(--fs-ui-off));
+  color: var(--text-2);
+  margin-top: 2px;
+}
+
+.whatsnew-row-wrap {
+  border-top: 1px solid var(--border);
+}
+
+.whatsnew-row-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.whatsnew-row-btn:hover {
+  background: var(--surface-1);
+}
+
+.whatsnew-row-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.whatsnew-row-title {
+  font-size: calc(13px + var(--fs-ui-off));
+  color: var(--text-1);
+}
+
+.whatsnew-row-detail {
+  font-size: calc(11.5px + var(--fs-ui-off));
+  color: var(--text-2);
+  margin-top: 2px;
+}
+
+.whatsnew-chevron {
+  font-size: 12px;
+  color: var(--text-2);
+  transition: transform 0.14s ease;
+  display: inline-block;
+}
+
+.whatsnew-chevron.open {
+  transform: rotate(90deg);
+}
+
+.whatsnew-body {
+  padding: 4px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.whatsnew-cat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.whatsnew-cat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: calc(12.5px + var(--fs-ui-off));
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.whatsnew-cat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.whatsnew-bullets {
+  margin: 0;
+  padding-left: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: calc(12.5px + var(--fs-ui-off));
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.whatsnew-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: calc(11.5px + var(--fs-ui-off));
+  color: var(--text-2);
+}
+
+.whatsnew-releases-link {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.whatsnew-releases-link:hover {
+  text-decoration: underline;
+}
+
+/* ---- P2-25: Connections / Remote MCP ------------------------------ */
+.connections-section { margin-top: 8px; }
+.remote-mcp-section { margin-top: 14px; }
+.remote-mcp-url-field { margin-top: 6px; }
+.remote-mcp-url-row { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.remote-mcp-url-row .choice { padding: 2px 8px; font-size: 12px; }
+.remote-mcp-grant {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
 }

@@ -19,6 +19,7 @@ import { probeForgeClis, type ForgeCliStatus } from "./forgeProbe";
 import { antiSlopInstructions } from "./antiSlop";
 import { builtinSlashCommands } from "../shared/slashCommands";
 import { clampFontSize } from "../shared/typeScale";
+import { buildWhatsNewInfo, recordWhatsNewLaunch } from "../shared/whatsNew";
 import {
   canSkipHydraMergeRecovery,
   clampedHydraCap,
@@ -130,6 +131,14 @@ const MAX_MESSAGE_CHARS = 256 * 1024;
 /** v2.2.34 title cadence — one user message == one completed turn sent. */
 function countUserTurns(thread: ChatThread): number {
   return thread.messages.filter((m) => m.role === "user").length;
+}
+
+function readBundledChangelog(): string | undefined {
+  try {
+    return readFileSync(join(__dirname, "..", "..", "CHANGELOG.md"), "utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 function boundedText(text: string): string {
@@ -318,6 +327,9 @@ export class Engine {
    * delivers the disregard notice rather than silence.
    */
   private readonly antiSlopDelivered = new Map<string, string>();
+  /** P2-58: threads currently running an async provider rewind (frozen
+   *  ThreadRuntime.isReverting). Prevents concurrent sends or rewinds. */
+  private readonly revertingThreads = new Set<string>();
 
   /** F19: daily token-spend ledger + per-session cumulative trackers.
    *  Trackers key on the PROVIDER session identity (Codex rollout id,
@@ -357,15 +369,37 @@ export class Engine {
   private readonly threadAccessOrder = new Map<string, number>();
   private accessTick = 0;
 
+  private readonly changelogText: string | undefined;
+
   constructor(
     private readonly store: Store,
     private readonly provider: ProviderAdapter = new MockProvider(),
     private readonly dataRoot: string = store.root,
     private readonly appVersion: string = "0.1.0",
     private readonly paths?: ProjectRuntimePaths,
+    changelogMarkdown?: string,
   ) {
     this.tokenLedger = new TokenLedger(this.dataRoot);
+    this.changelogText =
+      changelogMarkdown !== undefined ? changelogMarkdown : readBundledChangelog();
+    this.initWhatsNewLaunch();
     this.armShelveSweep();
+  }
+
+  private initWhatsNewLaunch(): void {
+    const isExistingUser =
+      this.store.hadStoreFileOnOpen ||
+      this.store.state.projects.length > 0 ||
+      this.store.state.threads.length > 0;
+    const probe: import("../shared/types").Settings = { ...this.store.state.settings };
+    if (!recordWhatsNewLaunch(probe, this.appVersion, isExistingUser)) return;
+    if (this.store.ownsWrites) {
+      this.store.update((d) => {
+        recordWhatsNewLaunch(d.settings, this.appVersion, isExistingUser);
+      });
+    } else {
+      recordWhatsNewLaunch(this.store.state.settings, this.appVersion, isExistingUser);
+    }
   }
 
   private touchThreadAccess(threadId: string): void {
@@ -611,6 +645,11 @@ export class Engine {
 
   get info(): AppInfo {
     const desc = this.provider.descriptor;
+    const whatsNew = buildWhatsNewInfo(
+      this.changelogText,
+      this.appVersion,
+      this.store.state.settings.whatsNewPreviousVersion,
+    );
     return {
       appVersion: this.appVersion,
       baselineTag: "v3.0.0",
@@ -627,6 +666,7 @@ export class Engine {
       ...(desc.runtimeInfo ? { syntheticRuntime: desc.runtimeInfo } : {}),
       ...(this.codexInfo ? { codex: this.codexInfo } : {}),
       ...(this.recoveredFrom ? { recoveredFrom: this.recoveredFrom } : {}),
+      ...(whatsNew ? { whatsNew } : {}),
       ...(typeof TIVANO_TERMINAL_CANDIDATE !== "undefined" &&
           TIVANO_TERMINAL_CANDIDATE === true
         ? { terminalCandidate: true as const }
@@ -1122,6 +1162,7 @@ export class Engine {
     title?: string,
     opts?: {
       workspaceDefault?: boolean;
+      runtimeMode?: import("../shared/types").RuntimeMode;
       /** F34: external-control create (frozen createExternalThread)
        *  never inherits the saved per-chat default or last pair — the
        *  resolved choice is handed in explicitly: `enabled` plus the
@@ -1150,7 +1191,7 @@ export class Engine {
       hasStartedTurn: false,
       // F06: seed the thread's runtime mode from the saved default
       // (frozen makeThread — absent setting = fullAccess).
-      runtimeMode: settings.defaultRuntimeMode ?? "fullAccess",
+      runtimeMode: opts?.runtimeMode ?? settings.defaultRuntimeMode ?? "fullAccess",
       // F21: seed the per-chat Hydra flag from the saved default (frozen
       // ChatThread.hydraDefaultKey semantics — absent setting = on).
       // F34: an external create instead takes its choice verbatim —
@@ -1605,7 +1646,10 @@ export class Engine {
     }
     // Frozen: sending in a shelved project wakes it — real work resumes.
     this.wakeShelvedProject(thread.projectId);
-    if (thread.turn && (thread.turn.status === "running" || thread.turn.status === "waiting-approval"))
+    if (
+      (thread.turn && (thread.turn.status === "running" || thread.turn.status === "waiting-approval")) ||
+      this.revertingThreads.has(threadId)
+    )
       throw new EngineError("a turn is already running on this thread");
     // F22 steer: a user message to a finished or stopped head runs it
     // again — its report goes to the lead as a fresh one (frozen).
@@ -2100,6 +2144,10 @@ export class Engine {
       live.continuation && !live.continuation.sent ? live.continuation : null;
     if (pendingContinuation)
       wireText = continuationPrompt(pendingContinuation) + "\n\n" + wireText;
+    const hydraPolicy =
+      this.provider.descriptor.mode === "codex"
+        ? this.codexHydraPolicy(live)
+        : undefined;
     try {
       const handle = this.provider.start(
         {
@@ -2124,6 +2172,7 @@ export class Engine {
                 ...(live.codexServiceTier
                   ? { serviceTier: live.codexServiceTier }
                   : {}),
+                ...(hydraPolicy !== undefined ? { hydraPolicy } : {}),
               }
             : {}),
         },
@@ -2150,6 +2199,7 @@ export class Engine {
           onQuestionAnswered: (key) => { this.noteTurnEvent(turn.id); this.onQuestionAnswered(threadId, turn.id, key); },
           onQuestionWithdrawn: (key) => { this.noteTurnEvent(turn.id); this.onQuestionWithdrawn(threadId, turn.id, key); },
           onModelReport: (model, effort) => { this.noteTurnEvent(turn.id); this.onModelReport(threadId, model, effort); },
+          onTurnStarted: (providerTurnId) => { this.noteTurnEvent(turn.id); this.onProviderTurnStarted(threadId, turn.id, providerTurnId); },
         },
       );
       this.handles.set(threadId, handle);
@@ -2870,7 +2920,7 @@ export class Engine {
 
   setSettings(patch: {
     theme?: import("../shared/types").ThemeId | undefined;
-    language?: "en" | "zh-Hans" | undefined;
+    language?: import("../shared/types").LanguageId | undefined;
     notifyOnDone?: boolean | undefined;
     chimeWhenFinished?: boolean | undefined;
     autoContinueAfterLimit?: boolean | undefined;
@@ -2894,6 +2944,10 @@ export class Engine {
     antiSlopEnabled?: boolean | undefined;
     alphaEnabled?: boolean | undefined;
     externalControlEnabled?: boolean | undefined;
+    remoteMCPEnabled?: boolean | undefined;
+    remoteMCPFullAccess?: boolean | undefined;
+    remoteMCPPublicURL?: string | undefined;
+    remoteMCPPort?: number | undefined;
     fontSizes?:
       | { ui?: number | undefined; content?: number | undefined; code?: number | undefined }
       | undefined;
@@ -2930,6 +2984,7 @@ export class Engine {
     helperPanelSize?: { width: number; height: number } | undefined;
     sidebarWidth?: number | undefined;
     terminalHeight?: number | undefined;
+    whatsNewSeenVersion?: string | undefined;
   }): void {
     this.assertMutable();
     this.store.update((d) => {
@@ -2992,6 +3047,16 @@ export class Engine {
       if (patch.alphaEnabled !== undefined) d.settings.alphaEnabled = patch.alphaEnabled;
       if (patch.externalControlEnabled !== undefined)
         d.settings.externalControlEnabled = patch.externalControlEnabled;
+      if (patch.remoteMCPEnabled !== undefined)
+        d.settings.remoteMCPEnabled = patch.remoteMCPEnabled;
+      if (patch.remoteMCPFullAccess !== undefined)
+        d.settings.remoteMCPFullAccess = patch.remoteMCPFullAccess;
+      if (patch.remoteMCPPublicURL !== undefined) {
+        if (patch.remoteMCPPublicURL === "") delete d.settings.remoteMCPPublicURL;
+        else d.settings.remoteMCPPublicURL = patch.remoteMCPPublicURL;
+      }
+      if (patch.remoteMCPPort !== undefined)
+        d.settings.remoteMCPPort = patch.remoteMCPPort;
       // F26: per-category writes merge and clamp like the frozen didSet —
       // a category never lands out of its range; reset writes the frozen
       // defaults explicitly (the Settings button sends all three).
@@ -3119,6 +3184,9 @@ export class Engine {
           760,
           Math.max(140, Math.round(patch.terminalHeight)),
         );
+      }
+      if (patch.whatsNewSeenVersion !== undefined) {
+        d.settings.whatsNewSeenVersion = patch.whatsNewSeenVersion;
       }
     });
     this.emit({ type: "settings-changed", settings: this.store.state.settings });
@@ -4642,6 +4710,28 @@ export class Engine {
   }
 
   /**
+   * P2-58: record the provider's admitted turn ID on the turn and its
+   * messages so conversation rewind targets the exact Codex turn.
+   */
+  private onProviderTurnStarted(
+    threadId: string,
+    turnId: string,
+    providerTurnId: string,
+  ): void {
+    const thread = this.store.state.threads.find((t) => t.id === threadId);
+    if (!thread) return;
+    const turn = thread.turn;
+    if (!turn || turn.id !== turnId) return;
+    if (!turn.providerTurnId) turn.providerTurnId = providerTurnId;
+    for (const m of thread.messages) {
+      if (m.turnId === turnId && !m.providerTurnId) {
+        m.providerTurnId = providerTurnId;
+      }
+    }
+    this.store.update(() => {});
+  }
+
+  /**
    * Persist a provider-side thread binding (Codex resume identity). The
    * adapter awaits this BEFORE turn/start so a restart can always resume.
    * Rejects when the thread is gone or the binding disagrees with the one
@@ -4949,14 +5039,13 @@ export class Engine {
     return hydraTeamStatus(heads);
   }
 
-  /** What rides the front of a lead's turn (frozen fallbackPreamble /
-   *  fallbackReportPreamble + delegationRequest for user turns). Heads
-   *  and Hydra-off chats get nothing; slash commands carry no guidance. */
-  private hydraWirePrefix(lead: ChatThread, isReport: boolean): string {
-    if (lead.hydraHead) return "";
+  /** P2-58: Codex carries the lead's Hydra policy in thread
+   *  developerInstructions (frozen keepsHydraPolicyInSystemPrompt). */
+  private codexHydraPolicy(lead: ChatThread): string | undefined {
+    if (lead.hydraHead) return undefined;
     const s = this.store.state.settings;
     const launch = this.hydraLaunchFor(lead);
-    if (!launch) return "";
+    if (!launch) return undefined;
     const project = this.store.state.projects.find((p) => p.id === lead.projectId);
     const policy = hydraLeadPolicy({
       tilt: s.hydraTilt ?? "active",
@@ -4972,6 +5061,26 @@ export class Engine {
           ? this.provider.descriptor.label
           : id,
     });
+    const adaptive =
+      this.subagentModeFor(lead) === "adaptive"
+        ? "\n\n" +
+          chimeraAdaptivePolicy(
+            s.chimeraPresets,
+            s.chimeraAutoDispatch === true,
+          )
+        : "";
+    return policy + adaptive;
+  }
+
+  /** What rides the front of a lead's turn (frozen fallbackPreamble /
+   *  fallbackReportPreamble + delegationRequest for user turns). Heads
+   *  and Hydra-off chats get nothing; slash commands carry no guidance. */
+  private hydraWirePrefix(lead: ChatThread, isReport: boolean): string {
+    if (lead.hydraHead) return "";
+    const s = this.store.state.settings;
+    const launch = this.hydraLaunchFor(lead);
+    if (!launch) return "";
+    const keepsInSystemPrompt = this.provider.descriptor.mode === "codex";
     const team = this.hydraTeamLine(lead.id);
     // Frozen v2QueuedHeadsNote: while the cap holds delegations back,
     // every lead prompt opens with the queue state so the lead never
@@ -4987,8 +5096,34 @@ export class Engine {
     if (isReport) {
       const canDelegate =
         (this.hydraRounds.get(lead.id) ?? 0) < MAX_DELEGATION_ROUNDS;
+      if (keepsInSystemPrompt) {
+        return queuedNote + hydraReportNote(team, canDelegate);
+      }
+      const policy = this.codexHydraPolicy(lead) ?? "";
       return queuedNote + policy + "\n\n" + hydraReportNote(team, canDelegate);
     }
+    if (keepsInSystemPrompt) {
+      return (
+        queuedNote +
+        hydraDelegationRequest(s.hydraTilt ?? "active") +
+        hydraTurnNote(team)
+      );
+    }
+    const project = this.store.state.projects.find((p) => p.id === lead.projectId);
+    const policy = hydraLeadPolicy({
+      tilt: s.hydraTilt ?? "active",
+      maxHeads: launch.maxHeads,
+      profiles: launch.headProfiles,
+      projects: this.store.state.projects
+        .filter((p) => p.id !== lead.projectId && p.directory)
+        .map((p) => ({ name: p.name, path: p.directory! })),
+      ownProjectName: project?.name,
+      isolated: launch.isolatesHeads,
+      providerLabel: (id) =>
+        id === this.provider.descriptor.mode
+          ? this.provider.descriptor.label
+          : id,
+    });
     // P1-36/P1-37: the adaptive mode's Chimera policy — role titles,
     // the numbered identity list and the auto-dispatch note ride the
     // delegation request (frozen ChimeraPrompts.policy, bounded).
@@ -7179,23 +7314,23 @@ export class Engine {
   }
 
   /**
-   * F09 (frozen ThreadRuntime.revert, bounded): rewind the conversation
-   * to before a turn — removes that turn and everything after it from
-   * the timeline, clears queued follow-ups (they answer a timeline that
-   * no longer exists), and drops the provider binding so the next turn
-   * opens a fresh conversation (frozen "provider cannot rewind" default
-   * path — neither mock nor the codex fixture implements rollback).
-   * Files are KEPT: in-place checkpoint restore stays disabled (A17),
-   * so the destructive "revert files too" variant is not offered and
-   * the notice says so plainly. Refuses while a turn runs or hydra
-   * heads are still working.
+   * F09 / P2-58 (frozen ThreadRuntime.revert, bounded): rewind the
+   * conversation to before a turn — removes that turn and everything after
+   * it from the timeline, clears queued follow-ups, and rewinds the
+   * provider conversation when the adapter implements `rollback` (Codex
+   * `thread/revert` with `thread/fork` fallback) or drops the provider
+   * binding when it does not. Files are KEPT. Refuses while a turn runs,
+   * a revert is already in flight, or hydra heads are still working.
    */
-  revertTurn(threadId: string, turnId: string): void {
+  revertTurn(threadId: string, turnId: string): void | Promise<void> {
     this.assertMutable();
     const thread = this.mustThread(threadId);
     this.ensureThreadLoaded(threadId);
     const live = thread.turn;
-    if (live && (live.status === "running" || live.status === "waiting-approval"))
+    if (
+      (live && (live.status === "running" || live.status === "waiting-approval")) ||
+      this.revertingThreads.has(threadId)
+    )
       throw new EngineError("Wait for the running turn to finish first.");
     if (
       this.store.state.threads.some(
@@ -7204,6 +7339,121 @@ export class Engine {
     )
       throw new EngineError("Stop the running agents before reverting this conversation.");
     const removed = this.removedTurnSet(thread, turnId);
+    if (!this.provider.rollback) {
+      this.provider.endSession?.(threadId);
+      delete thread.providerThread;
+      this.applyRewind(thread, removed);
+      return;
+    }
+    return this.revertProviderThread(thread, turnId, removed);
+  }
+
+  private async revertProviderThread(
+    thread: ChatThread,
+    turnId: string,
+    removed: Set<string>,
+  ): Promise<void> {
+    const threadId = thread.id;
+    this.revertingThreads.add(threadId);
+    try {
+      let targetProviderTurnId: string | undefined;
+      const turnHasNonError = new Map<string, boolean>();
+      for (const m of thread.messages) {
+        if (!m.turnId || !removed.has(m.turnId)) continue;
+        if (m.turnId === turnId && !targetProviderTurnId && m.providerTurnId) {
+          targetProviderTurnId = m.providerTurnId;
+        }
+        if (m.role === "assistant") {
+          turnHasNonError.set(m.turnId, m.status !== "error");
+        } else if (!turnHasNonError.has(m.turnId)) {
+          turnHasNonError.set(m.turnId, true);
+        }
+      }
+      if (
+        !targetProviderTurnId &&
+        thread.turn &&
+        thread.turn.id === turnId &&
+        thread.turn.providerTurnId
+      ) {
+        targetProviderTurnId = thread.turn.providerTurnId;
+      }
+      if (thread.turn && removed.has(thread.turn.id)) {
+        turnHasNonError.set(thread.turn.id, thread.turn.status !== "error");
+      }
+      const hasNonFailed = [...turnHasNonError.values()].some(Boolean);
+
+      if (targetProviderTurnId) {
+        const existingBinding = thread.providerThread;
+        if (!existingBinding) {
+          throw new EngineError("The original Codex conversation is unavailable.");
+        }
+        const workspace = this.resolveAuthorizedWorkspace(thread);
+        const hydraPolicy = this.codexHydraPolicy(thread);
+        const nextThreadId = await this.provider.rollback!(
+          threadId,
+          targetProviderTurnId,
+          {
+            workspace,
+            runtimeMode: thread.runtimeMode ?? "supervised",
+            ...(thread.codexModel ? { model: thread.codexModel } : {}),
+            ...(hydraPolicy !== undefined ? { hydraPolicy } : {}),
+          },
+        );
+        this.assertMutable();
+        const cur = this.mustThread(threadId);
+        this.ensureThreadLoaded(threadId);
+        if (nextThreadId === null) {
+          delete cur.providerThread;
+        } else if (
+          cur.providerThread &&
+          nextThreadId !== cur.providerThread.codexThreadId
+        ) {
+          cur.providerThread = {
+            ...cur.providerThread,
+            codexThreadId: nextThreadId,
+            savedAt: Date.now(),
+          };
+          this.freshSessionKeys.add(nextThreadId);
+        }
+        this.applyRewind(cur, removed);
+      } else if (thread.providerThread !== undefined || hasNonFailed) {
+        throw new EngineError(
+          "The selected message has no Codex turn ID, so its history cannot be safely reverted.",
+        );
+      } else {
+        this.provider.endSession?.(threadId);
+        delete thread.providerThread;
+        this.applyRewind(thread, removed);
+      }
+    } finally {
+      this.revertingThreads.delete(threadId);
+    }
+  }
+
+  private resolveAuthorizedWorkspace(thread: ChatThread): WorkspaceGrant {
+    if (!thread.projectId) {
+      throw new EngineError("WORKSPACE_NOT_CONFIGURED: thread has no project");
+    }
+    const grant = this.paths?.lookup(thread.projectId);
+    if (!grant) {
+      throw new EngineError(
+        "WORKSPACE_NOT_CONFIGURED: no authorized directory is bound to this project",
+      );
+    }
+    this.paths!.verify(grant);
+    if (thread.worktreeDir !== undefined) {
+      if (!this.paths!.dirLive(thread.worktreeDir)) {
+        throw new EngineError(
+          "WORKSPACE_NOT_CONFIGURED: the thread's worktree is missing or moved",
+        );
+      }
+      return { projectId: thread.projectId, directory: thread.worktreeDir };
+    }
+    return grant;
+  }
+
+  private applyRewind(thread: ChatThread, removed: Set<string>): void {
+    const live = thread.turn;
     thread.messages = thread.messages.filter(
       (m) => !(m.turnId !== undefined && removed.has(m.turnId)),
     );
@@ -7211,9 +7461,8 @@ export class Engine {
     // there is no live record left (done history lives in messages).
     if (live && removed.has(live.id)) thread.turn = null;
     thread.followUps = [];
-    this.handles.get(threadId)?.cancel();
-    this.handles.delete(threadId);
-    delete thread.providerThread;
+    this.handles.get(thread.id)?.cancel();
+    this.handles.delete(thread.id);
     thread.hasUnread = false;
     delete thread.unreadStatus;
     thread.updatedAt = Date.now();
@@ -7228,8 +7477,11 @@ export class Engine {
    * F09 (frozen ThreadRuntime.resend): rewind + send the edited text.
    * The composer intercepts this path when an edit target is set.
    */
-  resendTurn(threadId: string, turnId: string, text: string): Turn {
-    this.revertTurn(threadId, turnId);
+  resendTurn(threadId: string, turnId: string, text: string): Turn | Promise<Turn> {
+    const r = this.revertTurn(threadId, turnId);
+    if (r instanceof Promise) {
+      return r.then(() => this.sendTurn(threadId, text));
+    }
     return this.sendTurn(threadId, text);
   }
 

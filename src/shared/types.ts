@@ -56,7 +56,17 @@ export const THEME_IDS = [
   "matrix",
 ] as const;
 export type ThemeId = (typeof THEME_IDS)[number];
-export type LanguageId = "en" | "zh-Hans";
+export const LANGUAGE_IDS = ["en", "zh-Hans", "zh-Hant", "ja", "ko", "fr"] as const;
+export type LanguageId = (typeof LANGUAGE_IDS)[number];
+
+export const LANGUAGE_LABELS: Record<LanguageId, string> = {
+  en: "English",
+  "zh-Hans": "简体中文",
+  "zh-Hant": "繁體中文",
+  ja: "日本語",
+  ko: "한국어",
+  fr: "Français",
+};
 
 export interface Settings {
   theme: ThemeId;
@@ -224,6 +234,11 @@ export interface Settings {
    */
   alphaEnabled?: boolean;
   externalControlEnabled?: boolean;
+  /** P2-25: Remote MCP (outside Alpha, under Settings > Connections). */
+  remoteMCPEnabled?: boolean;
+  remoteMCPFullAccess?: boolean;
+  remoteMCPPublicURL?: string;
+  remoteMCPPort?: number;
   /**
    * F26: frozen uiFontSize/contentFontSize/codeFontSize — absolute point
    * sizes per category (ui 12–18, content 12–18, code 11–17). The offset
@@ -350,6 +365,27 @@ export interface Settings {
   /** A81: top-edge-dragged terminal drawer height — absent = the
    *  frozen 260; bounds 140–760. */
   terminalHeight?: number;
+  /** P2-55: version tracking for Settings > Version "What's new" (mirrors
+   *  upstream WhatsNew Keys: installedVersion / previousVersion / seenVersion). */
+  whatsNewInstalledVersion?: string;
+  whatsNewPreviousVersion?: string;
+  whatsNewSeenVersion?: string;
+}
+
+export interface WhatsNewDigest {
+  displayVersion: string;
+  versionCount: number;
+  oldestIncludedVersion?: string;
+  categories: {
+    newFeatures: string[];
+    bugFixes: string[];
+    refinements: string[];
+  };
+}
+
+export interface WhatsNewInfo {
+  en: WhatsNewDigest;
+  "zh-Hans": WhatsNewDigest;
 }
 
 export type TaskSleepMode = "off" | "system" | "display";
@@ -475,6 +511,8 @@ export interface Message {
   ts: number;
   /** Turn that produced this message (assistant/system). */
   turnId?: string;
+  /** Codex provider turn ID recorded at turn admission for conversation rewind. */
+  providerTurnId?: string;
   /** F03: system-role message rendered as a dedicated block
    *  (Codex reasoning/plan/tool items, turn todos, provider notices)
    *  instead of a plain note. */
@@ -589,6 +627,8 @@ export interface Turn {
   approval?: ApprovalRequest;
   question?: CodexQuestionRequest;
   assistantMessageId: string;
+  /** Codex provider turn ID recorded at turn admission for conversation rewind. */
+  providerTurnId?: string;
   /**
    * F03 quiet-watchdog readout (volatile): whole minutes since the last
    * provider event once silence passes the 5-minute label threshold —
@@ -1085,6 +1125,9 @@ export interface AppInfo {
    *  (and revealed) by the Source-control settings rows. Main-computed;
    *  the renderer can display it but never writes to it directly. */
   worktreesDir: string;
+  /** P2-55: release notes since the previous installed version, read from
+   *  CHANGELOG.md in main for en + zh-Hans. */
+  whatsNew?: WhatsNewInfo;
 }
 
 /** Per-turn checkpoint record as the renderer may see it — ledger
@@ -1341,4 +1384,37 @@ export interface GitDiffResult {
   kind: "text" | "binary" | "oversized" | "empty" | "unavailable";
   patch?: string;
   reason?: string;
+}
+
+export type RemoteMcpScope = "tivano.read" | "tivano.write";
+
+export interface RemoteMcpGrantView {
+  id: string;
+  clientId: string;
+  clientName: string;
+  scopes: RemoteMcpScope[];
+  createdAt: number;
+  lastUsedAt?: number;
+}
+
+export interface RemoteMcpApprovalRequest {
+  id: string;
+  clientName: string;
+  clientId: string;
+  redirectHost: string;
+  requestedScopes: RemoteMcpScope[];
+  code: string;
+  createdAt: number;
+}
+
+export interface RemoteMcpStatus {
+  enabled: boolean;
+  listening: boolean;
+  port: number;
+  mcpUrl: string;
+  publicUrl: string;
+  publicUrlValid: boolean;
+  failure: string | null;
+  pendingApprovals: RemoteMcpApprovalRequest[];
+  grants: RemoteMcpGrantView[];
 }

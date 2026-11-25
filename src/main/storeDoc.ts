@@ -24,6 +24,7 @@ import {
 import { SHORTCUT_COMMANDS, type KeyChord } from "../shared/shortcuts";
 import { MODEL_LIST_LIMIT, type ModelPreference } from "../shared/modelList";
 import {
+  LANGUAGE_IDS,
   SCHEMA_VERSION,
   THEME_IDS,
   type ChatThread,
@@ -125,6 +126,7 @@ const vTurn = vObject({
   approval: vOptional(vApproval),
   question: vOptional(vQuestionRequest),
   assistantMessageId: vNonEmptyString(120),
+  providerTurnId: vOptional(vNonEmptyString(200)),
 });
 
 const vMessage = vObject({
@@ -134,6 +136,7 @@ const vMessage = vObject({
   status: vMessageStatus,
   ts: vTs,
   turnId: vOptional(vString),
+  providerTurnId: vOptional(vNonEmptyString(200)),
   kind: vOptional(vEnum(["reasoning", "plan", "todos", "tool", "notice"] as const)),
   noticeLevel: vOptional(vEnum(["info", "warning", "error"] as const)),
   steps: vOptional(
@@ -497,7 +500,7 @@ const vMcpServer = vObject({
 
 const vSettings = vObject({
   theme: vEnum(THEME_IDS),
-  language: vEnum(["en", "zh-Hans"] as const),
+  language: vEnum(LANGUAGE_IDS),
   alwaysAllow: vArray(vString, PERSIST_MAX_GRANTS),
   // Optional so every pre-A18 store loads verbatim — absent means off.
   notifyOnDone: vOptional(vBoolean),
@@ -544,6 +547,11 @@ const vSettings = vObject({
   // gates off (the control socket never listens without them).
   alphaEnabled: vOptional(vBoolean),
   externalControlEnabled: vOptional(vBoolean),
+  // P2-25: Remote MCP lives outside Alpha under Settings > Connections.
+  remoteMCPEnabled: vOptional(vBoolean),
+  remoteMCPFullAccess: vOptional(vBoolean),
+  remoteMCPPublicURL: vOptional(vMaxString(2000)),
+  remoteMCPPort: vOptional(vInt(0, 65535)),
   // Optional so every pre-A38 store loads verbatim — absent = the
   // frozen defaults 14/15/13 (see shared/typeScale.ts).
   fontSizes: vOptional(vFontSizes),
@@ -620,6 +628,10 @@ const vSettings = vObject({
   // drawer top edge (140–760), frozen SidebarLayout/terminalHeight.
   sidebarWidth: vOptional(vNumber(210, 440)),
   terminalHeight: vOptional(vNumber(140, 760)),
+  // P2-55: version tracking for Settings > Version "What's new".
+  whatsNewInstalledVersion: vOptional(vNonEmptyString(80)),
+  whatsNewPreviousVersion: vOptional(vNonEmptyString(80)),
+  whatsNewSeenVersion: vOptional(vNonEmptyString(80)),
 });
 
 // F05 recent-slash-commands map: provider-keyed, names bounded to the
