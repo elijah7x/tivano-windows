@@ -201,7 +201,7 @@ export function App(): React.JSX.Element {
     side: "left" | "right";
     px: number;
   } | null>(null);
-  const { snapshot, lastError } = useSyncExternalStore(
+  const { snapshot, lastError, weatherFlashes } = useSyncExternalStore(
     (fn) => store.subscribe(fn),
     () => store.view,
   );
@@ -614,12 +614,13 @@ export function App(): React.JSX.Element {
           <WeatherWindowLayer
             threads={snapshot.threads}
             projects={snapshot.projects}
-            backdropOpacity={snapshot.settings.backdropOpacity}
+            finishFlashes={weatherFlashes}
           />
         )}
         {sidebarLive > 0 && (
           <Sidebar
             snapshot={snapshot}
+            finishFlashes={weatherFlashes}
             onOpenSettings={() => openSettings()}
             onOpenPalette={() => setPaletteOpen(true)}
           />

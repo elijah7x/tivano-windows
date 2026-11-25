@@ -23,11 +23,13 @@ export interface ThreadActivityOverrides {
   needsApproval?: boolean;
   needsAnswer?: boolean;
   isWorking?: boolean;
+  flashStatus?: "done" | "error" | "interrupted" | undefined;
 }
 
 /**
  * Frozen ThreadActivityStatus.resolve: pending decisions and live work stay
- * visible; terminal results are reminders only until they have been read.
+ * visible; terminal results are reminders only until they have been read
+ * (or flashed briefly when a turn ends on the currently viewed thread).
  */
 export function threadActivityStatus(
   th: ChatThread,
@@ -47,15 +49,27 @@ export function threadActivityStatus(
   if (overrides?.isWorking || turn?.status === "running") {
     return "running";
   }
-  if (!th.hasUnread) return "idle";
-  switch (th.unreadStatus) {
-    case "error":
-      return "failed";
-    case "interrupted":
-      return "interrupted";
-    default:
-      return "completed";
+  if (th.hasUnread) {
+    switch (th.unreadStatus) {
+      case "error":
+        return "failed";
+      case "interrupted":
+        return "interrupted";
+      default:
+        return "completed";
+    }
   }
+  if (overrides?.flashStatus !== undefined) {
+    switch (overrides.flashStatus) {
+      case "error":
+        return "failed";
+      case "interrupted":
+        return "interrupted";
+      default:
+        return "completed";
+    }
+  }
+  return "idle";
 }
 
 export type WeatherKind = "idle" | "awaiting" | "done" | "failed";
@@ -74,15 +88,6 @@ export interface HeroWeatherSnapshot {
   awaiting: number;
   done: number;
 }
-
-export const IDLE_WEATHER_SNAPSHOT: HeroWeatherSnapshot = {
-  kind: "idle",
-  count: 0,
-  hasRunningWork: false,
-  failed: 0,
-  awaiting: 0,
-  done: 0,
-};
 
 /**
  * Frozen HeroWeather.resolveSnapshot — folds thread statuses into counts and
@@ -130,6 +135,7 @@ export function portholeWeatherFromSnapshot(snapshot: HeroWeatherSnapshot): Hero
 export function resolveGlobalWeatherSnapshot(
   threads: readonly ChatThread[],
   projects?: readonly Project[],
+  finishFlashes?: Readonly<Record<string, "done" | "error" | "interrupted">>,
 ): HeroWeatherSnapshot {
   const shelvedIds = new Set<string>();
   if (projects) {
@@ -149,11 +155,7 @@ export function resolveGlobalWeatherSnapshot(
 
     // A finished/stopped Hydra head must not linger as waiting/working; only active
     // heads (or active turns on helpers) propagate to the parent.
-    const active = th.hydraHead
-      ? th.hydraHead.status === "running" ||
-        th.turn?.status === "running" ||
-        th.turn?.status === "waiting-approval"
-      : true;
+    const active = th.hydraHead ? th.hydraHead.status === "running" : true;
     if (!active) continue;
 
     if (th.turn?.approval?.status === "pending" || th.turn?.status === "waiting-approval") {
@@ -178,6 +180,7 @@ export function resolveGlobalWeatherSnapshot(
         needsApproval: approvalParents.has(th.id),
         needsAnswer: questionParents.has(th.id),
         isWorking: workingParents.has(th.id),
+        flashStatus: finishFlashes?.[th.id],
       }),
     );
   }
@@ -250,6 +253,54 @@ export function shouldStartPortholeHold(previous: HeroWeather, live: HeroWeather
     return live.count > previous.count;
   }
   return false;
+}
+
+/** Frozen GlobalWeatherLayer.shouldPlay: replay only on kind change or count increase. */
+export function shouldPlayWeatherPulse(previous: HeroWeather, next: HeroWeather): boolean {
+  if (next.kind === "idle") return false;
+  if (previous.kind === next.kind) return next.count > previous.count;
+  return true;
+}
+
+export interface WeatherPulseState {
+  kind: Exclude<WeatherKind, "idle">;
+  count: number;
+  releasing: boolean;
+  expired: boolean;
+}
+
+export type WeatherPulseAction = "none" | "clear" | "pulse" | "release";
+
+/**
+ * Pure state transition for GlobalWeatherLayer's 7.3s pulse / 0.95s awaiting
+ * release machine so production transitions and unit tests share one path.
+ */
+export function nextWeatherPulseState(
+  cur: WeatherPulseState | null,
+  previous: HeroWeather,
+  live: HeroWeather,
+  hasRunningWork: boolean,
+  paused: boolean,
+): { state: WeatherPulseState | null; action: WeatherPulseAction } {
+  if (paused) {
+    return { state: null, action: "clear" };
+  }
+  if (live.kind === "idle") {
+    if (hasRunningWork) {
+      return { state: null, action: "clear" };
+    }
+    if (previous.kind === "awaiting" && cur && !cur.expired && !cur.releasing) {
+      return { state: { ...cur, releasing: true }, action: "release" };
+    }
+    return { state: cur, action: "none" };
+  }
+  if (cur === null || cur.releasing || shouldPlayWeatherPulse(previous, live)) {
+    return {
+      state: { kind: live.kind, count: live.count, releasing: false, expired: false },
+      action: "pulse",
+    };
+  }
+  return { state: cur, action: "none" };
 }
 
 export const WEATHER_WINDOW_LABEL: Record<WeatherWindowMode, string> = {

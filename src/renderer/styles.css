@@ -353,7 +353,7 @@ button.primary:hover {
 .weather-picker {
   gap: 8px;
 }
-.weather-choice {
+.choice.weather-choice {
   display: inline-flex;
   flex-direction: column;
   align-items: center;
@@ -3574,7 +3574,6 @@ select.runtime-mode:disabled {
 /* P2-63: pause animations and drop layer hints while inactive, minimized or out of view. */
 html[data-paused="1"] .work-label,
 html[data-paused="1"] .spin-cell,
-html[data-paused="1"] .sky-doll.sway,
 html[data-paused="1"] .dots::after,
 html[data-paused="1"] .work-dots::after,
 html[data-paused="1"] .stave-bar .stave {

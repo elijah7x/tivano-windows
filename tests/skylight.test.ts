@@ -4,7 +4,10 @@
 // time-of-day sky periods, sub-agent-waiting wind (Hydra head & panel helper),
 // porthole vs global precedence, pause state, StreamVeil, and Settings UI.
 
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 
@@ -34,14 +37,21 @@ if (typeof (globalThis as { document?: unknown }).document === "undefined") {
 }
 
 import {
+  nextWeatherPulseState,
   portholeWeatherFromSnapshot,
   resolveGlobalWeatherSnapshot,
   resolveHeroWeatherSnapshot,
   resolveSkyPeriod,
   resolveWeatherWindowMode,
+  shouldPlayWeatherPulse,
   shouldStartPortholeHold,
   threadActivityStatus,
 } from "../src/shared/skylight";
+import { requestValidators } from "../src/shared/ipc";
+import { Engine } from "../src/main/engine";
+import { MockProvider } from "../src/main/mockProvider";
+import { Store } from "../src/main/store";
+import { ClientStore, WEATHER_FLASH_MS } from "../src/renderer/client";
 import { setModalCovered, setWindowActive } from "../src/renderer/appActivity";
 import { LanguageContext } from "../src/renderer/locale";
 import {
@@ -231,6 +241,61 @@ describe("threadActivityStatus & weather fold (P2-47)", () => {
       unreadStatus: "error",
     });
     expect(resolveGlobalWeatherSnapshot([shelvedFail], [shelvedProj]).kind).toBe("idle");
+
+    // Archived threads, in-panel helpers (as standalone rows), and finished Hydra heads
+    // never linger as awaiting/done/failed; running work still sets hasRunningWork.
+    const archivedFail = thread({
+      id: "t-arch",
+      isArchived: true,
+      hasUnread: true,
+      unreadStatus: "error",
+    });
+    const finishedHead = thread({
+      id: "head-done",
+      hydraHead: {
+        leadId: "lead-1",
+        headIndex: 2,
+        name: "Done",
+        task: "done",
+        batchId: "b1",
+        status: "completed",
+        spawnedAt: 3,
+      },
+      turn: {
+        status: "waiting-approval",
+        approval: { status: "pending" },
+      } as ChatThread["turn"],
+    });
+    const inPanelDone = thread({
+      id: "helper-done",
+      parentThreadId: "lead-1",
+      isInPanel: true,
+      hasUnread: true,
+      unreadStatus: "error",
+    });
+    const foldRunning = resolveGlobalWeatherSnapshot([
+      thread({ id: "lead-1", turn: { status: "running" } as ChatThread["turn"] }),
+      archivedFail,
+      finishedHead,
+      inPanelDone,
+    ]);
+    expect(foldRunning).toEqual({
+      kind: "idle",
+      count: 0,
+      hasRunningWork: true,
+      failed: 0,
+      awaiting: 0,
+      done: 0,
+    });
+
+    // finishFlashes surfaces sun/rain on the viewed thread without double-counting unread.
+    const viewedDone = resolveGlobalWeatherSnapshot(
+      [thread({ id: "sel-1" }), thread({ id: "bg-1", hasUnread: true, unreadStatus: "done" })],
+      undefined,
+      { "sel-1": "done", "bg-1": "done" },
+    );
+    expect(viewedDone.kind).toBe("done");
+    expect(viewedDone.done).toBe(2);
   });
 
   it("resolves weatherWindowMode with legacy showsSkylight fallback and time-of-day sky periods", () => {
@@ -338,19 +403,19 @@ describe("Weather window components (P2-47)", () => {
       turn: { status: "waiting-approval", approval: { status: "pending" } } as ChatThread["turn"],
     });
     const fullWind = renderToStaticMarkup(
-      createElement(WeatherWindowLayer, { threads: [awaitingThread], holdsSteady: true }),
+      createElement(WeatherWindowLayer, { threads: [awaitingThread] }),
     );
     expect(fullWind).toContain("weather-window-layer");
     expect(fullWind).toContain('data-weather="awaiting"');
 
     const fullIdle = renderToStaticMarkup(
-      createElement(WeatherWindowLayer, { threads: [thread({})], holdsSteady: true }),
+      createElement(WeatherWindowLayer, { threads: [thread({})] }),
     );
     expect(fullIdle).toBe("");
 
     setModalCovered(true);
     const fullPaused = renderToStaticMarkup(
-      createElement(WeatherWindowLayer, { threads: [awaitingThread], holdsSteady: true }),
+      createElement(WeatherWindowLayer, { threads: [awaitingThread] }),
     );
     expect(fullPaused).toBe("");
     setModalCovered(false);
@@ -449,6 +514,149 @@ describe("Weather window components (P2-47)", () => {
 
     expect(renderToStaticMarkup(createElement(WeatherWindowThumbnail, { mode: "porthole" }))).toContain("wt-porthole");
     expect(renderToStaticMarkup(createElement(WeatherWindowThumbnail, { mode: "full" }))).toContain("wt-full");
+  });
+
+  it("drives Full window pulse/release transitions without re-pulsing on count drop or cutting off finish flashes", () => {
+    expect(shouldPlayWeatherPulse({ kind: "awaiting", count: 1 }, { kind: "awaiting", count: 2 })).toBe(true);
+    expect(shouldPlayWeatherPulse({ kind: "awaiting", count: 2 }, { kind: "awaiting", count: 1 })).toBe(false);
+
+    // Mount with awaiting -> starts pulse.
+    const p1 = nextWeatherPulseState(null, { kind: "awaiting", count: 1 }, { kind: "awaiting", count: 1 }, false, false);
+    expect(p1).toEqual({
+      state: { kind: "awaiting", count: 1, releasing: false, expired: false },
+      action: "pulse",
+    });
+
+    // Count decrease stays quiet (no restart even if expired).
+    const pDrop = nextWeatherPulseState(
+      { kind: "awaiting", count: 2, releasing: false, expired: true },
+      { kind: "awaiting", count: 2 },
+      { kind: "awaiting", count: 1 },
+      false,
+      false,
+    );
+    expect(pDrop.action).toBe("none");
+
+    // awaiting -> idle enters release when not running.
+    const pRel = nextWeatherPulseState(p1.state, { kind: "awaiting", count: 1 }, { kind: "idle", count: 0 }, false, false);
+    expect(pRel).toEqual({
+      state: { kind: "awaiting", count: 1, releasing: true, expired: false },
+      action: "release",
+    });
+
+    // done -> idle (after finish flash expires or markRead) preserves the 7.3s pulse,
+    // while starting new running work stops it immediately.
+    const donePulse = { kind: "done" as const, count: 1, releasing: false, expired: false };
+    const pKeep = nextWeatherPulseState(donePulse, { kind: "done", count: 1 }, { kind: "idle", count: 0 }, false, false);
+    expect(pKeep).toEqual({ state: donePulse, action: "none" });
+    const pStop = nextWeatherPulseState(donePulse, { kind: "done", count: 1 }, { kind: "idle", count: 0 }, true, false);
+    expect(pStop).toEqual({ state: null, action: "clear" });
+
+    // Paused clears immediately.
+    const pPaused = nextWeatherPulseState(donePulse, { kind: "done", count: 1 }, { kind: "done", count: 1 }, false, true);
+    expect(pPaused).toEqual({ state: null, action: "clear" });
+  });
+});
+
+describe("Weather window settings persistence & ClientStore finish flashes (P2-47)", () => {
+  const dirs: string[] = [];
+  const tmp = () => {
+    const d = mkdtempSync(join(tmpdir(), "tivano-sky-"));
+    dirs.push(d);
+    return d;
+  };
+  afterEach(() => {
+    vi.useRealTimers();
+    while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+  });
+
+  it("validates settings:set and persists weatherWindowMode / showsSkylight / lastWeatherWindowMode", () => {
+    for (const m of ["porthole", "full", "off"] as const) {
+      expect(requestValidators["settings:set"]({ weatherWindowMode: m }).weatherWindowMode).toBe(m);
+    }
+    expect(() => requestValidators["settings:set"]({ weatherWindowMode: "banner" })).toThrow();
+    expect(requestValidators["settings:set"]({ showsSkylight: false }).showsSkylight).toBe(false);
+
+    const root = tmp();
+    const store = new Store(root);
+    store.open();
+    const engine = new Engine(store, new MockProvider({ tickMs: 1 }), root, "0.0.0-test");
+
+    engine.setSettings({ weatherWindowMode: "full" });
+    expect(engine.snapshot().settings).toMatchObject({
+      weatherWindowMode: "full",
+      lastWeatherWindowMode: "full",
+      showsSkylight: true,
+    });
+
+    // Legacy showsSkylight=false turns off and preserves lastWeatherWindowMode; true restores "full".
+    engine.setSettings({ showsSkylight: false });
+    expect(engine.snapshot().settings).toMatchObject({
+      weatherWindowMode: "off",
+      lastWeatherWindowMode: "full",
+      showsSkylight: false,
+    });
+    engine.setSettings({ showsSkylight: true });
+    expect(engine.snapshot().settings).toMatchObject({
+      weatherWindowMode: "full",
+      showsSkylight: true,
+    });
+
+    store.close();
+    const store2 = new Store(root);
+    store2.open();
+    expect(store2.state.settings.weatherWindowMode).toBe("full");
+    expect(store2.state.settings.lastWeatherWindowMode).toBe("full");
+    store2.close();
+  });
+
+  it("flashes weatherFlashes on finish-signal for the viewed thread and clears on expiry or new run", () => {
+    vi.useFakeTimers();
+    const cs = new ClientStore(async () => ({}));
+    const th = thread({ id: "t-view" });
+    const snap: Snapshot = {
+      projects: [],
+      threads: [th],
+      settings: { theme: "system", language: "en", alwaysAllow: [], weatherWindowMode: "porthole" },
+      selectedThreadId: "t-view",
+      info: baseInfo,
+      rev: 1,
+      tokenActivity: {},
+    };
+    cs.hydrate(snap, cs.beginHydration());
+
+    cs.apply({
+      type: "finish-signal",
+      rev: 2,
+      threadId: "t-view",
+      status: "done",
+      chime: false,
+      notify: "done",
+      silent: false,
+    });
+    expect(cs.view.weatherFlashes).toEqual({ "t-view": "done" });
+    expect(resolveGlobalWeatherSnapshot(cs.snapshot!.threads, cs.snapshot!.projects, cs.view.weatherFlashes).kind).toBe("done");
+
+    vi.advanceTimersByTime(WEATHER_FLASH_MS + 10);
+    expect(cs.view.weatherFlashes).toEqual({});
+
+    // A failure flash is cleared immediately when a new turn begins running.
+    cs.apply({
+      type: "finish-signal",
+      rev: 3,
+      threadId: "t-view",
+      status: "error",
+      chime: false,
+      notify: "failed",
+      silent: false,
+    });
+    expect(cs.view.weatherFlashes).toEqual({ "t-view": "error" });
+    cs.apply({
+      type: "thread-updated",
+      rev: 4,
+      thread: thread({ id: "t-view", turn: { status: "running" } as ChatThread["turn"] }),
+    });
+    expect(cs.view.weatherFlashes).toEqual({});
   });
 });
 

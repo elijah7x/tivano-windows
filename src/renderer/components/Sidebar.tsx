@@ -9,7 +9,7 @@ import { createPortal } from "react-dom";
 import type { ChatThread, OpenDirectoryResult, Snapshot } from "../../shared/types";
 import { compareThreads } from "../../shared/threadOrder";
 import { useT } from "../locale";
-import { api, callApi, clientStore, tryCall } from "../client";
+import { api, callApi, clientStore, tryCall, type WeatherFlashStatus } from "../client";
 import { ProjectIconPicker } from "./ProjectIconPicker";
 import { MiniSpinner } from "./SpinnerCells";
 import { Skylight } from "./Skylight";
@@ -60,6 +60,7 @@ function statusMark(t: ChatThread): React.JSX.Element {
 
 export function Sidebar(props: {
   snapshot: Snapshot;
+  finishFlashes?: Readonly<Record<string, WeatherFlashStatus>> | undefined;
   onOpenSettings: () => void;
   onOpenPalette: () => void;
 }): React.JSX.Element {
@@ -616,7 +617,11 @@ export function Sidebar(props: {
       {/* P2-47 (frozen SidebarPorthole): non-interactive weather porthole
           above the thread list when Weather window is set to Porthole. */}
       {resolveWeatherWindowMode(snapshot.settings) === "porthole" && (
-        <Skylight threads={snapshot.threads} projects={snapshot.projects} />
+        <Skylight
+          threads={snapshot.threads}
+          projects={snapshot.projects}
+          finishFlashes={props.finishFlashes}
+        />
       )}
       {creatingProject && (
         <div className="search">

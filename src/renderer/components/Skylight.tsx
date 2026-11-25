@@ -18,6 +18,7 @@ import {
   FULL_WINDOW_RELEASE_MS,
   PORTHOLE_HOLD_MS,
   comparePortholeStrength,
+  nextWeatherPulseState,
   portholeWeatherFromSnapshot,
   resolveGlobalWeatherSnapshot,
   resolveSkyPeriod,
@@ -25,7 +26,9 @@ import {
   type HeroWeather,
   type SkyPeriod,
   type WeatherKind,
+  type WeatherPulseState,
 } from "../../shared/skylight";
+import type { WeatherFlashStatus } from "../client";
 import { useAppPaused, useInView } from "../appActivity";
 
 function usePrefersReducedMotion(): boolean {
@@ -258,9 +261,8 @@ function PortholeScene(props: {
 export function Skylight(props: {
   threads: ChatThread[];
   projects?: Project[] | undefined;
+  finishFlashes?: Readonly<Record<string, WeatherFlashStatus>> | undefined;
   clockOverride?: Date | undefined;
-  /** Retained optional so legacy test callers compile; porthole is non-interactive. */
-  onNewThread?: (() => void) | undefined;
 }): React.JSX.Element {
   const rootRef = useRef<HTMLDivElement>(null);
   const appPaused = useAppPaused();
@@ -285,10 +287,15 @@ export function Skylight(props: {
     return () => window.clearInterval(id);
   }, [props.clockOverride, paused]);
 
-  const snapshot = resolveGlobalWeatherSnapshot(props.threads, props.projects);
+  const snapshot = resolveGlobalWeatherSnapshot(
+    props.threads,
+    props.projects,
+    props.finishFlashes,
+  );
   const live = portholeWeatherFromSnapshot(snapshot);
 
   const [held, setHeld] = useState<{ weather: HeroWeather; deadline: number } | null>(null);
+  const heldRef = useRef<{ weather: HeroWeather; deadline: number } | null>(null);
   const lastLiveRef = useRef<HeroWeather>(live);
   const holdTimerRef = useRef<number | null>(null);
   const seededRef = useRef(false);
@@ -298,6 +305,7 @@ export function Skylight(props: {
       window.clearTimeout(holdTimerRef.current);
     }
     holdTimerRef.current = null;
+    heldRef.current = null;
     setHeld(null);
   };
 
@@ -320,23 +328,29 @@ export function Skylight(props: {
     }
 
     const now = Date.now();
-    const isHolding = held !== null && now < held.deadline;
+    const curHeld = heldRef.current;
+    const isHolding = curHeld !== null && now < curHeld.deadline;
 
     if (shouldStartPortholeHold(previous, currentLive)) {
-      if (!isHolding || comparePortholeStrength(currentLive, held.weather) >= 0) {
+      if (!isHolding || comparePortholeStrength(currentLive, curHeld.weather) >= 0) {
         if (holdTimerRef.current !== null && typeof window !== "undefined") {
           window.clearTimeout(holdTimerRef.current);
         }
         const deadline = now + PORTHOLE_HOLD_MS;
-        setHeld({ weather: currentLive, deadline });
+        const nextHeld = { weather: currentLive, deadline };
+        heldRef.current = nextHeld;
+        setHeld(nextHeld);
         if (typeof window !== "undefined") {
           holdTimerRef.current = window.setTimeout(() => {
             holdTimerRef.current = null;
+            if (heldRef.current?.deadline === deadline) {
+              heldRef.current = null;
+            }
             setHeld((cur) => (cur?.deadline === deadline ? null : cur));
           }, PORTHOLE_HOLD_MS);
         }
       }
-    } else if (!isHolding && held !== null) {
+    } else if (!isHolding && curHeld !== null) {
       clearHold();
     }
   }, [live.kind, live.count]);
@@ -377,25 +391,21 @@ export function Skylight(props: {
 export function WeatherWindowLayer(props: {
   threads: ChatThread[];
   projects?: Project[] | undefined;
-  backdropOpacity?: number | undefined;
-  holdsSteady?: boolean | undefined;
+  finishFlashes?: Readonly<Record<string, WeatherFlashStatus>> | undefined;
 }): React.JSX.Element | null {
   const appPaused = useAppPaused();
   const reduceMotion = usePrefersReducedMotion();
   const paused = appPaused || reduceMotion;
 
-  const snapshot = resolveGlobalWeatherSnapshot(props.threads, props.projects);
+  const snapshot = resolveGlobalWeatherSnapshot(
+    props.threads,
+    props.projects,
+    props.finishFlashes,
+  );
   const live: HeroWeather = { kind: snapshot.kind, count: snapshot.count };
 
-  const liveKey = live.kind === "idle" ? "idle" : `${live.kind}:${live.count}`;
-  const [pulseState, setPulseState] = useState<{
-    key: string;
-    kind: WeatherKind;
-    count: number;
-    releasing: boolean;
-    expired: boolean;
-  } | null>(null);
-
+  const [pulseState, setPulseState] = useState<WeatherPulseState | null>(null);
+  const pulseStateRef = useRef<WeatherPulseState | null>(null);
   const prevLiveRef = useRef<HeroWeather>(live);
   const timerRef = useRef<number | null>(null);
   const pulseTokenRef = useRef(0);
@@ -411,97 +421,79 @@ export function WeatherWindowLayer(props: {
   useEffect(() => () => clearTimer(), []);
 
   useEffect(() => {
-    if (paused) {
-      clearTimer();
-      setPulseState(null);
-      prevLiveRef.current = live;
-      return;
-    }
-
-    if (props.holdsSteady) {
-      clearTimer();
-      setPulseState(
-        live.kind === "idle"
-          ? null
-          : { key: liveKey, kind: live.kind, count: live.count, releasing: false, expired: false },
-      );
-      prevLiveRef.current = live;
-      return;
-    }
-
     const old = prevLiveRef.current;
     prevLiveRef.current = live;
 
-    if (live.kind === "idle") {
-      if (snapshot.hasRunningWork) {
-        clearTimer();
-        setPulseState(null);
-      } else if (old.kind === "awaiting" && pulseState && !pulseState.expired) {
-        const token = ++pulseTokenRef.current;
-        if (timerRef.current !== null && typeof window !== "undefined") {
-          window.clearTimeout(timerRef.current);
-        }
-        setPulseState({ ...pulseState, releasing: true });
-        if (typeof window !== "undefined") {
-          timerRef.current = window.setTimeout(() => {
-            if (pulseTokenRef.current === token) {
-              setPulseState(null);
-            }
-          }, FULL_WINDOW_RELEASE_MS);
-        }
-      } else {
-        clearTimer();
-        setPulseState(null);
+    const transition = nextWeatherPulseState(
+      pulseStateRef.current,
+      old,
+      live,
+      snapshot.hasRunningWork,
+      paused,
+    );
+
+    if (transition.action === "clear") {
+      clearTimer();
+      pulseStateRef.current = null;
+      setPulseState(null);
+      return;
+    }
+
+    if (transition.action === "release") {
+      const token = ++pulseTokenRef.current;
+      if (timerRef.current !== null && typeof window !== "undefined") {
+        window.clearTimeout(timerRef.current);
+      }
+      pulseStateRef.current = transition.state;
+      setPulseState(transition.state);
+      if (typeof window !== "undefined") {
+        timerRef.current = window.setTimeout(() => {
+          if (pulseTokenRef.current === token) {
+            pulseStateRef.current = null;
+            setPulseState(null);
+          }
+        }, FULL_WINDOW_RELEASE_MS);
       }
       return;
     }
 
-    if (pulseState?.key === liveKey) return;
-
-    const token = ++pulseTokenRef.current;
-    if (timerRef.current !== null && typeof window !== "undefined") {
-      window.clearTimeout(timerRef.current);
+    if (transition.action === "pulse" && transition.state) {
+      const token = ++pulseTokenRef.current;
+      if (timerRef.current !== null && typeof window !== "undefined") {
+        window.clearTimeout(timerRef.current);
+      }
+      const started = transition.state;
+      pulseStateRef.current = started;
+      setPulseState(started);
+      if (typeof window !== "undefined") {
+        timerRef.current = window.setTimeout(() => {
+          if (pulseTokenRef.current === token) {
+            const expired: WeatherPulseState = { ...started, releasing: false, expired: true };
+            pulseStateRef.current = expired;
+            setPulseState(expired);
+          }
+        }, FULL_WINDOW_PULSE_MS);
+      }
     }
-    setPulseState({
-      key: liveKey,
-      kind: live.kind,
-      count: live.count,
-      releasing: false,
-      expired: false,
-    });
-    if (typeof window !== "undefined") {
-      timerRef.current = window.setTimeout(() => {
-        if (pulseTokenRef.current === token) {
-          setPulseState((cur) =>
-            cur && cur.key === liveKey ? { ...cur, releasing: false, expired: true } : cur,
-          );
-        }
-      }, FULL_WINDOW_PULSE_MS);
-    }
-  }, [liveKey, live.kind, live.count, snapshot.hasRunningWork, paused, props.holdsSteady]);
+  }, [live.kind, live.count, snapshot.hasRunningWork, paused]);
 
   const displayed = (() => {
     if (paused) return null;
-    if (props.holdsSteady) {
-      return live.kind === "idle"
-        ? null
-        : { kind: live.kind, count: live.count, releasing: false };
-    }
-    if (live.kind !== "idle") {
-      if (pulseState?.key === liveKey && pulseState.expired) return null;
+    if (pulseState !== null) {
+      if (pulseState.expired) return null;
       return {
-        kind: live.kind,
-        count: live.count,
-        releasing: pulseState?.key === liveKey ? pulseState.releasing : false,
+        kind: pulseState.kind,
+        count: pulseState.count,
+        releasing: pulseState.releasing,
       };
     }
-    if (pulseState && pulseState.releasing && !snapshot.hasRunningWork) {
-      return { kind: pulseState.kind, count: pulseState.count, releasing: true };
+    if (live.kind !== "idle") {
+      return { kind: live.kind, count: live.count, releasing: false };
     }
     return null;
   })();
 
-  if (!displayed || displayed.kind === "idle") return null;
+  if (!displayed) return null;
 
   return (
     <div
@@ -510,11 +502,6 @@ export function WeatherWindowLayer(props: {
       data-weather={displayed.kind}
       data-paused={paused ? "true" : "false"}
       data-count={displayed.count}
-      style={
-        props.backdropOpacity !== undefined
-          ? ({ "--ww-boost": String(1 + 0.4 * (1 - Math.min(1, Math.max(0, props.backdropOpacity / 0.55)))) } as React.CSSProperties)
-          : undefined
-      }
     >
       {displayed.kind === "awaiting" && (
         <svg className="ww-svg" viewBox="0 0 800 500" preserveAspectRatio="none">

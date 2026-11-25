@@ -84,10 +84,18 @@ declare global {
   }
 }
 
+export type WeatherFlashStatus = "done" | "error" | "interrupted";
+
+/** How long a finish-signal weather flash stays visible in the live snapshot
+ *  so Porthole (8s hold) and Full window (7.3s pulse) catch on-screen turns. */
+export const WEATHER_FLASH_MS = 1000;
+
 export interface ClientView {
   snapshot: Snapshot | null;
   /** Last surfaced invoke/apply error; shown in the global error banner. */
   lastError: string | null;
+  /** Transient finish flashes for threads whose turn ended on screen. */
+  weatherFlashes?: Readonly<Record<string, WeatherFlashStatus>>;
 }
 
 interface Draft {
@@ -111,7 +119,7 @@ export class ClientStore {
   snapshot: Snapshot | null = null;
   lastError: string | null = null;
   /** Cached subscription view — useSyncExternalStore re-reads by reference. */
-  view: ClientView = { snapshot: null, lastError: null };
+  view: ClientView = { snapshot: null, lastError: null, weatherFlashes: {} };
   private listeners = new Set<() => void>();
   /** Events received before the snapshot lands — filtered by rev at hydrate. */
   private buffered: AppEvent[] = [];
@@ -132,6 +140,9 @@ export class ClientStore {
   limitResumes: Record<string, number> = {};
   /** P2-63: paced notification timers for non-visible streaming panels/threads. */
   private pacedNotifyTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** P2-47: transient weather flashes for on-screen turn completions. */
+  private flashTimers = new Map<string, { status: WeatherFlashStatus; timer: ReturnType<typeof setTimeout> }>();
+  private cachedWeatherFlashes: Readonly<Record<string, WeatherFlashStatus>> = {};
   private readonly invoke: InvokeFn;
 
   constructor(invoke?: InvokeFn) {
@@ -144,7 +155,11 @@ export class ClientStore {
   }
 
   private publish(): void {
-    this.view = { snapshot: this.snapshot, lastError: this.lastError };
+    this.view = {
+      snapshot: this.snapshot,
+      lastError: this.lastError,
+      weatherFlashes: this.cachedWeatherFlashes,
+    };
   }
 
   private notify(): void {
@@ -184,6 +199,7 @@ export class ClientStore {
     if (gen !== this.hydrateGen) return; // superseded cycle (StrictMode replay)
     for (const id of this.pacedNotifyTimers.values()) clearTimeout(id);
     this.pacedNotifyTimers.clear();
+    this.clearAllWeatherFlashes();
     this.snapshot = s;
     this.snapshotRev = s.rev;
     this.limitResumes = { ...(s.limitResumesAt ?? {}) };
@@ -516,9 +532,42 @@ export class ClientStore {
 
   private dropThreadState(threadId: string): void {
     this.clearPacedTimer(threadId);
+    this.clearWeatherFlash(threadId, false);
     this.drafts.delete(threadId);
     this.editTargets.delete(threadId);
     this.pendingSends.delete(threadId);
+  }
+
+  private rebuildWeatherFlashes(): void {
+    const next: Record<string, WeatherFlashStatus> = {};
+    for (const [id, entry] of this.flashTimers) next[id] = entry.status;
+    this.cachedWeatherFlashes = next;
+  }
+
+  private setWeatherFlash(threadId: string, status: WeatherFlashStatus): void {
+    const prev = this.flashTimers.get(threadId);
+    if (prev) clearTimeout(prev.timer);
+    const timer = setTimeout(() => {
+      this.clearWeatherFlash(threadId, true);
+    }, WEATHER_FLASH_MS);
+    this.flashTimers.set(threadId, { status, timer });
+    this.rebuildWeatherFlashes();
+  }
+
+  private clearWeatherFlash(threadId: string, notifyAfter: boolean): void {
+    const prev = this.flashTimers.get(threadId);
+    if (!prev) return;
+    clearTimeout(prev.timer);
+    this.flashTimers.delete(threadId);
+    this.rebuildWeatherFlashes();
+    if (notifyAfter) this.notify();
+  }
+
+  private clearAllWeatherFlashes(): void {
+    if (this.flashTimers.size === 0) return;
+    for (const entry of this.flashTimers.values()) clearTimeout(entry.timer);
+    this.flashTimers.clear();
+    this.cachedWeatherFlashes = {};
   }
 
   // ---- event application ------------------------------------------------
@@ -532,6 +581,7 @@ export class ClientStore {
     }
     switch (event.type) {
       case "snapshot":
+        this.clearAllWeatherFlashes();
         this.snapshot = event.snapshot;
         this.snapshotRev = event.snapshot.rev;
         this.notify();
@@ -555,6 +605,14 @@ export class ClientStore {
         s.threads = [...s.threads.filter((t) => t.id !== event.thread.id), event.thread];
         break;
       case "thread-updated":
+        if (
+          event.thread.hasUnread ||
+          event.thread.isArchived ||
+          event.thread.turn?.status === "running" ||
+          event.thread.turn?.status === "waiting-approval"
+        ) {
+          this.clearWeatherFlash(event.thread.id, false);
+        }
         s.threads = s.threads.map((t) => (t.id === event.thread.id ? event.thread : t));
         break;
       case "thread-removed":
@@ -563,7 +621,10 @@ export class ClientStore {
         break;
       case "thread-selected":
         s.selectedThreadId = event.threadId;
-        if (event.threadId) this.clearPacedTimer(event.threadId);
+        if (event.threadId) {
+          this.clearPacedTimer(event.threadId);
+          this.clearWeatherFlash(event.threadId, false);
+        }
         break;
       case "settings-changed":
         s.settings = event.settings;
@@ -607,6 +668,9 @@ export class ClientStore {
       }
       case "turn-status": {
         this.clearPacedTimer(event.threadId);
+        if (event.status === "running" || event.status === "waiting-approval") {
+          this.clearWeatherFlash(event.threadId, false);
+        }
         const t = this.thread(event.threadId);
         const turn = t?.turn;
         if (!t || !turn || turn.id !== event.turnId) return;
@@ -620,9 +684,20 @@ export class ClientStore {
       case "finish-signal": {
         // F28 frozen turnFinished — the engine applied the
         // stillWorking/userStopped gates; here remains the on-screen check.
+        // P2-47: also pulse a transient finish flash so the currently viewed
+        // thread brings sun on finish / rain on failure without persisting unread.
         if (event.chime) playFinishChime();
         const t = this.thread(event.threadId);
         if (event.notify && t) maybeNotifyDone(this, t, event.notify, event.silent);
+        if (event.notify && t && !t.hydraHead && !t.hasUnread) {
+          const flashStatus: WeatherFlashStatus =
+            event.notify === "failed"
+              ? "error"
+              : event.notify === "stopped"
+                ? "interrupted"
+                : "done";
+          this.setWeatherFlash(t.id, flashStatus);
+        }
         break;
       }
       case "quick-draft": {
