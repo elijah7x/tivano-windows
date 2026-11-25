@@ -2926,6 +2926,7 @@ export class Engine {
     threadTitles?: "once" | "updated" | undefined;
     autoShelveDays?: number | undefined;
     shelvedGroupName?: string | null | undefined;
+    quickChatEnabled?: boolean | undefined;
     shortcuts?: Record<string, import("../shared/shortcuts").KeyChord | null> | undefined;
     alphaEnabled?: boolean | undefined;
     externalControlEnabled?: boolean | undefined;
@@ -3035,6 +3036,8 @@ export class Engine {
             : 0;
       if (patch.shelvedGroupName !== undefined)
         d.settings.shelvedGroupName = patch.shelvedGroupName?.trim() || null;
+      if (patch.quickChatEnabled !== undefined)
+        d.settings.quickChatEnabled = patch.quickChatEnabled;
       // F27: the whole overrides map arrives validated — replace wholesale
       // so a removed override truly unsets (frozen Override semantics).
       if (patch.shortcuts !== undefined) {

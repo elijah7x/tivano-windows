@@ -436,10 +436,8 @@ export class Store {
       // start clean. If the preservation itself fails we fail CLOSED — the
       // original file stays byte-identical and nothing is ever overwritten.
       if (err instanceof CorruptStoreError || err instanceof SyntaxError) {
-        const backup = join(
-          this.root,
-          `store.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
-        );
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const backup = join(this.root, `store.corrupt-${stamp}.json`);
         try {
           renameSync(this.file, backup);
         } catch (backupErr) {
@@ -450,6 +448,7 @@ export class Store {
               `refusing to start clean and lose the evidence`,
           );
         }
+        this.preserveSegmentsOnCorruptHead(stamp);
         this.recoveredFrom = backup;
         this.data = emptyStore();
         this.opened = true;
@@ -459,6 +458,54 @@ export class Store {
       this.lock.release();
       this.closed = true;
       throw err;
+    }
+  }
+
+  /**
+   * Preserve existing turn segments when a corrupt or unreadable store head
+   * is moved aside so a subsequent atomicWrite() orphan sweep against the
+   * empty recovered head never deletes conversation history.
+   */
+  private preserveSegmentsOnCorruptHead(stamp: string): void {
+    const turnsDir = join(this.root, TURNS_DIRNAME);
+    if (!existsSync(turnsDir)) return;
+    let stat: ReturnType<typeof lstatSync>;
+    try {
+      stat = lstatSync(turnsDir);
+    } catch {
+      return;
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return;
+    let entries: string[];
+    try {
+      entries = readdirSync(turnsDir);
+    } catch {
+      return;
+    }
+    if (entries.length === 0) return;
+    let turnsBackup = join(this.root, `${TURNS_DIRNAME}.corrupt-${stamp}`);
+    if (existsSync(turnsBackup)) {
+      turnsBackup = join(this.root, `${TURNS_DIRNAME}.corrupt-${stamp}-${randomUUID().slice(0, 8)}`);
+    }
+    try {
+      renameSync(turnsDir, turnsBackup);
+      return;
+    } catch {
+      // Directory rename failed (e.g., an open handle on Windows); quarantine
+      // individual segment files in place and protect any stubborn ones.
+    }
+    for (const f of entries) {
+      if (!f.endsWith(".json") || f.includes(".corrupt-")) continue;
+      const id = f.slice(0, -".json".length);
+      let dest = join(turnsDir, `${id}.corrupt-${stamp}.json`);
+      if (existsSync(dest)) {
+        dest = join(turnsDir, `${id}.corrupt-${stamp}-${randomUUID().slice(0, 8)}.json`);
+      }
+      try {
+        renameSync(join(turnsDir, f), dest);
+      } catch {
+        this.protectedSegments.add(id);
+      }
     }
   }
 

@@ -247,4 +247,76 @@ describe("segmented turn storage (F30)", () => {
     expect(result.recoveredFrom).toBeTruthy();
     expect(existsSync(result.recoveredFrom!)).toBe(true);
   });
+
+  it("corrupt-head recovery preserves existing turn segments across flushes and restarts", () => {
+    const root = freshRoot();
+    const tid = randomUUID();
+    {
+      const { store } = openStore(root);
+      store.update((d) => {
+        d.threads.push(
+          baseThread(tid, [msg("u1", "user", "keep me"), msg("a1", "assistant", "important")]) as never,
+        );
+      });
+      store.flushNow();
+      store.close();
+    }
+    const segPath = join(root, "turns", `${tid}.json`);
+    const originalSegBytes = readFileSync(segPath, "utf8");
+
+    // Corrupt store.json (both invalid JSON and validation-failing unknown key).
+    writeFileSync(join(root, "store.json"), "{not json");
+    const { store: s1, result: r1 } = openStore(root);
+    expect(r1.recoveredFrom).toBeTruthy();
+    expect(existsSync(r1.recoveredFrom!)).toBe(true);
+    // Flushing and closing after recovery must not delete the preserved turn segment.
+    const newTid = randomUUID();
+    s1.update((d) => {
+      d.threads.push(baseThread(newTid, [msg("n1", "user", "fresh")]) as never);
+    });
+    s1.flushNow();
+    s1.close();
+
+    // A subsequent open + flush must also leave the preserved segments intact.
+    const { store: s2, result: r2 } = openStore(root);
+    expect(r2.recoveredFrom).toBeUndefined();
+    expect(r2.data.threads.map((t) => t.id)).toEqual([newTid]);
+    s2.flushNow();
+    s2.close();
+
+    const backupDirs = readdirSync(root).filter((f) => f.startsWith("turns.corrupt-"));
+    expect(backupDirs.length).toBe(1);
+    const preservedPath = join(root, backupDirs[0]!, `${tid}.json`);
+    expect(existsSync(preservedPath)).toBe(true);
+    expect(readFileSync(preservedPath, "utf8")).toBe(originalSegBytes);
+    expect(existsSync(join(root, "turns", `${newTid}.json`))).toBe(true);
+  });
+
+  it("preserves turn segments across CorruptStoreError recovery and handles backup name collisions", () => {
+    const root = freshRoot();
+    const tid = randomUUID();
+    {
+      const { store } = openStore(root);
+      store.update((d) => {
+        d.threads.push(baseThread(tid, [msg("u1", "user", "saved turn")]) as never);
+      });
+      store.flushNow();
+      store.close();
+    }
+    const segBytes = readFileSync(join(root, "turns", `${tid}.json`), "utf8");
+    const head = JSON.parse(readFileSync(join(root, "store.json"), "utf8")) as {
+      settings: Record<string, unknown>;
+    };
+    head.settings.bogusUnknownKey = true;
+    writeFileSync(join(root, "store.json"), JSON.stringify(head));
+
+    const { store, result } = openStore(root);
+    expect(result.recoveredFrom).toBeTruthy();
+    store.flushNow();
+    store.close();
+
+    const backupDirs = readdirSync(root).filter((f) => f.startsWith("turns.corrupt-"));
+    expect(backupDirs.length).toBe(1);
+    expect(readFileSync(join(root, backupDirs[0]!, `${tid}.json`), "utf8")).toBe(segBytes);
+  });
 });

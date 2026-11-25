@@ -107,6 +107,34 @@ describe("P2-62 retired settings migration", () => {
     expect(() => validateStoreFile(raw)).toThrow(CorruptStoreError);
   });
 
+  it("persists and reloads live settings keys without corrupt-store recovery", () => {
+    const root = freshRoot();
+    const { store, engine } = makeEngine(root);
+    engine.setSettings({
+      threadTitles: "updated",
+      autoShelveDays: 7,
+      shelvedGroupName: "  Archived Work  ",
+      quickChatEnabled: true,
+    });
+    store.close();
+
+    const { store: store2, engine: engine2 } = makeEngine(root);
+    expect(store2.recoveredFrom).toBeUndefined();
+    expect(engine2.snapshot().settings.threadTitles).toBe("updated");
+    expect(engine2.snapshot().settings.autoShelveDays).toBe(7);
+    expect(engine2.snapshot().settings.shelvedGroupName).toBe("Archived Work");
+    expect(engine2.snapshot().settings.quickChatEnabled).toBe(true);
+
+    engine2.setSettings({ shelvedGroupName: "   ", quickChatEnabled: false });
+    store2.close();
+
+    const { store: store3, engine: engine3 } = makeEngine(root);
+    expect(store3.recoveredFrom).toBeUndefined();
+    expect(engine3.snapshot().settings.shelvedGroupName).toBeNull();
+    expect(engine3.snapshot().settings.quickChatEnabled).toBe(false);
+    store3.close();
+  });
+
   it("rejects retired keys in settings:set IPC validation and ignores them in Engine.setSettings", () => {
     const { store, engine } = makeEngine(freshRoot());
     for (const key of [
