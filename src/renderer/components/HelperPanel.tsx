@@ -17,6 +17,7 @@ import type { ChatThread, Message, Settings } from "../../shared/types";
 import { useT } from "../locale";
 import { renderMarkdown } from "../markdown";
 import { tryCall } from "../client";
+import { watchSelectionResidue } from "../selectionRepaint";
 import { translateNotice } from "../i18n";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
@@ -80,6 +81,13 @@ export function HelperPanel(props: {
     const el = timelineRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [thread.messages.length, thread.turn?.seq]);
+
+  // P2-34: same selection-residue repaint as the main timeline.
+  useEffect(() => {
+    const el = timelineRef.current;
+    if (!el) return;
+    return watchSelectionResidue(el);
+  }, []);
 
   const w = Math.min(
     Math.max(sizeDrag?.w ?? props.size?.width ?? WIDTH, MIN_W),
