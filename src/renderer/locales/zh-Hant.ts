@@ -2038,4 +2038,41 @@ export const zhHant: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "1 個檔案已變更，新增 %@ 行，刪除 %@ 行",
   "%@ files changed, %@ lines added, %@ lines removed": "%@ 個檔案已變更，新增 %@ 行，刪除 %@ 行",
   "Show this thread's changes": "顯示此對話的變更",
+  // P2-47
+  "Weather window": "天氣窗",
+  "Porthole": "舷窗",
+  "Full window": "落地窗",
+  "No weather.": "不顯示天氣。",
+  "A small window above the thread list: wind when waiting on you, sunlight when a turn finishes, rain when one fails.":
+    "對話列表上方的一扇小窗：等你回覆時起風，回合完成時出太陽，失敗時下雨。",
+  "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
+    "在等待你回答或確認時拂過微風、完成時灑下暖陽、失敗時落下細雨。",
+  // P2-50
+  "Where shall we begin today?": "今天從哪裡開始？",
+  "Work in a project": "在專案中工作",
+  "Agents read and edit this folder, and can run in parallel worktrees.":
+    "代理會讀取並編輯此資料夾，並可在平行 worktree 中執行。",
+  "Add a project folder": "新增專案資料夾",
+  "Just chat": "直接對話",
+  "No project folder needed. Good for questions and drafts.":
+    "無需專案資料夾，適合提問與草稿。",
+  "Start a chat": "開始對話",
+  "Install a coding agent first": "請先安裝一個程式設計代理",
+  "1 provider ready": "1 個供應商可用",
+  "%lld providers ready": "%lld 個供應商可用",
+  "Manage": "管理",
+  "Install": "安裝",
+  "Ready": "已就緒",
+  "ChatGPT plan or API key": "ChatGPT 方案或 API 金鑰",
+  "Synthetic provider": "合成提供方",
+  "Provider checklist": "供應商清單",
+  // P1-36
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
+    "已達子代理並行上限（%d）\n1 個任務正在排隊：同時最多執行 %d 個子代理（設定 › Hydra）。執行中的子代理完成後會自動派出。",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on their own as running sub-agents finish.":
+    "已達子代理並行上限（%d）\n%d 個任務正在排隊：同時最多執行 %d 個子代理（設定 › Hydra）。執行中的子代理完成後會自動派出。",
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once. It goes out on its own as a running sub-agent finishes.":
+    "已達子代理並行上限（%d）\n1 個任務正在排隊：同時最多執行 %d 個子代理。執行中的子代理完成後會自動派出。",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
+    "已達子代理並行上限（%d）\n%d 個任務正在排隊：同時最多執行 %d 個子代理。執行中的子代理完成後會自動派出。",
 };

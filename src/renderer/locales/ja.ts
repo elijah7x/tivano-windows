@@ -2038,4 +2038,41 @@ export const ja: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "1 ファイル変更、%@ 行追加、%@ 行削除",
   "%@ files changed, %@ lines added, %@ lines removed": "%@ ファイル変更、%@ 行追加、%@ 行削除",
   "Show this thread's changes": "このスレッドの変更を表示",
+  // P2-47
+  "Weather window": "天気ウィンドウ",
+  "Porthole": "舷窓",
+  "Full window": "フルウィンドウ",
+  "No weather.": "天気を表示しません。",
+  "A small window above the thread list: wind when waiting on you, sunlight when a turn finishes, rain when one fails.":
+    "スレッド一覧の上にある小さな窓。返信待ちのときは風、ターン完了時は日差し、失敗時は雨が表れます。",
+  "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
+    "応答や承認を待っているときはそよ風、完了時は日差し、失敗時は雨をさりげなく表示します。",
+  // P2-50
+  "Where shall we begin today?": "今日はどこから始めましょうか？",
+  "Work in a project": "プロジェクトで作業する",
+  "Agents read and edit this folder, and can run in parallel worktrees.":
+    "エージェントはこのフォルダーを読み書きし、複数の worktree で並列実行できます。",
+  "Add a project folder": "プロジェクトフォルダーを追加",
+  "Just chat": "そのままチャット",
+  "No project folder needed. Good for questions and drafts.":
+    "プロジェクトフォルダーは不要です。質問や下書きに向いています。",
+  "Start a chat": "チャットを開始",
+  "Install a coding agent first": "先にコーディングエージェントをインストールしてください",
+  "1 provider ready": "1 件のプロバイダーが利用可能",
+  "%lld providers ready": "%lld 件のプロバイダーが利用可能",
+  "Manage": "管理",
+  "Install": "インストール",
+  "Ready": "準備完了",
+  "ChatGPT plan or API key": "ChatGPT プランまたは API キー",
+  "Synthetic provider": "合成プロバイダー",
+  "Provider checklist": "プロバイダー一覧",
+  // P1-36
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
+    "サブエージェントの同時実行上限（%d）に達しました\n1 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です（設定 › Hydra）。実行中のサブエージェントが完了すると自動的に送信されます。",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on their own as running sub-agents finish.":
+    "サブエージェントの同時実行上限（%d）に達しました\n%d 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です（設定 › Hydra）。実行中のサブエージェントが完了すると順次自動的に送信されます。",
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once. It goes out on its own as a running sub-agent finishes.":
+    "サブエージェントの同時実行上限（%d）に達しました\n1 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です。実行中のサブエージェントが完了すると自動的に送信されます。",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
+    "サブエージェントの同時実行上限（%d）に達しました\n%d 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です。実行中のサブエージェントが完了すると順次自動的に送信されます。",
 };

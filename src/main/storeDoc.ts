@@ -28,6 +28,7 @@ import {
   LANGUAGE_IDS,
   SCHEMA_VERSION,
   THEME_IDS,
+  WEATHER_WINDOW_MODES,
   legacyAppearanceOfTheme,
   migrateLegacyTheme,
   type ChatThread,
@@ -560,6 +561,8 @@ const vSettings = vObject({
   defaultWorkspaceMode: vOptional(vEnum(["local", "worktree", "auto"] as const)),
   showReasoning: vOptional(vBoolean),
   showsWorkingCard: vOptional(vBoolean),
+  weatherWindowMode: vOptional(vEnum(WEATHER_WINDOW_MODES)),
+  lastWeatherWindowMode: vOptional(vEnum(["porthole", "full"] as const)),
   showsSkylight: vOptional(vBoolean),
   // F33: CLI install receipt — path of the client our shim points at.
   cliInstallationTarget: vOptional(vNonEmptyString(4000)),
@@ -569,6 +572,10 @@ const vSettings = vObject({
   // Optional so every pre-A21 store loads verbatim — absent means off.
   taskSleepMode: vOptional(vEnum(["off", "system", "display"] as const)),
   textGeneration: vOptional(vEnum(["automatic", "off"] as const)),
+  threadTitles: vOptional(vEnum(["once", "updated"] as const)),
+  autoShelveDays: vOptional(vInt(0, 14)),
+  shelvedGroupName: vOptional(vNullable(vNonEmptyString(60))),
+  quickChatEnabled: vOptional(vBoolean),
   // Optional so every pre-A35 store loads verbatim — overrides only;
   // a stored null chord means the shortcut was cleared (frozen Override).
   shortcuts: vOptional(vShortcuts),

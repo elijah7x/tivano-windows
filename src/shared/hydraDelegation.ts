@@ -84,7 +84,28 @@ export interface StreamedDelegations {
 
 const OPENER = /```[ \t]*hydra(?:-sent|-leaving)?[ \t]*\r?\n/i;
 
+/** Frozen `mayOpenDelegationFence`: quick byte check for three backticks
+ *  followed by optional spaces/tabs and `h`/`H` so ordinary replies
+ *  without a hydra fence skip regex execution altogether. */
+export function mayOpenHydraFence(text: string): boolean {
+  let pos = text.indexOf("```");
+  while (pos !== -1) {
+    let after = pos + 3;
+    while (after < text.length) {
+      const c = text.charCodeAt(after);
+      if (c === 0x20 || c === 0x09) after += 1;
+      else break;
+    }
+    if (after < text.length && (text.charCodeAt(after) | 0x20) === 0x68) {
+      return true;
+    }
+    pos = text.indexOf("```", pos + 1);
+  }
+  return false;
+}
+
 export function streamedDelegations(text: string): StreamedDelegations | null {
+  if (!mayOpenHydraFence(text)) return null;
   const m = OPENER.exec(text);
   if (!m || m.index === undefined) return null;
   return streamedDelegationsInBody(text.slice(m.index + m[0].length));
@@ -289,6 +310,7 @@ export class HydraDelegationStreamParser {
 
 const BLOCK_RE = /```[ \t]*hydra(?:-sent|-leaving)?[ \t]*\r?\n[\s\S]*?(?:```|$)/i;
 export function withoutDelegationBlock(text: string): string {
+  if (!mayOpenHydraFence(text)) return text.trim();
   const m = BLOCK_RE.exec(text);
   return (m ? text.slice(0, m.index) + text.slice(m.index + m[0].length) : text).trim();
 }
@@ -749,10 +771,12 @@ export function personaIndex(named: string): number | undefined {
  *  `delegationOpener`): ```hydra, ```hydra-sent or ```hydra-leaving. */
 const DELEGATION_OPENER = /^```[ \t]*hydra(?:-sent|-leaving)?[ \t]*$/m;
 const SENT_OPENER = /^```[ \t]*hydra-(?:sent|leaving)[ \t]*$/m;
+const UNSENT_OPENER = /^```[ \t]*hydra[ \t]*$/m;
 
 /** Frozen `hasSentDelegationBlock`: the block's card is already in its
  *  sent (or leaving) state. */
 export function hasSentDelegationBlock(text: string): boolean {
+  if (!mayOpenHydraFence(text)) return false;
   return SENT_OPENER.test(text);
 }
 
@@ -761,8 +785,8 @@ export function hasSentDelegationBlock(text: string): boolean {
  *  (and a later rescan sends nothing twice). No-op without an
  *  un-sent opener. */
 export function markingDelegationBlockSent(text: string): string {
-  if (hasSentDelegationBlock(text)) return text;
-  return text.replace(/^```[ \t]*hydra[ \t]*$/m, "```hydra-sent");
+  if (!mayOpenHydraFence(text) || hasSentDelegationBlock(text)) return text;
+  return text.replace(UNSENT_OPENER, "```hydra-sent");
 }
 
 /** A lead has been told never to put a check in a brief, but some do
@@ -815,9 +839,11 @@ const POLICY_REPORT_STYLE_RULE =
 
 /** Frozen `projectRule`/`v2DelegationRequest` route clause, bounded:
  *  a head routes by a sidebar project's NAME or an ABSOLUTE PATH — the
- *  path is created when its parent exists, system folders are refused
- *  and a non-Git folder is changed in place without a copy or merge
- *  (no "files" list or per-file narrowing in this port). */
+ *  path is created when its parent exists, system folders are refused,
+ *  a path inside a Git repository targets the enclosing repository top
+ *  (whole repository as copy/landing scope; no "files" list or per-file
+ *  narrowing in this port), and a non-Git folder is changed in place
+ *  without a copy or merge. */
 function policyProjectRule(
   projects: { name: string; path: string }[],
   ownName: string | undefined,
@@ -828,7 +854,7 @@ function policyProjectRule(
       projects.map((p) => `${p.name} (\`${p.path}\`)`).join(", ") +
       "."
     : "";
-  return `Heads may work in any project. A head works in ${own} unless it is sent to another: an entry of the delegation block names it with "project", a sidebar project's name or the absolute path of a worktree, another repository or any folder, including non-Git folders — a folder the path names is created when its parent exists, system folders are refused, and a name that matches no sidebar project and is no absolute path does not start the head. Non-Git folders are changed in place without a copy or merge.${named} Whatever a head changes lands in the checkout it worked in, already there when its report arrives.`;
+  return `Heads may work in any project. A head works in ${own} unless it is sent to another: an entry of the delegation block names it with "project", a sidebar project's name or the absolute path of a worktree, another repository or any folder, including non-Git folders — a folder the path names is created when its parent exists, system folders are refused, and a name that matches no sidebar project and is no absolute path does not start the head. A path inside a Git repository targets the enclosing repository root (the whole repository is that head's copy and landing scope, with no subfolder or per-file narrowing). Non-Git folders are changed in place without a copy or merge.${named} Whatever a head changes lands in the checkout it worked in, already there when its report arrives.`;
 }
 
 /**

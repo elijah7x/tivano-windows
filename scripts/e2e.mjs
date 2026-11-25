@@ -84,6 +84,7 @@ import { runGeneralSettingsChecks } from "./generalSettingsChecks.mjs";
 import { runWorkingIndicatorChecks } from "./workingIndicatorChecks.mjs";
 import { runLayoutChecks, runShelfChecks, runQuickChecks } from "./layoutChecks.mjs";
 import { runRemoteMcpChecks } from "./remoteMcpChecks.mjs";
+import { runWelcomeChecks } from "./welcomeChecks.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "package.json"));
@@ -132,6 +133,29 @@ async function launch(envOverrides = {}, label = "instance") {
   app.on("window", attach);
   for (const page of app.windows()) attach(page);
   return { app, proc, ledger: entry };
+}
+
+/** Launch with a fresh isolated empty dataRoot (cleaned by caller after exit). */
+async function launchFresh(envOverrides = {}, label = "instance") {
+  const freshDataRoot = mkdtempSync(join(tmpdir(), "tivano-e2e-fresh-"));
+  const app = await electron.launch({
+    executablePath: electronBin,
+    args: [root, `--data-root=${freshDataRoot}`],
+    env: { ...env, ...envOverrides },
+    timeout: 30000,
+  });
+  let proc = null;
+  try {
+    proc = app.process();
+  } catch {
+    proc = null;
+  }
+  const entry = { label, pid: proc?.pid ?? null, exited: false, outcome: "pending" };
+  instanceLedger.push(entry);
+  const attach = (page) => page.on("pageerror", (e) => pageErrors.push(String(e)));
+  app.on("window", attach);
+  for (const page of app.windows()) attach(page);
+  return { app, proc, ledger: entry, freshDataRoot };
 }
 
 /** state:get via the page bridge — real ids and states, not DOM guesses. */
@@ -2071,6 +2095,16 @@ try {
     launch,
     instances,
     snap,
+    check,
+    boundedClose,
+  });
+
+  // ---- session 33: P2-50 First-launch WelcomeView + NoThreadView ----------
+  await runWelcomeChecks({
+    launchFresh,
+    instances,
+    snap,
+    outDir,
     check,
     boundedClose,
   });

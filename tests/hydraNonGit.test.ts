@@ -143,10 +143,11 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(head.hydraHead!.summary).toContain("is a system folder");
   });
 
-  it("a leading ~ expands to the home folder before routing", async () => {
+  it("a leading ~ expands to the home folder before routing and preserves typed ref in display", async () => {
     const { engine } = rig();
     // The expanded route must behave exactly like spelling the home
-    // folder out — an unexpanded ~ would fail "no project named".
+    // folder out — an unexpanded ~ would fail "no project named", and
+    // the refusal notice must display what the lead typed ("~").
     const lead = engine.createThread(null, "lead");
     engine.sendTurn(lead.id, "do it [mock:hydra-path]~");
     const lead2 = engine.createThread(null, "lead2");
@@ -157,11 +158,28 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     const twin = heads(engine, lead2.id)[0]!;
     await waitFor(() => head.hydraHead!.status !== "running");
     await waitFor(() => twin.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe("failed");
     expect(head.hydraHead!.status).toBe(twin.hydraHead!.status);
+    expect(head.hydraHead!.summary).toContain("Hydra: ~ is a system folder");
+    expect(head.hydraHead!.summary).not.toContain(homedir());
+    expect(
+      notices(engine, lead.id).some((n) => n.includes("Hydra: ~ is a system folder")),
+    ).toBe(true);
     expect(head.hydraHead!.summary).not.toContain("no project named");
     expect(head.hydraHead!.targetCheckout).toBe(
       twin.hydraHead!.targetCheckout,
     );
+
+    // Missing parent under ~ also preserves the typed ~/... reference.
+    const lead3 = engine.createThread(null, "lead3");
+    const typedMissing = "~/tivano-missing-parent-test/kid";
+    engine.sendTurn(lead3.id, `do it [mock:hydra-path]${typedMissing}`);
+    await waitFor(() => heads(engine, lead3.id).length === 1);
+    const head3 = heads(engine, lead3.id)[0]!;
+    await waitFor(() => head3.hydraHead!.status !== "running");
+    expect(head3.hydraHead!.status).toBe("failed");
+    expect(head3.hydraHead!.summary).toContain(`Hydra: ${typedMissing} is not a folder`);
+    expect(head3.hydraHead!.summary).not.toContain(homedir());
   });
 
   it("a quoted path with a space routes whole", async () => {
@@ -366,5 +384,92 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
       "D:\\repo",
     );
     expect(gitPrompt).not.toContain("not a Git repository");
+  });
+
+  it.skipIf(process.platform !== "win32")("different-case path route to an existing non-Git project preserves its grant and available status", async () => {
+    const { engine, paths } = rig();
+    const folder = join(tmp("tivano-case-"), "MixedCaseFolder");
+    mkdirSync(folder, { recursive: true });
+    const { project } = engine.openUserDirectory(folder);
+    const storedDir = project.directory!;
+    const flipped = storedDir.replace(/[A-Za-z]/g, (c) =>
+      c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase(),
+    );
+    expect(flipped).not.toBe(storedDir);
+
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]${flipped}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+
+    expect(head.hydraHead!.status).toBe("completed");
+    expect(head.projectId).toBe(project.id);
+    expect(head.hydraHead!.targetCheckout).toBe(storedDir);
+    expect(paths.lookup(project.id)?.directory).toBe(storedDir);
+    const updated = engine.snapshot().projects.find((p) => p.id === project.id)!;
+    expect(updated.directoryStatus).toBe("available");
+    expect(engine.threadDirectory(head.id)).toBe(storedDir);
+    // No duplicate sidebar project was created.
+    expect(engine.snapshot().projects.filter((p) => p.id === project.id)).toHaveLength(1);
+    expect(engine.snapshot().projects).toHaveLength(2);
+  });
+
+  it.skipIf(process.platform !== "win32")("different-case subfolder route to an existing Git project preserves grant and availability", async () => {
+    const { engine, paths } = rig();
+    const repo = join(tmp("tivano-case-repo-"), "CaseRepo");
+    const sub = join(repo, "SubDir");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    mkdirSync(sub, { recursive: true });
+    const { project } = engine.openUserDirectory(repo);
+    const storedDir = project.directory!;
+    const flippedSub = sub.replace(/[A-Za-z]/g, (c) =>
+      c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase(),
+    );
+
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]${flippedSub}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+
+    expect(head.hydraHead!.status).toBe("completed");
+    expect(head.hydraHead!.isNonGitCheckout).toBe(false);
+    expect(head.projectId).toBe(project.id);
+    expect(head.hydraHead!.targetCheckout).toBe(storedDir);
+    expect(paths.lookup(project.id)?.directory).toBe(storedDir);
+    expect(
+      engine.snapshot().projects.find((p) => p.id === project.id)?.directoryStatus,
+    ).toBe("available");
+    expect(engine.threadDirectory(head.id)).toBe(storedDir);
+  });
+
+  it.skipIf(process.platform !== "win32")("re-attaching a listed project whose grant was lost preserves stored directory case", async () => {
+    const { engine, paths } = rig();
+    const folder = join(tmp("tivano-reattach-"), "StoredCase");
+    mkdirSync(folder, { recursive: true });
+    const { project } = engine.openUserDirectory(folder);
+    const storedDir = project.directory!;
+    paths.revoke(project.id);
+    expect(
+      engine.snapshot().projects.find((p) => p.id === project.id)?.directoryStatus,
+    ).toBe("unavailable");
+
+    const flipped = storedDir.replace(/[A-Za-z]/g, (c) =>
+      c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase(),
+    );
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]${flipped}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+
+    expect(head.hydraHead!.status).toBe("completed");
+    expect(head.projectId).toBe(project.id);
+    expect(paths.lookup(project.id)?.directory).toBe(storedDir);
+    expect(
+      engine.snapshot().projects.find((p) => p.id === project.id)?.directoryStatus,
+    ).toBe("available");
   });
 });

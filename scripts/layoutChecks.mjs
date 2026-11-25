@@ -194,14 +194,18 @@ export async function runLayoutChecks({ launch: launchApp, instances, snap, outD
     fs2,
   );
 
-  // ---- A84 skylight hero + stream veil -----------------------------------
-  // SKY-01: the hero card sits in the sidebar by default (showsSkylight).
+  // ---- P2-47 Weather window (Porthole / Full window / Off) + stream veil -
+  // SKY-01: the non-interactive porthole sits above the thread list by default.
   await page2.waitForSelector(".skylight", { timeout: 8000 });
-  verify("SKY-01 skylight hero present by default", true);
+  const portholePointer = await page2.evaluate(() => {
+    const el = document.querySelector(".skylight");
+    return el ? getComputedStyle(el).pointerEvents : null;
+  });
+  verify("SKY-01 weather porthole present and non-interactive by default", portholePointer === "none", portholePointer);
 
-  // SKY-02/03: a held streaming turn ([mock:mend] flushes then pauses)
-  // keeps status=streaming — the fresh tail carries .md-veil and the
-  // hero folds the running thread into RUN · 1.
+  // SKY-02: a held streaming turn ([mock:mend] flushes then pauses) keeps
+  // status=streaming — the fresh tail carries .md-veil while live work stays
+  // calm (porthole does not show a RUN tag).
   await page2.locator(".composer textarea").fill("spin [mock:mend]");
   await page2.keyboard.press("Enter");
   let veils = 0;
@@ -211,51 +215,51 @@ export async function runLayoutChecks({ launch: launchApp, instances, snap, outD
     if (veils === 0) await new Promise((r) => setTimeout(r, 40));
   }
   verify("SKY-02 flushed tail carries the veil span", veils > 0, `veils=${veils}`);
-  // SKY-03: the tag must equal the real fold of THIS data root — earlier
-  // suites leave interrupted/failed threads here, and frozen precedence
-  // puts those above a running turn. Recompute the expected tag from the
-  // snapshot rather than assume RUN wins.
-  const foldTag = (s) => {
-    const st = { failed: 0, awaiting: 0, running: 0, done: 0 };
-    const workingParents = new Set(
-      s.threads
-        .filter(
-          (x) =>
-            x.parentThreadId &&
-            (x.turn?.status === "running" || x.turn?.status === "waiting-approval"),
-        )
-        .map((x) => x.parentThreadId),
-    );
-    for (const th of s.threads) {
-      if (th.isArchived || th.hydraHead) continue;
-      let a = "idle";
-      if (workingParents.has(th.id) && th.turn?.status !== "running") a = "running";
-      else if (th.turn?.approval?.status === "pending" || th.turn?.status === "waiting-approval")
-        a = "awaiting";
-      else if (th.turn?.question?.status === "pending") a = "awaiting";
-      else if (th.turn?.status === "running") a = "running";
-      else if (th.hasUnread)
-        a = th.unreadStatus === "error" || th.unreadStatus === "interrupted" ? "failed" : "done";
-      st[a] = (st[a] ?? 0) + 1;
+  const foldWeather = (s) => {
+    let failed = 0;
+    let awaiting = 0;
+    let done = 0;
+    const approvalParents = new Set();
+    const questionParents = new Set();
+    for (const x of s.threads) {
+      if (x.isArchived) continue;
+      const pid = x.hydraHead?.leadId ?? (x.isInPanel ? x.parentThreadId : undefined);
+      if (!pid) continue;
+      const active = x.hydraHead ? x.hydraHead.status === "running" : true;
+      if (!active) continue;
+      if (x.turn?.approval?.status === "pending" || x.turn?.status === "waiting-approval")
+        approvalParents.add(pid);
+      if (x.turn?.question?.status === "pending") questionParents.add(pid);
     }
-    if (st.failed > 0) return `FAIL · ${st.failed}`;
-    if (st.awaiting > 0) return `WAIT · ${st.awaiting}`;
-    if (st.running > 0) return `RUN · ${st.running}`;
-    if (st.done > 0) return `DONE · ${st.done}`;
-    return null;
+    for (const th of s.threads) {
+      if (th.isArchived || th.hydraHead || (th.isInPanel && th.parentThreadId)) continue;
+      if (
+        approvalParents.has(th.id) ||
+        th.turn?.approval?.status === "pending" ||
+        th.turn?.status === "waiting-approval" ||
+        questionParents.has(th.id) ||
+        th.turn?.question?.status === "pending"
+      ) {
+        awaiting++;
+      } else if (th.turn?.status === "running") {
+        // live running work stays calm in v3.0.0 weather window
+      } else if (th.hasUnread) {
+        if (th.unreadStatus === "error" || th.unreadStatus === "interrupted") failed++;
+        else done++;
+      }
+    }
+    if (awaiting > 0) return "awaiting";
+    if (failed > 0) return "failed";
+    if (done > 0) return "done";
+    return "idle";
   };
-  const tagExpected = foldTag(await snap(page2));
-  await new Promise((r) => setTimeout(r, 300));
-  const tagRun =
-    (await page2.locator(".sky-tag").count()) > 0
-      ? (await page2.locator(".sky-tag").textContent()).trim()
-      : null;
-  verify("SKY-03 hero tag equals the real weather fold",
-    tagRun === tagExpected, { dom: tagRun, expected: tagExpected });
+  const weatherExpected = foldWeather(await snap(page2));
+  await new Promise((r) => setTimeout(r, 200));
+  const weatherActual = await page2.locator(".skylight").getAttribute("data-weather");
+  verify("SKY-03 porthole weather equals the v3 fold",
+    weatherActual === weatherExpected, { dom: weatherActual, expected: weatherExpected });
   await page2.screenshot({ path: join(outDir, "skylight-running.png") });
   const selId = (await snap(page2)).selectedThreadId;
-  // The held turn never settles on its own — stop it, then the hero
-  // leaves RUN.
   await page2.evaluate(
     (id) => window.tivano.invoke("turns:cancel", { threadId: id }),
     selId,
@@ -268,27 +272,85 @@ export async function runLayoutChecks({ launch: launchApp, instances, snap, outD
       ) || s.threads.find((y) => y.id === selId)?.turn == null,
     30000,
   );
-  const tagAfter = await page2.locator(".sky-tag").count()
-    ? (await page2.locator(".sky-tag").textContent()).trim()
-    : null;
-  const tagExpectedAfter = foldTag(await snap(page2));
-  verify("SKY-04 hero reflects the fold once the turn settles",
-    tagAfter === tagExpectedAfter && !tagAfter?.startsWith("RUN ·"),
-    { dom: tagAfter, expected: tagExpectedAfter });
+  const weatherAfter = await page2.locator(".skylight").getAttribute("data-weather");
+  const portholeText = (await page2.locator(".skylight").innerText()).trim();
+  verify("SKY-04 porthole remains text-free after settle",
+    portholeText === "" && Boolean(weatherAfter),
+    { portholeText, weatherAfter });
 
-  // SKY-05: the setting hides and restores the card.
-  await page2.evaluate(() => window.tivano.invoke("settings:set", { showsSkylight: false }));
+  // SKY-04a: a waiting turn on the selected thread brings wind to the porthole.
+  await page2.locator(".composer textarea").fill("hold [mock:approval]");
+  await page2.keyboard.press("Enter");
+  await page2.waitForSelector(".approval", { timeout: 10000 });
+  const awaitingWeather = await page2.locator(".skylight").getAttribute("data-weather");
+  const breezeCount = await page2.locator(".skylight .ph-breeze").count();
+  verify("SKY-04a porthole shows awaiting wind when a chat waits on approval",
+    awaitingWeather === "awaiting" && breezeCount > 0, { awaitingWeather, breezeCount });
+
+  // SKY-05: Weather window Off / Full window / Porthole modes via Settings > Appearance.
+  await page2.locator(".sidebar-foot button.row").click();
+  await page2.waitForSelector(".weather-picker", { timeout: 8000 });
+  await page2.locator('.weather-choice[data-weather-mode="off"]').click();
+  await waitSnap(page2, (s) => s.settings.weatherWindowMode === "off");
   await page2.waitForSelector(".skylight", { state: "detached", timeout: 8000 });
-  verify("SKY-05 showsSkylight=false hides the hero", true);
-  await page2.evaluate(() => window.tivano.invoke("settings:set", { showsSkylight: true }));
-  await page2.waitForSelector(".skylight", { timeout: 8000 });
-  verify("SKY-05b showsSkylight=true restores the hero", true);
+  verify("SKY-05 Settings > Appearance Weather window Off hides porthole", true);
 
-  // SKY-07: activating the hero creates a thread (frozen onActivate → newThread).
+  await page2.locator('.weather-choice[data-weather-mode="full"]').click();
+  await waitSnap(page2, (s) => s.settings.weatherWindowMode === "full");
+  await page2.waitForSelector(".skylight", { state: "detached", timeout: 8000 });
+  // Close Settings so the app is unpaused and the Full window overlay renders.
+  await page2.locator(".modal-actions .primary").click();
+  await page2.waitForSelector(".modal", { state: "detached", timeout: 5000 });
+  await page2.waitForSelector('.weather-window-layer[data-weather="awaiting"]', { timeout: 8000 });
+  const fullLayerPointer = await page2.evaluate(() => {
+    const el = document.querySelector(".weather-window-layer");
+    return el ? getComputedStyle(el).pointerEvents : null;
+  });
+  verify("SKY-05a Settings > Appearance Weather window Full window shows non-interactive awaiting overlay",
+    fullLayerPointer === "none", { fullLayerPointer });
+
+  await page2.locator(".sidebar-foot button.row").click();
+  await page2.waitForSelector(".weather-picker", { timeout: 8000 });
+  await page2.locator('.weather-choice[data-weather-mode="porthole"]').click();
+  await waitSnap(page2, (s) => s.settings.weatherWindowMode === "porthole");
+  await page2.locator(".modal-actions .primary").click();
+  await page2.waitForSelector(".modal", { state: "detached", timeout: 5000 });
+  await page2.waitForSelector(".weather-window-layer", { state: "detached", timeout: 8000 });
+  await page2.waitForSelector('.skylight[data-weather="awaiting"]', { timeout: 8000 });
+  verify("SKY-05b Settings > Appearance Weather window Porthole restores porthole", true);
+
+  // SKY-06: approving the viewed thread's turn brings sunlight on finish (finish-signal flash + 8s hold).
+  const approvalId = (await snap(page2)).threads.find((y) => y.id === selId)?.turn?.approval?.id;
+  await page2.evaluate(
+    (p) => window.tivano.invoke("approvals:resolve", p),
+    { threadId: selId, approvalId, optionId: "once" },
+  );
+  await waitSnap(
+    page2,
+    (s) => s.threads.find((y) => y.id === selId)?.turn?.status === "done",
+    15000,
+  );
+  await page2.waitForSelector('.skylight[data-weather="done"]', { timeout: 8000 });
+  verify("SKY-06 porthole flashes sunlight when the viewed thread finishes", true);
+
+  // SKY-06a: a failed turn on the viewed thread brings rain.
+  await page2.locator(".composer textarea").fill("[mock:fail] boom");
+  await page2.keyboard.press("Enter");
+  await waitSnap(
+    page2,
+    (s) => s.threads.find((y) => y.id === selId)?.turn?.status === "error",
+    15000,
+  );
+  await page2.waitForSelector('.skylight[data-weather="failed"]', { timeout: 8000 });
+  verify("SKY-06a porthole flashes rain when the viewed thread fails", true);
+
+  // SKY-07: clicking the porthole area does not create a thread (non-interactive).
   const nBefore = (await snap(page2)).threads.length;
-  await page2.locator(".skylight").click();
-  await waitSnap(page2, (s) => s.threads.length === nBefore + 1);
-  verify("SKY-07 hero activation creates a thread", true, { nBefore });
+  const box = await page2.locator(".skylight").boundingBox();
+  if (box) await page2.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await new Promise((r) => setTimeout(r, 200));
+  verify("SKY-07 porthole is non-interactive (no thread created on click)",
+    (await snap(page2)).threads.length === nBefore, { nBefore });
 
   await boundedClose(s2.app, s2.proc, {});
 }

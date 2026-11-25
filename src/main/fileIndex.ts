@@ -9,6 +9,11 @@
 
 import { readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import {
+  compileMentionIndex,
+  scoreMentionIndex,
+  type MentionIndex,
+} from "../shared/fileMention";
 
 export interface FileIndexDeps {
   /** `git rev-parse --is-inside-work-tree` inside the directory —
@@ -70,27 +75,50 @@ function enumerate(directory: string): string[] {
 }
 
 export class FileIndexService {
-  private readonly cache = new Map<string, { paths: string[]; builtAt: number }>();
+  private readonly cache = new Map<
+    string,
+    { paths: string[]; mentionIndex: MentionIndex; builtAt: number }
+  >();
 
   constructor(private readonly deps: FileIndexDeps) {}
 
-  /** The searchable paths for a directory — the cached index while it is
-   *  fresh (the frozen port serves a stale index only while a rebuild is
-   *  already running; this bounded version rebuilds inline instead). */
-  async list(directory: string): Promise<string[]> {
+  private async getEntry(directory: string): Promise<{
+    paths: string[];
+    mentionIndex: MentionIndex;
+    builtAt: number;
+  }> {
     const now = (this.deps.now ?? Date.now)();
     const freshMs = this.deps.freshMs ?? FRESH_MS;
     const cached = this.cache.get(directory);
-    if (cached && now - cached.builtAt < freshMs) return cached.paths;
+    if (cached && now - cached.builtAt < freshMs) return cached;
     const paths = await this.build(directory);
+    const entry = {
+      paths,
+      mentionIndex: compileMentionIndex(paths),
+      builtAt: now,
+    };
     this.cache.delete(directory); // refresh LRU position
-    this.cache.set(directory, { paths, builtAt: now });
+    this.cache.set(directory, entry);
     while (this.cache.size > MAX_INDEXES) {
       const oldest = this.cache.keys().next().value;
       if (oldest === undefined) break;
       this.cache.delete(oldest);
     }
-    return paths;
+    return entry;
+  }
+
+  /** The searchable paths for a directory — the cached index while it is
+   *  fresh (the frozen port serves a stale index only while a rebuild is
+   *  already running; this bounded version rebuilds inline instead). */
+  async list(directory: string): Promise<string[]> {
+    return (await this.getEntry(directory)).paths;
+  }
+
+  /** Score `query` against the directory's cached pre-compiled
+   *  MentionIndex without re-lowercasing or re-encoding every keystroke. */
+  async search(directory: string, query: string, limit = 8): Promise<string[]> {
+    const entry = await this.getEntry(directory);
+    return scoreMentionIndex(entry.mentionIndex, query, limit);
   }
 
   private async build(directory: string): Promise<string[]> {
