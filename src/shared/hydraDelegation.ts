@@ -839,9 +839,11 @@ const POLICY_REPORT_STYLE_RULE =
 
 /** Frozen `projectRule`/`v2DelegationRequest` route clause, bounded:
  *  a head routes by a sidebar project's NAME or an ABSOLUTE PATH — the
- *  path is created when its parent exists, system folders are refused
- *  and a non-Git folder is changed in place without a copy or merge
- *  (no "files" list or per-file narrowing in this port). */
+ *  path is created when its parent exists, system folders are refused,
+ *  a path inside a Git repository targets the enclosing repository top
+ *  (whole repository as copy/landing scope; no "files" list or per-file
+ *  narrowing in this port), and a non-Git folder is changed in place
+ *  without a copy or merge. */
 function policyProjectRule(
   projects: { name: string; path: string }[],
   ownName: string | undefined,
@@ -852,7 +854,7 @@ function policyProjectRule(
       projects.map((p) => `${p.name} (\`${p.path}\`)`).join(", ") +
       "."
     : "";
-  return `Heads may work in any project. A head works in ${own} unless it is sent to another: an entry of the delegation block names it with "project", a sidebar project's name or the absolute path of a worktree, another repository or any folder, including non-Git folders — a folder the path names is created when its parent exists, system folders are refused, and a name that matches no sidebar project and is no absolute path does not start the head. Non-Git folders are changed in place without a copy or merge.${named} Whatever a head changes lands in the checkout it worked in, already there when its report arrives.`;
+  return `Heads may work in any project. A head works in ${own} unless it is sent to another: an entry of the delegation block names it with "project", a sidebar project's name or the absolute path of a worktree, another repository or any folder, including non-Git folders — a folder the path names is created when its parent exists, system folders are refused, and a name that matches no sidebar project and is no absolute path does not start the head. A path inside a Git repository targets the enclosing repository root (the whole repository is that head's copy and landing scope, with no subfolder or per-file narrowing). Non-Git folders are changed in place without a copy or merge.${named} Whatever a head changes lands in the checkout it worked in, already there when its report arrives.`;
 }
 
 /**

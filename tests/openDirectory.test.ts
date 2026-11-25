@@ -363,6 +363,28 @@ describe("restart restoration and unavailable bindings", () => {
     r.store.close();
   });
 
+  it.skipIf(process.platform !== "win32")("opening the same folder with different letter case reuses and preserves the stored grant", async () => {
+    const r = rig();
+    const dir = join(tmp("tivano-p2d-case-"), "MixedCase");
+    mkdirSync(dir);
+    const opened = (await openerFor(r, choose(dir)).open()).opened[0]!;
+    const stored = opened.directory!;
+    const flipped = stored.replace(/[A-Za-z]/g, (c) =>
+      c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase(),
+    );
+    const again = await openerFor(r, choose(flipped)).open();
+    expect(again.opened[0]!.id).toBe(opened.id);
+    expect(r.paths.lookup(opened.id)?.directory).toBe(stored);
+    expect(r.engine.snapshot().projects[0]!.directoryStatus).toBe("available");
+
+    r.paths.revoke(opened.id);
+    const reattached = await openerFor(r, choose(flipped)).open();
+    expect(reattached.opened[0]!.id).toBe(opened.id);
+    expect(r.paths.lookup(opened.id)?.directory).toBe(stored);
+    expect(r.engine.snapshot().projects[0]!.directoryStatus).toBe("available");
+    r.store.close();
+  });
+
   it("a retargeted path is never broadened: symlink at the recorded path fails restore", async () => {
     const r = rig();
     const dir = tmp("tivano-p2d-user-");
