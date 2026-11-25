@@ -2229,6 +2229,15 @@ const zhHans: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "1 个文件已更改，新增 %@ 行，删除 %@ 行",
   "%@ files changed, %@ lines added, %@ lines removed": "%@ 个文件已更改，新增 %@ 行，删除 %@ 行",
   "Show this thread's changes": "显示此对话的改动",
+  // P2-47: Weather window (v3.0.0 Localizable.xcstrings verbatim zh-Hans)
+  "Weather window": "天气窗",
+  "Porthole": "舷窗",
+  "Full window": "落地窗",
+  "No weather.": "不显示天气。",
+  "A small window above the thread list: wind when waiting on you, sunlight when a turn finishes, rain when one fails.":
+    "对话列表上方的一扇小窗：等你回复时起风，回合完成时出太阳，失败时下雨。",
+  "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
+    "在等待你回答或确认时拂过微风、完成时洒下暖阳、失败时落下细雨。",
   // P2-50: first-launch page (Work in a project / Just chat + provider checklist).
   "Where shall we begin today?": "今天从哪里开始？",
   "Work in a project": "在项目里工作",

@@ -33,6 +33,7 @@ import {
   type ResolvedHydraLaunch,
 } from "../shared/hydra";
 import { visibleThreads } from "../shared/threadOrder";
+import { resolveWeatherWindowMode } from "../shared/skylight";
 import {
   HydraDelegationStreamParser,
   MAX_DELEGATED_TASKS,
@@ -2915,6 +2916,7 @@ export class Engine {
     defaultWorkspaceMode?: "local" | "worktree" | "auto" | undefined;
     showReasoning?: boolean | undefined;
     showsWorkingCard?: boolean | undefined;
+    weatherWindowMode?: import("../shared/types").WeatherWindowMode | undefined;
     showsSkylight?: boolean | undefined;
     cliInstallationTarget?: string | null | undefined;
     taskSleepMode?: "off" | "system" | "display" | undefined;
@@ -2992,7 +2994,28 @@ export class Engine {
         d.settings.showReasoning = patch.showReasoning;
       if (patch.showsWorkingCard !== undefined)
         d.settings.showsWorkingCard = patch.showsWorkingCard;
-      if (patch.showsSkylight !== undefined) d.settings.showsSkylight = patch.showsSkylight;
+      if (patch.weatherWindowMode !== undefined) {
+        if (patch.weatherWindowMode !== "off") {
+          d.settings.lastWeatherWindowMode = patch.weatherWindowMode;
+        } else if (
+          d.settings.weatherWindowMode &&
+          d.settings.weatherWindowMode !== "off"
+        ) {
+          d.settings.lastWeatherWindowMode = d.settings.weatherWindowMode;
+        }
+        d.settings.weatherWindowMode = patch.weatherWindowMode;
+        d.settings.showsSkylight = patch.weatherWindowMode !== "off";
+      } else if (patch.showsSkylight !== undefined) {
+        d.settings.showsSkylight = patch.showsSkylight;
+        if (!patch.showsSkylight) {
+          if (d.settings.weatherWindowMode && d.settings.weatherWindowMode !== "off") {
+            d.settings.lastWeatherWindowMode = d.settings.weatherWindowMode;
+          }
+          d.settings.weatherWindowMode = "off";
+        } else if (resolveWeatherWindowMode(d.settings) === "off") {
+          d.settings.weatherWindowMode = d.settings.lastWeatherWindowMode ?? "porthole";
+        }
+      }
       // F33: null clears the install receipt (frozen uninstall path).
       if (patch.cliInstallationTarget !== undefined) {
         if (patch.cliInstallationTarget === null) delete d.settings.cliInstallationTarget;

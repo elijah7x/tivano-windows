@@ -2038,6 +2038,15 @@ export const ko: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "파일 1개 변경, %@줄 추가, %@줄 삭제",
   "%@ files changed, %@ lines added, %@ lines removed": "파일 %@개 변경, %@줄 추가, %@줄 삭제",
   "Show this thread's changes": "이 스레드의 변경 사항 표시",
+  // P2-47
+  "Weather window": "날씨 창",
+  "Porthole": "현창",
+  "Full window": "전체 창",
+  "No weather.": "날씨를 표시하지 않습니다.",
+  "A small window above the thread list: wind when waiting on you, sunlight when a turn finishes, rain when one fails.":
+    "스레드 목록 위의 작은 창입니다. 사용자의 응답을 기다릴 때는 바람이 불고, 턴이 끝나면 햇살이 비치며, 실패하면 비가 내립니다.",
+  "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
+    "응답이나 승인을 기다릴 때는 산들바람을, 턴이 완료되면 햇살을, 실패하면 비를 은은하게 표시합니다.",
   // P2-50
   "Where shall we begin today?": "오늘은 어디서부터 시작할까요?",
   "Work in a project": "프로젝트에서 작업",

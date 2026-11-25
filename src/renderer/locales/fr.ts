@@ -2038,6 +2038,15 @@ export const fr: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "1 fichier modifié, %@ lignes ajoutées, %@ lignes supprimées",
   "%@ files changed, %@ lines added, %@ lines removed": "%@ fichiers modifiés, %@ lignes ajoutées, %@ lignes supprimées",
   "Show this thread's changes": "Afficher les modifications de cette conversation",
+  // P2-47
+  "Weather window": "Fenêtre météo",
+  "Porthole": "Hublot",
+  "Full window": "Pleine fenêtre",
+  "No weather.": "Aucune météo.",
+  "A small window above the thread list: wind when waiting on you, sunlight when a turn finishes, rain when one fails.":
+    "Une petite fenêtre au-dessus de la liste des conversations : du vent lorsqu’elle attend votre réponse, du soleil quand un tour se termine, de la pluie en cas d’échec.",
+  "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
+    "Affiche une brise légère lorsqu’une réponse ou une confirmation est attendue, du soleil lorsqu’un tour se termine et de la pluie en cas d’échec.",
   // P2-50
   "Where shall we begin today?": "Par où commençons-nous aujourd’hui ?",
   "Work in a project": "Travailler dans un projet",

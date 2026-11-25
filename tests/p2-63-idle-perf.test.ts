@@ -688,11 +688,29 @@ describe("P2-63 archive switch, activity pause, and working-indicator isolation"
     expect(cardHtml).toContain('class="work-card"');
 
     // Skylight suppresses sway animation when modal covers the window.
+    const awaitingThread: ChatThread = {
+      ...thread,
+      turn: {
+        ...thread.turn!,
+        status: "waiting-approval",
+        approval: {
+          id: "a1",
+          turnId: "turn-1",
+          kind: "action",
+          headline: "Allow?",
+          title: "run",
+          symbol: "bolt",
+          options: [{ id: "once", title: "Allow once", role: "approve", scope: "once" }],
+          status: "pending",
+        },
+      },
+    };
     setModalCovered(true);
     const skyHtml = renderToStaticMarkup(
-      createElement(Skylight, { threads: [thread], onNewThread: () => {} }),
+      createElement(Skylight, { threads: [awaitingThread] }),
     );
-    expect(skyHtml).not.toContain("sky-doll sway");
+    expect(skyHtml).toContain('data-paused="true"');
+    expect(skyHtml).not.toContain("ph-doll sway");
     const pausedSpin = renderToStaticMarkup(createElement(MiniSpinner, {}));
     expect(pausedSpin).toContain("spin-cell spin-row-0 still");
     setModalCovered(false);
