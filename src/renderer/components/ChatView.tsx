@@ -18,6 +18,10 @@ import {
   type MarkdownLabels,
 } from "../markdown";
 import { appActivity, subscribeMemoryPressure, useAppPaused, useInView } from "../appActivity";
+import {
+  clearMdCoordCacheForMemoryPressure,
+  mdCoordMapFor,
+} from "../markdownCoordinatorCache";
 import { visibleThreads } from "../../shared/threadOrder";
 import { api, callApi, clientStore } from "../client";
 import { ApprovalCard } from "./ApprovalCard";
@@ -145,38 +149,7 @@ function statusLabel(t: (k: string) => string, m: Message): string | null {
 const delegationCard = (body: string, sent: boolean): React.ReactNode =>
   createElement(HydraDelegationCard, { body, sent });
 
-/** P2-32 (frozen: a runtime's paragraph model survives selection
- *  changes — switching back to a running chat does not rebuild it):
- *  per-thread coordinator caches outlive the ChatView mount that filled
- *  them, so a remount reuses every landed block instead of re-parsing
- *  the whole timeline. LRU-bounded so a long session never pins every
- *  visited timeline. */
-const MD_COORD_CACHE_MAX = 4;
-const mdCoordCache = new Map<
-  string,
-  Map<string, StreamingMarkdownCoordinator>
->();
 const EMPTY_MD_MAP: Map<string, StreamingMarkdownCoordinator> = new Map();
-
-function mdCoordMapFor(
-  threadId: string,
-): Map<string, StreamingMarkdownCoordinator> {
-  const cached = mdCoordCache.get(threadId);
-  if (cached !== undefined) {
-    mdCoordCache.delete(threadId);
-    mdCoordCache.set(threadId, cached);
-    return cached;
-  }
-  const map = new Map<string, StreamingMarkdownCoordinator>();
-  mdCoordCache.set(threadId, map);
-  while (mdCoordCache.size > MD_COORD_CACHE_MAX) {
-    const oldest = mdCoordCache.keys().next().value;
-    if (oldest === undefined) break;
-    mdCoordCache.get(oldest)?.forEach((c) => c.dispose());
-    mdCoordCache.delete(oldest);
-  }
-  return map;
-}
 
 export function ChatView(props: {
   thread: ChatThread | null;
@@ -367,13 +340,7 @@ export function ChatView(props: {
   useEffect(() => {
     return subscribeMemoryPressure(() => {
       veilRef.current.clear();
-      mdCoordCache.forEach((map) => {
-        map.forEach((c) => c.dispose());
-        // A mounted view holds its map object — empty it too so the
-        // next render rebuilds instead of holding disposed entries.
-        map.clear();
-      });
-      mdCoordCache.clear();
+      clearMdCoordCacheForMemoryPressure();
     });
   }, []);
   const threadsRef = useRef(props.threads);

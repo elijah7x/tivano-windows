@@ -391,4 +391,65 @@ describe("P2-32 off-screen stream coalescing (frozen offscreenFlush)", () => {
       vi.useRealTimers();
     }
   });
+
+  it("window-activity flushes shown-panel and offscreen pacing in one publish", () => {
+    vi.useFakeTimers();
+    try {
+      const store = new ClientStore(async () => ({}));
+      store.hydrate(
+        snap(5, [streamingThread("t1", "u1", "m1"), streamingThread("t2", "u2", "m2")]),
+        store.beginHydration(),
+      );
+      store.noteTimelineShown("t1", true); // shown panel, still unselected
+      const count = notifies(store);
+      store.apply({ type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "a", rev: 6 });
+      store.apply({ type: "turn-chunk", threadId: "t2", turnId: "u2", seq: 3, delta: "b", rev: 7 });
+      expect(count()).toBe(0);
+      store.onBridgeEvent({ type: "window-activity", active: true } as never);
+      expect(count()).toBe(1); // both pacing paths shared this one publish
+      expect(store.thread("t1")!.messages[0]!.content).toBe("olda");
+      expect(store.thread("t2")!.messages[0]!.content).toBe("oldb");
+      vi.advanceTimersByTime(2000);
+      expect(count()).toBe(1); // neither timer fires a duplicate later
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hydrate clears a straddling offscreen timer", () => {
+    vi.useFakeTimers();
+    try {
+      const store = streamStore();
+      store.apply({ type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "NEW", rev: 6 });
+      const count = notifies(store);
+      store.hydrate(snap(7, [streamingThread("t1", "u1", "m1")]), store.beginHydration());
+      expect(count()).toBe(1); // hydration's own publish
+      vi.advanceTimersByTime(5000);
+      expect(count()).toBe(1); // no stale offscreen timer publishes again
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reference-counts overlapping shown timelines before dropping to offscreen pace", () => {
+    vi.useFakeTimers();
+    try {
+      const store = streamStore();
+      store.noteTimelineShown("t1", true);
+      store.noteTimelineShown("t1", true);
+      store.noteTimelineShown("t1", false);
+      const count = notifies(store);
+      store.apply({ type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "x", rev: 6 });
+      vi.advanceTimersByTime(90);
+      expect(count()).toBe(1); // one shown mount remains: panel pace
+      store.noteTimelineShown("t1", false);
+      store.apply({ type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 4, delta: "y", rev: 7 });
+      vi.advanceTimersByTime(90);
+      expect(count()).toBe(1);
+      vi.advanceTimersByTime(910);
+      expect(count()).toBe(2); // all mounts gone: offscreen pace
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

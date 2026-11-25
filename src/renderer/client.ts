@@ -124,11 +124,12 @@ export class ClientStore {
   private sentVersions = new Map<string, number>();
   /** F20: threads waiting for a usage-limit reset (ephemeral mirror). */
   limitResumes: Record<string, number> = {};
-  /** P2-32 (frozen ThreadRuntime.shownTimelines): threads whose timeline
-   *  is mounted right now — the selected chat and an open helper panel.
-   *  Stream chunks landing on any other thread coalesce their re-render
-   *  to `OFFSCREEN_FLUSH_MS` instead of notifying per chunk. */
-  private readonly shownThreads = new Set<string>();
+  /** P2-32 (frozen ThreadRuntime.shownTimelines): count of mounted
+   *  timelines per thread — the selected chat, an open helper panel, and
+   *  panel heads can overlap. Stream chunks landing on any other thread
+   *  coalesce their re-render to `OFFSCREEN_FLUSH_MS` instead of
+   *  notifying per chunk. */
+  private readonly shownThreads = new Map<string, number>();
   /** Pending off-screen mutations not yet published to subscribers. */
   private unseenDirty = false;
   private unseenTimer: ReturnType<typeof setTimeout> | null = null;
@@ -162,10 +163,13 @@ export class ClientStore {
    *  at once — the chat "catches up" the moment it is opened. */
   noteTimelineShown(threadId: string, shown: boolean): void {
     if (shown) {
-      this.shownThreads.add(threadId);
-      this.flushUnseen();
+      const count = (this.shownThreads.get(threadId) ?? 0) + 1;
+      this.shownThreads.set(threadId, count);
+      if (count === 1) this.flushUnseen();
     } else {
-      this.shownThreads.delete(threadId);
+      const count = Math.max(0, (this.shownThreads.get(threadId) ?? 0) - 1);
+      if (count === 0) this.shownThreads.delete(threadId);
+      else this.shownThreads.set(threadId, count);
     }
   }
 
