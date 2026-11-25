@@ -1,4 +1,4 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-22.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-25.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 # Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-ApprovalRecoveryAttempts <n>] [-StalePrHours <h>] [-StalePrGateRuns <n>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
 # Launches and watches a single Devin Desktop autopilot chat following autopilot.md.
@@ -309,7 +309,8 @@ function Invoke-SelfSync {
 function Initialize-GuiTypes {
   if ($script:GuiTypesLoaded) { return }
   Add-Type -AssemblyName System.Windows.Forms
-  Add-Type -TypeDefinition @'
+  if ($null -eq ('DevLoopWindows' -as [type])) {
+    Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -326,6 +327,10 @@ public static class DevLoopWindows {
     public string ClassName { get; set; }
     public string ProcessName { get; set; }
     public bool HasShellFlyoutOpen { get; set; }
+  }
+  public sealed class HealthWindowCounts {
+    public int HungWindows { get; set; }
+    public int NotRespondingDialogs { get; set; }
   }
   delegate bool EnumProc(IntPtr h, IntPtr p);
   [StructLayout(LayoutKind.Sequential)]
@@ -345,6 +350,7 @@ public static class DevLoopWindows {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsHungAppWindow(IntPtr h);
   [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
@@ -510,6 +516,25 @@ public static class DevLoopWindows {
     if (all.Length > 0 && all[0].Rank > 0) return all[0].Handle;
     return IntPtr.Zero;
   }
+  public static HealthWindowCounts GetHealthWindowCounts(int[] pids) {
+    var counts = new HealthWindowCounts { HungWindows = 0, NotRespondingDialogs = 0 };
+    if (pids == null || pids.Length == 0) return counts;
+    var pidSet = new Dictionary<uint, bool>();
+    for (int i = 0; i < pids.Length; i++) {
+      if (pids[i] > 0) pidSet[(uint)pids[i]] = true;
+    }
+    if (pidSet.Count == 0) return counts;
+    EnumWindows((h, p) => {
+      if (!IsWindowVisible(h)) return true;
+      uint pid = 0;
+      GetWindowThreadProcessId(h, out pid);
+      if (pid == 0 || !pidSet.ContainsKey(pid)) return true;
+      if (IsHungAppWindow(h)) counts.HungWindows++;
+      if (GetWindowClass(h) == "#32770" && GetWindowTitle(h) == "Devin") counts.NotRespondingDialogs++;
+      return true;
+    }, IntPtr.Zero);
+    return counts;
+  }
   public static double GetUserIdleSeconds() {
     var info = new LASTINPUTINFO();
     info.cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO));
@@ -520,6 +545,7 @@ public static class DevLoopWindows {
   }
 }
 '@
+  }
   $script:GuiTypesLoaded = $true
 }
 
@@ -1046,15 +1072,21 @@ function Set-KickoffOutcome {
   Save-WatchdogState $watchdog
 }
 
-function Stop-DevinDesktop {
-  # Stop only Devin Desktop's own process trees; the Devin CLI (bin\devin.exe) used by the
-  # PR reviewer and the audit arbiter must keep running.
-  $procs = @(Get-CimInstance Win32_Process -Filter "Name='Devin.exe'" -ErrorAction SilentlyContinue | Where-Object {
+function Get-DevinDesktopProcesses {
+  # Select only Devin Desktop's own root processes; exclude the Devin CLI (bin\devin.exe) used by
+  # the PR reviewer and the audit arbiter, and exclude Electron child/helper processes.
+  return @(Get-CimInstance Win32_Process -Filter "Name='Devin.exe'" -ErrorAction SilentlyContinue | Where-Object {
     $_.ExecutablePath -and
     $_.ExecutablePath -notmatch '\\bin\\devin\.exe$' -and
     [string]$_.CommandLine -notmatch '--type=' -and
     [string]$_.CommandLine -notmatch '--require='
   })
+}
+
+function Stop-DevinDesktop {
+  # Stop only Devin Desktop's own process trees; the Devin CLI (bin\devin.exe) used by the
+  # PR reviewer and the audit arbiter must keep running.
+  $procs = @(Get-DevinDesktopProcesses)
   foreach ($desk in $procs) {
     $null = & taskkill.exe /T /F /PID ([int]$desk.ProcessId) 2>&1
   }
@@ -1063,6 +1095,121 @@ function Stop-DevinDesktop {
     Start-Sleep -Seconds 3
   }
   return $procs.Count
+}
+
+function Write-HealthSample {
+  try {
+    Initialize-GuiTypes
+
+    $freeRamMB = 0
+    $commitPct = 0
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+    if ($null -ne $os) {
+      $freeRamMB = [int][Math]::Round(([double]$os.FreePhysicalMemory) / 1024.0)
+      $totalVirtKb = [double]$os.TotalVirtualMemorySize
+      $freeVirtKb = [double]$os.FreeVirtualMemory
+      if ($totalVirtKb -gt 0) {
+        $usedVirtKb = $totalVirtKb - $freeVirtKb
+        if ($usedVirtKb -lt 0) { $usedVirtKb = 0.0 }
+        $commitPct = [int][Math]::Round(($usedVirtKb / $totalVirtKb) * 100.0)
+      }
+    }
+
+    $desktopProcs = @(Get-DevinDesktopProcesses)
+    $pidList = New-Object Collections.Generic.List[int]
+    foreach ($proc in $desktopProcs) {
+      $procId = [int]$proc.ProcessId
+      if ($procId -gt 0) { $null = $pidList.Add($procId) }
+    }
+    # Electron keeps most of its memory in renderer/GPU/utility children, so sum each
+    # desktop root's whole process tree (children of children included).
+    $wsBytes = 0.0
+    $allProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $treeIds = New-Object 'Collections.Generic.HashSet[int]'
+    foreach ($rootId in $pidList) { $null = $treeIds.Add([int]$rootId) }
+    $grew = $true
+    while ($grew) {
+      $grew = $false
+      foreach ($cp in $allProcs) {
+        if ($treeIds.Contains([int]$cp.ParentProcessId) -and $treeIds.Add([int]$cp.ProcessId)) { $grew = $true }
+      }
+    }
+    foreach ($cp in $allProcs) {
+      if ($treeIds.Contains([int]$cp.ProcessId) -and $null -ne $cp.WorkingSetSize) { $wsBytes += [double]$cp.WorkingSetSize }
+    }
+    $desktopMB = [int][Math]::Round($wsBytes / 1048576.0)
+
+    $hungWindows = 0
+    $notRespondingDialogs = 0
+    if ($pidList.Count -gt 0) {
+      [int[]]$pidArr = $pidList.ToArray()
+      $counts = [DevLoopWindows]::GetHealthWindowCounts($pidArr)
+      if ($null -ne $counts) {
+        $hungWindows = [int]$counts.HungWindows
+        $notRespondingDialogs = [int]$counts.NotRespondingDialogs
+      }
+    }
+
+    $sample = [ordered]@{
+      utc = [DateTime]::UtcNow.ToString('o')
+      freeRamMB = $freeRamMB
+      commitPct = $commitPct
+      desktopMB = $desktopMB
+      hungWindows = $hungWindows
+      notRespondingDialogs = $notRespondingDialogs
+    }
+    $jsonLine = ConvertTo-Json -InputObject $sample -Compress -Depth 3
+
+    $stateDir = $script:StateDir
+    if ([string]::IsNullOrWhiteSpace($stateDir) -and -not [string]::IsNullOrWhiteSpace($script:WorkRoot)) {
+      $stateDir = Join-Path $script:WorkRoot 'state'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($stateDir)) {
+      [IO.Directory]::CreateDirectory($stateDir) | Out-Null
+      $healthPath = Join-Path $stateDir 'health.jsonl'
+      $utf8NoBom = New-Object Text.UTF8Encoding($false)
+      [IO.File]::AppendAllText($healthPath, ($jsonLine + "`n"), $utf8NoBom)
+
+      $fi = New-Object IO.FileInfo($healthPath)
+      if ($fi.Exists -and $fi.Length -gt 2097152) {
+        $raw = [IO.File]::ReadAllText($healthPath, [Text.Encoding]::UTF8)
+        $allLines = @($raw -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($allLines.Count -gt 5000) {
+          $kept = @($allLines[($allLines.Count - 5000)..($allLines.Count - 1)])
+          $trimmed = ($kept -join "`n") + "`n"
+          $tmpPath = $healthPath + '.tmp'
+          try {
+            [IO.File]::WriteAllText($tmpPath, $trimmed, $utf8NoBom)
+            try {
+              [IO.File]::Replace($tmpPath, $healthPath, [NullString]::Value)
+            } catch {
+              [IO.File]::Copy($tmpPath, $healthPath, $true)
+            }
+          } finally {
+            try {
+              if (Test-Path -LiteralPath $tmpPath -PathType Leaf) { [IO.File]::Delete($tmpPath) }
+            } catch { }
+          }
+        }
+      }
+    }
+
+    Write-Log ('health: freeRamMB=' + $freeRamMB + ' commitPct=' + $commitPct + ' desktopMB=' + $desktopMB + ' hung=' + $hungWindows + ' dialog=' + $notRespondingDialogs)
+  } catch {
+    $msg = ''
+    try { $msg = [string]$_.Exception.Message } catch { $msg = 'unknown error' }
+    $msg = Protect-PublicText $msg
+    $msg = [regex]::Replace($msg, '(?i)[A-Za-z]:\\Users\\[^\\\s''"]+', '<user-path>')
+    if (-not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
+      $msg = [regex]::Replace($msg, [regex]::Escape($env:USERNAME), '<user>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
+      $msg = [regex]::Replace($msg, [regex]::Escape($env:COMPUTERNAME), '<host>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    $msg = ConvertTo-SingleLine $msg 160
+    if ([string]::IsNullOrWhiteSpace($msg)) { $msg = 'unknown error' }
+    Write-Log ('health: sample failed (' + $msg + ')')
+  }
 }
 
 function Restart-StuckDevin {
@@ -1711,6 +1858,8 @@ function Invoke-AutoMerge {
 }
 
 function Invoke-WatchTick {
+  try { Initialize-GuiTypes } catch { }
+  Write-HealthSample
   if (Test-Stop) { return }
 
   $env:GH_PROMPT_DISABLED = '1'
@@ -2039,7 +2188,11 @@ try {
   $script:WatchdogPath = Join-Path $script:AutopilotDir 'watchdog.json'
   $script:LogPath = Join-Path $script:LogsDir ('autopilot-' + [DateTime]::Now.ToString('yyyyMMdd') + '.log')
 
-  if ($Watch -and (Test-Stop)) { exit 0 }
+  if ($Watch -and (Test-Stop)) {
+    [IO.Directory]::CreateDirectory($script:LogsDir) | Out-Null
+    Write-HealthSample
+    exit 0
+  }
 
   [IO.Directory]::CreateDirectory($script:WorkRoot) | Out-Null
   [IO.Directory]::CreateDirectory($script:LogsDir) | Out-Null

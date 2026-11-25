@@ -133,7 +133,20 @@ Before merging, autopilot PRs require a `success` commit status on context `nyx/
   1. **Approval pending `>= -ApprovalMinutes` (default `3`):** detects an unresolved permission prompt in `%APPDATA%\Devin\cli\logs\devin_*.log`, focuses the window, re-sends `/bypass` and waits for confirmation, then pastes a continuation prompt.
   2. **No log write for `>= -IdleMinutes` (default `25`, range `5`–`240`):** when eligible work remains (or the chat is not in an empty-queue `polling` state) and no worktree, gate, review, packaging, or smoke process is running, focuses the window and pastes a continuation prompt pointing back to `autopilot.md` / `solo-v3.md` and `progress.json`.
   3. **Automatic restart after 6 unresponsive nudges:** every nudge is recorded in `<Root>\autopilot\watchdog.json`. If 6 consecutive nudges produce no new agent log activity and no child task process is running, the watchdog posts one informational public-text-safe note to `Automated dev loop: progress log`, stops the unresponsive Devin Desktop process, resets the counter, and relaunches via `-Kickoff` instead of waiting for a person.
-- **Quiet exits:** exits immediately if `<Root>\state\STOP` exists. When Devin Desktop is open and waiting on today's `daily merge cap` or legitimately `polling` with no eligible open `nyx-auto` issues, the watchdog avoids unnecessary nudges.
+- **Health sampling:** at the start of every watchdog tick (before user-idle deferral or `STOP` exits), `-Watch` records a UTC snapshot of free RAM, commit percentage, Devin Desktop working set, hung top-level window count, and "not responding" dialog count to `<Root>\state\health.jsonl` (trimmed to the last 5,000 lines when over 2 MB) and writes a one-line `health:` log entry.
+- **Quiet exits:** exits immediately if `<Root>\state\STOP` exists (after recording the tick's health sample). When Devin Desktop is open and waiting on today's `daily merge cap` or legitimately `polling` with no eligible open `nyx-auto` issues, the watchdog avoids unnecessary nudges.
+
+### Loop health report (`Get-LoopHealth.ps1`)
+
+`scripts/dev-loop/Get-LoopHealth.ps1` is a read-only summary script over a trailing window (default `24` hours):
+
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Get-LoopHealth.ps1 `
+  -Root C:\tivano\dev-loop -Hours 24
+```
+
+- Reads `<Root>\state\health.jsonl`, `<Root>\autopilot\gate\*\summary.json` (and `gate.log` for timeout detection), and `<Root>\state\logs\autopilot-*.log`.
+- Emits one compact JSON object (`windowHours`, `health`, `gates`, `watchdog`) and exits `0`; missing files report zeros without errors.
 
 ### Guarded paths and trust model
 
@@ -154,7 +167,8 @@ Before merging, autopilot PRs require a `success` commit status on context `nyx/
 - `<Root>\autopilot\gate\pr-<n>-<timestamp>\`: gate run logs and `failures.md`.
 - `<Root>\autopilot\neon\`: Gemini 4 Neon escalation fixer runs (`pr-<n>-<timestamp>\` with filled prompt, `agy` logs, git status/diff artifacts, and `result.json`) and `health.json` (6-hour non-retryable unavailability cooldown).
 - `<Root>\autopilot\runs\<n>\`: commit messages, PR bodies, and `neon-<k>.md` failure inputs.
-- `<Root>\state\logs\autopilot-yyyyMMdd.log`: kickoff, self-sync, and watchdog logs.
+- `<Root>\state\health.jsonl`: per-tick watchdog health samples (`utc`, `freeRamMB`, `commitPct`, `desktopMB`, `hungWindows`, `notRespondingDialogs`; trimmed to the last 5,000 lines when over 2 MB).
+- `<Root>\state\logs\autopilot-yyyyMMdd.log`: kickoff, self-sync, health, and watchdog logs.
 - `<Root>\state\STOP`: stop file checked by autopilot and `-Watch` / `-Kickoff`.
 
 ### Prerequisites
