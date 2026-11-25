@@ -25,13 +25,13 @@ describe("Store", () => {
     const s = new Store(root);
     s.open();
     s.update((d) => {
-      d.settings.theme = "dark";
+      d.settings.theme = "nord";
       d.projects.push({ id: "3f6b7c90-1a2b-4c3d-8e9f-a1b2c3d4e5f6", name: "p", createdAt: 1, expanded: true });
     });
     s.close();
     const again = new Store(root);
     again.open();
-    expect(again.state.settings.theme).toBe("dark");
+    expect(again.state.settings.theme).toBe("nord");
     expect(again.state.projects).toHaveLength(1);
     again.close();
     // No temp files leak alongside the store.
@@ -124,9 +124,9 @@ describe("Store", () => {
     expect(() => s.close()).toThrow(/guard.*busy/);
     expect(s.ownsWrites).toBe(true);
     rmSync(guard, { recursive: true });
-    s.update((d) => { d.settings.theme = "dark"; });
+    s.update((d) => { d.settings.theme = "nord"; });
     s.close();
-    expect(JSON.parse(readFileSync(join(root, "store.json"), "utf8")).settings.theme).toBe("dark");
+    expect(JSON.parse(readFileSync(join(root, "store.json"), "utf8")).settings.theme).toBe("nord");
   });
 
   it("rejects a symlinked data root", () => {
@@ -160,7 +160,7 @@ describe("write ownership & lifecycle", () => {
     const a = new Store(root);
     a.open();
     a.update((d) => {
-      d.settings.theme = "dark";
+      d.settings.theme = "nord";
     });
     a.flushNow();
     const winner = readFileSync(join(root, "store.json"), "utf8");
@@ -179,7 +179,7 @@ describe("write ownership & lifecycle", () => {
     s.close();
     const bytes = readFileSync(join(root, "store.json"), "utf8");
     s.update((d) => {
-      d.settings.theme = "dark";
+      d.settings.theme = "nord";
     });
     s.flushNow();
     expect(readFileSync(join(root, "store.json"), "utf8")).toBe(bytes);

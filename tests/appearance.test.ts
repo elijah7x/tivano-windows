@@ -122,4 +122,24 @@ describe("P2-62 retired settings migration", () => {
     }
     store.close();
   });
+
+  it("migrates legacy v2.x theme variants onto the 12 accent families + appearanceMode (P2-51)", () => {
+    for (const [legacy, expectedTheme, expectedMode] of [
+      ["tokyoNight", "nightOwl", "dark"],
+      ["githubLight", "github", "light"],
+      ["breezeDark", "breeze", "dark"],
+      ["breezeLight", "breeze", "light"],
+      ["dark", "system", "dark"],
+      ["light", "system", "light"],
+      ["catppuccinLatte", "catppuccin", "light"],
+    ] as const) {
+      const raw = JSON.parse(JSON.stringify(emptyStore())) as {
+        settings: Record<string, unknown>;
+      };
+      raw.settings.theme = legacy;
+      const migrated = validateStoreFile(raw);
+      expect(migrated.settings.theme, legacy).toBe(expectedTheme);
+      expect(migrated.settings.appearanceMode, legacy).toBe(expectedMode);
+    }
+  });
 });

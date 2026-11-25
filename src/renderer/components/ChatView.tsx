@@ -182,6 +182,12 @@ export function ChatView(props: {
    *  showsWorkingCard picks the live working indicator's card/line
    *  form (frozen Conversation defaults). */
   settings?: Settings;
+  /** P2-51: whether the chat header's More controls (…) are expanded; owned
+   *  by the shell so switching chats keeps the expanded state. */
+  topControlsExpanded?: boolean;
+  onSetTopControlsExpanded?: (
+    next: boolean | ((prev: boolean) => boolean),
+  ) => void;
   /** Hydra intro's "Set up in Settings" — the modal lives on the shell. */
   onOpenSettings?: () => void;
 }): React.JSX.Element {
@@ -198,7 +204,12 @@ export function ChatView(props: {
   const [previewTurn, setPreviewTurn] = useState<string | null>(null);
   const [worktreeOpen, setWorktreeOpen] = useState(false);
   const [scriptsOpen, setScriptsOpen] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
+  const [localMoreOpen, setLocalMoreOpen] = useState(false);
+  const moreOpen = props.topControlsExpanded ?? localMoreOpen;
+  const setMoreOpen = (next: boolean | ((prev: boolean) => boolean)) => {
+    if (props.onSetTopControlsExpanded) props.onSetTopControlsExpanded(next);
+    else setLocalMoreOpen(next);
+  };
   const moreRef = useRef<HTMLDivElement>(null);
   const [msgMenu, setMsgMenu] = useState<MessagePopoverState | null>(null);
   const ckptGen = useRef(0);
@@ -377,7 +388,6 @@ export function ChatView(props: {
   };
   useEffect(() => {
     setHydraPanelHidden(props.settings?.hydraAutoOpensPanels === false);
-    setMoreOpen(false);
     // Seed with THIS thread's count — resetting to 0 would count the
     // existing heads as "new" and reopen a panel the user dismissed
     // when switching between same-count threads (frozen parity: only
@@ -398,7 +408,11 @@ export function ChatView(props: {
   useEffect(() => {
     if (!moreOpen) return;
     const down = (e: MouseEvent): void => {
-      if (!moreRef.current?.contains(e.target as Node)) setMoreOpen(false);
+      const target = e.target as Element | null;
+      if (target && (moreRef.current?.contains(target) || target.closest(".sidebar"))) {
+        return;
+      }
+      setMoreOpen(false);
     };
     const key = (e: KeyboardEvent): void => {
       if (e.key === "Escape") setMoreOpen(false);
@@ -603,7 +617,7 @@ export function ChatView(props: {
           <div className="openin more-controls" ref={moreRef}>
             <button
               type="button"
-              className="head-action more-controls-btn"
+              className={`head-action more-controls-btn${moreOpen ? " active" : ""}`}
               aria-haspopup="menu"
               aria-expanded={moreOpen}
               aria-label={t("More controls")}
@@ -880,11 +894,10 @@ export function ChatView(props: {
             if (turn?.status === "running" && m.turnId === turn.id) return null;
             return <ToolMsgRow key={m.id} m={m} />;
           }
-          // F04 (frozen MessagePopoverMenu): right-click opens the
-          // message's context menu at the pointer — Copy, Copy as
-          // markdown, the last fenced code block and Add to reply on
-          // replies. A link target stays with the link popover; the
-          // frozen "Edit from here" is revert, not in this build.
+          // F04 / P2-51 (v3.0.0 MessagePopoverMenu): right-click opens the
+          // message's context menu at the pointer — single Copy (for a
+          // selection) or Copy all (whole message as Markdown), plus Add
+          // to reply on replies or rewind rows on user prompts.
           const openMsgMenu = (e: React.MouseEvent) => {
             if (m.role !== "assistant" && m.role !== "user") return;
             const el = e.target as HTMLElement;
@@ -896,17 +909,9 @@ export function ChatView(props: {
               sel && !sel.isCollapsed && article && article.contains(sel.anchorNode)
                 ? sel.toString()
                 : null;
-            const bodyEl = article?.querySelector(".msg-body");
-            const plain = bodyEl
-              ? Array.from(bodyEl.childNodes)
-                  .map((n) => n.textContent ?? "")
-                  .filter((s) => s !== "")
-                  .join("\n")
-              : m.content;
             setMsgMenu({
               text: m.content,
               selection: selection === "" ? null : selection,
-              plain,
               role: m.role,
               threadId: thread.id,
               messageId: m.id,
@@ -1192,7 +1197,11 @@ export function ChatView(props: {
         readOnly={!!props.readOnly}
       />
       {msgMenu && (
-        <MessagePopover state={msgMenu} onClose={() => setMsgMenu(null)} />
+        <MessagePopover
+          key={`${msgMenu.messageId}:${msgMenu.x}:${msgMenu.y}`}
+          state={msgMenu}
+          onClose={() => setMsgMenu(null)}
+        />
       )}
       {previewTurn && (
         <CheckpointPreviewDialog

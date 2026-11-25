@@ -1,50 +1,79 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-30.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-// F26 theme menu (frozen ThemePickerButton): the current theme's swatch
-// and name in a capsule button; the popover lists Breeze and System on
-// top, then every dark theme under "Dark" and every light theme under
-// "Light" — the frozen ordering, with the selected item checked. Theme
-// names stay in English verbatim like the frozen `localizesTitle: false`.
+// P2-51 accent picker & appearance split circle (AppearanceSettingsPage.swift):
+// 12 named accent colors in AppTheme.allCases order with localized names
+// (System Accent, Avocado, Matcha Green, ... Honey Yellow) and a plain
+// accent circle swatch with a hairline rim, paired with the split-circle
+// Match System / Light / Dark toggle.
 
 import { useEffect, useRef, useState } from "react";
-import type { ThemeId } from "../../shared/types";
-import { THEMES, themeById } from "../theme";
+import type { AppearanceMode, ThemeId } from "../../shared/types";
+import {
+  THEMES,
+  appearanceModeTitle,
+  nextAppearanceMode,
+  resolveTheme,
+  themeById,
+} from "../theme";
 import { useT } from "../locale";
 
-/** Frozen `swatch`: surface→accent gradient; follow-OS themes split half
- *  light/half dark, and Breeze carries its avocado core. */
-function Swatch({ id }: { id: ThemeId }) {
-  const p = themeById(id).palette;
-  if (p.scheme == null) {
-    return (
-      <span
-        className="theme-swatch"
-        style={{ background: "linear-gradient(to right, #ffffff 50%, #1e1e20 50%)" }}
-      >
-        {id === "breeze" && (
-          <span className="theme-swatch-core" style={{ background: "#7ba58f" }} />
-        )}
-      </span>
-    );
-  }
-  const accent = p.accent ? `#${p.accent}` : "#0a84ff";
+/** v3.0.0 `swatch`: plain circle filled with the dynamic accent (or
+ *  system blue for System Accent), with a hairline rim. */
+function Swatch({
+  id,
+  appearanceMode,
+  osDark,
+}: {
+  id: ThemeId;
+  appearanceMode: AppearanceMode;
+  osDark: boolean;
+}) {
+  const resolved = resolveTheme(id, osDark, appearanceMode);
   return (
     <span
       className="theme-swatch"
-      style={{
-        background: `linear-gradient(to bottom right, #${p.surface} 0%, #${p.surface} 42%, ${accent} 100%)`,
-      }}
+      style={{ background: resolved.accent }}
     />
+  );
+}
+
+/** v3.0.0 `AppearanceSplitCircleButton`: cycles Match System -> Light -> Dark. */
+export function AppearanceSplitCircleButton(props: {
+  mode: AppearanceMode;
+  onChange: (mode: AppearanceMode) => void;
+}): React.JSX.Element {
+  const t = useT();
+  const title = t(appearanceModeTitle(props.mode));
+  const left = props.mode === "dark" ? "#1E1E20" : "#FFFFFF";
+  const right = props.mode === "light" ? "#FFFFFF" : "#1E1E20";
+  return (
+    <button
+      type="button"
+      className="openin-btn appearance-btn"
+      title={title}
+      aria-label={title}
+      data-appearance-mode={props.mode}
+      onClick={() => props.onChange(nextAppearanceMode(props.mode))}
+    >
+      <span
+        className="appearance-circle"
+        style={{ background: `linear-gradient(to right, ${left} 50%, ${right} 50%)` }}
+      />
+    </button>
   );
 }
 
 export function ThemePicker(props: {
   value: ThemeId;
+  appearanceMode?: AppearanceMode;
+  osDark?: boolean;
   onChange: (id: ThemeId) => void;
 }): React.JSX.Element {
   const t = useT();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const mode = props.appearanceMode ?? "system";
+  const osDark = props.osDark ?? false;
 
   useEffect(() => {
     if (!open) return;
@@ -63,8 +92,6 @@ export function ThemePicker(props: {
   }, [open]);
 
   const current = themeById(props.value);
-  const dark = THEMES.filter((th) => th.palette.scheme === "dark");
-  const light = THEMES.filter((th) => th.palette.scheme === "light");
 
   const item = (id: ThemeId) => (
     <button
@@ -77,8 +104,8 @@ export function ThemePicker(props: {
         setOpen(false);
       }}
     >
-      <Swatch id={id} />
-      <span className="theme-name">{themeById(id).name}</span>
+      <Swatch id={id} appearanceMode={mode} osDark={osDark} />
+      <span className="theme-name">{t(themeById(id).name)}</span>
       {id === props.value && <span className="theme-check">✓</span>}
     </button>
   );
@@ -92,18 +119,13 @@ export function ThemePicker(props: {
         aria-label={t("Theme")}
         onClick={() => setOpen((o) => !o)}
       >
-        <Swatch id={current.id} />
-        <span className="theme-name">{current.name}</span>
+        <Swatch id={current.id} appearanceMode={mode} osDark={osDark} />
+        <span className="theme-name">{t(current.name)}</span>
         <span className="theme-chev">▾</span>
       </button>
       {open && (
         <div className="openin-menu theme-menu" role="menu" aria-label={t("Theme")}>
-          {item("breeze")}
-          {item("system")}
-          <div className="openin-section">{t("Dark")}</div>
-          {dark.map((th) => item(th.id))}
-          <div className="openin-section">{t("Light")}</div>
-          {light.map((th) => item(th.id))}
+          {THEMES.map((th) => item(th.id))}
         </div>
       )}
     </div>

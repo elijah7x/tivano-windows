@@ -94,10 +94,10 @@ describe("hydration and revision boundaries", () => {
     const store = new ClientStore(async () => ({}));
     store.hydrate(snap(5), store.beginHydration());
     store.onBridgeEvent({ type: "settings-changed", rev: 7,
-      settings: { theme: "dark", language: "en", alwaysAllow: [] } });
+      settings: { theme: "nord", language: "en", alwaysAllow: [] } });
     store.onBridgeEvent({ type: "settings-changed", rev: 6,
-      settings: { theme: "light", language: "en", alwaysAllow: [] } });
-    expect(store.snapshot!.settings.theme).toBe("dark");
+      settings: { theme: "github", language: "en", alwaysAllow: [] } });
+    expect(store.snapshot!.settings.theme).toBe("nord");
     expect(store.snapshot!.rev).toBe(7);
   });
 

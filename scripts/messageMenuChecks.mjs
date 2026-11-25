@@ -89,14 +89,12 @@ export async function runMessageMenuChecks({
   await waitSnap(page, (s) => threadDone(s, tid));
   await page.locator(".msg.assistant").last().waitFor();
 
-  // MQ-01: assistant rows — the mock reply always ends fenced, so the
-  // code row is always present; Add to reply starts the second group.
+  // MQ-01: assistant rows — single Copy all (when unselected) + Add to reply.
   await rightClick(page, ".msg.assistant", true);
   await page.waitForSelector(".msg-menu", { timeout: 5000 });
   verify(
     "MQ-01 assistant rows",
-    (await menuRows(page)).join("|") ===
-      "Copy|Copy message as markdown|Copy last code block|Add to reply",
+    (await menuRows(page)).join("|") === "Copy all|Add to reply",
     await menuRows(page),
   );
   verify(
@@ -105,47 +103,32 @@ export async function runMessageMenuChecks({
   );
   await page.screenshot({ path: `${outDir}/msg-menu-en.png` });
 
-  // MQ-03: Copy with no selection → the rendered plain text (markdown
-  // formatting flattened, fence body included).
-  await page.locator(".msg-menu .msg-row", { hasText: "Copy" }).first().click();
-  await page.waitForSelector(".msg-menu", { state: "detached", timeout: 5000 });
-  const plainClip = await clip(page);
-  verify(
-    "MQ-03 Copy → plain rendered text",
-    plainClip.includes("echo bold tail") && !plainClip.includes("**bold**"),
-    plainClip.slice(0, 80),
-  );
-
-  // MQ-04: Copy message as markdown → the raw source.
-  await rightClick(page, ".msg.assistant", true);
-  await page.waitForSelector(".msg-menu", { timeout: 5000 });
-  await page
-    .locator(".msg-menu .msg-row", { hasText: "Copy message as markdown" })
-    .click();
+  // MQ-03: Copy all with no selection → the whole message as Markdown.
+  await page.locator(".msg-menu .msg-row", { hasText: "Copy all" }).first().click();
   await page.waitForSelector(".msg-menu", { state: "detached", timeout: 5000 });
   const rawClip = await clip(page);
   verify(
-    "MQ-04 markdown copy → raw source",
+    "MQ-03 Copy all → whole message as Markdown",
     rawClip.includes("echo **bold** tail") && rawClip.includes("```ts"),
     rawClip.slice(0, 80),
   );
 
-  // MQ-05: Copy last code block → the last fence's body only.
-  await rightClick(page, ".msg.assistant", true);
-  await page.waitForSelector(".msg-menu", { timeout: 5000 });
-  await page
-    .locator(".msg-menu .msg-row", { hasText: "Copy last code block" })
-    .click();
-  await page.waitForSelector(".msg-menu", { state: "detached", timeout: 5000 });
+  // MQ-04: code blocks keep their own copy button.
+  await page.locator(".msg.assistant .md-copy").last().click();
   verify(
-    "MQ-05 code copy → fence body only",
+    "MQ-04 code block Copy button copies fence body only",
     (await clip(page)) === "const synthetic = true; // mock output, not generated code",
     await clip(page),
   );
 
-  // MQ-06: a selection inside the message wins the Copy fallback.
+  // MQ-05: a selection inside the message turns Copy all into Copy and copies the selection.
   await rightClickSelected(page);
   await page.waitForSelector(".msg-menu", { timeout: 5000 });
+  verify(
+    "MQ-05 selection switches label to Copy",
+    (await menuRows(page)).join("|") === "Copy|Add to reply",
+    await menuRows(page),
+  );
   await page.locator(".msg-menu .msg-row", { hasText: "Copy" }).first().click();
   await page.waitForSelector(".msg-menu", { state: "detached", timeout: 5000 });
   verify(
@@ -190,6 +173,7 @@ export async function runMessageMenuChecks({
   await rightClickSelected(page);
   await page.waitForSelector(".msg-menu", { timeout: 5000 });
   await page.locator(".msg-menu .msg-row", { hasText: "Add to reply" }).click();
+  await page.waitForSelector(".msg-menu", { state: "detached", timeout: 5000 });
   await page.waitForSelector(".composer-chips .quote-chip", { timeout: 5000 });
   await send(page, "following up");
   const sent = await waitSnap(page, (s) => {
@@ -219,6 +203,7 @@ export async function runMessageMenuChecks({
   await rightClickSelected(page);
   await page.waitForSelector(".msg-menu", { timeout: 5000 });
   await page.locator(".msg-menu .msg-row", { hasText: "Add to reply" }).click();
+  await page.waitForSelector(".msg-menu", { state: "detached", timeout: 5000 });
   await page.waitForSelector(".composer-chips .quote-chip", { timeout: 5000 });
   await page.locator(".composer-chips .quote-chip-x").click();
   await page.waitForFunction(
@@ -227,14 +212,15 @@ export async function runMessageMenuChecks({
   );
   verify("MQ-12 chip × removes the quote", true);
 
-  // MQ-13: user prompts carry the copy pair plus the F09 rewind rows
+  // MQ-13: user prompts carry Copy all plus the F09 rewind rows
   // (frozen "Edit from here" / bounded Rewind — user-only).
+  await page.evaluate(() => window.getSelection()?.removeAllRanges());
   await rightClick(page, ".msg.user", true);
   await page.waitForSelector(".msg-menu", { timeout: 5000 });
   verify(
-    "MQ-13 user rows = copy pair + rewind rows",
+    "MQ-13 user rows = Copy all + rewind rows",
     (await menuRows(page)).join("|") ===
-      "Copy|Copy message as markdown|Edit from here|Rewind to this turn",
+      "Copy all|Edit from here|Rewind to this turn",
     await menuRows(page),
   );
 
@@ -268,8 +254,7 @@ export async function runMessageMenuChecks({
   await page.waitForSelector(".msg-menu", { timeout: 5000 });
   verify(
     "MQ-16 zh rows",
-    (await menuRows(page)).join("|") ===
-      "复制|将消息复制为 Markdown|复制最后一个代码块|添加到回复",
+    (await menuRows(page)).join("|") === "复制全文|添加到回复",
     await menuRows(page),
   );
   await page.screenshot({ path: `${outDir}/msg-menu-zh.png` });

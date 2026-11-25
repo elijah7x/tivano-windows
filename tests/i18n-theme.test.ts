@@ -423,34 +423,37 @@ describe("i18n", () => {
 });
 
 describe("theme", () => {
-  it("ships the full frozen 29-theme catalog in allCases order", () => {
-    expect(THEMES).toHaveLength(29);
-    expect(THEMES[0]!.id).toBe("breeze");
-    expect(THEMES.at(-1)!.id).toBe("matrix");
+  it("ships the 12 named v3.0.0 accent families in allCases order", () => {
+    expect(THEMES).toHaveLength(12);
+    expect(THEMES[0]!.id).toBe("system");
+    expect(THEMES[1]!.id).toBe("breeze");
+    expect(THEMES.at(-1)!.id).toBe("ayu");
     for (const th of THEMES) {
       expect(th.name.length).toBeGreaterThan(0);
-      expect(th.palette.surface).toMatch(/^[0-9a-fA-F]{6}$/);
-      for (const hex of [th.palette.accent, th.palette.success, th.palette.warning, th.palette.danger])
-        if (hex != null) expect(hex).toMatch(/^[0-9a-fA-F]{6}$/);
-    }
-  });
-
-  it("breeze follows the OS and carries the avocado accent from upstream", () => {
-    const breeze = THEMES.find((t) => t.id === "breeze")!;
-    expect(breeze.palette.scheme).toBeNull();
-    expect(breeze.palette.accent).toBe("7BA58F");
-    expect(THEMES.find((t) => t.id === "system")!.palette.accent).toBeNull();
-  });
-
-  it("every theme detail string is a localizable key with translations in all languages", () => {
-    for (const th of THEMES) {
-      expect(th.detail.length).toBeGreaterThan(0);
-      for (const lang of TRANSLATED_LANGUAGES) {
-        const localized = translate(lang, th.detail);
-        expect(localized, `${lang} ${th.id}: ${th.detail}`).not.toBe(th.detail);
+      if (th.accentHexes) {
+        expect(th.accentHexes.dark).toMatch(/^[0-9a-fA-F]{6}$/);
+        expect(th.accentHexes.light).toMatch(/^[0-9a-fA-F]{6}$/);
       }
     }
-    expect(translate("zh-Hans", "Follows your Mac · Avocado")).toBe("跟随你的 Mac · 牛油果绿");
-    expect(translate("zh-Hans", "Dark · Wave blue")).toBe("深色 · 浪蓝");
+  });
+
+  it("breeze carries the avocado accent from upstream and system keeps null", () => {
+    const breeze = THEMES.find((t) => t.id === "breeze")!;
+    expect(breeze.accentHexes).toEqual({ dark: "7BA58F", light: "7BA58F" });
+    expect(THEMES.find((t) => t.id === "system")!.accentHexes).toBeNull();
+  });
+
+  it("every accent name is a localizable key with translations in all languages", () => {
+    for (const th of THEMES) {
+      for (const lang of TRANSLATED_LANGUAGES) {
+        const localized = translate(lang, th.name);
+        expect(localized, `${lang} ${th.id}: ${th.name}`).not.toBe(th.name);
+      }
+    }
+    expect(translate("zh-Hans", "System Accent")).toBe("系统强调色");
+    expect(translate("zh-Hans", "Avocado")).toBe("牛油果绿");
+    expect(translate("zh-Hans", "Coral Red")).toBe("珊瑚红");
+    expect(translate("zh-Hans", "More controls")).toBe("更多控件");
+    expect(translate("zh-Hans", "Copy all")).toBe("复制全文");
   });
 });

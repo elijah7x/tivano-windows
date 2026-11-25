@@ -1,9 +1,9 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-30.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-// F26 theme catalog e2e — the frozen 29-theme picker: sections, swatch,
-// real computed-token evidence on the document, OS-follow resolution,
-// persistence across restart, zh-Hans localized section headers with
-// un-localized theme names (frozen localizesTitle:false parity).
+// P2-51 / F26 accent & appearance e2e — the 12 named accent colors +
+// AppearanceMode split-circle button (Match System / Light / Dark),
+// computed-token evidence on the document, OS-follow resolution,
+// persistence across restart, and localized zh-Hans accent names.
 
 export async function runThemeChecks({
   launch: launchApp,
@@ -26,45 +26,60 @@ export async function runThemeChecks({
   const page = await app.firstWindow();
   await page.waitForSelector(".sidebar-head", { timeout: 15000 });
   await page.evaluate(() =>
-    window.tivano.invoke("settings:set", { language: "en", theme: "breeze" }));
+    window.tivano.invoke("settings:set", { language: "en", theme: "breeze", appearanceMode: "system" }));
 
-  // TH-01: the picker button carries the current theme's swatch + name.
+  // TH-01: the picker button carries the current accent swatch + name.
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 8000 });
   const btnText = await page.locator(".theme-btn").innerText();
-  verify("TH-01", btnText.includes("Breeze"), btnText);
+  verify("TH-01", btnText.includes("Avocado"), btnText);
 
-  // TH-02: menu opens with 29 items and the frozen section headers.
+  // TH-02: menu opens with all 12 named v3.0.0 accent colors.
   await page.locator(".theme-btn").click();
   await page.waitForSelector(".theme-menu", { timeout: 5000 });
   const items = page.locator('.theme-menu [role="menuitemradio"]');
-  verify("TH-02", (await items.count()) === 29, await items.count());
-  const sections = await page.locator(".theme-menu .openin-section").allInnerTexts();
-  verify("TH-02b", sections.join("|") === "Dark|Light", sections);
+  verify("TH-02", (await items.count()) === 12, await items.count());
 
-  // TH-03: pick Tokyo Night → the document tokens resolve the palette.
-  await page.locator('.theme-menu [role="menuitemradio"]', { hasText: "Tokyo Night" }).click();
+  // TH-03: pick Sky Blue + switch appearance to Dark → dark tokens + dark hex.
+  await page.locator('.theme-menu [role="menuitemradio"]', { hasText: "Sky Blue" }).click();
   await page.waitForFunction(
-    () => document.documentElement.dataset.theme === "tokyoNight",
+    () => document.documentElement.dataset.theme === "nightOwl",
     { timeout: 5000 },
   );
-  const tn = {
+  // Cycle Match System -> Light -> Dark via the split-circle button.
+  await page.locator(".appearance-btn").click();
+  await page.waitForFunction(
+    () => document.documentElement.dataset.appearance === "light",
+    { timeout: 5000 },
+  );
+  await page.locator(".appearance-btn").click();
+  await page.waitForFunction(
+    () => document.documentElement.dataset.appearance === "dark",
+    { timeout: 5000 },
+  );
+  const darkSky = {
     accent: await css(page, "--accent"),
     surface: await css(page, "--surface"),
-    danger: await css(page, "--danger"),
     scheme: await page.evaluate(() => document.documentElement.style.colorScheme),
     bodyBg: await page.evaluate(() => getComputedStyle(document.body).backgroundColor),
   };
   verify("TH-03",
-    tn.accent.toLowerCase() === "#7aa2f7" && tn.surface.toLowerCase() === "#1a1b26" && tn.danger.toLowerCase() === "#f7768e"
-      && tn.scheme === "dark" && tn.bodyBg === "rgb(26, 27, 38)",
-    tn);
+    darkSky.accent.toLowerCase() === "#82aaff" && darkSky.surface.toLowerCase() === "#1e1e20"
+      && darkSky.scheme === "dark" && darkSky.bodyBg === "rgb(30, 30, 32)",
+    darkSky);
 
-  // TH-04: a light theme flips scheme, surface and accent.
+  // TH-04: pick Sea Blue + switch to Light → light surface and light hex.
   await page.locator(".theme-btn").click();
-  await page.locator('.theme-menu [role="menuitemradio"]', { hasText: "GitHub Light" }).click();
+  await page.locator('.theme-menu [role="menuitemradio"]', { hasText: "Sea Blue" }).click();
   await page.waitForFunction(
-    () => document.documentElement.dataset.theme === "githubLight",
+    () => document.documentElement.dataset.theme === "github",
+    { timeout: 5000 },
+  );
+  // Dark -> Match System -> Light.
+  await page.locator(".appearance-btn").click();
+  await page.locator(".appearance-btn").click();
+  await page.waitForFunction(
+    () => document.documentElement.dataset.appearance === "light",
     { timeout: 5000 },
   );
   const gl = {
@@ -86,26 +101,21 @@ export async function runThemeChecks({
     ));
   verify("TH-05", refused !== "accepted", refused);
 
-  // TH-06: zh-Hans — section headers localize, theme names stay English
-  // (frozen localizesTitle:false parity).
+  // TH-06: zh-Hans — accent color names localize.
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "zh-Hans" }));
   await page.locator(".theme-btn").click();
   await page.waitForSelector(".theme-menu", { timeout: 5000 });
-  const zhSections = await page.locator(".theme-menu .openin-section").allInnerTexts();
   const zhFirst = await items.first().innerText();
-  const zhDetail = await page.locator(".theme-detail").innerText();
+  const zhBtnText = await page.locator(".theme-btn").innerText();
   verify("TH-06",
-    zhSections.join("|") === "深色|浅色" && zhFirst.includes("Breeze") &&
-      zhDetail === "浅色 · 蓝色",
-    { zhSections, zhFirst, zhDetail });
-  // Close the menu by toggling the button — Escape would close the modal too.
+    zhFirst.includes("系统强调色") && zhBtnText.includes("海蓝"),
+    { zhFirst, zhBtnText });
   await page.locator(".theme-btn").click();
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
   await page.locator(".modal-actions .primary").click();
   await page.waitForSelector(".modal", { state: "detached", timeout: 5000 });
 
-  // TH-07: restart keeps the picked theme — the picker and the tokens
-  // both reflect it.
+  // TH-07: restart keeps the picked accent and appearanceMode.
   await boundedClose(app, proc);
   const s2 = await launch("theme-restart");
   instances.push(s2);
@@ -117,12 +127,13 @@ export async function runThemeChecks({
     scheme: await page2.evaluate(() => document.documentElement.style.colorScheme),
   };
   verify("TH-07",
-    persisted.theme === "githubLight" && persisted.accent.toLowerCase() === "#0969da"
+    persisted.theme === "github" && persisted.accent.toLowerCase() === "#0969da"
       && persisted.scheme === "light",
     persisted);
 
-  // TH-08: a follow-OS theme resolves to the host's real color scheme.
-  await page2.evaluate(() => window.tivano.invoke("settings:set", { theme: "breeze" }));
+  // TH-08: Match System appearanceMode resolves to the host's real color scheme.
+  await page2.evaluate(() =>
+    window.tivano.invoke("settings:set", { theme: "breeze", appearanceMode: "system" }));
   await page2.waitForFunction(
     () => document.documentElement.dataset.theme === "breeze",
     { timeout: 5000 },

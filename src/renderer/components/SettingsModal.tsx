@@ -22,8 +22,7 @@ import { useT } from "../locale";
 import { translateError } from "../i18n";
 import { api, tryCall } from "../client";
 import { playFinishChime } from "../finishChime";
-import { themeById } from "../theme";
-import { ThemePicker } from "./ThemePicker";
+import { AppearanceSplitCircleButton, ThemePicker } from "./ThemePicker";
 import { TokenActivitySection } from "./TokenActivitySection";
 import { ShortcutsSection } from "./ShortcutsSection";
 import { HydraSection } from "./HydraSection";
@@ -225,7 +224,22 @@ export function SettingsModal(props: {
   };
 
   const setTheme = (theme: Settings["theme"]) => tryCall("settings:set", { theme });
+  const setAppearanceMode = (appearanceMode: NonNullable<Settings["appearanceMode"]>) =>
+    tryCall("settings:set", { appearanceMode });
   const setLanguage = (language: LanguageId) => tryCall("settings:set", { language });
+  const [osDark, setOsDark] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: dark)").matches
+      : false,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    if (typeof mq.addEventListener !== "function") return;
+    const onChange = () => setOsDark(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
 
   const canWrite = !!codex?.mutable && !loadErr && !busy && !codex.chooserBusy;
 
@@ -249,11 +263,20 @@ export function SettingsModal(props: {
               ))}
             </div>
 
-            <h3>{t("Theme")}</h3>
+            <h3>{t("Appearance & accent")}</h3>
             <div className="theme-line">
-              <ThemePicker value={settings.theme} onChange={setTheme} />
-              <span className="theme-detail">{t(themeById(settings.theme).detail)}</span>
+              <AppearanceSplitCircleButton
+                mode={settings.appearanceMode ?? "system"}
+                onChange={setAppearanceMode}
+              />
+              <ThemePicker
+                value={settings.theme}
+                appearanceMode={settings.appearanceMode ?? "system"}
+                osDark={osDark}
+                onChange={setTheme}
+              />
             </div>
+            <p className="codex-note">{t("Colors controls and highlighted text.")}</p>
             <div className="choice-row">
               <button
                 role="switch"

@@ -32,7 +32,10 @@ describe("IPC request validators", () => {
     expect(
       requestValidators["approvals:resolve"]({ threadId: uuid, approvalId: uuid, optionId: "once" }),
     ).toBeTruthy();
-    expect(requestValidators["settings:set"]({ theme: "dark" }).theme).toBe("dark");
+    expect(requestValidators["settings:set"]({ theme: "nord" }).theme).toBe("nord");
+    expect(requestValidators["settings:set"]({ appearanceMode: "dark" }).appearanceMode).toBe("dark");
+    expect(() => requestValidators["settings:set"]({ theme: "dark" })).toThrow(ValidationError);
+    expect(() => requestValidators["settings:set"]({ appearanceMode: "sepia" })).toThrow(ValidationError);
     for (const lang of ["en", "zh-Hans", "zh-Hant", "ja", "ko", "fr"] as const) {
       expect(requestValidators["settings:set"]({ language: lang }).language).toBe(lang);
     }

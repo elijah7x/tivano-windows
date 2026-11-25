@@ -1,83 +1,116 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-30.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-// F26 theme catalog: frozen AppTheme palettes verbatim + the derived
-// token ladder (hue-preserving mix, luminance-picked accent ink,
-// follow-OS resolution for Breeze/System).
+// P2-51 accent catalog: 12 named v3.0.0 accent families + AppearanceMode
+// resolution + legacy v2.x theme migration.
 
 import { describe, expect, it } from "vitest";
-import { THEMES, themeById, resolveTheme, mixHex, luminance } from "../src/renderer/theme";
-import { THEME_IDS } from "../src/shared/types";
+import {
+  THEMES,
+  appearanceModeTitle,
+  mixHex,
+  luminance,
+  nextAppearanceMode,
+  resolveTheme,
+  themeById,
+} from "../src/renderer/theme";
+import {
+  APPEARANCE_MODES,
+  THEME_IDS,
+  legacyAppearanceOfTheme,
+  migrateLegacyTheme,
+} from "../src/shared/types";
 
-describe("frozen catalog", () => {
-  it("holds all 29 frozen themes in allCases order with verbatim palettes", () => {
+describe("P2-51 12-accent catalog", () => {
+  it("holds all 12 v3.0.0 named accents in AppTheme.allCases order", () => {
     expect(THEMES.map((t) => t.id)).toEqual([...THEME_IDS]);
-    expect(THEMES).toHaveLength(29);
-    const spot = (id: string, surface: string, accent: string | null, scheme: string | null) => {
-      const p = themeById(id as (typeof THEME_IDS)[number]).palette;
-      expect(p.surface, id).toBe(surface);
-      expect(p.accent, id).toBe(accent);
-      expect(p.scheme, id).toBe(scheme);
-    };
-    spot("breeze", "1E1E20", "7BA58F", null);
-    spot("system", "1E1E20", null, null);
-    spot("tokyoNight", "1A1B26", "7AA2F7", "dark");
-    spot("githubLight", "FFFFFF", "0969DA", "light");
-    spot("matrix", "000000", "00E676", "dark");
-    spot("rosePine", "191724", "EB6F92", "dark");
+    expect(THEMES).toHaveLength(12);
+    expect(THEMES.map((t) => t.name)).toEqual([
+      "System Accent",
+      "Avocado",
+      "Matcha Green",
+      "Emerald Green",
+      "Glacier Blue",
+      "Sea Blue",
+      "Sky Blue",
+      "Lavender Purple",
+      "Rose Pink",
+      "Raspberry Red",
+      "Coral Red",
+      "Honey Yellow",
+    ]);
+    expect(themeById("system").accentHexes).toBeNull();
+    expect(themeById("breeze").accentHexes).toEqual({ dark: "7BA58F", light: "7BA58F" });
+    expect(themeById("github").accentHexes).toEqual({ dark: "4493F8", light: "0969DA" });
+    expect(themeById("claude").accentHexes).toEqual({ dark: "CE7E64", light: "B5654A" });
   });
 
-  it("keeps frozen status hues where the palette defines them", () => {
-    expect(themeById("dracula").palette).toMatchObject({
-      success: "50FA7B", warning: "FFB86C", danger: "FF5555",
-    });
-    // Undefined hues fall back to the system set, not invented per-theme.
-    expect(themeById("claude").palette.success).toBe("51A556");
-    expect(themeById("breeze").palette.success).toBeNull();
+  it("cycles appearance mode system -> light -> dark -> system", () => {
+    expect(APPEARANCE_MODES).toEqual(["system", "light", "dark"]);
+    expect(nextAppearanceMode("system")).toBe("light");
+    expect(nextAppearanceMode("light")).toBe("dark");
+    expect(nextAppearanceMode("dark")).toBe("system");
+    expect(appearanceModeTitle("system")).toBe("Match System");
+    expect(appearanceModeTitle("light")).toBe("Light");
+    expect(appearanceModeTitle("dark")).toBe("Dark");
+  });
+
+  it("maps retired v2.x theme ids onto the 12 accent families + legacy appearance", () => {
+    expect(migrateLegacyTheme("breezeDark")).toBe("breeze");
+    expect(legacyAppearanceOfTheme("breezeDark")).toBe("dark");
+    expect(migrateLegacyTheme("breezeLight")).toBe("breeze");
+    expect(legacyAppearanceOfTheme("breezeLight")).toBe("light");
+    expect(migrateLegacyTheme("dark")).toBe("system");
+    expect(legacyAppearanceOfTheme("dark")).toBe("dark");
+    expect(migrateLegacyTheme("light")).toBe("system");
+    expect(legacyAppearanceOfTheme("light")).toBe("light");
+    expect(migrateLegacyTheme("tokyoNight")).toBe("nightOwl");
+    expect(legacyAppearanceOfTheme("tokyoNight")).toBe("dark");
+    expect(migrateLegacyTheme("githubLight")).toBe("github");
+    expect(legacyAppearanceOfTheme("githubLight")).toBe("light");
+    expect(migrateLegacyTheme("catppuccinMocha")).toBe("catppuccin");
+    expect(migrateLegacyTheme("dracula")).toBe("catppuccin");
+    expect(migrateLegacyTheme("cursor")).toBe("nord");
+    expect(migrateLegacyTheme("neon-party")).toBeNull();
   });
 });
 
 describe("resolveTheme", () => {
-  it("dark theme resolves verbatim surface + accent", () => {
-    const t = resolveTheme("tokyoNight", false);
-    expect(t.scheme).toBe("dark");
-    expect(t.surface).toBe("#1A1B26");
-    expect(t.accent).toBe("#7AA2F7");
-    expect(t.success).toBe("#9ECE6A");
+  it("resolves dark and light hexes per appearanceMode", () => {
+    const dark = resolveTheme("github", false, "dark");
+    expect(dark.scheme).toBe("dark");
+    expect(dark.surface).toBe("#1E1E20");
+    expect(dark.accent).toBe("#4493F8");
+
+    const light = resolveTheme("github", true, "light");
+    expect(light.scheme).toBe("light");
+    expect(light.surface).toBe("#FFFFFF");
+    expect(light.accent).toBe("#0969DA");
+    expect(luminance(light.surface2.slice(1))).toBeLessThan(luminance(light.surface.slice(1)));
   });
 
-  it("light theme resolves and darkens the ladder toward black", () => {
-    const t = resolveTheme("githubLight", true);
-    expect(t.scheme).toBe("light");
-    expect(t.surface).toBe("#FFFFFF");
-    expect(luminance(t.surface2.slice(1))).toBeLessThan(luminance(t.surface.slice(1)));
-    expect(t.accent).toBe("#0969DA");
-    expect(t.text).toBe("#1d1d20");
+  it("system appearanceMode follows osDark", () => {
+    expect(resolveTheme("breeze", true, "system").scheme).toBe("dark");
+    expect(resolveTheme("breeze", false, "system").scheme).toBe("light");
+    expect(resolveTheme("breeze", false, "system").surface).toBe("#FFFFFF");
+    expect(resolveTheme("breeze", true, "system").surface).toBe("#1E1E20");
+    expect(resolveTheme("nightOwl", true, "system").accent).toBe("#82AAFF");
+    expect(resolveTheme("nightOwl", false, "system").accent).toBe("#4876D6");
   });
 
-  it("null-scheme themes follow the OS flag", () => {
-    expect(resolveTheme("breeze", true).scheme).toBe("dark");
-    expect(resolveTheme("breeze", false).scheme).toBe("light");
-    expect(resolveTheme("breeze", false).surface).toBe("#FFFFFF");
-    expect(resolveTheme("breeze", true).surface).toBe("#1E1E20");
-    expect(resolveTheme("system", false).surface).toBe("#FFFFFF");
-  });
-
-  it("null accent falls back to the system-blue default per scheme", () => {
-    expect(resolveTheme("system", true).accent).toBe("#0A84FF");
-    expect(resolveTheme("light", true).accent).toBe("#0A6DFF");
+  it("system accent falls back to the system-blue default per scheme", () => {
+    expect(resolveTheme("system", true, "dark").accent).toBe("#0A84FF");
+    expect(resolveTheme("system", true, "light").accent).toBe("#0A6DFF");
   });
 
   it("picks accent-contrast ink by luminance", () => {
-    // matrix green on black → dark ink; tokyoNight blue → white ink.
-    expect(resolveTheme("matrix", true).accentContrast).toBe("#10201a");
-    expect(resolveTheme("tokyoNight", true).accentContrast).toBe("#ffffff");
+    expect(resolveTheme("matrix", true, "dark").accentContrast).toBe("#10201a");
+    expect(resolveTheme("nightOwl", true, "dark").accentContrast).toBe("#ffffff");
   });
 
   it("derives hue-preserving surface steps", () => {
-    const t = resolveTheme("tokyoNight", true);
-    // Tokyo Night's tint must survive in the steps, not collapse to grey.
-    expect(t.surface2).toBe(`#${mixHex("1A1B26", "FFFFFF", 0.05)}`);
-    expect(t.surface3).toBe(`#${mixHex("1A1B26", "FFFFFF", 0.105)}`);
+    const t = resolveTheme("nord", true, "dark");
+    expect(t.surface2).toBe(`#${mixHex("1E1E20", "FFFFFF", 0.05)}`);
+    expect(t.surface3).toBe(`#${mixHex("1E1E20", "FFFFFF", 0.105)}`);
   });
 });
 
@@ -85,11 +118,11 @@ describe("color math", () => {
   it("mixHex folds the second color in by amount", () => {
     expect(mixHex("000000", "FFFFFF", 0)).toBe("000000");
     expect(mixHex("000000", "FFFFFF", 1)).toBe("ffffff");
-    expect(mixHex("1E1E20", "FFFFFF", 0.05)).toBe("29292b"); // close to the static breeze ladder
+    expect(mixHex("1E1E20", "FFFFFF", 0.05)).toBe("29292b");
   });
 
   it("luminance ranks bright accents above dark ones", () => {
-    expect(luminance("00E676")).toBeGreaterThan(luminance("268BD2"));
+    expect(luminance("00E676")).toBeGreaterThan(luminance("0969DA"));
     expect(luminance("FFFFFF")).toBeCloseTo(1);
   });
 });

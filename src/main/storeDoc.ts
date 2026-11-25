@@ -24,9 +24,12 @@ import {
 import { SHORTCUT_COMMANDS, type KeyChord } from "../shared/shortcuts";
 import { MODEL_LIST_LIMIT, type ModelPreference } from "../shared/modelList";
 import {
+  APPEARANCE_MODES,
   LANGUAGE_IDS,
   SCHEMA_VERSION,
   THEME_IDS,
+  legacyAppearanceOfTheme,
+  migrateLegacyTheme,
   type ChatThread,
   type StoreFile,
   type ThreadContinuation,
@@ -505,20 +508,36 @@ const RETIRED_SETTING_KEYS = [
   "antiSlopEnabled",
 ] as const;
 
-/** Drop v2.x settings retired in v3.0.0 (P2-62) so existing stores migrate
- *  cleanly without failing strict schema validation. */
+/** Drop v2.x settings retired in v3.0.0 (P2-62) and migrate legacy
+ *  light/dark theme variants onto the 12 accent families + appearanceMode
+ *  (P2-51) so existing stores load cleanly without failing validation. */
 function stripRetiredSettings(raw: Record<string, unknown>): Record<string, unknown> {
   const s = raw.settings;
   if (typeof s !== "object" || s === null || Array.isArray(s)) return raw;
   const rec = s as Record<string, unknown>;
-  if (!RETIRED_SETTING_KEYS.some((k) => k in rec)) return raw;
+  const hasRetired = RETIRED_SETTING_KEYS.some((k) => k in rec);
+  const rawTheme = typeof rec.theme === "string" ? rec.theme : null;
+  const isLegacyTheme =
+    rawTheme !== null &&
+    !(THEME_IDS as readonly string[]).includes(rawTheme) &&
+    migrateLegacyTheme(rawTheme) !== null;
+  if (!hasRetired && !isLegacyTheme) return raw;
   const nextSettings = { ...rec };
   for (const k of RETIRED_SETTING_KEYS) delete nextSettings[k];
+  if (isLegacyTheme && rawTheme !== null) {
+    const migrated = migrateLegacyTheme(rawTheme);
+    if (migrated !== null) nextSettings.theme = migrated;
+    if (nextSettings.appearanceMode === undefined) {
+      const legacyMode = legacyAppearanceOfTheme(rawTheme);
+      if (legacyMode !== null) nextSettings.appearanceMode = legacyMode;
+    }
+  }
   return { ...raw, settings: nextSettings };
 }
 
 const vSettings = vObject({
   theme: vEnum(THEME_IDS),
+  appearanceMode: vOptional(vEnum(APPEARANCE_MODES)),
   language: vEnum(LANGUAGE_IDS),
   alwaysAllow: vArray(vString, PERSIST_MAX_GRANTS),
   // Optional so every pre-A49 store loads verbatim — absent means the
