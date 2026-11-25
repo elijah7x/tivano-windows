@@ -1,6 +1,6 @@
 # Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-22.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
+# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-ApprovalRecoveryAttempts <n>] [-StalePrHours <h>] [-StalePrGateRuns <n>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
 # Launches and watches a single Devin Desktop autopilot chat following autopilot.md.
 
 param(
@@ -14,6 +14,9 @@ param(
   [ValidatePattern('^[A-Za-z0-9_.-]+$')][string]$Label = 'nyx-auto',
   [ValidateRange(5, 240)][int]$IdleMinutes = 25,
   [ValidateRange(1, 240)][int]$ApprovalMinutes = 3,
+  [ValidateRange(1, 20)][int]$ApprovalRecoveryAttempts = 3,
+  [ValidateRange(1, 720)][int]$StalePrHours = 48,
+  [ValidateRange(1, 100)][int]$StalePrGateRuns = 5,
   [ValidateRange(0, 3600)][int]$UserIdleSeconds = 120,
   [ValidateRange(1, 1440)][int]$IntervalMinutes = 15,
   [string]$SyncSource = 'C:\tivano\audit\tool',
@@ -820,6 +823,9 @@ function Get-DevinLogActivity {
         $filePendingUtc = $parsed
       } elseif ($null -ne $filePendingUtc -and $line -match 'User approved tool permission|User denied tool permission|auto-decided') {
         $filePendingUtc = $null
+      } elseif ($null -ne $filePendingUtc -and $agentWork -and $parsed -gt $filePendingUtc) {
+        # The same session did agent work after the prompt, so the prompt is no longer what it waits on.
+        $filePendingUtc = $null
       }
     }
     if ($null -ne $filePendingUtc -and ($null -eq $oldestPendingUtc -or $filePendingUtc -lt $oldestPendingUtc)) {
@@ -846,14 +852,16 @@ function Read-WatchdogState {
     totalNudges = 0
     stuckNotified = $false
     nudges = @()
+    approvalPendingKey = ''
+    approvalFailures = 0
   }
   $data = Read-JsonFile $script:WatchdogPath
   if (-not $data) { return $state }
-  foreach ($key in @('lastSyncedSha', 'lastKickoffUtc', 'lastKickoffOutcome', 'lastKickoffAttemptUtc', 'firstSeenUtc', 'lastSeenLogWriteUtc', 'lastNudgeUtc', 'lastNudgeReason', 'lastNudgeLogWriteUtc')) {
+  foreach ($key in @('lastSyncedSha', 'lastKickoffUtc', 'lastKickoffOutcome', 'lastKickoffAttemptUtc', 'firstSeenUtc', 'lastSeenLogWriteUtc', 'lastNudgeUtc', 'lastNudgeReason', 'lastNudgeLogWriteUtc', 'approvalPendingKey')) {
     $val = Get-JsonProp $data $key
     if ($null -ne $val) { $state[$key] = [string]$val }
   }
-  foreach ($key in @('trackingIssue', 'kickoffFailures', 'consecutiveNudges', 'totalNudges')) {
+  foreach ($key in @('trackingIssue', 'kickoffFailures', 'consecutiveNudges', 'totalNudges', 'approvalFailures')) {
     $val = Get-JsonProp $data $key
     if ($null -ne $val) { $state[$key] = [int]$val }
   }
@@ -1055,6 +1063,29 @@ function Stop-DevinDesktop {
     Start-Sleep -Seconds 3
   }
   return $procs.Count
+}
+
+function Restart-StuckDevin {
+  param($Watchdog, [string]$Reason)
+  $busyOnRestart = @(Get-BusyAutopilotProcesses)
+  if ($busyOnRestart.Count -gt 0) {
+    Write-Log ($Reason + ', but ' + $busyOnRestart.Count + ' task process(es) are running; not restarting')
+    return
+  }
+  if (-not [bool]$Watchdog['stuckNotified']) {
+    if (Send-StuckTrackingComment $Watchdog) {
+      $Watchdog['stuckNotified'] = $true
+      Save-WatchdogState $Watchdog
+    }
+  }
+  Write-Log ($Reason + '; restarting Devin Desktop')
+  $null = Stop-DevinDesktop
+  $Watchdog['consecutiveNudges'] = 0
+  $Watchdog['stuckNotified'] = $false
+  $Watchdog['approvalFailures'] = 0
+  $Watchdog['approvalPendingKey'] = ''
+  Save-WatchdogState $Watchdog
+  $null = Invoke-Kickoff -WaitForIdle $false
 }
 
 function Invoke-Kickoff {
@@ -1310,6 +1341,40 @@ function Add-AuditLogComment {
   }
 }
 
+function Write-StalePrReport {
+  # Lists open nyx/ PRs that have been open for at least $StalePrHours hours and have used at least
+  # $StalePrGateRuns gate runs, in <autopilot>\stale-prs.json. autopilot.md section 11 parks them so they
+  # stop consuming gate runs; the report itself changes nothing.
+  param($OpenPrs)
+  $gateRoot = Join-Path $script:AutopilotDir 'gate'
+  $nowUtc = [DateTime]::UtcNow
+  $stale = New-Object Collections.Generic.List[object]
+  foreach ($pr in @($OpenPrs)) {
+    $head = [string](Get-JsonProp $pr 'headRefName')
+    if (-not $head.StartsWith('nyx/')) { continue }
+    $num = [int](Get-JsonProp $pr 'number')
+    $created = Parse-UtcTimestamp ([string](Get-JsonProp $pr 'createdAt'))
+    if ($null -eq $created) { continue }
+    $ageHours = ($nowUtc - $created).TotalHours
+    if ($ageHours -lt $StalePrHours) { continue }
+    $runs = 0
+    if (Test-Path -LiteralPath $gateRoot -PathType Container) {
+      $runs = @(Get-ChildItem -LiteralPath $gateRoot -Directory -Filter ('pr-' + $num + '-*') -ErrorAction SilentlyContinue |
+          Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'summary.json') -PathType Leaf }).Count
+    }
+    if ($runs -lt $StalePrGateRuns) { continue }
+    $lane = 'devin'
+    if ($head.StartsWith('nyx/h-')) { $lane = 'hydrogen' }
+    $null = $stale.Add([ordered]@{ pr = $num; branch = $head; lane = $lane; ageHours = [Math]::Round($ageHours, 1); gateRuns = $runs })
+  }
+  $report = [ordered]@{ generatedUtc = $nowUtc.ToString('o'); thresholdHours = $StalePrHours; thresholdGateRuns = $StalePrGateRuns; prs = $stale.ToArray() }
+  Write-Text (Join-Path $script:AutopilotDir 'stale-prs.json') ((ConvertTo-Json -InputObject $report -Depth 4) + "`n")
+  if ($stale.Count -gt 0) {
+    $names = @($stale.ToArray() | ForEach-Object { '#' + $_.pr + ' (' + $_.gateRuns + ' runs, ' + [int]$_.ageHours + 'h)' })
+    Write-Log ('stale PRs to park: ' + ($names -join ', '))
+  }
+}
+
 function Invoke-AutoMerge {
   param([switch]$DryRun)
   $whatIfVar = Get-Variable -Name 'WhatIfPreference' -ErrorAction SilentlyContinue
@@ -1325,7 +1390,7 @@ function Invoke-AutoMerge {
     $script:GhPath = $ghCmd.Source
   }
 
-  $listRes = Invoke-Gh ('pr list -R ' + $Repo + ' --state open --limit 100 --json number,headRefName,headRefOid,title,body,labels,author,baseRefName,isCrossRepository')
+  $listRes = Invoke-Gh ('pr list -R ' + $Repo + ' --state open --limit 100 --json number,headRefName,headRefOid,title,body,labels,author,baseRefName,isCrossRepository,createdAt')
   if ($listRes.exitCode -ne 0) {
     Write-Log ('auto-merge: skipped (gh pr list failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $listRes) 200) + ')')
     return
@@ -1341,6 +1406,12 @@ function Invoke-AutoMerge {
   } catch {
     Write-Log ('auto-merge: skipped (could not parse gh pr list JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 200) + ')')
     return
+  }
+
+  try {
+    Write-StalePrReport $openPrs
+  } catch {
+    Write-Log ('stale-pr report error: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
   }
 
   $mergedTodayLoaded = $false
@@ -1771,50 +1842,48 @@ function Invoke-WatchTick {
   }
 
   if ([int]$watchdog['consecutiveNudges'] -ge 6) {
-    $busyOnRestart = @(Get-BusyAutopilotProcesses)
-    if ($busyOnRestart.Count -gt 0) {
-      Write-Log ('6 nudges reached, but ' + $busyOnRestart.Count + ' task process(es) are running; not restarting')
-      return
-    }
-    if (-not [bool]$watchdog['stuckNotified']) {
-      if (Send-StuckTrackingComment $watchdog) {
-        $watchdog['stuckNotified'] = $true
-        Save-WatchdogState $watchdog
-      }
-    }
-    Write-Log 'autopilot unresponsive after 6 nudges with no new log activity; restarting Devin Desktop'
-    $null = Stop-DevinDesktop
-    $watchdog['consecutiveNudges'] = 0
-    $watchdog['stuckNotified'] = $false
-    Save-WatchdogState $watchdog
-    $null = Invoke-Kickoff -WaitForIdle $false
+    Restart-StuckDevin $watchdog 'autopilot unresponsive after 6 nudges with no new log activity'
     return
   }
 
-  if ($null -ne $activity.pendingApprovalUtc) {
+  $recentWork = ($null -ne $activity.newestWriteUtc -and ($nowUtc - $activity.newestWriteUtc).TotalMinutes -lt $IdleMinutes)
+  if ($null -ne $activity.pendingApprovalUtc -and $recentWork) {
+    Write-Log ('approval prompt from ' + $activity.pendingApprovalUtc.ToString('o') + ' looks stale: agent work seen ' + [Math]::Round(($nowUtc - $activity.newestWriteUtc).TotalMinutes, 1) + 'm ago; not recovering')
+  } elseif ($null -ne $activity.pendingApprovalUtc) {
     $pendingMin = ($nowUtc - $activity.pendingApprovalUtc).TotalMinutes
     if ($pendingMin -ge $ApprovalMinutes) {
-      Write-Log ('approval pending for ' + [Math]::Round($pendingMin, 1) + 'm (>= ' + $ApprovalMinutes + 'm); recovering /bypass')
+      $pendingKey = $activity.pendingApprovalUtc.ToString('o')
+      if ([string]$watchdog['approvalPendingKey'] -ne $pendingKey) {
+        $watchdog['approvalPendingKey'] = $pendingKey
+        $watchdog['approvalFailures'] = 0
+        Save-WatchdogState $watchdog
+      }
+      # A prompt that /bypass cannot clear (bypass already on, or a hung tool call that logged a prompt the
+      # UI never shows) would otherwise block every later nudge; after repeated failures restart instead.
+      if ([int]$watchdog['approvalFailures'] -ge $ApprovalRecoveryAttempts) {
+        Restart-StuckDevin $watchdog ('approval pending for ' + [Math]::Round($pendingMin, 1) + 'm and ' + $watchdog['approvalFailures'] + ' recovery attempts failed')
+        return
+      }
+      Write-Log ('approval pending for ' + [Math]::Round($pendingMin, 1) + 'm (>= ' + $ApprovalMinutes + 'm); recovering /bypass (attempt ' + ([int]$watchdog['approvalFailures'] + 1) + '/' + $ApprovalRecoveryAttempts + ')')
+      $abort = ''
       if (-not (Set-DevinForeground $window)) {
-        Write-Log 'approval recovery aborted: could not focus Devin window'
+        $abort = 'could not focus Devin window'
+      } elseif (-not (Send-DevinBypassCommandSafe $window)) {
+        $abort = '/bypass not confirmed or focus changed'
+      } elseif (-not (Set-DevinForeground $window)) {
+        $abort = 'lost focus after /bypass'
+      } elseif (-not (Focus-DevinChatInput $window)) {
+        $abort = 'focus changed before clear'
+      } elseif (-not (Send-DevinTextSafe $window 'Bypass mode is on again. Continue where you left off.')) {
+        $abort = 'focus changed before paste'
+      }
+      if ($abort) {
+        $watchdog['approvalFailures'] = [int]$watchdog['approvalFailures'] + 1
+        Save-WatchdogState $watchdog
+        Write-Log ('approval recovery aborted: ' + $abort + ' (' + $watchdog['approvalFailures'] + '/' + $ApprovalRecoveryAttempts + ')')
         return
       }
-      if (-not (Send-DevinBypassCommandSafe $window)) {
-        Write-Log 'approval recovery aborted: /bypass not confirmed or focus changed'
-        return
-      }
-      if (-not (Set-DevinForeground $window)) {
-        Write-Log 'approval recovery aborted: lost focus after /bypass'
-        return
-      }
-      if (-not (Focus-DevinChatInput $window)) {
-        Write-Log 'approval recovery aborted: focus changed before clear'
-        return
-      }
-      if (-not (Send-DevinTextSafe $window 'Bypass mode is on again. Continue where you left off.')) {
-        Write-Log 'approval recovery aborted: focus changed before paste'
-        return
-      }
+      $watchdog['approvalFailures'] = 0
       Register-WatchdogNudge $watchdog 'approval' $activity.newestWriteUtc $nowUtc
       Write-Log ('sent approval recovery nudge (' + $watchdog['consecutiveNudges'] + '/6)')
       return

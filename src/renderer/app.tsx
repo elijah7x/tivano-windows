@@ -5,7 +5,8 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { api, clientStore, tryCall } from "./client";
-import type { Snapshot } from "../shared/types";
+import { setModalCovered } from "./appActivity";
+import type { RemoteMcpApprovalRequest, RemoteMcpStatus, Snapshot } from "../shared/types";
 import {
   SHORTCUT_COMMANDS,
   chordFromEvent,
@@ -74,6 +75,61 @@ function ArchivePrompt(props: {
   );
 }
 
+/** P2-25: Remote MCP OAuth approval prompt (frozen RootView alert). */
+function RemoteMcpApprovalPrompt(props: {
+  request: RemoteMcpApprovalRequest;
+  onDecide: (decision: "full" | "read" | "deny") => void;
+}): React.JSX.Element {
+  const t = useT();
+  const r = props.request;
+  const offersWrite = r.requestedScopes.includes("tivano.write");
+  return (
+    <div
+      className="modal-veil"
+      role="presentation"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") props.onDecide("deny");
+      }}
+    >
+      <div
+        className="modal"
+        role="alertdialog"
+        aria-modal="true"
+        data-testid="remote-mcp-approval"
+        aria-label={t("Allow %@ to control Tivano?", r.clientName)}
+      >
+        <h2>{t("Allow %@ to control Tivano?", r.clientName)}</h2>
+        <p className="ckpt-note mono">
+          {t("Code: %@ · Redirects to %@", r.code, r.redirectHost || r.clientId)}
+        </p>
+        <div className="modal-actions">
+          {offersWrite && (
+            <button
+              className="primary"
+              data-testid="remote-mcp-allow-full"
+              autoFocus
+              onClick={() => props.onDecide("full")}
+            >
+              {t("Allow full control")}
+            </button>
+          )}
+          <button
+            className={offersWrite ? undefined : "primary"}
+            autoFocus={!offersWrite}
+            data-testid="remote-mcp-allow-read"
+            onClick={() => props.onDecide("read")}
+          >
+            {t("Allow read only")}
+          </button>
+          <button data-testid="remote-mcp-deny" onClick={() => props.onDecide("deny")}>
+            {t("Deny")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Sits inside LanguageContext so the dismiss label localizes correctly. */
 function ErrorBanner(props: { text: string; onDismiss: () => void }): React.JSX.Element {
   const t = useT();
@@ -122,6 +178,7 @@ export function App(): React.JSX.Element {
   /** F27 archiveThread (⌘W): frozen "asks to archive; Delete is a click
    *  away" prompt for the SELECTED thread. */
   const [archivePrompt, setArchivePrompt] = useState(false);
+  const [remoteApproval, setRemoteApproval] = useState<RemoteMcpApprovalRequest | null>(null);
   /** F04 link popover — frozen LinkPopover: one transient menu anchored
    *  under the right-clicked chat link; null = closed. */
   const [linkPop, setLinkPop] = useState<LinkPopoverState | null>(null);
@@ -141,19 +198,37 @@ export function App(): React.JSX.Element {
   );
 
   useEffect(() => {
+    setModalCovered(settingsOpen || paletteOpen);
+    return () => setModalCovered(false);
+  }, [settingsOpen, paletteOpen]);
+
+  useEffect(() => {
     // Subscribe FIRST (events buffer), then fetch the snapshot: its rev
     // boundary filters out anything already reflected in it. `disposed`
     // invalidates this cycle's late resolve under StrictMode replay.
     ensureTerminalBridge();
     let disposed = false;
     const gen = store.beginHydration();
-    const detach = api().onEvent((e) => store.onBridgeEvent(e));
+    const detach = api().onEvent((e) => {
+      if (e.type === "remote-mcp-changed") {
+        if (!disposed) setRemoteApproval(e.status.pendingApprovals[0] ?? null);
+        return;
+      }
+      store.onBridgeEvent(e);
+    });
     api()
       .invoke("state:get", {})
       .then((s) => {
         if (disposed) return;
         store.hydrate(s as Snapshot, gen);
         setReady(true);
+        void api()
+          .invoke("remoteMcp:status", {})
+          .then((rm) => {
+            if (!disposed && rm)
+              setRemoteApproval((rm as RemoteMcpStatus).pendingApprovals[0] ?? null);
+          })
+          .catch(() => {});
       })
       .catch((e: Error) => {
         if (!disposed) setFatal(e.message);
@@ -345,7 +420,7 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     if (snapshot) {
-      document.documentElement.lang = snapshot.settings.language === "zh-Hans" ? "zh-Hans" : "en";
+      document.documentElement.lang = snapshot.settings.language;
     }
   }, [snapshot?.settings.language]);
 
@@ -361,15 +436,6 @@ export function App(): React.JSX.Element {
     return () => mq.removeEventListener("change", apply);
   }, [snapshot?.settings.theme]);
 
-  // F26: frozen performanceMode — the flag lives on <html> so one CSS
-  // block can strip every rendered effect the build actually has.
-  useEffect(() => {
-    if (!snapshot) return;
-    if (snapshot.settings.performanceMode === true)
-      document.documentElement.dataset.performance = "1";
-    else delete document.documentElement.dataset.performance;
-  }, [snapshot?.settings.performanceMode]);
-
   // F26: push the frozen TypeScale offsets into the three CSS vars; the
   // code offset also reaches live xterm instances (terminals scale with
   // the code category like the frozen diff/code views).
@@ -384,8 +450,7 @@ export function App(): React.JSX.Element {
   }, [snapshot?.settings.fontSizes]);
 
   // F26 wallpaper layer: refetch the picture whenever the installed
-  // basename changes. Performance Mode keeps the setting but the frozen
-  // solid fallback means nothing is painted (see .has-wp below).
+  // basename changes.
   useEffect(() => {
     const file = snapshot?.settings.wallpaper?.file;
     if (!file) {
@@ -483,11 +548,10 @@ export function App(): React.JSX.Element {
 
   // F26: the frozen window paints the picture at backdropOpacity under
   // glass on a TRANSPARENT window. Ours is opaque — honest mapping: the
-  // picture fills the app at that opacity over the solid base, softness
-  // becomes a CSS blur, and Performance Mode falls back to solid.
+  // picture fills the app at that opacity over the solid base and softness
+  // becomes a CSS blur.
   const wp = snapshot.settings.wallpaper;
-  const wpOn =
-    !!wp && !!wpUrl && snapshot.settings.performanceMode !== true;
+  const wpOn = !!wp && !!wpUrl;
 
   // A81 frozen SidebarLayout: default 268, bounds 210–440, drag past
   // 110 collapses (session-only, like ⌘B); a collapsed edge drags back
@@ -643,6 +707,21 @@ export function App(): React.JSX.Element {
               tryCall("threads:delete", { id: selected.id });
             }}
             onClose={() => setArchivePrompt(false)}
+          />
+        )}
+        {remoteApproval && (
+          <RemoteMcpApprovalPrompt
+            request={remoteApproval}
+            onDecide={(decision) => {
+              const id = remoteApproval.id;
+              setRemoteApproval(null);
+              void api()
+                .invoke("remoteMcp:decide", { id, decision })
+                .then((rm) => {
+                  if (rm) setRemoteApproval((rm as RemoteMcpStatus).pendingApprovals[0] ?? null);
+                })
+                .catch(() => {});
+            }}
           />
         )}
         {lastError && <ErrorBanner text={lastError} onDismiss={() => store.clearError()} />}

@@ -152,6 +152,12 @@ export interface ProviderCallbacks {
    */
   onModelReport?(model: string | null, effort: string | null): void;
   /**
+   * Codex only: the provider admitted a turn with `providerTurnId`
+   * (frozen turnStarted(providerTurnID:)). Persisted on the turn/message
+   * so conversation rewind can target the exact Codex turn.
+   */
+  onTurnStarted?(providerTurnId: string): void;
+  /**
    * Codex only: a user-input request was PRESENTED (serialized like
    * approvals — never co-presented with another server request).
    * `providerKey` is the only identity the answer may name.
@@ -233,6 +239,14 @@ export interface TurnContext {
   runtimeMode?: import("../shared/types").RuntimeMode;
   /** F06: build vs plan for THIS turn (Codex collaborationMode). */
   interactionMode?: import("../shared/types").InteractionMode;
+  /**
+   * Codex only (P2-58): Hydra lead developer instructions for this turn's
+   * thread parameters when sub-agents are on (undefined when off or on a
+   * head). Sent on thread/start, thread/resume and thread/fork; when
+   * undefined, CodexSession sends ordinary-thread instructions so a
+   * resumed conversation drops any earlier sub-agent policy.
+   */
+  hydraPolicy?: string;
 }
 
 /** Outcome of one child teardown, for evidence and the close gate. */
@@ -319,6 +333,23 @@ export interface ProviderAdapter {
    * maps that to the frozen "Nothing to compact yet." notice.
    */
   compact?(localThreadId: string): Promise<void>;
+  /**
+   * F09 / P2-58: rewind a bound provider conversation to before
+   * `targetTurnId` (Codex only; frozen CodexSession.rollback(from:)).
+   * Returns the surviving provider thread id (unchanged on thread/revert,
+   * new id on thread/fork, null when the first turn was rewound and the
+   * original thread was archived).
+   */
+  rollback?(
+    localThreadId: string,
+    targetTurnId: string,
+    opts: {
+      workspace?: WorkspaceGrant;
+      runtimeMode?: import("../shared/types").RuntimeMode;
+      model?: string;
+      hydraPolicy?: string;
+    },
+  ): Promise<string | null>;
   /**
    * End every owned child and report per-child outcomes. Idempotent; must
    * not throw — individual failures are reported in the result instead so

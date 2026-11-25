@@ -5,6 +5,7 @@
 
 import type { ApprovalRequest } from "../../shared/types";
 import { useT } from "../locale";
+import { translateDetail, translateNotice } from "../i18n";
 import { tryCall } from "../client";
 
 export function ApprovalCard(props: {
@@ -33,8 +34,8 @@ export function ApprovalCard(props: {
       ) : (
         <p>{t(approval.title)}</p>
       )}
-      {approval.detail && <p className="detail">{t(approval.detail)}</p>}
-      {approval.reason && <p className="reason">{t(approval.reason)}</p>}
+      {approval.detail && <p className="detail">{translateDetail(t, approval.detail)}</p>}
+      {approval.reason && <p className="reason">{translateNotice(t, approval.reason)}</p>}
       {pending ? (
         <div className="actions">
           {[...approval.options].reverse().map((o) =>

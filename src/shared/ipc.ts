@@ -21,7 +21,7 @@ import {
   ValidationError,
   type Validator,
 } from "./validate";
-import { THEME_IDS, type LanguageId } from "./types";
+import { LANGUAGE_IDS, THEME_IDS } from "./types";
 import { SHORTCUT_COMMANDS, type KeyChord } from "./shortcuts";
 import type { ModelPreference } from "./modelList";
 
@@ -260,6 +260,11 @@ export const REQUEST_CHANNELS = [
   "codex:clear",
   "control:status",
   "control:retry",
+  "remoteMcp:status",
+  "remoteMcp:retry",
+  "remoteMcp:decide",
+  "remoteMcp:revoke",
+  "remoteMcp:revoke-all",
   "cli:status",
   "cli:install",
   "cli:uninstall",
@@ -294,7 +299,7 @@ export type RequestChannel = (typeof REQUEST_CHANNELS)[number];
 export const EVENT_CHANNEL = "tivano:event";
 
 const vTheme = vEnum(THEME_IDS);
-const vLanguage = vEnum(["en", "zh-Hans"] as const satisfies readonly LanguageId[]);
+const vLanguage = vEnum(LANGUAGE_IDS);
 
 /** Bounded dynamic record {questionId: answer[]} — the ONLY map-shaped
  *  payload in the contract. Question ids are re-validated against the
@@ -461,7 +466,6 @@ export const requestValidators = {
   "settings:set": vObject({
     theme: vOptional(vTheme),
     language: vOptional(vLanguage),
-    notifyOnDone: vOptional(vBoolean),
     // F28: frozen chimeWhenFinished (default on) — a soft chime when a
     // turn finishes, whether or not the thread is in view.
     chimeWhenFinished: vOptional(vBoolean),
@@ -479,9 +483,6 @@ export const requestValidators = {
     defaultWorkspaceMode: vOptional(vEnum(["local", "worktree", "auto"] as const)),
     showReasoning: vOptional(vBoolean),
     showsWorkingCard: vOptional(vBoolean),
-    // F26: strips rendered effects for lowest GPU usage (frozen
-    // performanceMode, default false).
-    performanceMode: vOptional(vBoolean),
     // F26: sidebar weather hero (frozen showsSkylight, default true).
     showsSkylight: vOptional(vBoolean),
     // F33: CLI install receipt (frozen cliInstallationTarget) — the shim
@@ -493,16 +494,15 @@ export const requestValidators = {
     autoShelveDays: vOptional(vInt(0, 14)),
     quickChatEnabled: vOptional(vBoolean),
     shelvedGroupName: vOptional(vNullable(vNonEmptyString(60))),
-    // F13: free-form commit-message guidance (frozen commitInstructions).
-    commitInstructions: vOptional(vMaxString(4096)),
     // F27: whole overrides map (id → chord|null); structural shape only —
     // the refusal/conflict rules live in the recorder + shortcut model.
     shortcuts: vOptional(vShortcuts),
-    // F31: frozen antiSlopEnabled toggle ("Concise AI replies").
-    antiSlopEnabled: vOptional(vBoolean),
     // F33: double gate — both must be true before the socket listens.
     alphaEnabled: vOptional(vBoolean),
     externalControlEnabled: vOptional(vBoolean),
+    remoteMCPEnabled: vOptional(vBoolean),
+    remoteMCPFullAccess: vOptional(vBoolean),
+    remoteMCPPublicURL: vOptional(vMaxString(2000)),
     // F26: per-category absolute sizes; frozen ranges enforced at write.
     fontSizes: vOptional(
       vObject({
@@ -562,6 +562,8 @@ export const requestValidators = {
     sidebarWidth: vOptional(vNumber(210, 440)),
     // A81: top-edge-dragged terminal drawer height (frozen 140–760).
     terminalHeight: vOptional(vNumber(140, 760)),
+    // P2-55: marks the current version's What's new banner as seen.
+    whatsNewSeenVersion: vOptional(vNonEmptyString(80)),
   }),
   "links:open-external": vObject({ url: vNonEmptyString(2048) }),
   // Embedded terminal. No shell/command/path keys exist anywhere in these
@@ -672,6 +674,14 @@ export const requestValidators = {
   // itself is never reachable through IPC (Unix socket only).
   "control:status": vObject({}),
   "control:retry": vObject({}),
+  "remoteMcp:status": vObject({}),
+  "remoteMcp:retry": vObject({}),
+  "remoteMcp:decide": vObject({
+    id: vId,
+    decision: vEnum(["full", "read", "deny"] as const),
+  }),
+  "remoteMcp:revoke": vObject({ id: vId }),
+  "remoteMcp:revoke-all": vObject({}),
   // F33 CLI install surface — bounded: no paths cross the bridge; main
   // owns dir/target resolution and reports honest state back.
   "cli:status": vObject({}),
@@ -850,4 +860,7 @@ type AppEventPayload =
   | {
       type: "slash-recorded";
       recentCommands: Record<string, string[]>;
-    };
+    }
+  | { type: "window-activity"; active: boolean }
+  | { type: "memory-pressure"; critical: boolean }
+  | { type: "remote-mcp-changed"; status: import("./types").RemoteMcpStatus };

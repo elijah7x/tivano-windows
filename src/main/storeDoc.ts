@@ -24,6 +24,7 @@ import {
 import { SHORTCUT_COMMANDS, type KeyChord } from "../shared/shortcuts";
 import { MODEL_LIST_LIMIT, type ModelPreference } from "../shared/modelList";
 import {
+  LANGUAGE_IDS,
   SCHEMA_VERSION,
   THEME_IDS,
   type ChatThread,
@@ -125,6 +126,7 @@ const vTurn = vObject({
   approval: vOptional(vApproval),
   question: vOptional(vQuestionRequest),
   assistantMessageId: vNonEmptyString(120),
+  providerTurnId: vOptional(vNonEmptyString(200)),
 });
 
 const vMessage = vObject({
@@ -134,6 +136,7 @@ const vMessage = vObject({
   status: vMessageStatus,
   ts: vTs,
   turnId: vOptional(vString),
+  providerTurnId: vOptional(vNonEmptyString(200)),
   kind: vOptional(vEnum(["reasoning", "plan", "todos", "tool", "notice"] as const)),
   noticeLevel: vOptional(vEnum(["info", "warning", "error"] as const)),
   steps: vOptional(
@@ -215,6 +218,13 @@ const vHydraReview = vObject({
   createdAt: vTs,
 });
 
+const vHydraJobSummary = vObject({
+  id: vNonEmptyString(120),
+  isOpen: vBoolean,
+  ending: vOptional(vEnum(["completed", "stopped", "failed"] as const)),
+  merge: vOptional(vEnum(["merged", "nothing", "failed", "skipped"] as const)),
+});
+
 const vThread = vObject({
   id: vNonEmptyString(120),
   projectId: vNullable(vNonEmptyString(120)),
@@ -290,6 +300,8 @@ const vThread = vObject({
   subagentMode: vOptional(vEnum(["same", "preset", "adaptive"] as const)),
   // P1-38: persisted independent-review cards.
   hydraReviews: vOptional(vArray(vHydraReview, 200)),
+  // P2-63: settled Hydra jobs ledger.
+  hydraJobs: vOptional(vArray(vHydraJobSummary, 200)),
   // P1-39: frozen hasStartedTurn — a turn reached a provider.
   hasStartedTurn: vOptional(vBoolean),
   // v2.2.34 keep-updated titles — see ChatThread.
@@ -486,12 +498,29 @@ const vMcpServer = vObject({
   headers: vOptional(vMcpHeaders),
 });
 
+const RETIRED_SETTING_KEYS = [
+  "performanceMode",
+  "notifyOnDone",
+  "commitInstructions",
+  "antiSlopEnabled",
+] as const;
+
+/** Drop v2.x settings retired in v3.0.0 (P2-62) so existing stores migrate
+ *  cleanly without failing strict schema validation. */
+function stripRetiredSettings(raw: Record<string, unknown>): Record<string, unknown> {
+  const s = raw.settings;
+  if (typeof s !== "object" || s === null || Array.isArray(s)) return raw;
+  const rec = s as Record<string, unknown>;
+  if (!RETIRED_SETTING_KEYS.some((k) => k in rec)) return raw;
+  const nextSettings = { ...rec };
+  for (const k of RETIRED_SETTING_KEYS) delete nextSettings[k];
+  return { ...raw, settings: nextSettings };
+}
+
 const vSettings = vObject({
   theme: vEnum(THEME_IDS),
-  language: vEnum(["en", "zh-Hans"] as const),
+  language: vEnum(LANGUAGE_IDS),
   alwaysAllow: vArray(vString, PERSIST_MAX_GRANTS),
-  // Optional so every pre-A18 store loads verbatim — absent means off.
-  notifyOnDone: vOptional(vBoolean),
   // Optional so every pre-A49 store loads verbatim — absent means the
   // frozen default (on).
   chimeWhenFinished: vOptional(vBoolean),
@@ -512,7 +541,6 @@ const vSettings = vObject({
   defaultWorkspaceMode: vOptional(vEnum(["local", "worktree", "auto"] as const)),
   showReasoning: vOptional(vBoolean),
   showsWorkingCard: vOptional(vBoolean),
-  performanceMode: vOptional(vBoolean),
   showsSkylight: vOptional(vBoolean),
   // F33: CLI install receipt — path of the client our shim points at.
   cliInstallationTarget: vOptional(vNonEmptyString(4000)),
@@ -525,16 +553,15 @@ const vSettings = vObject({
   // Optional so every pre-A35 store loads verbatim — overrides only;
   // a stored null chord means the shortcut was cleared (frozen Override).
   shortcuts: vOptional(vShortcuts),
-  // Optional so every pre-A36 store loads verbatim — frozen
-  // commitInstructions is a free-form string (empty = none).
-  commitInstructions: vOptional(vMaxString(4096)),
-  // Optional so every pre-A37 store loads verbatim — absent = enabled
-  // (frozen antiSlopEnabled defaults true).
-  antiSlopEnabled: vOptional(vBoolean),
   // Optional so every pre-A39 store loads verbatim — absent = both
   // gates off (the control socket never listens without them).
   alphaEnabled: vOptional(vBoolean),
   externalControlEnabled: vOptional(vBoolean),
+  // P2-25: Remote MCP lives outside Alpha under Settings > Connections.
+  remoteMCPEnabled: vOptional(vBoolean),
+  remoteMCPFullAccess: vOptional(vBoolean),
+  remoteMCPPublicURL: vOptional(vMaxString(2000)),
+  remoteMCPPort: vOptional(vInt(0, 65535)),
   // Optional so every pre-A38 store loads verbatim — absent = the
   // frozen defaults 14/15/13 (see shared/typeScale.ts).
   fontSizes: vOptional(vFontSizes),
@@ -611,6 +638,10 @@ const vSettings = vObject({
   // drawer top edge (140–760), frozen SidebarLayout/terminalHeight.
   sidebarWidth: vOptional(vNumber(210, 440)),
   terminalHeight: vOptional(vNumber(140, 760)),
+  // P2-55: version tracking for Settings > Version "What's new".
+  whatsNewInstalledVersion: vOptional(vNonEmptyString(80)),
+  whatsNewPreviousVersion: vOptional(vNonEmptyString(80)),
+  whatsNewSeenVersion: vOptional(vNonEmptyString(80)),
 });
 
 // F05 recent-slash-commands map: provider-keyed, names bounded to the
@@ -752,12 +783,15 @@ const vThreadHead = vObject({
       isNonGitCheckout: vOptional(vBoolean),
       copyKept: vOptional(vBoolean),
       landingPending: vOptional(vBoolean),
+      mergedAt: vOptional(vTs),
       spawnedAt: vTs,
       finishedAt: vOptional(vTs),
     }),
   ),
   // P1-38: the lead's independent-review cards.
   hydraReviews: vOptional(vArray(vHydraReview, 200)),
+  // P2-63: settled Hydra jobs ledger.
+  hydraJobs: vOptional(vArray(vHydraJobSummary, 200)),
   // P1-39: frozen hasStartedTurn — a turn reached a provider.
   hasStartedTurn: vOptional(vBoolean),
   // F25: helper-chat binding (frozen parentThreadID / isInPanel).
@@ -911,7 +945,7 @@ export function validateStoreHead(parsed: unknown): StoreHead {
     checkCapacity((raw.settings as Record<string, unknown>).alwaysAllow, PERSIST_MAX_GRANTS, "grants");
   let doc: StoreHead;
   try {
-    doc = vStoreHead(parsed) as StoreHead;
+    doc = vStoreHead(stripRetiredSettings(raw)) as StoreHead;
   } catch (e) {
     throw new CorruptStoreError(
       `invalid store document: ${e instanceof Error ? e.message : String(e)}`,
@@ -987,7 +1021,7 @@ export function validateStoreFile(parsed: unknown): StoreFile {
 
   let doc: StoreFile;
   try {
-    doc = vStoreFile(parsed) as StoreFile;
+    doc = vStoreFile(stripRetiredSettings(raw)) as StoreFile;
   } catch (e) {
     throw new CorruptStoreError(
       `invalid store document: ${e instanceof Error ? e.message : String(e)}`,

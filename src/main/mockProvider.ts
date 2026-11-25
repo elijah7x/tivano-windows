@@ -27,7 +27,7 @@ export type { ProviderCallbacks, ProviderTurnHandle };
 const DEFAULT_TICK_MS = 12;
 
 function replyScript(prompt: string): string[] {
-  // The wire prompt may carry injected guidance (anti-slop, the Hydra
+  // The wire prompt may carry injected guidance (the Hydra
   // policy, forwarded context). Its echo is verbatim EXCEPT the fenced
   // hydra opener: a policy that teaches the block shape embeds one as
   // an example, and an echoed live fence would parse as a real

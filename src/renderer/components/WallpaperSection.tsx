@@ -58,8 +58,6 @@ export function WallpaperSection(props: { settings: Settings }) {
     else setStatus(null);
   };
 
-  const perf = settings.performanceMode === true;
-
   return (
     <>
       <h3>{t("Wallpaper")}</h3>
@@ -117,9 +115,6 @@ export function WallpaperSection(props: { settings: Settings }) {
               }
             />
           </label>
-        )}
-        {perf && wp && (
-          <p className="wp-note">{t("Wallpaper is paused while Performance Mode is on.")}</p>
         )}
       </div>
 

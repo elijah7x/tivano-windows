@@ -13,7 +13,7 @@ import { EngineError } from "./engine";
 import { boundedTouched, CheckpointLedger, type TurnCheckpoint } from "./checkpointLedger";
 import type { CheckpointService, PreviewResult, RestoreResult } from "./checkpointService";
 import type { ProjectRuntimePaths } from "./projectRuntimePaths";
-import type { ChatThread, CheckpointDiffView, Project } from "../shared/types";
+import type { ChatThread, CheckpointDiffView, Message, Project } from "../shared/types";
 
 export interface CheckpointCoordinatorDeps {
   service: CheckpointService;
@@ -21,6 +21,7 @@ export interface CheckpointCoordinatorDeps {
   paths: ProjectRuntimePaths | null;
   projects: () => readonly Project[];
   threads: () => readonly ChatThread[];
+  threadMessages?: (threadId: string) => readonly Message[];
   emit: (e: { type: "checkpoints-changed"; threadId: string }) => void;
 }
 
@@ -262,7 +263,9 @@ export class CheckpointCoordinator {
       !p.cancelled &&
       thread !== null &&
       thread.projectId === p.projectId &&
-      thread.messages.some((m) => m.turnId === p.turnId) &&
+      (this.deps.threadMessages?.(p.threadId) ?? thread.messages).some(
+        (m) => m.turnId === p.turnId,
+      ) &&
       grant !== undefined &&
       grant.directory === p.grantDir;
     if (!owned) {

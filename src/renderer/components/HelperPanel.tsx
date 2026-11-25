@@ -194,7 +194,7 @@ export function HelperPanel(props: {
     if (m.role === "system")
       return (
         <div key={m.id} className="msg system">
-          {m.content}
+          {translateNotice(t, m.content)}
         </div>
       );
     // Frozen TimelineGroup.build: thinking never renders as a row — it

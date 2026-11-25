@@ -9,23 +9,24 @@
 // honest simplification, noted in the ledger.
 
 import type React from "react";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import type { ChatThread } from "../../shared/types";
 import {
   heroWeatherTag,
   resolveHeroWeather,
   threadActivityStatus,
 } from "../../shared/skylight";
+import { useAppPaused, useInView } from "../appActivity";
 import { useT } from "../locale";
 
 /** The doll and its weather — one small SVG, variant strokes per state. */
-function SkyScene({ kind }: { kind: string }): React.JSX.Element {
+function SkyScene({ kind, paused }: { kind: string; paused: boolean }): React.JSX.Element {
   return (
     <svg className="sky-art" viewBox="0 0 72 60" aria-hidden="true" focusable="false">
       {/* hanging thread */}
       <line className="sky-thread" x1="24" y1="0" x2="24" y2="12" />
       {/* teru-teru-bōzu doll */}
-      <g className={`sky-doll${kind === "running" ? " sway" : ""}`}>
+      <g className={`sky-doll${kind === "running" && !paused ? " sway" : ""}`}>
         <circle className="sky-doll-head" cx="24" cy="20" r="8" />
         <path className="sky-doll-body" d="M16 26 Q24 28 32 26 L34 44 Q24 48 14 44 Z" />
       </g>
@@ -82,6 +83,10 @@ export function Skylight(props: {
   onNewThread: () => void;
 }): React.JSX.Element {
   const t = useT();
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const appPaused = useAppPaused();
+  const inView = useInView(btnRef);
+  const paused = appPaused || !inView;
   const weather = useMemo(() => {
     // Frozen SidebarHero.weather: helpers running under a parent count the
     // parent as working (workingParents); heads never enter the fold.
@@ -106,13 +111,14 @@ export function Skylight(props: {
   const tag = heroWeatherTag(weather);
   return (
     <button
+      ref={btnRef}
       type="button"
       className={`skylight w-${weather.kind}`}
       title={t("Skylight — start a new thread")}
       aria-label={t("Skylight — start a new thread")}
       onClick={props.onNewThread}
     >
-      <SkyScene kind={weather.kind} />
+      <SkyScene kind={weather.kind} paused={paused} />
       {tag !== null && <span className="sky-tag">{tag}</span>}
     </button>
   );

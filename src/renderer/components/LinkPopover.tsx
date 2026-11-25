@@ -91,7 +91,7 @@ export function LinkPopover(props: {
             }}
           >
             <span className="dl-icon" aria-hidden="true">⎇</span>
-            <span className="suggest-name">{merge.title}</span>
+            <span className="suggest-name">{t("Merge %@", merge.label)}</span>
           </button>
           <div className="link-pop-sep" role="separator" />
         </>
