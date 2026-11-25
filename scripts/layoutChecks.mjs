@@ -284,14 +284,6 @@ export async function runLayoutChecks({ launch: launchApp, instances, snap, outD
   await page2.waitForSelector(".skylight", { timeout: 8000 });
   verify("SKY-05b showsSkylight=true restores the hero", true);
 
-  // SKY-06: Performance Mode parks the hero even while the setting is on
-  // (frozen showsSkylightNow = showsSkylight && !performanceMode).
-  await page2.evaluate(() => window.tivano.invoke("settings:set", { performanceMode: true }));
-  await page2.waitForSelector(".skylight", { state: "detached", timeout: 8000 });
-  verify("SKY-06 performanceMode parks the hero", true);
-  await page2.evaluate(() => window.tivano.invoke("settings:set", { performanceMode: false }));
-  await page2.waitForSelector(".skylight", { timeout: 8000 });
-
   // SKY-07: activating the hero creates a thread (frozen onActivate → newThread).
   const nBefore = (await snap(page2)).threads.length;
   await page2.locator(".skylight").click();

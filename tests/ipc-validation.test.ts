@@ -37,10 +37,16 @@ describe("IPC request validators", () => {
       expect(requestValidators["settings:set"]({ language: lang }).language).toBe(lang);
     }
     expect(() => requestValidators["settings:set"]({ language: "de" })).toThrow(ValidationError);
-    expect(
-      requestValidators["settings:set"]({ notifyOnDone: true }).notifyOnDone,
-    ).toBe(true);
-    expect(() => requestValidators["settings:set"]({ notifyOnDone: "yes" })).toThrow(
+    expect(() => requestValidators["settings:set"]({ notifyOnDone: true })).toThrow(
+      ValidationError,
+    );
+    expect(() => requestValidators["settings:set"]({ performanceMode: true })).toThrow(
+      ValidationError,
+    );
+    expect(() => requestValidators["settings:set"]({ commitInstructions: "x" })).toThrow(
+      ValidationError,
+    );
+    expect(() => requestValidators["settings:set"]({ antiSlopEnabled: false })).toThrow(
       ValidationError,
     );
     expect(

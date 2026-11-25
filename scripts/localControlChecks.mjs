@@ -175,10 +175,14 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   // ---- settings via control -------------------------------------------------
   const { res: setRes } = await req("settingsSet", {
     ticket: `${instance}/${randomUUID()}/${Date.now()}`,
-    key: "antiSlopEnabled", bool: false,
+    key: "textGeneration", textGeneration: "off",
   });
-  verify("LC-19 settingsSet antiSlopEnabled", setRes.result?.operation?.state === "ended", setRes);
-  await waitSnap(page, (s) => s.settings.antiSlopEnabled === false);
+  verify("LC-19 settingsSet textGeneration", setRes.result?.operation?.state === "ended", setRes);
+  await waitSnap(page, (s) => s.settings.textGeneration === "off");
+  await req("settingsSet", {
+    ticket: `${instance}/${randomUUID()}/${Date.now()}`,
+    key: "textGeneration", textGeneration: "automatic",
+  });
   const { res: sky } = await req("settingsSet", {
     ticket: `${instance}/${randomUUID()}/${Date.now()}`,
     key: "showsSkylight", bool: false,
@@ -398,7 +402,7 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   // restore the persisted gates so later suites inherit a clean default
   await page.evaluate(() =>
     window.tivano.invoke("settings:set", {
-      alphaEnabled: false, externalControlEnabled: false, antiSlopEnabled: true,
+      alphaEnabled: false, externalControlEnabled: false,
     }));
   const c = await boundedClose(inst.app, inst.proc);
   verify("LC-26 clean shutdown", c.exited === true, c);

@@ -436,15 +436,6 @@ export function App(): React.JSX.Element {
     return () => mq.removeEventListener("change", apply);
   }, [snapshot?.settings.theme]);
 
-  // F26: frozen performanceMode — the flag lives on <html> so one CSS
-  // block can strip every rendered effect the build actually has.
-  useEffect(() => {
-    if (!snapshot) return;
-    if (snapshot.settings.performanceMode === true)
-      document.documentElement.dataset.performance = "1";
-    else delete document.documentElement.dataset.performance;
-  }, [snapshot?.settings.performanceMode]);
-
   // F26: push the frozen TypeScale offsets into the three CSS vars; the
   // code offset also reaches live xterm instances (terminals scale with
   // the code category like the frozen diff/code views).
@@ -459,8 +450,7 @@ export function App(): React.JSX.Element {
   }, [snapshot?.settings.fontSizes]);
 
   // F26 wallpaper layer: refetch the picture whenever the installed
-  // basename changes. Performance Mode keeps the setting but the frozen
-  // solid fallback means nothing is painted (see .has-wp below).
+  // basename changes.
   useEffect(() => {
     const file = snapshot?.settings.wallpaper?.file;
     if (!file) {
@@ -558,11 +548,10 @@ export function App(): React.JSX.Element {
 
   // F26: the frozen window paints the picture at backdropOpacity under
   // glass on a TRANSPARENT window. Ours is opaque — honest mapping: the
-  // picture fills the app at that opacity over the solid base, softness
-  // becomes a CSS blur, and Performance Mode falls back to solid.
+  // picture fills the app at that opacity over the solid base and softness
+  // becomes a CSS blur.
   const wp = snapshot.settings.wallpaper;
-  const wpOn =
-    !!wp && !!wpUrl && snapshot.settings.performanceMode !== true;
+  const wpOn = !!wp && !!wpUrl;
 
   // A81 frozen SidebarLayout: default 268, bounds 210–440, drag past
   // 110 collapses (session-only, like ⌘B); a collapsed edge drags back
