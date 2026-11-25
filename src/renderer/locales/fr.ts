@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-24.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // French (fr) translation catalog (P2-49).
 
@@ -381,7 +381,6 @@ export const fr: Record<string, string> = {
   "Match System": "Selon le système",
   "Appearance & accent": "Apparence et accentuation",
   "Colors controls and highlighted text.": "Colore les commandes et le texte surligné.",
-  "More controls": "Plus de commandes",
   "System Accent": "Accentuation système",
   "Avocado": "Avocat",
   "Matcha Green": "Vert matcha",
@@ -2024,4 +2023,19 @@ export const fr: Record<string, string> = {
   "Empty": "Vide",
   "%d models": "%d modèles",
   "1 model": "1 modèle",
+  // P2-53
+  "Appearance": "Apparence",
+  "Models & Providers": "Modèles et fournisseurs",
+  "Shortcuts": "Raccourcis",
+  "Storage": "Stockage",
+  "Version & About": "Version et à propos",
+  "Settings pages": "Pages des paramètres",
+  "More controls": "Plus de commandes",
+  "Hide changes": "Masquer les modifications",
+  "No changes yet": "Aucune modification",
+  "Files the agent changes appear here after each turn.": "Les fichiers modifiés par l’agent s’affichent ici après chaque tour.",
+  "%@ files": "%@ fichiers",
+  "1 file changed, %@ lines added, %@ lines removed": "1 fichier modifié, %@ lignes ajoutées, %@ lignes supprimées",
+  "%@ files changed, %@ lines added, %@ lines removed": "%@ fichiers modifiés, %@ lignes ajoutées, %@ lignes supprimées",
+  "Show this thread's changes": "Afficher les modifications de cette conversation",
 };

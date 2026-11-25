@@ -80,14 +80,11 @@ export async function runFolderChecks({
   // Select the bound thread — both actions must be enabled.
   await page.evaluate((id) => window.tivano.invoke("threads:select", { id }), tid);
   await page.waitForSelector(".chat-head h1", { timeout: 10000 });
-  if (await page.locator('.more-controls-btn[aria-expanded="false"]').count()) {
-    await page.locator(".more-controls-btn").click();
-  }
-  // Reveal/Copy now live inside the "Open in" menu (frozen OpenInMenu).
-  await page.waitForSelector('button[title="Open in another app"]', { timeout: 10000 });
-  await page.locator('button[title="Open in another app"]').click();
-  await page.waitForSelector('.openin-menu [role="menuitem"]', { timeout: 5000 });
-  const fmItem = page.locator('.openin-menu [role="menuitem"]').first();
+  // Reveal/Copy now live inside the top-bar More controls menu ("Open in").
+  await page.waitForSelector(".more-controls-btn", { timeout: 10000 });
+  await page.locator(".more-controls-btn").click();
+  await page.waitForSelector('.more-controls-menu [data-openin-item="true"]', { timeout: 5000 });
+  const fmItem = page.locator('.more-controls-menu [data-openin-item="true"]').first();
   verify("FOLDER-01 reveal enabled on a bound thread", await fmItem.isEnabled());
 
   // Copy path — main resolves the directory, writes the real clipboard.
@@ -123,9 +120,9 @@ export async function runFolderChecks({
   await page.keyboard.press("Escape"); // close the open menu first
   await page.locator('button[title="New thread"]').click();
   const lone = (await snap(page)).selectedThreadId;
-  await page.locator('button[title="Open in another app"]').click();
-  await page.waitForSelector('.openin-menu [role="menuitem"]', { timeout: 5000 });
-  const offItem = page.locator('.openin-menu [role="menuitem"]').first();
+  await page.locator(".more-controls-btn").click();
+  await page.waitForSelector('.more-controls-menu [data-openin-item="true"]', { timeout: 5000 });
+  const offItem = page.locator('.more-controls-menu [data-openin-item="true"]').first();
   verify("FOLDER-05 unbound thread shows the disabled state", !(await offItem.isEnabled()));
   await page.keyboard.press("Escape");
   const refused = await page.evaluate(
@@ -164,9 +161,9 @@ export async function runFolderChecks({
 
   // Back on the bound thread the menu shows file-manager + editors + copy.
   await page.evaluate((id) => window.tivano.invoke("threads:select", { id }), tid);
-  await page.locator('button[title="Open in another app"]').click();
-  await page.waitForSelector('.openin-menu [role="menuitem"]', { timeout: 5000 });
-  const itemCount = await page.locator('.openin-menu [role="menuitem"]').count();
+  await page.locator(".more-controls-btn").click();
+  await page.waitForSelector('.more-controls-menu [data-openin-item="true"]', { timeout: 5000 });
+  const itemCount = await page.locator('.more-controls-menu [data-openin-item="true"]').count();
   verify(
     "OI-03 menu = file manager + discovered editors + copy path",
     itemCount === 1 + editors.length + 1,

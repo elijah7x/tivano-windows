@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-24.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P2-25: Remote MCP settings rows under Settings > Connections (outside Alpha).
 
@@ -154,7 +154,7 @@ export function RemoteMcpSection(props: { settings: Settings }): React.JSX.Eleme
           <span className="mono">{mcpUrl}</span>
           <button
             type="button"
-            className="choice"
+            className="choice settings-btn-compact"
             aria-label={t("Copy server URL")}
             title={t("Copy server URL")}
             onClick={() => {
@@ -176,7 +176,7 @@ export function RemoteMcpSection(props: { settings: Settings }): React.JSX.Eleme
           {enabled && !listening && status?.failure && (
             <button
               type="button"
-              className="choice control-retry"
+              className="choice control-retry settings-btn-compact"
               aria-label={t("Retry remote MCP")}
               title={t("Retry remote MCP")}
               onClick={() =>

@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-24.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Traditional Chinese (zh-Hant) translation catalog (P2-49).
 
@@ -381,7 +381,6 @@ export const zhHant: Record<string, string> = {
   "Match System": "跟隨系統",
   "Appearance & accent": "外觀與強調色",
   "Colors controls and highlighted text.": "用於控制項與反白文字的顏色。",
-  "More controls": "更多控制項",
   "System Accent": "系統強調色",
   "Avocado": "酪梨綠",
   "Matcha Green": "抹茶綠",
@@ -2024,4 +2023,19 @@ export const zhHant: Record<string, string> = {
   "Empty": "空白",
   "%d models": "%d 個模型",
   "1 model": "1 個模型",
+  // P2-53
+  "Appearance": "外觀",
+  "Models & Providers": "模型與供應商",
+  "Shortcuts": "快速鍵",
+  "Storage": "儲存空間",
+  "Version & About": "版本與關於",
+  "Settings pages": "設定頁面",
+  "More controls": "更多控制項",
+  "Hide changes": "隱藏變更",
+  "No changes yet": "尚無變更",
+  "Files the agent changes appear here after each turn.": "代理每輪修改的檔案會顯示在此處。",
+  "%@ files": "%@ 個檔案",
+  "1 file changed, %@ lines added, %@ lines removed": "1 個檔案已變更，新增 %@ 行，刪除 %@ 行",
+  "%@ files changed, %@ lines added, %@ lines removed": "%@ 個檔案已變更，新增 %@ 行，刪除 %@ 行",
+  "Show this thread's changes": "顯示此對話的變更",
 };

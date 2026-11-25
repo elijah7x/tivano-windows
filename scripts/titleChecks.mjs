@@ -80,6 +80,7 @@ export async function runTitleChecks({
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "zh-Hans" }));
   await page.locator(".sidebar-foot button.row").last().click();
   await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="conversation"]').click();
   const group = page.locator('.modal [role="radiogroup"][aria-label="对话标题"]');
   await group.waitFor({ timeout: 10000 });
   const heads = await page.locator(".modal h3").allInnerTexts();

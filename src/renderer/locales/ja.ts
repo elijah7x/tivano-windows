@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-24.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Japanese (ja) translation catalog (P2-49).
 
@@ -381,7 +381,6 @@ export const ja: Record<string, string> = {
   "Match System": "システムに合わせる",
   "Appearance & accent": "外観とアクセント",
   "Colors controls and highlighted text.": "コントロールとハイライトされたテキストの色を変更します。",
-  "More controls": "その他のコントロール",
   "System Accent": "システムアクセント",
   "Avocado": "アボカド",
   "Matcha Green": "抹茶グリーン",
@@ -2024,4 +2023,19 @@ export const ja: Record<string, string> = {
   "Empty": "空",
   "%d models": "%d 個のモデル",
   "1 model": "1 個のモデル",
+  // P2-53
+  "Appearance": "外観",
+  "Models & Providers": "モデルとプロバイダー",
+  "Shortcuts": "ショートカット",
+  "Storage": "ストレージ",
+  "Version & About": "バージョンと情報",
+  "Settings pages": "設定ページ",
+  "More controls": "その他のコントロール",
+  "Hide changes": "変更を隠す",
+  "No changes yet": "変更はまだありません",
+  "Files the agent changes appear here after each turn.": "エージェントが変更したファイルは各ターンの後にここへ表示されます。",
+  "%@ files": "%@ 個のファイル",
+  "1 file changed, %@ lines added, %@ lines removed": "1 ファイル変更、%@ 行追加、%@ 行削除",
+  "%@ files changed, %@ lines added, %@ lines removed": "%@ ファイル変更、%@ 行追加、%@ 行削除",
+  "Show this thread's changes": "このスレッドの変更を表示",
 };

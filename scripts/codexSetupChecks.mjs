@@ -61,6 +61,7 @@ export async function runCodexSetupChecks({
     if (pinEn) await page.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
     await page.locator(".sidebar-foot button.row").click();
     await page.waitForSelector(".modal", { timeout: 10000 });
+    await page.locator('[data-settings-page="models"]').click();
     await page.waitForSelector(".codex-setup", { timeout: 10000 });
     await waitIdle(page);
   };
@@ -461,6 +462,8 @@ export async function runCodexSetupChecks({
   const settle = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const openPending = async () => {
     await page.locator(".sidebar-foot button.row").click();
+    await page.waitForSelector(".modal", { timeout: 10000 });
+    await page.locator('[data-settings-page="models"]').click();
     await page.waitForSelector(".codex-setup");
     await settle();
   };

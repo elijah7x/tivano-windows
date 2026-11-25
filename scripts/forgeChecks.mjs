@@ -78,6 +78,7 @@ export async function runForgeChecks({
   // FG-02: the settings section renders the same truth.
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 8000 });
+  await page.locator('[data-settings-page="connections"]').click();
   await page.locator(".forge-section").scrollIntoViewIfNeeded();
   await page.waitForSelector(".forge-row", { timeout: 8000 });
   const ghText = await page

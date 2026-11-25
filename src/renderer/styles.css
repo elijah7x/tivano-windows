@@ -1,4 +1,4 @@
-/* Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-22.
+/* Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
    Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
    Themes mirror the frozen baseline palettes (AppTheme.swift): Breeze
    follows the OS with the avocado accent #7BA58F; light/dark keep the
@@ -144,6 +144,15 @@ button.primary:hover {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
+}
+
+.sidebar.sidebar-tray {
+  margin: 8px 0 8px 8px;
+  height: calc(100% - 16px);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
 }
 
 .sidebar-head {
@@ -570,15 +579,72 @@ button.primary:hover {
 .chat-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 18px;
+  gap: 8px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--border);
+}
+
+.chat-head.chat-head-empty {
+  border-bottom: 0;
 }
 
 .chat-head h1 {
   font-size: calc(15px + var(--fs-ui-off));
   margin: 0;
   font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-top-controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.chrome-capsule {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  padding: 2px;
+  gap: 2px;
+}
+
+.chrome-capsule .term-toggle,
+.chrome-capsule .term-toggle + .term-toggle {
+  margin-left: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  height: 24px;
+  padding: 0 10px;
+}
+
+.chrome-capsule .term-toggle.on {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.more-controls-btn {
+  border-radius: 999px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.more-controls-menu {
+  right: 0;
+  left: auto;
+  min-width: 196px;
 }
 
 .badge {
@@ -2061,6 +2127,151 @@ select.runtime-mode:disabled {
   margin-top: 18px;
 }
 
+/* P2-53: Reorganized two-pane Settings modal (consolidated pages, no search
+   field, unified 28px button size with 24px compact secondary actions). */
+.modal.settings-modal {
+  width: 820px;
+  max-width: 94vw;
+  height: 82vh;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 18px 20px;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.settings-head h2 {
+  margin: 0;
+}
+
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 18px;
+  padding-top: 14px;
+}
+
+.settings-nav {
+  width: 176px;
+  flex: 0 0 176px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  padding-right: 6px;
+  border-right: 1px solid var(--border);
+}
+
+.settings-nav-item {
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: calc(13px + var(--fs-ui-off));
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.settings-nav-item:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.settings-nav-item.active {
+  background: var(--surface-3);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.settings-pane {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.settings-pane > h3:first-child {
+  margin-top: 0;
+}
+
+.settings-modal .modal-actions {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Unified regular button size inside Settings (28px, matching pickers) */
+.settings-modal .choice,
+.settings-modal .wp-btn,
+.settings-modal .forge-refresh,
+.settings-modal .forge-wt-reveal,
+.settings-modal .mcp-add,
+.settings-modal .mcp-browse,
+.settings-modal .mcp-row-ops .choice,
+.settings-modal .mcp-transport .choice,
+.settings-modal .fs-reset,
+.settings-modal .shortcut-reset,
+.settings-modal .modal-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: calc(12.5px + var(--fs-ui-off));
+  font-weight: 500;
+  line-height: 1;
+}
+
+.settings-modal .fs-step {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+}
+
+/* Compact secondary-line action size (24px) */
+.settings-modal .settings-btn-compact,
+.settings-modal .remote-mcp-url-row .choice.settings-btn-compact,
+.settings-modal .shortcut-mini.settings-btn-compact,
+.settings-modal .mcp-tools-toggle.settings-btn-compact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: calc(11.5px + var(--fs-ui-off));
+  font-weight: 500;
+  line-height: 1;
+}
+
+/* Destructive actions turn red on hover */
+.settings-modal .remote-mcp-revoke:hover:not(:disabled),
+.settings-modal .mcp-remove:hover:not(:disabled),
+.settings-modal .wp-btn.danger:hover:not(:disabled),
+.settings-modal .archive-delete-all:hover:not(:disabled),
+.settings-modal .choice.danger:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
 .kv {
   display: grid;
   grid-template-columns: 130px 1fr;
@@ -2244,6 +2455,10 @@ select.runtime-mode:disabled {
   width: 6px;
   cursor: col-resize;
   z-index: 30;
+}
+.sidebar-edge[data-open="true"] {
+  top: 8px;
+  bottom: 8px;
 }
 .sidebar-edge:hover {
   background: var(--accent-soft, rgba(90, 140, 255, 0.25));
@@ -2656,26 +2871,31 @@ select.runtime-mode:disabled {
   background: var(--surface);
 }
 
-/* Whole-thread changes tab (frozen ThreadChangesTab) — summary chip above
-   the composer plus a file-list popover with inline diffs. */
+/* Whole-thread changes capsule & popover (frozen ThreadChangesCapsule +
+   DiffInspector) — +/− numbers live in the lean top bar and open the
+   changes panel right below them instead of over the composer. */
 .thread-changes { position: relative; padding: 0 16px; }
+.thread-changes.in-topbar { padding: 0; }
 .thread-changes-tab {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 12px;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface-2);
   color: var(--text);
   font-size: calc(12px + var(--fs-ui-off));
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
-.thread-changes-tab:hover { background: var(--surface); }
+.thread-changes-tab:hover,
+.thread-changes-tab.active { background: var(--surface-3); }
 .thread-changes-tab .tc-plusminus { font-family: var(--mono); font-weight: 600; }
 .thread-changes-tab .tc-count { color: var(--text-2); }
-.thread-changes .tc-add { color: var(--success); font-family: var(--mono); font-size: calc(11.5px + var(--fs-ui-off)); }
-.thread-changes .tc-del { color: var(--danger); font-family: var(--mono); font-size: calc(11.5px + var(--fs-ui-off)); }
+.thread-changes .tc-add { color: var(--success); font-family: var(--mono); font-size: calc(11.5px + var(--fs-ui-off)); font-weight: 600; }
+.thread-changes .tc-del { color: var(--danger); font-family: var(--mono); font-size: calc(11.5px + var(--fs-ui-off)); font-weight: 600; }
 .thread-changes .tc-bin { color: var(--text-2); font-size: calc(11px + var(--fs-ui-off)); }
 .thread-changes-pop {
   position: absolute;
@@ -2686,17 +2906,44 @@ select.runtime-mode:disabled {
   max-height: 60vh;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
-  z-index: 30;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+  z-index: 40;
+}
+.thread-changes-pop[data-anchor="topbar"] {
+  top: calc(100% + 6px);
+  bottom: auto;
+  left: auto;
+  right: 0;
+  width: min(560px, 85vw);
+  max-height: 70vh;
 }
 .tc-pop-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 14px;
   font-size: calc(12px + var(--fs-ui-off));
   font-weight: 600;
   color: var(--text-2);
   border-bottom: 1px solid var(--border);
+}
+.tc-pop-title { flex: 1; }
+.tc-pop-meta { display: inline-flex; align-items: center; gap: 6px; }
+.tc-empty {
+  padding: 24px 16px;
+  text-align: center;
+}
+.tc-empty-title {
+  font-size: calc(13px + var(--fs-ui-off));
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.tc-empty-detail {
+  font-size: calc(12px + var(--fs-ui-off));
+  color: var(--text-2);
 }
 .tc-files { list-style: none; margin: 0; padding: 6px 0; }
 .tc-file-row {

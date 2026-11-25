@@ -254,15 +254,15 @@ describe("P2-51 persistent chat header More controls", () => {
         onToggleDock: () => {},
         settings,
         topControlsExpanded: false,
-        onToggleTopControls: () => {},
+        onSetTopControlsExpanded: () => {},
       }),
     );
     expect(collapsedHtml).toContain("more-controls-btn");
     expect(collapsedHtml).toContain('aria-expanded="false"');
     expect(collapsedHtml).toContain('aria-label="More controls"');
     expect(collapsedHtml).toContain("Terminal");
+    expect(collapsedHtml).not.toContain("more-controls-menu");
     expect(collapsedHtml).not.toContain("Forward to new thread");
-    expect(collapsedHtml).not.toContain("Thread worktree");
 
     const expandedChatBHtml = renderInLang(
       "zh-Hans",
@@ -278,14 +278,15 @@ describe("P2-51 persistent chat header More controls", () => {
         onToggleDock: () => {},
         settings,
         topControlsExpanded: true,
-        onToggleTopControls: () => {},
+        onSetTopControlsExpanded: () => {},
       }),
     );
     expect(expandedChatBHtml).toContain("more-controls-btn active");
     expect(expandedChatBHtml).toContain('aria-expanded="true"');
     expect(expandedChatBHtml).toContain('aria-label="更多控件"');
-    expect(expandedChatBHtml).toContain("转发");
-    expect(expandedChatBHtml).toContain("工作区");
+    expect(expandedChatBHtml).toContain("more-controls-menu");
+    expect(expandedChatBHtml).toContain("转发到新对话");
+    expect(expandedChatBHtml).toContain("线程 worktree");
     expect(expandedChatBHtml).toContain("脚本");
   });
 });

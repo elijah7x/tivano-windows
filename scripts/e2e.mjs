@@ -268,6 +268,7 @@ try {
   // settings: theme + About attribution
   await page.getByRole("button", { name: "Settings" }).click();
   await page.waitForSelector(".modal");
+  await page.locator('[data-settings-page="about"]').click();
   const about = await page.locator(".modal .about").last().innerText();
   check(
     "About carries upstream attribution",
@@ -282,6 +283,7 @@ try {
   await page.screenshot({ path: join(outDir, "04-settings-about.png") });
 
   // switch to zh-Hans and confirm localization lands
+  await page.locator('[data-settings-page="appearance"]').click();
   await page.getByRole("radio", { name: "简体中文" }).click();
   await page.waitForFunction(() => document.body.innerText.includes("对话列表"), null, {
     timeout: 5000,

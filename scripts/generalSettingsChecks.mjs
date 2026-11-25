@@ -94,6 +94,7 @@ export async function runGeneralSettingsChecks({
       await page.locator(".sidebar-foot button.row").click();
       await page.waitForSelector(".modal", { timeout: 8000 });
     }
+    await page.locator('[data-settings-page="conversation"]').click();
   };
 
   // ---- GEN-01: the two frozen sections render with their controls -------
