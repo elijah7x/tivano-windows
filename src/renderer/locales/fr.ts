@@ -1072,6 +1072,7 @@ export const fr: Record<string, string> = {
   "Heads effort": "Effort des sous-agents",
   "Heads at once": "Sous-agents simultanés",
   "Head profiles": "Profils de sous-agent",
+  "Profile model": "Modèle du profil",
   "Profile name (for example: quick, deep, docs)": "Nom du profil (par exemple : quick, deep, docs)",
   "Pair's heads provider": "Fournisseur des sous-agents de la paire",
   "Pair's model": "Modèle de la paire",

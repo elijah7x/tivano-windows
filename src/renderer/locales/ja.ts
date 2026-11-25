@@ -1072,6 +1072,7 @@ export const ja: Record<string, string> = {
   "Heads effort": "ヘッドの推論レベル",
   "Heads at once": "同時実行数",
   "Head profiles": "ヘッドプロファイル",
+  "Profile model": "プロファイルモデル",
   "Profile name (for example: quick, deep, docs)": "プロファイル名（例: quick、deep、docs）",
   "Pair's heads provider": "ペアのヘッドプロバイダー",
   "Pair's model": "ペアのモデル",

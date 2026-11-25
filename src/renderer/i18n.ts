@@ -1237,6 +1237,7 @@ const zhHans: Record<string, string> = {
   "Heads effort": "子智能体推理强度",
   "Heads at once": "并发子智能体数",
   "Head profiles": "子智能体配置",
+  "Profile model": "配置模型",
   "Profile name (for example: quick, deep, docs)": "配置名称（例如：quick、deep、docs）",
   "Pair's heads provider": "组合的子智能体服务商",
   "Pair's model": "组合的模型",

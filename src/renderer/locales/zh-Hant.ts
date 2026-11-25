@@ -1072,6 +1072,7 @@ export const zhHant: Record<string, string> = {
   "Heads effort": "子代理推論強度",
   "Heads at once": "同時執行數量",
   "Head profiles": "子代理設定檔",
+  "Profile model": "設定檔模型",
   "Profile name (for example: quick, deep, docs)": "設定檔名稱（例如：quick、deep、docs）",
   "Pair's heads provider": "組合的子代理服務商",
   "Pair's model": "組合的模型",

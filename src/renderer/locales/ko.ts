@@ -1072,6 +1072,7 @@ export const ko: Record<string, string> = {
   "Heads effort": "헤드 강도",
   "Heads at once": "동시 실행 수",
   "Head profiles": "헤드 프로필",
+  "Profile model": "프로필 모델",
   "Profile name (for example: quick, deep, docs)": "프로필 이름(예: quick, deep, docs)",
   "Pair's heads provider": "페어의 헤드 제공자",
   "Pair's model": "페어의 모델",
