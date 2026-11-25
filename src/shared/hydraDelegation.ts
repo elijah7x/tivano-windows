@@ -745,9 +745,6 @@ export function personaIndex(named: string): number | undefined {
 // provider can carry: every lead turn takes the preamble, report turns
 // take the report note, user turns take the delegation request).
 
-/** The opener fence of a delegation block, any info-state (frozen
- *  `delegationOpener`): ```hydra, ```hydra-sent or ```hydra-leaving. */
-const DELEGATION_OPENER = /^```[ \t]*hydra(?:-sent|-leaving)?[ \t]*$/m;
 const SENT_OPENER = /^```[ \t]*hydra-(?:sent|leaving)[ \t]*$/m;
 
 /** Frozen `hasSentDelegationBlock`: the block's card is already in its
