@@ -2940,6 +2940,7 @@ export class Engine {
     hydraAutoMerge?: boolean | undefined;
     hydraArchivesCodexHeads?: boolean | undefined;
     hydraShowsHeadDetails?: boolean | undefined;
+    hydraAutoOpensPanels?: boolean | undefined;
     hydraAutoPopsHeads?: boolean | undefined;
     hydraTempersHeadEffort?: boolean | undefined;
     hasSeenHydraIntro?: boolean | undefined;
@@ -3065,6 +3066,8 @@ export class Engine {
         d.settings.hydraArchivesCodexHeads = patch.hydraArchivesCodexHeads;
       if (patch.hydraShowsHeadDetails !== undefined)
         d.settings.hydraShowsHeadDetails = patch.hydraShowsHeadDetails;
+      if (patch.hydraAutoOpensPanels !== undefined)
+        d.settings.hydraAutoOpensPanels = patch.hydraAutoOpensPanels;
       if (patch.hydraAutoPopsHeads !== undefined)
         d.settings.hydraAutoPopsHeads = patch.hydraAutoPopsHeads;
       if (patch.hydraTempersHeadEffort !== undefined)
@@ -3169,6 +3172,19 @@ export class Engine {
     // Turning the auto-shelve picker on applies the new window right
     // away — frozen parity, and the exemption set is re-evaluated here.
     if (patch.autoShelveDays !== undefined) this.shelveIdleProjects();
+    // Flipping the helper-panel layout Off folds every open panel back
+    // into the sidebar — like closeHelper, working turns keep running.
+    if (patch.hydraAutoOpensPanels === false) {
+      let folded = false;
+      for (const t of this.store.state.threads) {
+        if (t.isInPanel !== true) continue;
+        t.isInPanel = false;
+        t.updatedAt = Date.now();
+        folded = true;
+        this.emit({ type: "thread-updated", thread: t });
+      }
+      if (folded) this.store.update(() => {});
+    }
   }
 
   /**
@@ -7252,7 +7268,10 @@ export class Engine {
         ? { interactionMode: parent.interactionMode }
         : {}),
       parentThreadId: parentId,
-      isInPanel: true,
+      // P2-40: helpers are sub-agents too — the Off layout keeps them
+      // out of floating panels the same as Hydra heads (frozen
+      // AppModel.swift:1999 sets isInPanel from the setting).
+      isInPanel: this.store.state.settings.hydraAutoOpensPanels !== false,
     };
     this.store.update((d) => {
       d.threads.push(thread);
@@ -7263,22 +7282,53 @@ export class Engine {
   }
 
   /**
-   * F25 frozen `closeSubagent`: the panel closes — a running turn is
-   * interrupted (frozen releases the session once it finishes; ours ends
-   * the turn the same way through cancelTurn) and the helper drops into
-   * the sidebar under its parent as a smaller row.
+   * F25 frozen `closeSubagent`: the panel only folds — a working helper
+   * keeps its turn running (frozen AppModel.swift:2012-2021) and drops
+   * into the sidebar under its parent as a smaller row. Closing never
+   * stops work.
    */
   closeHelper(threadId: string): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
     this.ensureThreadLoaded(threadId);
-    if (thread.turn?.status === "running" || thread.turn?.status === "waiting-approval")
-      this.cancelTurn(threadId);
     if (thread.isInPanel !== true) return;
     thread.isInPanel = false;
     thread.updatedAt = Date.now();
     this.store.update(() => {});
     this.emit({ type: "thread-updated", thread });
+  }
+
+  /**
+   * F25 frozen `showSubagentPanel`: opens a helper's panel beside its
+   * parent without touching its runtime. The panel shows one plain
+   * helper — any other paneled helper of the same parent returns to
+   * the sidebar, still running; the parent stays the selected chat.
+   */
+  showHelper(threadId: string): void {
+    this.assertMutable();
+    const thread = this.mustThread(threadId);
+    const parentId = thread.parentThreadId;
+    if (!parentId) throw new EngineError("thread is not a helper");
+    const now = Date.now();
+    for (const other of this.store.state.threads) {
+      if (
+        other.id !== threadId &&
+        other.parentThreadId === parentId &&
+        other.isInPanel === true &&
+        !other.hydraHead
+      ) {
+        other.isInPanel = false;
+        other.updatedAt = now;
+        this.emit({ type: "thread-updated", thread: other });
+      }
+    }
+    thread.isInPanel = true;
+    thread.updatedAt = now;
+    this.store.update((d) => {
+      d.ui.selectedThreadId = parentId;
+    });
+    this.emit({ type: "thread-updated", thread });
+    this.emit({ type: "thread-selected", threadId: parentId });
   }
 
   /**

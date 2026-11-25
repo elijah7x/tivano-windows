@@ -26,6 +26,7 @@ import { WorktreeDialog } from "./WorktreeDialog";
 import { BranchMenu } from "./BranchMenu";
 import { HydraMark } from "./HydraMark";
 import { HydraPanel } from "./HydraPanel";
+import { HelperPanel } from "./HelperPanel";
 import { OpenInMenu } from "./OpenInMenu";
 import { ScriptsDialog } from "./ScriptsDialog";
 import { Composer } from "./Composer";
@@ -41,6 +42,7 @@ import { MessagePopover } from "./MessagePopover";
 import { NewThreadPrompt } from "./NewThreadPrompt";
 import type { MessagePopoverState } from "./MessagePopover";
 import { peelQuotes, quoteExcerpt } from "../../shared/replyQuote";
+import { hydraPanelLayout } from "../../shared/hydra";
 import {
   groupMessages,
   partitionGroup,
@@ -144,6 +146,10 @@ function statusLabel(t: (k: string) => string, m: Message): string | null {
  *  (frozen HydraDelegationBlock) — injected so markdown stays pure. */
 const delegationCard = (body: string, sent: boolean): React.ReactNode =>
   createElement(HydraDelegationCard, { body, sent });
+
+/** P2-40 "One per sub-agent": auto-popped panels spread over the
+ *  pane's corners (frozen corner fill order). */
+const POP_CORNERS = ["tr", "tl", "br", "bl"] as const;
 
 export function ChatView(props: {
   thread: ChatThread | null;
@@ -298,11 +304,41 @@ export function ChatView(props: {
   // auto-shows it (frozen AppModel+Hydra spawn parity).
   const heads = useMemo(
     () =>
-      (props.threads ?? []).filter((x) => x.hydraHead?.leadId === threadId),
+      (props.threads ?? [])
+        .filter((x) => x.hydraHead?.leadId === threadId)
+        .slice()
+        .sort((a, b) => a.hydraHead!.spawnedAt - b.hydraHead!.spawnedAt),
     [props.threads, threadId],
   );
-  const [hydraPanelHidden, setHydraPanelHidden] = useState(false);
+  // Frozen ThreadRuntime init: isHydraPanelHidden = !hydraAutoOpensPanels
+  // — under Off a fresh thread starts with the panel hidden (the working
+  // pill shows instead); Single/Independent open it.
+  const [hydraPanelHidden, setHydraPanelHidden] = useState(
+    () => props.settings?.hydraAutoOpensPanels === false,
+  );
   const headCount = useRef(0);
+  // Frozen HelpersWorkingRow.hidden: this chat's children at work that
+  // no visible panel shows — heads while THEIR panel is hidden (Off, or
+  // dismissed mid-run under Single/Independent), plain helpers while
+  // isInPanel is false (Off, or closed while working). Newest first.
+  const hiddenWorking = useMemo(
+    () =>
+      (props.threads ?? [])
+        .filter(
+          (x) => x.parentThreadId === threadId || x.hydraHead?.leadId === threadId,
+        )
+        .filter((h) => {
+          if (h.isArchived) return false;
+          const running =
+            h.hydraHead?.status === "running" ||
+            (h.turn !== null &&
+              ["running", "waiting-approval", "stopping"].includes(h.turn.status));
+          if (!running) return false;
+          return h.hydraHead ? hydraPanelHidden : h.isInPanel !== true;
+        })
+        .sort((a, b) => b.createdAt - a.createdAt),
+    [props.threads, threadId, hydraPanelHidden],
+  );
   // A84 (frozen StreamVeil): per-message veil bookkeeping — how much text
   // the latest flush added and the EMA of flush gaps that paces the fade.
   const veilRef = useRef(
@@ -333,12 +369,24 @@ export function ChatView(props: {
     return c;
   };
   useEffect(() => {
-    setHydraPanelHidden(false);
-    headCount.current = 0;
+    setHydraPanelHidden(props.settings?.hydraAutoOpensPanels === false);
+    // Seed with THIS thread's count — resetting to 0 would count the
+    // existing heads as "new" and reopen a panel the user dismissed
+    // when switching between same-count threads (frozen parity: only
+    // a genuinely new head opens the panel).
+    headCount.current = heads.length;
+    setPopHeld(new Set());
     veilRef.current.clear();
     mdCoordRef.current.forEach((c) => c.dispose());
     mdCoordRef.current.clear();
   }, [threadId]);
+  // Frozen AppModel: turning the layout Off hides any open panel —
+  // turning it On only allows future auto-opens, nothing re-opens on
+  // the flip itself.
+  useEffect(() => {
+    if (props.settings?.hydraAutoOpensPanels === false)
+      setHydraPanelHidden(true);
+  }, [props.settings?.hydraAutoOpensPanels]);
   useEffect(() => {
     return subscribeMemoryPressure(() => {
       veilRef.current.clear();
@@ -389,10 +437,23 @@ export function ChatView(props: {
     }, 60);
     return () => window.clearTimeout(timer);
   }, [threadId, props.threads?.length, props.projects?.length, t]);
+  // P2-40: panels open on their own only under the Single/Independent
+  // layouts (frozen hydraAutoOpensPanels); Off shows the working pill.
+  // Only a new head count may auto-open — the layout flip alone never
+  // re-opens a dismissed panel (frozen ThreadRuntime parity).
   useEffect(() => {
-    if (heads.length > headCount.current) setHydraPanelHidden(false);
+    if (heads.length > headCount.current && props.settings?.hydraAutoOpensPanels !== false)
+      setHydraPanelHidden(false);
     headCount.current = heads.length;
   }, [heads.length]);
+
+  // P2-40 "One per sub-agent" (frozen hydraAutoPopsHeads +
+  // hydraAutoPopHeld): under Independent with the panels allowed to
+  // open, every head after the first pops its own floating panel.
+  // Dismissing one holds it closed until the lead is re-opened; the
+  // head stays reachable in the team panel.
+  const [popHeld, setPopHeld] = useState<ReadonlySet<string>>(new Set());
+  const popsOn = hydraPanelLayout(props.settings ?? {}) === "independent";
 
   if (!thread) {
     return (
@@ -542,6 +603,37 @@ export function ChatView(props: {
           onDismiss={() => setHydraPanelHidden(true)}
         />
       )}
+      {thread &&
+        !thread.hydraHead &&
+        popsOn &&
+        !hydraPanelHidden &&
+        heads.length > 1 &&
+        heads
+          .slice(1)
+          .map((h, i) => ({ h, i }))
+          .filter(
+            ({ h }) =>
+              h.hydraHead?.status === "running" &&
+              !h.isArchived &&
+              !popHeld.has(h.id),
+          )
+          .map(({ h, i }) => (
+            <HelperPanel
+              key={h.id}
+              thread={h}
+              parentTitle={thread.title}
+              readOnly={!!props.readOnly}
+              settings={props.settings}
+              size={props.settings?.helperPanelSize}
+              // Corner + cascade key off the head's roster position —
+              // surviving pops keep their spot when one is dismissed.
+              initialCorner={POP_CORNERS[i % POP_CORNERS.length]}
+              cascadeIndex={Math.floor(i / POP_CORNERS.length)}
+              overlay
+              onDock={() => {}}
+              onClose={() => setPopHeld((s) => new Set(s).add(h.id))}
+            />
+          ))}
       {props.readOnly && (
         <div className="banner error" role="alert">
           {t(
@@ -975,6 +1067,31 @@ export function ChatView(props: {
             </button>
           </div>
         )}
+        {/* P2-40/F25 (frozen HelpersWorkingRow): helpers at work with
+            no panel showing end the timeline as a pill — tapping opens
+            the hidden head panel or re-panels the folded helper. */}
+        {hiddenWorking.length > 0 &&
+          (() => {
+            const first = hiddenWorking[0]!;
+            return (
+              <button
+                type="button"
+                className="hydra-working-pill"
+                title={t("Show the panel")}
+                onClick={() => {
+                  if (first.hydraHead) setHydraPanelHidden(false);
+                  else
+                    void callApi("threads:show-helper", { id: first.id }).catch(
+                      () => {},
+                    );
+                }}
+              >
+                {hiddenWorking.length === 1
+                  ? t("%@ is working", first.hydraHead?.name ?? first.title)
+                  : t("%d sub-agents working", String(hiddenWorking.length))}
+              </button>
+            );
+          })()}
         <div ref={endRef} />
       </div>
       {/* F03: frozen TimelineMinimap — one tick per user message on the

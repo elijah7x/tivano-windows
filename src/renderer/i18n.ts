@@ -264,6 +264,18 @@ const zhHans: Record<string, string> = {
   "Task": "任务",
   "Sleep": "睡眠",
   "Off": "关闭",
+  "Floating panel layout": "悬浮面板排布",
+  "Single panel": "单个面板",
+  "One per sub-agent": "独立面板",
+  "%@ is working": "%@ 正在工作",
+  "%d sub-agents working": "%d 个子代理工作中",
+  "Sub-agent": "子代理",
+  "Does not open floating panels automatically. The chat still shows which sub-agents are running, and you can open a panel yourself.":
+    "不自动打开悬浮面板。对话中仍会显示子代理的运行状态，需要时可手动打开面板。",
+  "When multiple sub-agents run, each sub-agent after the first automatically opens its own floating panel: on both sides of the chat when wide enough, or stacked on one side when narrow.":
+    "多个子代理并行时，第 2 个起自动弹出各自的悬浮面板：窗口够宽时分列对话两侧，较窄时同侧纵向堆叠。",
+  "Keeps all running sub-agents in one floating panel; switch between them from its top-left menu, or pop individual sub-agents out manually.":
+    "多个子代理共用同一个悬浮面板，可在面板左上角切换查看，也可手动将某个子代理单独弹出。",
   "Text generation": "文本生成",
   "Name once": "首次命名",
   "Keep updated": "持续更新",
@@ -1199,12 +1211,6 @@ const zhHans: Record<string, string> = {
   "Progress": "进度",
   "Every step": "每一步",
   "The head's progress bar, or each of its steps as it goes.": "显示子智能体的进度条，或其执行的每一步。",
-  "Heads' panels": "子智能体面板布局",
-  "One panel": "一个面板",
-  "A panel each": "各自面板",
-  "Each head after the first gets a panel of its own beside the chat while there is room, left and right until each side is full.":
-    "除第一个外，每个子智能体在空间允许时都会在对话旁获得独立面板，先左后右，直到两侧排满。",
-  "One panel over the chat lists every head.": "对话上方用一个面板列出所有子智能体。",
   "Lower the default reasoning effort for heads": "降低子智能体的默认推理强度",
   "Effort set in a pair is unaffected. When no effort is specified and the head uses the same provider as the lead, the head stays at the standard effort (usually medium); if the lead uses a lower effort, the head inherits it.":
     "搭配方案中指定的推理强度不受影响。未指定推理强度、且子智能体与主智能体使用同一服务商时，子智能体使用常规推理强度（通常为“中”）；若主智能体使用更低的推理强度，子智能体则沿用。",
@@ -1246,6 +1252,7 @@ const zhHans: Record<string, string> = {
   "Heads effort": "子智能体推理强度",
   "Heads at once": "并发子智能体数",
   "Head profiles": "子智能体配置",
+  "Profile model": "配置模型",
   "Profile name (for example: quick, deep, docs)": "配置名称（例如：quick、deep、docs）",
   "Pair's heads provider": "组合的子智能体服务商",
   "Pair's model": "组合的模型",
@@ -1941,7 +1948,6 @@ const zhHans: Record<string, string> = {
   "Resets the weekly limit": "重置每周额度",
   "Show remaining usage": "显示剩余额度",
   "Extra usage": "额外用量",
-  "Sub-agent": "子代理",
   "Send out a sub-agent": "派出子代理",
   "Brief a sub-agent": "向子代理交代任务",
   "Wait for sub-agents": "等待子代理",

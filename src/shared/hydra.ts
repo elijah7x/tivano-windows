@@ -913,3 +913,21 @@ export function pairEffortsPhrase(
   if (heads !== undefined) return { kind: "heads", heads: effortTitle(heads) };
   return { kind: "none" };
 }
+
+/** P2-40 frozen PanelLayout (HydraSettingsPage): the three-way floating
+ *  panel setting rides two booleans — autoOpens gates any automatic
+ *  panel, pops only applies once panels open at all. */
+export type HydraPanelLayout = "single" | "independent" | "off";
+export function hydraPanelLayout(s: {
+  hydraAutoOpensPanels?: boolean | undefined;
+  hydraAutoPopsHeads?: boolean | undefined;
+}): HydraPanelLayout {
+  if (s.hydraAutoOpensPanels === false) return "off";
+  return s.hydraAutoPopsHeads === true ? "independent" : "single";
+}
+export function hydraPanelLayoutPatch(l: HydraPanelLayout): {
+  hydraAutoOpensPanels: boolean;
+  hydraAutoPopsHeads: boolean;
+} {
+  return { hydraAutoOpensPanels: l !== "off", hydraAutoPopsHeads: l === "independent" };
+}
