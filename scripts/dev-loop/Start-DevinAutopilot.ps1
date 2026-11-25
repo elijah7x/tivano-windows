@@ -16,7 +16,7 @@ param(
   [ValidateRange(1, 240)][int]$ApprovalMinutes = 3,
   [ValidateRange(1, 20)][int]$ApprovalRecoveryAttempts = 3,
   [ValidateRange(1, 720)][int]$StalePrHours = 48,
-  [ValidateRange(1, 100)][int]$StalePrGateRuns = 5,
+  [ValidateRange(1, 100)][int]$StalePrGateRuns = 3,
   [ValidateSet(0, 1)][int]$AutoParkStale = 1,
   [string]$HydrogenLaneRoot = '',
   [ValidateRange(0, 3600)][int]$UserIdleSeconds = 120,
@@ -53,7 +53,7 @@ $script:DevinPath = $null
 $script:Redactions = @()
 $script:GuiTypesLoaded = $false
 $script:LastFreshSessionDeferred = $false
-$script:AutoMergeDailyCap = 20
+$script:AutoMergeDailyCap = 40
 $script:AttributionLinePattern = '(?i)co-authored-by|generated (with|by) \[?devin|devin\.ai'
 
 function Write-Text {
@@ -2611,7 +2611,7 @@ function Invoke-AutoMerge {
         continue
       }
 
-      # (e) Today's merges are under the daily cap (20).
+      # (e) Today's merges are under the daily cap (40).
       if (-not $mergedTodayLoaded) {
         $mergedToday = Get-TodayMergedNyxPrCount
         $mergedTodayLoaded = $true
