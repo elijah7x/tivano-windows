@@ -2066,4 +2066,13 @@ export const fr: Record<string, string> = {
   "ChatGPT plan or API key": "Forfait ChatGPT ou clé API",
   "Synthetic provider": "Fournisseur synthétique",
   "Provider checklist": "Liste des fournisseurs",
+  // P1-36
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
+    "Limite de sous-agents atteinte (%d)\n1 tâche est en file d’attente : %d sous-agents au maximum s’exécutent à la fois (Réglages › Hydra). Elle démarrera automatiquement dès qu’un sous-agent en cours aura terminé.",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on its own as running sub-agents finish.":
+    "Limite de sous-agents atteinte (%d)\n%d tâches sont en file d’attente : %d sous-agents au maximum s’exécutent à la fois (Réglages › Hydra). Elles démarreront automatiquement à mesure que les sous-agents en cours termineront.",
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once. It goes out on its own as a running sub-agent finishes.":
+    "Limite de sous-agents atteinte (%d)\n1 tâche est en file d’attente : %d sous-agents au maximum s’exécutent à la fois. Elle démarrera automatiquement dès qu’un sous-agent en cours aura terminé.",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on its own as running sub-agents finish.":
+    "Limite de sous-agents atteinte (%d)\n%d tâches sont en file d’attente : %d sous-agents au maximum s’exécutent à la fois. Elles démarreront automatiquement à mesure que les sous-agents en cours termineront.",
 };

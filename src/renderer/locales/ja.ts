@@ -2066,4 +2066,13 @@ export const ja: Record<string, string> = {
   "ChatGPT plan or API key": "ChatGPT プランまたは API キー",
   "Synthetic provider": "合成プロバイダー",
   "Provider checklist": "プロバイダー一覧",
+  // P1-36
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
+    "サブエージェントの同時実行上限（%d）に達しました\n1 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です（設定 › Hydra）。実行中のサブエージェントが完了すると自動的に送信されます。",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on its own as running sub-agents finish.":
+    "サブエージェントの同時実行上限（%d）に達しました\n%d 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です（設定 › Hydra）。実行中のサブエージェントが完了すると順次自動的に送信されます。",
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once. It goes out on its own as a running sub-agent finishes.":
+    "サブエージェントの同時実行上限（%d）に達しました\n1 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です。実行中のサブエージェントが完了すると自動的に送信されます。",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on its own as running sub-agents finish.":
+    "サブエージェントの同時実行上限（%d）に達しました\n%d 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です。実行中のサブエージェントが完了すると順次自動的に送信されます。",
 };

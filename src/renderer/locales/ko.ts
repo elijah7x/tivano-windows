@@ -2066,4 +2066,13 @@ export const ko: Record<string, string> = {
   "ChatGPT plan or API key": "ChatGPT 플랜 또는 API 키",
   "Synthetic provider": "합성 제공자",
   "Provider checklist": "제공자 목록",
+  // P1-36
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
+    "하위 에이전트 동시 실행 한도(%d)에 도달함\n작업 1개가 대기 중입니다. 한 번에 최대 %d개의 하위 에이전트만 실행됩니다(설정 › Hydra). 실행 중인 하위 에이전트가 끝나면 자동으로 시작됩니다.",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on its own as running sub-agents finish.":
+    "하위 에이전트 동시 실행 한도(%d)에 도달함\n작업 %d개가 대기 중입니다. 한 번에 최대 %d개의 하위 에이전트만 실행됩니다(설정 › Hydra). 실행 중인 하위 에이전트가 끝나면 차례대로 자동 시작됩니다.",
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once. It goes out on its own as a running sub-agent finishes.":
+    "하위 에이전트 동시 실행 한도(%d)에 도달함\n작업 1개가 대기 중입니다. 한 번에 최대 %d개의 하위 에이전트만 실행됩니다. 실행 중인 하위 에이전트가 끝나면 자동으로 시작됩니다.",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on its own as running sub-agents finish.":
+    "하위 에이전트 동시 실행 한도(%d)에 도달함\n작업 %d개가 대기 중입니다. 한 번에 최대 %d개의 하위 에이전트만 실행됩니다. 실행 중인 하위 에이전트가 끝나면 차례대로 자동 시작됩니다.",
 };
