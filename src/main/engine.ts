@@ -1211,7 +1211,7 @@ export class Engine {
         ? opts.externalHydra.pairId
           ? { hydraPairId: opts.externalHydra.pairId }
           : {}
-        : settings.lastHydraPairId
+        : settings.lastHydraPairId && settings.subagentModeDefault !== "same"
           ? { hydraPairId: settings.lastHydraPairId }
           : {}),
       ...(opts?.externalHydra
@@ -1499,6 +1499,13 @@ export class Engine {
       if (k.startsWith(id + "")) this.hydraTouched.delete(k);
     for (const k of [...this.hydraFallbackNoted])
       if (k.startsWith(id + ":")) this.hydraFallbackNoted.delete(k);
+    for (const k of [...this.hydraQueueNoted])
+      if (k.startsWith(id + ":")) this.hydraQueueNoted.delete(k);
+    this.hydraRounds.delete(id);
+    for (const k of [...this.hydraRounds.keys()])
+      if (k.startsWith(id + ":")) this.hydraRounds.delete(k);
+    this.hydraRefunds.delete(id);
+    this.hydraBudgetGen.delete(id);
     for (const k of [...this.hydraCaptures.keys()])
       if (k.startsWith(id + ":")) this.hydraCaptures.delete(k);
     // F11: an app-created worktree leaves the thread — best-effort
@@ -4965,21 +4972,26 @@ export class Engine {
     if (this.readOnly) return;
     const sent = this.hydraSent.get(key) ?? 0;
     const news = parser.delegations.slice(sent);
-    if (!news.length) return;
-    this.hydraSent.set(key, sent + news.length);
-    // A ```hydra-sent block records heads that already went out —
-    // advancing the watermark only (frozen parity).
-    if (parser.isSentBlock) return;
-    // Frozen HydraPrompts.maxDelegatedTasks: a block's entries are
-    // bounded; overflow is refused, never dropped silently.
-    const room = Math.max(0, MAX_DELEGATED_TASKS - sent);
-    news.forEach((d, i) => {
-      if (i >= room) {
-        this.refuseDelegation(thread, `a delegation block holds at most ${MAX_DELEGATED_TASKS} tasks`);
-        return;
+    if (news.length) {
+      this.hydraSent.set(key, sent + news.length);
+      // A ```hydra-sent block records heads that already went out —
+      // advancing the watermark only (frozen parity).
+      if (!parser.isSentBlock) {
+        // Frozen HydraPrompts.maxDelegatedTasks: a block's entries are
+        // bounded; overflow is refused, never dropped silently.
+        const room = Math.max(0, MAX_DELEGATED_TASKS - sent);
+        news.forEach((d, i) => {
+          if (i >= room) {
+            this.refuseDelegation(thread, `a delegation block holds at most ${MAX_DELEGATED_TASKS} tasks`);
+            return;
+          }
+          this.dispatchDelegation(thread, d);
+        });
       }
-      this.dispatchDelegation(thread, d);
-    });
+    }
+    if (parser.isComplete && !parser.isSentBlock) {
+      this.noteQueuedHeads(thread, [thread.turn?.id ?? "batch"]);
+    }
   }
 
   /** A refused delegation is TOLD to the lead — a queued message the
@@ -5178,6 +5190,9 @@ export class Engine {
   /** Pairs whose heads-provider note this lead already heard once per
    *  job (frozen hydraFallbackNoted, per lead+pair). */
   private readonly hydraFallbackNoted = new Set<string>();
+  /** Batches whose concurrency-cap notice already reached the lead's
+   *  chat (frozen hydraQueueNoted, per lead+batchId). */
+  private readonly hydraQueueNoted = new Set<string>();
   /** Frozen HydraTreeCache: heads of one delegation block share ONE
    *  capture of the same checkout — keyed batchId:checkout, dropped when
    *  the batch's reports flush. */
@@ -5191,6 +5206,38 @@ export class Engine {
   /** Frozen hydraLanding queue — landings into one lead's checkout
    *  serialize, so two returning heads never merge onto each other. */
   private readonly hydraLandings = new Map<string, Promise<void>>();
+
+  /** P1-36 (frozen noteQueuedHeads): announce once per dispatch in the
+   *  lead's chat when tasks wait on the concurrency cap. */
+  private noteQueuedHeads(lead: ChatThread, batchIds: Iterable<string>): void {
+    if (lead.hydraHead) return;
+    const launch = this.hydraLaunchFor(lead);
+    if (!launch) return;
+    const queue = this.hydraWaiting.get(lead.id);
+    if (!queue?.length) return;
+    const fresh = new Set<string>();
+    for (const id of batchIds) {
+      const key = `${lead.id}:${id}`;
+      if (this.hydraQueueNoted.has(key)) continue;
+      if (queue.some((w) => w.batchId === id)) {
+        this.hydraQueueNoted.add(key);
+        fresh.add(id);
+      }
+    }
+    if (!fresh.size) return;
+    const queuedCount = queue.filter((w) => fresh.has(w.batchId)).length;
+    const cap = launch.maxHeads ?? HYDRA_UNCAPPED_CONCURRENCY;
+    const hasCap = launch.maxHeads !== undefined;
+    const msg =
+      queuedCount === 1
+        ? hasCap
+          ? `Sub-agent limit reached (${cap})\n1 task is queued: at most ${cap} sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.`
+          : `Sub-agent limit reached (${cap})\n1 task is queued: at most ${cap} sub-agents run at once. It goes out on its own as a running sub-agent finishes.`
+        : hasCap
+          ? `Sub-agent limit reached (${cap})\n${queuedCount} tasks are queued: at most ${cap} sub-agents run at once (Settings › Hydra). They go out on their own as running sub-agents finish.`
+          : `Sub-agent limit reached (${cap})\n${queuedCount} tasks are queued: at most ${cap} sub-agents run at once. They go out on their own as running sub-agents finish.`;
+    this.appendNotice(lead, msg, "info");
+  }
 
   /** Frozen spawnWaitingHeads: send out queued delegations as far as the
    *  launch's cap has room — after every spawn and every head finish. */
@@ -6726,7 +6773,10 @@ export class Engine {
         }
         const gen = this.hydraBudgetGen.get(leadId) ?? 0;
         const refunds = this.hydraRefunds.get(leadId) ?? 0;
-        if (this.hydraBatchGen.get(batchId) !== gen) continue;
+        if (this.hydraBatchGen.get(batchId) !== gen) {
+          this.hydraBatchGen.delete(batchId);
+          continue;
+        }
         this.hydraBatchGen.delete(batchId);
         if (refunds >= MAX_REFUNDED_ROUNDS) continue;
         const rounds = this.hydraRounds.get(leadId) ?? 0;
@@ -6919,6 +6969,7 @@ export class Engine {
         this.emit({ type: "thread-updated", thread });
       }
     }
+    this.noteQueuedHeads(thread, [turn.id]);
     this.flushHydraReports(thread.id);
     if (!thread.hydraHead) this.maybeReviewHydra(thread);
   }
