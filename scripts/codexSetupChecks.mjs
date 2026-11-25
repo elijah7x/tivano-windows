@@ -135,6 +135,85 @@ export async function runCodexSetupChecks({
     `outcome=${c.outcome}`,
   );
 
+  // --- session A2: a pending executable never forces the path UI on --------
+  // P2-39's frozen default is OFF even when a candidate/saved path exists.
+  // The invalid-pick session above legitimately wrote the switch ON while
+  // exercising the editor. Reset that one key in the closed store so this
+  // session again tests the real undefined default rather than a later
+  // explicit user choice.
+  {
+    const doc = JSON.parse(readFileSync(join(dataRoot, "store.json"), "utf8"));
+    delete doc.settings.providersShowExecutablePath;
+    writeFileSync(join(dataRoot, "store.json"), JSON.stringify(doc));
+  }
+  s = await launch({ TIVANO_TEST_CODEX_PICK: fakeExe }, "s-codexsetup-a2-defaultoff");
+  instances.push(s);
+  ({ app, proc, ledger } = s);
+  page = await app.firstWindow();
+  await page.waitForSelector(".sidebar-head", { timeout: 15000 });
+  await page.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
+  await page.evaluate(() => window.tivano.invoke("codex:choose", {}));
+  st = await setupState(page);
+  verify(
+    "valid pending choice exists before the default-off check",
+    st.pendingExecutable === realpathSync(fakeExe) && st.savedExecutable === null,
+    st.pendingExecutable,
+  );
+  await page.locator(".sidebar-foot button.row").click();
+  await page.waitForSelector(".modal .codex-setup", { timeout: 10000 });
+  await waitIdle(page);
+  const hiddenSetupText = await page.locator(".codex-setup").innerText();
+  const exeSwitch = page
+    .locator(".prov-switch", { hasText: "Custom executable path" })
+    .locator("input");
+  verify(
+    "P2-39 executable editor stays off by default with a pending path",
+    hiddenSetupText.includes("This launch") &&
+      !hiddenSetupText.includes("Saved program") &&
+      !hiddenSetupText.includes("Selected, not saved") &&
+      !hiddenSetupText.includes("Choose program") &&
+      (await exeSwitch.count()) === 1 &&
+      !(await exeSwitch.isChecked()),
+    hiddenSetupText.slice(0, 180),
+  );
+  await exeSwitch.click();
+  await page.waitForFunction(
+    () => document.querySelector(".codex-setup")?.textContent?.includes("Selected, not saved"),
+    null,
+    { timeout: 10000 },
+  );
+  let deadline = Date.now() + 8000;
+  while (Date.now() < deadline && storedSettings().providersShowExecutablePath !== true)
+    await new Promise((r) => setTimeout(r, 60));
+  verify(
+    "P2-39 executable switch click persists ON",
+    storedSettings().providersShowExecutablePath === true,
+    storedSettings().providersShowExecutablePath,
+  );
+  await exeSwitch.click();
+  await page.waitForFunction(
+    () => !document.querySelector(".codex-setup")?.textContent?.includes("Selected, not saved"),
+    null,
+    { timeout: 10000 },
+  );
+  deadline = Date.now() + 8000;
+  while (Date.now() < deadline && storedSettings().providersShowExecutablePath !== false)
+    await new Promise((r) => setTimeout(r, 60));
+  verify(
+    "P2-39 executable switch click persists OFF and hides the rows",
+    storedSettings().providersShowExecutablePath === false &&
+      !(await page.locator(".codex-setup").innerText()).includes("Saved program"),
+    storedSettings().providersShowExecutablePath,
+  );
+  c = await boundedClose(app, proc);
+  ledger.exited = c.exited;
+  ledger.outcome = c.outcome;
+  verify(
+    "default-off session closed cleanly",
+    c.outcome === "resolved" && c.exited && c.exitCode === 0,
+    `outcome=${c.outcome}`,
+  );
+
   // --- session B: cancel keeps everything ----------------------------------
   s = await launch({ TIVANO_TEST_CODEX_PICK: "" }, "s-codexsetup-b-cancel");
   instances.push(s);

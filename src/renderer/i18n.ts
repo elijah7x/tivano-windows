@@ -877,6 +877,7 @@ const zhHans: Record<string, string> = {
   "CLI update checks are not available in this build": "此构建暂不提供 CLI 更新检查",
   "Choose your providers": "选择服务商",
   "Show only the providers you use in Settings and the model picker.": "仅在设置和模型选择器中显示你使用的服务商。",
+  "Codex is hidden in Providers": "在服务商中隐藏 Codex",
   "Choose providers": "选择服务商",
   "Click a provider to show or hide it. Your settings are kept.": "点击服务商以显示或隐藏它。你的设置会保留。",
   "Active": "已启用",
@@ -887,6 +888,7 @@ const zhHans: Record<string, string> = {
   "No Codex account information": "没有 Codex 账户信息",
   "In use": "使用中",
   "Uses the sign-in already configured in the Codex CLI. Tivano cannot read the account name, plan, or usage in this build.": "使用 Codex CLI 中已配置的登录。此构建中 Tivano 无法读取账户名称、套餐或用量。",
+  "Tivano cannot verify the Codex CLI sign-in or read the account name, plan, or usage in this build.": "此构建中 Tivano 无法验证 Codex CLI 的登录状态，也无法读取账户名称、套餐或用量。",
   "Custom executable path": "自定义可执行文件路径",
   "Installed": "已安装",
   "Installed, but it points to an older copy of Tivano. Repair it to use this one.":

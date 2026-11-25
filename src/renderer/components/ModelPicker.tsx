@@ -61,8 +61,10 @@ export function ModelPicker(props: {
   const { thread } = props;
   const [catalog, setCatalog] = useState<CodexModelCatalog | null>(null);
   const gen = useRef(0);
+  const settings = clientStore.snapshot?.settings;
 
   const refresh = () => {
+    if (clientStore.snapshot?.settings?.codexProviderEnabled === false) return;
     const g = ++gen.current;
     api()
       .invoke("models:list", {})
@@ -77,7 +79,7 @@ export function ModelPicker(props: {
 
   // First fetch on mount/thread switch; the dropdown ALSO refreshes on
   // open so "no session yet" self-heals once a turn binds one.
-  useEffect(refresh, [thread.id]);
+  useEffect(refresh, [thread.id, settings?.codexProviderEnabled]);
 
   const models: CodexModelOption[] = catalog?.state === "ready" ? catalog.models : [];
   // F17: frozen modelList — when pins exist the picker shows ONLY the
@@ -85,7 +87,6 @@ export function ModelPicker(props: {
   // "the picker shows every model" until the user pins). Sections are
   // optgroups — a native select can't fold like the frozen panel, so
   // collapsed sections still list their pins.
-  const settings = clientStore.snapshot?.settings;
   const pinnedList: ModelPin[] = settings?.modelList ?? [];
   const pinnedSections = settings?.modelSections ?? [];
   const pinnedIds = new Set(pinnedList.map(pinId));
@@ -134,10 +135,12 @@ export function ModelPicker(props: {
   const set = (model: string | null, effort: string | null, fastTier: string | null) =>
     tryCall("threads:set-model", { threadId: thread.id, model, effort, fastTier });
 
-  if (settings?.codexProviderEnabled === false) return null;
+  const providerEnabled = settings?.codexProviderEnabled !== false;
+  if (!providerEnabled && !subagentVisible) return null;
 
   return (
-    <div className="model-picker" data-cat={catalog?.state ?? "loading"}>
+    <div className="model-picker" data-cat={providerEnabled ? (catalog?.state ?? "loading") : "hidden"}>
+      {providerEnabled && (
       <select
         className="model-select"
         aria-label={t("Model")}
@@ -203,6 +206,8 @@ export function ModelPicker(props: {
               </option>
             ))}
       </select>
+      )}
+      {providerEnabled && (
       <select
         className="effort-select"
         aria-label={t("Effort")}
@@ -228,6 +233,7 @@ export function ModelPicker(props: {
           </option>
         ))}
       </select>
+      )}
       {subagentVisible && (
         <select
           className="subagent-mode-select"
@@ -285,7 +291,7 @@ export function ModelPicker(props: {
           {t("Auto-dispatch")}
         </label>
       )}
-      {tierId !== null && (
+      {providerEnabled && tierId !== null && (
         <label
           className="fast-tier"
           title={t("Fast service tier — applies to the next turn")}
@@ -306,6 +312,7 @@ export function ModelPicker(props: {
           {t("Fast tier")}
         </label>
       )}
+      {providerEnabled && (
       <span className="model-note">
         {catalog === null
           ? t("Loading model list…")
@@ -317,6 +324,7 @@ export function ModelPicker(props: {
                 ? `${t("Provider reports")}: ${reported}`
                 : t("Applies to the next turn")}
       </span>
+      )}
     </div>
   );
 }

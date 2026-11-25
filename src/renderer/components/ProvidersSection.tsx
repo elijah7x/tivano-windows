@@ -63,9 +63,13 @@ interface ProviderRow {
 function ProviderAccountsRow(props: { codex: CodexSetupState | null }): React.JSX.Element {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
-  const active =
-    props.codex?.runtime?.state === "fixture" ||
-    props.codex?.runtime?.state === "configured-unverified";
+  const runtimeState = props.codex?.runtime?.state;
+  const active = runtimeState === "fixture" || runtimeState === "configured-unverified";
+  const authState = runtimeState === "fixture"
+    ? t("offline fixture (synthetic)")
+    : runtimeState === "configured-unverified"
+      ? t("configured — unverified")
+      : null;
   const title = active ? t("Codex CLI sign-in") : t("No Codex account information");
   return (
     <div className="prov-accounts" data-testid="provider-accounts">
@@ -78,6 +82,7 @@ function ProviderAccountsRow(props: { codex: CodexSetupState | null }): React.JS
         <span className="prov-accounts-title">{t("Accounts")}</span>
         <span className="prov-accounts-summary">
           {title}
+          {authState ? ` · ${authState}` : ""}
           {" · "}
           {t("Usage unavailable in this build")}
         </span>
@@ -90,11 +95,11 @@ function ProviderAccountsRow(props: { codex: CodexSetupState | null }): React.JS
           <div className="prov-account-main">
             <span>
               {t("Codex CLI sign-in")}
-              {active ? ` · ${t("In use")}` : ""}
+              {authState ? ` · ${authState}` : ""}
             </span>
             <span className="dim">
               {t(
-                "Uses the sign-in already configured in the Codex CLI. Tivano cannot read the account name, plan, or usage in this build.",
+                "Tivano cannot verify the Codex CLI sign-in or read the account name, plan, or usage in this build.",
               )}
             </span>
           </div>
@@ -150,21 +155,6 @@ export function ProvidersSection(props: {
         <span className="prov-name">{t("Codex")}</span>
         <span className="prov-route dim">{props.codexRoute}</span>
       </div>
-      <div className="prov-switches">
-        <label className="prov-switch" title={t("CLI update checks are not available in this build")}>
-          <input type="checkbox" disabled />
-          <span>{t("Check for updates")}</span>
-          <span className="dim">{t("unavailable in this build")}</span>
-        </label>
-        <label className="prov-switch">
-          <input
-            type="checkbox"
-            checked={props.executablePathVisible}
-            onChange={(e) => props.onExecutablePathVisible(e.target.checked)}
-          />
-          <span>{t("Custom executable path")}</span>
-        </label>
-      </div>
       <ProviderAccountsRow codex={props.codex} />
       {props.renderCodexCard({ executablePath })}
     </section>
@@ -215,11 +205,28 @@ export function ProvidersSection(props: {
 
           </div>
         )}
+        <div className="prov-switches">
+          <label className="prov-switch" title={t("CLI update checks are not available in this build")}>
+            <input type="checkbox" disabled />
+            <span>{t("Check for updates")}</span>
+            <span className="dim">{t("unavailable in this build")}</span>
+          </label>
+          <label className="prov-switch">
+            <input
+              type="checkbox"
+              checked={props.executablePathVisible}
+              onChange={(e) => props.onExecutablePathVisible(e.target.checked)}
+            />
+            <span>{t("Custom executable path")}</span>
+          </label>
+        </div>
       </div>
+      {props.codexProviderEnabled && (
       <div className="prov-cols">
         <div className="prov-rail" role="listbox" aria-label={t("Providers")}>
           <button
             type="button"
+            role="option"
             className={`prov-rail-btn${sel === null ? " sel" : ""}`}
             title={t("All providers")}
             aria-label={t("All providers")}
@@ -232,6 +239,7 @@ export function ProvidersSection(props: {
             <button
               key={p.id}
               type="button"
+              role="option"
               className={`prov-rail-btn${sel === p.id ? " sel" : ""}`}
               title={statusLabel(p)}
               aria-label={statusLabel(p)}
@@ -246,9 +254,10 @@ export function ProvidersSection(props: {
           ))}
           {/* Frozen SettingsIconRail: the expanded list floats out over the
               page on hover without scrolling it. */}
-          <div className="prov-rail-expand" role="presentation">
+          <div className="prov-rail-expand" role="presentation" aria-hidden="true">
             <button
               type="button"
+              tabIndex={-1}
               className={`prov-expand-row${sel === null ? " sel" : ""}`}
               onClick={() => setSelected(null)}
             >
@@ -258,6 +267,7 @@ export function ProvidersSection(props: {
               <button
                 key={p.id}
                 type="button"
+                tabIndex={-1}
                 className={`prov-expand-row${sel === p.id ? " sel" : ""}`}
                 onClick={() => setSelected(p.id)}
               >
@@ -276,6 +286,7 @@ export function ProvidersSection(props: {
           {providers.length === 0 ? <p className="dim">{t("No matching providers")}</p> : codexCard}
         </div>
       </div>
+      )}
     </>
   );
 }

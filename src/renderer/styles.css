@@ -1957,7 +1957,10 @@ select.runtime-mode:disabled {
   margin-top: 10px;
 }
 .prov-rail {
-  position: relative;
+  position: sticky;
+  top: 8px;
+  align-self: flex-start;
+  overscroll-behavior: contain;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -2003,6 +2006,9 @@ select.runtime-mode:disabled {
   left: 100%;
   top: 0;
   min-width: 180px;
+  max-height: min(420px, 70vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 5px 5px 5px 11px;
   border: 1px solid var(--border);
   border-radius: 10px;

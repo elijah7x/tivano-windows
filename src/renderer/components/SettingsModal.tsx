@@ -770,10 +770,7 @@ export function SettingsModal(props: {
           onCodexProviderEnabled={(v) =>
             tryCall("settings:set", { codexProviderEnabled: v })
           }
-          executablePathVisible={
-            settings.providersShowExecutablePath ??
-            Boolean(codex?.savedExecutable || codex?.pendingExecutable)
-          }
+          executablePathVisible={settings.providersShowExecutablePath ?? false}
           onExecutablePathVisible={(v) =>
             tryCall("settings:set", { providersShowExecutablePath: v })
           }
@@ -806,23 +803,27 @@ export function SettingsModal(props: {
                 )}
               </>
             )}
-            {codex?.effectiveExecutable && (
+            {executablePath && codex?.effectiveExecutable && (
               <>
                 <span>{t("Executable in use")}</span>
                 <span className="mono">{codex.effectiveExecutable}</span>
               </>
             )}
-            <span>{t("Saved program")}</span>
-            <span className="mono">
-              {codex ? codex.savedExecutable ?? t("None saved") : t(loadErr ? "Failed to load" : "Loading")}
-            </span>
-            {codex?.savedInvalidReason && (
+            {executablePath && (
+              <>
+                <span>{t("Saved program")}</span>
+                <span className="mono">
+                  {codex ? codex.savedExecutable ?? t("None saved") : t(loadErr ? "Failed to load" : "Loading")}
+                </span>
+              </>
+            )}
+            {executablePath && codex?.savedInvalidReason && (
               <>
                 <span>{t("Saved path status")}</span>
                 <span className="mono">{translateError(t, codex.savedInvalidReason)}</span>
               </>
             )}
-            {codex && codex.savedEffect !== "none" && (
+            {executablePath && codex && codex.savedEffect !== "none" && (
               <>
                 <span>{t("Saved effect")}</span>
                 <span>
@@ -836,13 +837,13 @@ export function SettingsModal(props: {
                 </span>
               </>
             )}
-            {codex && codex.savedExecutable === null && (
+            {executablePath && codex && codex.savedExecutable === null && (
               <>
                 <span>{t("After restart")}</span>
                 <span>{t("No saved program will be used. Explicit provider and environment settings still apply; without them, the default provider is used. This launch is unchanged.")}</span>
               </>
             )}
-            {codex?.pendingExecutable && (
+            {executablePath && codex?.pendingExecutable && (
               <>
                 <span>{t("Selected, not saved")}</span>
                 <span className="mono">{codex.pendingExecutable}</span>

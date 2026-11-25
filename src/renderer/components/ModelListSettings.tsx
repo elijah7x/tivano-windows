@@ -101,8 +101,10 @@ export function ModelListSettings(): React.JSX.Element {
   const [draft, setDraft] = useState("");
   const [dropHint, setDropHint] = useState<string | null>(null);
   const dragRef = useRef<string | null>(null);
+  const providerEnabled = settings?.codexProviderEnabled !== false;
 
   useEffect(() => {
+    if (!providerEnabled) return;
     let live = true;
     api()
       .invoke("models:list", {})
@@ -116,7 +118,7 @@ export function ModelListSettings(): React.JSX.Element {
     return () => {
       live = false;
     };
-  }, []);
+  }, [providerEnabled]);
 
   // Transient menus close on outside mousedown / Escape / scroll — the
   // same discipline the message popover uses.
@@ -383,6 +385,14 @@ export function ModelListSettings(): React.JSX.Element {
       </div>
     );
   };
+
+  if (!providerEnabled) {
+    return (
+      <div className="ml-settings">
+        <p className="codex-note">{t("Codex is hidden in Providers")}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="ml-settings">

@@ -42,11 +42,14 @@ export async function runModelListChecks({
     throw new Error("Timed out waiting for the expected application state");
   };
   const settingsOf = async (page) => (await snap(page)).settings;
-  const openSettings = async (page) => {
+  const openSettingsModal = async (page) => {
     if ((await page.locator(".modal").count()) === 0) {
       await page.locator(".sidebar-foot button.row").click();
       await page.waitForSelector(".modal", { timeout: 8000 });
     }
+  };
+  const openSettings = async (page) => {
+    await openSettingsModal(page);
     await page.locator(".ml-settings").scrollIntoViewIfNeeded();
     await page.waitForSelector(".ml-head-title", { timeout: 8000 });
   };
@@ -58,7 +61,7 @@ export async function runModelListChecks({
   };
   const optionValues = async (page) =>
     page.evaluate(() =>
-      [...document.querySelectorAll(".model-select option")].map((o) => o.value),
+      [...document.querySelectorAll(".composer .model-select option")].map((o) => o.value),
     );
 
   let s = await launch({}, "s-modellist-a");
@@ -117,9 +120,9 @@ export async function runModelListChecks({
 
   // ML-03: the thread picker restricts to the pinned set (frozen parity).
   await closeSettings(page);
-  await page.waitForSelector(".model-select", { timeout: 8000 });
+  await page.waitForSelector(".composer .model-select", { timeout: 8000 });
   await page.waitForFunction(
-    () => [...document.querySelectorAll(".model-select option")].some((o) => o.value !== ""),
+    () => [...document.querySelectorAll(".composer .model-select option")].some((o) => o.value !== ""),
     null,
     { timeout: 8000 },
   );
@@ -242,7 +245,7 @@ export async function runModelListChecks({
   const pinnedWithPref = Object.entries(
     (await settingsOf(page)).modelPreferences,
   )[0][0].split("/")[1];
-  await page.locator(".model-select").selectOption(pinnedWithPref);
+  await page.locator(".composer .model-select").selectOption(pinnedWithPref);
   await waitSnapshot(page, async () => {
     const st = await snap(page);
     const t = st.threads.find((x) => x.id === threadId);
@@ -327,7 +330,7 @@ export async function runModelListChecks({
   page = await app.firstWindow();
   await page.waitForSelector(".sidebar-head", { timeout: 15000 });
   await page.evaluate((id) => window.tivano.invoke("threads:select", { id }), threadId);
-  await page.waitForSelector(".model-select", { timeout: 8000 });
+  await page.waitForSelector(".composer .model-select", { timeout: 8000 });
   const afterRestart = await settingsOf(page);
   verify(
     "ML-16b layout + prefs survive restart",
@@ -368,13 +371,13 @@ export async function runModelListChecks({
     null,
     { timeout: 10000, polling: 200 },
   );
-  await page.locator(".model-select").focus(); // onFocus refetches the catalog
+  await page.locator(".composer .model-select").focus(); // onFocus refetches the catalog
   await page.evaluate(() =>
     window.tivano.invoke("settings:set", { hideOutdatedModels: true }),
   );
-  await page.waitForSelector(".model-select", { timeout: 8000 });
+  await page.waitForSelector(".composer .model-select", { timeout: 8000 });
   await page.waitForFunction(
-    () => [...document.querySelectorAll(".model-select option")].some((o) => o.value !== ""),
+    () => [...document.querySelectorAll(".composer .model-select option")].some((o) => o.value !== ""),
     null,
     { timeout: 8000 },
   );
@@ -421,6 +424,86 @@ export async function runModelListChecks({
     window.tivano.invoke("settings:set", { hideOutdatedModels: true }),
   );
   await closeSettings(page);
+
+  // ML-18 / P2-39: hiding the only provider is a real interactive state
+  // transition — provider choosing, Settings > Models, the composer picker
+  // and Quick Chat all stop exposing Codex model surfaces, while the
+  // unrelated sub-agent controls stay available. Re-enabling refetches the
+  // catalog instead of leaving the picker stuck in its hidden state.
+  verify(
+    "ML-18a codex picker controls visible before provider hiding",
+    (await page.locator(".composer .model-select").count()) === 1 &&
+      (await page.locator(".effort-select").count()) === 1 &&
+      (await page.locator(".subagent-mode-select").count()) === 1,
+  );
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { quickChatEnabled: true }),
+  );
+  const quickWindowP = app.waitForEvent("window", { timeout: 8000 });
+  await page.evaluate(() => window.tivano.invoke("quick:show", {}));
+  await quickWindowP;
+  const quick = app.windows().find((w) => w.url().includes("#quick"));
+  verify("ML-18b quick chat opens for the provider-hiding check", !!quick);
+  await quick.waitForSelector(".quick-input", { timeout: 8000 });
+  await quick.waitForSelector(".quick-model", { timeout: 8000 });
+
+  await openSettingsModal(page);
+  await page.locator(".prov-active-card .prov-small-btn").click();
+  await page.locator(".prov-choice-tile").click();
+  await waitSnapshot(page, async () => (await settingsOf(page)).codexProviderEnabled === false);
+  verify(
+    "ML-18c provider tile click persists hidden and removes the provider rail",
+    (await page.locator(".prov-rail").count()) === 0 &&
+      (await page.locator(".prov-card").count()) === 0,
+  );
+  await page.locator(".ml-settings").scrollIntoViewIfNeeded();
+  const hiddenModelsText = await page.locator(".ml-settings").innerText();
+  verify(
+    "ML-18d Settings > Models honors the hidden provider",
+    hiddenModelsText.includes("Codex is hidden in Providers") &&
+      !hiddenModelsText.includes("Hide outdated models"),
+    hiddenModelsText,
+  );
+  await closeSettings(page);
+  await page.waitForFunction(
+    () => document.querySelector(".composer .model-select") === null &&
+      document.querySelector(".effort-select") === null &&
+      document.querySelector(".subagent-mode-select") !== null,
+    null,
+    { timeout: 8000 },
+  );
+  verify(
+    "ML-18e composer hides Codex controls but keeps sub-agent controls",
+    true,
+  );
+  await quick.waitForFunction(
+    () => document.querySelector(".quick-model") === null,
+    null,
+    { timeout: 8000 },
+  );
+  verify("ML-18f Quick Chat hides its model control live", true);
+
+  await openSettingsModal(page);
+  await page.locator(".prov-active-card .prov-small-btn").click();
+  await page.locator(".prov-choice-tile").click();
+  await waitSnapshot(page, async () => (await settingsOf(page)).codexProviderEnabled !== false);
+  await closeSettings(page);
+  await page.waitForSelector(".composer .model-select", { timeout: 8000 });
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".composer .model-select option")].some((o) => o.value !== ""),
+    null,
+    { timeout: 8000 },
+  );
+  verify(
+    "ML-18g re-enabling the provider restores and refetches the picker",
+    true,
+  );
+  await quick.waitForSelector(".quick-model", { timeout: 8000 });
+  verify("ML-18h Quick Chat restores its model control live", true);
+  await page.evaluate(() => window.tivano.invoke("quick:hide", {}));
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { quickChatEnabled: false }),
+  );
 
   {
     const c = await boundedClose(app, proc);

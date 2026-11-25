@@ -58,6 +58,7 @@ import { DirectoryOpener } from "./openProjectDirectory";
 import { AttachmentService } from "./attachmentService";
 import { lockdownWebContents } from "./security";
 import { forwardEvents, registerIpc } from "./ipc";
+import type { AppEvent } from "../shared/ipc";
 import { CloseCoordinator } from "./lifecycle";
 import { TerminalService } from "./terminalService";
 import { forkPtyHost } from "./ptyHostLauncher";
@@ -439,6 +440,7 @@ const coordinator = new CloseCoordinator({
   },
   finishQuit: () => {
     // Resume the originally requested close/quit — exactly once.
+    if (quickWin && !quickWin.isDestroyed()) quickWin.close();
     if (win && !win.isDestroyed()) win.close();
     else app.quit();
   },
@@ -572,7 +574,12 @@ bootstrap = app.whenReady().then(async () => {
     attach: (raw) => eng.openUserDirectory(raw),
   });
 
-  const broadcast = forwardEvents(win.webContents);
+  const broadcastMain = forwardEvents(win.webContents);
+  const broadcast = (event: AppEvent) => {
+    broadcastMain(event);
+    if (event.type === "settings-changed" && quickWin && !quickWin.isDestroyed())
+      forwardEvents(quickWin.webContents)(event);
+  };
 
   // P2-63: track window focus/visible/minimized state so renderer animations,
   // timers and background streaming pace down while inactive/minimized/hidden.

@@ -23,8 +23,23 @@ function QuickChatInner() {
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [providerEnabled, setProviderEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
+    areaRef.current?.focus();
+    void api()
+      .invoke("state:get", {})
+      .then((r) =>
+        setProviderEnabled((r as Snapshot).settings.codexProviderEnabled !== false),
+      );
+    return api().onEvent((event) => {
+      if (event.type === "settings-changed")
+        setProviderEnabled(event.settings.codexProviderEnabled !== false);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (providerEnabled !== true) return;
     void api()
       .invoke("models:list", {})
       .then((r) => {
@@ -35,8 +50,7 @@ function QuickChatInner() {
           cat.models.find((m) => m.isDefault)?.id ?? cat.models[0]?.id ?? null,
         );
       });
-    areaRef.current?.focus();
-  }, []);
+  }, [providerEnabled]);
 
   const cycleModel = () => {
     if (!models.length) return;
@@ -83,7 +97,7 @@ function QuickChatInner() {
   return (
     <div className="quick-root">
       <div className="quick-head">
-        {models.length > 0 && (
+        {providerEnabled === true && models.length > 0 && (
           <button
             type="button"
             className="quick-model"
