@@ -324,7 +324,7 @@ describe("CodexAppServerProvider P2-57 lightweight-start", () => {
     expect(seenArgs[0]).toEqual([FIXTURE, ...CODEX_ONE_SHOT_CONFIG_ARGS]);
     expect(c1.killed.length).toBeGreaterThan(0);
 
-    // Second one-shot interrupted by provider.dispose() accounts orphaned pending cleanly.
+    // Second one-shot interrupted by provider.dispose() rejects cleanly without flagging orphanedPending.
     const inFlight = p.runOneShot(ws, async (rpc) => rpc.request("model/list", {}));
     const init2 = await c2.next();
     c2.write({
@@ -338,7 +338,7 @@ describe("CodexAppServerProvider P2-57 lightweight-start", () => {
       p.dispose(),
       expect(inFlight).rejects.toThrow(/CODEX_CONNECTION_CLOSED/),
     ]);
-    expect(disposeRes.orphanedPending).toBe(1);
+    expect(disposeRes.orphanedPending).toBe(0);
     expect(disposeRes.children.length).toBe(1);
     expect(disposeRes.children[0]!.confirmed).toBe(true);
   });
