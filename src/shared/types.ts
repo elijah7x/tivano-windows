@@ -255,6 +255,9 @@ export interface Settings {
   /** Settings › Providers shows the executable-path surfaces inside each
    *  provider card (frozen card-top switch, default off). */
   providersShowExecutablePath?: boolean;
+  /** Settings › Providers provider choosing: whether the Codex provider is
+   *  active in provider/model surfaces (frozen default true). */
+  codexProviderEnabled?: boolean;
   /** Lower the default reasoning effort for heads (frozen default true;
    *  effort set in a pair is unaffected). */
   hydraTempersHeadEffort?: boolean;

@@ -56,7 +56,7 @@ function effortTitle(effort: string): string {
 export function ModelPicker(props: {
   thread: ChatThread;
   readOnly?: boolean;
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   const t = useT();
   const { thread } = props;
   const [catalog, setCatalog] = useState<CodexModelCatalog | null>(null);
@@ -133,6 +133,8 @@ export function ModelPicker(props: {
   const tierId = thread.codexServiceTier ?? selectedModel?.fastTier ?? null;
   const set = (model: string | null, effort: string | null, fastTier: string | null) =>
     tryCall("threads:set-model", { threadId: thread.id, model, effort, fastTier });
+
+  if (settings?.codexProviderEnabled === false) return null;
 
   return (
     <div className="model-picker" data-cat={catalog?.state ?? "loading"}>

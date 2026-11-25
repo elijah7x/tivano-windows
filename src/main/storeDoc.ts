@@ -581,6 +581,7 @@ const vSettings = vObject({
   hydraShowsHeadDetails: vOptional(vBoolean),
   hydraAutoPopsHeads: vOptional(vBoolean),
   providersShowExecutablePath: vOptional(vBoolean),
+  codexProviderEnabled: vOptional(vBoolean),
   hydraTempersHeadEffort: vOptional(vBoolean),
   hasSeenHydraIntro: vOptional(vBoolean),
   hydraPairs: vOptional(vArray(vHydraPair, PERSIST_MAX_HYDRA_PAIRS)),

@@ -524,6 +524,7 @@ export const requestValidators = {
     hydraShowsHeadDetails: vOptional(vBoolean),
     hydraAutoPopsHeads: vOptional(vBoolean),
     providersShowExecutablePath: vOptional(vBoolean),
+    codexProviderEnabled: vOptional(vBoolean),
     hydraTempersHeadEffort: vOptional(vBoolean),
     hasSeenHydraIntro: vOptional(vBoolean),
     hydraPairs: vOptional(vArray(vHydraPair, 64)),

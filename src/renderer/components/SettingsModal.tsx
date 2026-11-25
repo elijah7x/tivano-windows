@@ -766,6 +766,10 @@ export function SettingsModal(props: {
 
         <ProvidersSection
           codex={codex}
+          codexProviderEnabled={settings.codexProviderEnabled !== false}
+          onCodexProviderEnabled={(v) =>
+            tryCall("settings:set", { codexProviderEnabled: v })
+          }
           executablePathVisible={
             settings.providersShowExecutablePath ??
             Boolean(codex?.savedExecutable || codex?.pendingExecutable)

@@ -1,13 +1,14 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P2-39/P2-19 (frozen SettingsIconRail + ProvidersSettingsPage): a compact
 // provider list that collapses to an icon rail and floats out an expanded
-// card on hover, an "All providers" overview, per-provider cards whose
-// choosing happens inside the card, card-top switches, and status dots
-// (ready / needs attention / not installed). This build ships one provider
-// (Codex) and has no provider-account rows — the folded-accounts row is a
-// documented bound, and CLI update checks have no engine yet (the switch
-// renders honestly disabled).
+// card on hover, an "All providers" overview, in-card provider choosing,
+// per-provider cards with card-top switches, folded accounts, and status
+// dots (ready / needs attention / not installed). This build ships one
+// provider (Codex). The account row is the Codex CLI's implicit sign-in:
+// account metadata, plan balances, adding and switching accounts have no
+// honest source here yet, and CLI update checks have no engine yet (that
+// switch renders honestly disabled).
 
 import { useMemo, useState } from "react";
 import type { CodexInfo, CodexSetupState } from "../../shared/types";
@@ -59,8 +60,56 @@ interface ProviderRow {
   status: ProviderListStatus | null;
 }
 
+function ProviderAccountsRow(props: { codex: CodexSetupState | null }): React.JSX.Element {
+  const t = useT();
+  const [expanded, setExpanded] = useState(false);
+  const active =
+    props.codex?.runtime?.state === "fixture" ||
+    props.codex?.runtime?.state === "configured-unverified";
+  const title = active ? t("Codex CLI sign-in") : t("No Codex account information");
+  return (
+    <div className="prov-accounts" data-testid="provider-accounts">
+      <button
+        type="button"
+        className="prov-accounts-head"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span className="prov-accounts-title">{t("Accounts")}</span>
+        <span className="prov-accounts-summary">
+          {title}
+          {" · "}
+          {t("Usage unavailable in this build")}
+        </span>
+        <span className="prov-accounts-chevron" aria-hidden="true">
+          {expanded ? "⌃" : "⌄"}
+        </span>
+      </button>
+      {expanded && (
+        <div className="prov-account-row">
+          <div className="prov-account-main">
+            <span>
+              {t("Codex CLI sign-in")}
+              {active ? ` · ${t("In use")}` : ""}
+            </span>
+            <span className="dim">
+              {t(
+                "Uses the sign-in already configured in the Codex CLI. Tivano cannot read the account name, plan, or usage in this build.",
+              )}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ProvidersSection(props: {
   codex: CodexSetupState | null;
+  /** Frozen provider choosing: whether Codex appears in Providers and
+   *  model surfaces (default true). */
+  codexProviderEnabled: boolean;
+  onCodexProviderEnabled: (enabled: boolean) => void;
   /** Persisted card-top switch (frozen, default off): shows the
    *  executable-path surfaces inside the provider card. */
   executablePathVisible: boolean;
@@ -74,21 +123,22 @@ export function ProvidersSection(props: {
   const t = useT();
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
-  // The executable-path switch is the persisted frozen toggle — the
-  // chooser row itself always renders (the Codex-setup flow needs it).
+  const [choosing, setChoosing] = useState(false);
   const executablePath = props.executablePathVisible;
 
   const providers = useMemo<ProviderRow[]>(() => {
     const q = search.trim().toLowerCase();
-    const rows: ProviderRow[] = [
-      {
-        id: "codex",
-        label: t("Codex"),
-        status: providerListStatus(props.codex?.runtime?.state),
-      },
-    ];
+    const rows: ProviderRow[] = props.codexProviderEnabled
+      ? [
+          {
+            id: "codex",
+            label: t("Codex"),
+            status: providerListStatus(props.codex?.runtime?.state),
+          },
+        ]
+      : [];
     return q === "" ? rows : rows.filter((r) => r.label.toLowerCase().includes(q));
-  }, [search, props.codex?.runtime?.state, t]);
+  }, [search, props.codexProviderEnabled, props.codex?.runtime?.state, t]);
 
   const sel = selected && providers.some((p) => p.id === selected) ? selected : null;
   const statusLabel = (p: ProviderRow) =>
@@ -115,6 +165,7 @@ export function ProvidersSection(props: {
           <span>{t("Custom executable path")}</span>
         </label>
       </div>
+      <ProviderAccountsRow codex={props.codex} />
       {props.renderCodexCard({ executablePath })}
     </section>
   );
@@ -132,6 +183,39 @@ export function ProvidersSection(props: {
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
+      <div className="prov-active-card" data-testid="active-providers-card">
+        <div className="prov-active-row">
+          <div className="prov-active-text">
+            <strong>{t("Choose your providers")}</strong>
+            <span className="dim">
+              {t("Show only the providers you use in Settings and the model picker.")}
+            </span>
+          </div>
+          <button type="button" className="prov-small-btn" onClick={() => setChoosing((v) => !v)}>
+            {choosing ? t("Done") : t("Choose providers")}
+          </button>
+        </div>
+        {choosing && (
+          <div className="prov-choice-area">
+            <p className="dim">{t("Click a provider to show or hide it. Your settings are kept.")}</p>
+            <button
+              type="button"
+              className={`prov-choice-tile${props.codexProviderEnabled ? " sel" : ""}`}
+              aria-pressed={props.codexProviderEnabled}
+              onClick={() => props.onCodexProviderEnabled(!props.codexProviderEnabled)}
+            >
+              <span className="prov-glyph" aria-hidden="true">
+                ⌘
+              </span>
+              <span>{t("Codex")}</span>
+              <span className="dim">
+                {props.codexProviderEnabled ? t("Active") : t("Hidden")}
+              </span>
+            </button>
+
+          </div>
+        )}
+      </div>
       <div className="prov-cols">
         <div className="prov-rail" role="listbox" aria-label={t("Providers")}>
           <button
@@ -142,9 +226,7 @@ export function ProvidersSection(props: {
             aria-selected={sel === null}
             onClick={() => setSelected(null)}
           >
-            <span className="prov-glyph" aria-hidden="true">
-              ⊞
-            </span>
+            <span className="prov-glyph" aria-hidden="true">⊞</span>
           </button>
           {providers.map((p) => (
             <button
@@ -156,9 +238,7 @@ export function ProvidersSection(props: {
               aria-selected={sel === p.id}
               onClick={() => setSelected(p.id)}
             >
-              <span className="prov-glyph" aria-hidden="true">
-                ⌘
-              </span>
+              <span className="prov-glyph" aria-hidden="true">⌘</span>
               {p.status && (
                 <span className={`prov-dot ${p.status}`} title={providerStatusTitle(t, p.status)} />
               )}
@@ -183,10 +263,7 @@ export function ProvidersSection(props: {
               >
                 <span className="grow">{p.label}</span>
                 {p.status && (
-                  <span
-                    className={`prov-dot ${p.status}`}
-                    title={providerStatusTitle(t, p.status)}
-                  />
+                  <span className={`prov-dot ${p.status}`} title={providerStatusTitle(t, p.status)} />
                 )}
               </button>
             ))}

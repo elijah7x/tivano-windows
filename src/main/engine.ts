@@ -2942,6 +2942,7 @@ export class Engine {
     hydraShowsHeadDetails?: boolean | undefined;
     hydraAutoPopsHeads?: boolean | undefined;
     providersShowExecutablePath?: boolean | undefined;
+    codexProviderEnabled?: boolean | undefined;
     hydraTempersHeadEffort?: boolean | undefined;
     hasSeenHydraIntro?: boolean | undefined;
     hydraPairs?: import("../shared/hydra").HydraPair[] | undefined;
@@ -3070,6 +3071,8 @@ export class Engine {
         d.settings.hydraAutoPopsHeads = patch.hydraAutoPopsHeads;
       if (patch.providersShowExecutablePath !== undefined)
         d.settings.providersShowExecutablePath = patch.providersShowExecutablePath;
+      if (patch.codexProviderEnabled !== undefined)
+        d.settings.codexProviderEnabled = patch.codexProviderEnabled;
       if (patch.hydraTempersHeadEffort !== undefined)
         d.settings.hydraTempersHeadEffort = patch.hydraTempersHeadEffort;
       if (patch.hasSeenHydraIntro !== undefined)
