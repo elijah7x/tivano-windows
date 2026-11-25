@@ -51,7 +51,6 @@ $script:DevinPath = $null
 $script:Redactions = @()
 $script:GuiTypesLoaded = $false
 $script:LastFreshSessionDeferred = $false
-$script:LastFreshSessionPromptSent = $false
 $script:AutoMergeDailyCap = 20
 $script:AttributionLinePattern = '(?i)co-authored-by|generated (with|by) \[?devin|devin\.ai'
 
@@ -896,8 +895,7 @@ function Get-AutopilotMessage {
 function Start-FreshDevinSession {
   param([IntPtr]$Window, [string]$Reason)
   $script:LastFreshSessionDeferred = $false
-  $script:LastFreshSessionPromptSent = $false
-  if (Test-Stop) {
+    if (Test-Stop) {
     $script:LastFreshSessionDeferred = $true
     return $false
   }
@@ -927,7 +925,7 @@ function Start-FreshDevinSession {
 
   $pressSince = [DateTime]::Now
   if (-not (Send-DevinKeysSafe $Window '^n')) {
-    Write-Log ('session rotation unconfirmed (' + $Reason + ')')
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; Ctrl+N not sent)')
     return $false
   }
   Start-Sleep -Seconds 3
@@ -935,28 +933,28 @@ function Start-FreshDevinSession {
     $script:LastFreshSessionDeferred = $true
     return $false
   }
-  if (-not (Focus-DevinChatInput $Window)) {
-    Write-Log ('session rotation unconfirmed (' + $Reason + ')')
+  # Turn on bypass in the new chat and confirm it from the log before any mission text goes out.
+  # If Ctrl+N landed in an editor instead of a new chat, /bypass is never confirmed and nothing
+  # else is sent, so the caller falls back to its normal path.
+  if (-not (Send-DevinBypassCommandSafe $Window)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; /bypass not confirmed after Ctrl+N)')
+    return $false
+  }
+  if (-not (Wait-DevinSessionNew $pressSince 10)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; no session/new in log)')
+    return $false
+  }
+  if (Test-Stop) {
+    $script:LastFreshSessionDeferred = $true
+    return $false
+  }
+  if (-not (Set-DevinForeground $Window) -or -not (Focus-DevinChatInput $Window)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; focus lost before mission)')
     return $false
   }
   $freshMessage = Get-AutopilotMessage -FreshSession
   if (-not (Send-DevinTextSafe $Window $freshMessage)) {
-    Write-Log ('session rotation unconfirmed (' + $Reason + ')')
-    return $false
-  }
-  if (-not (Wait-DevinSessionNew $pressSince 20)) {
-    if (Test-Stop) {
-      $script:LastFreshSessionDeferred = $true
-      return $false
-    }
-    # The prompt is already delivered: do not let the caller nudge again, and restart the
-    # age clock so an unmatched log phrase cannot trigger a new session on every tick.
-    $state = Read-WatchdogState
-    $state['sessionStartedUtc'] = [DateTime]::UtcNow.ToString('o')
-    Save-WatchdogState $state
-    $script:LastFreshSessionDeferred = $true
-    $script:LastFreshSessionPromptSent = $true
-    Write-Log ('session rotation unconfirmed (' + $Reason + '; prompt sent, no session/new in log)')
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; mission paste failed)')
     return $false
   }
 
@@ -1246,10 +1244,12 @@ function Stop-DevinDesktop {
 }
 
 function Stop-StrayApps {
-  if ($null -eq $StrayApps -or @($StrayApps).Count -eq 0) { return }
+  # -File passes a list as one comma-joined string; 'none' disables the cleanup.
+  $strayNames = @(@($StrayApps) | ForEach-Object { ([string]$_) -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -ine 'none' })
+  if ($strayNames.Count -eq 0) { return }
   $allProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
   if ($allProcs.Count -eq 0) { return }
-  foreach ($rawName in @($StrayApps)) {
+  foreach ($rawName in $strayNames) {
     if ([string]::IsNullOrWhiteSpace([string]$rawName)) { continue }
     $baseName = ([string]$rawName).Trim()
     if ($baseName.EndsWith('.exe', [StringComparison]::OrdinalIgnoreCase)) {
@@ -1271,7 +1271,11 @@ function Stop-StrayApps {
       [string]$_.Name -ieq $exeName -and
       [string]$_.CommandLine -notmatch '--type=' -and
       [string]$_.CommandLine -notmatch '(?i)zcode\.cjs' -and
-      -not $sameNamePids.Contains([int]$_.ParentProcessId)
+      -not $sameNamePids.Contains([int]$_.ParentProcessId) -and
+      (
+        ($baseName -ieq 'ZCode' -and [string]$_.CommandLine -match '(?i)--updated') -or
+        ($baseName -ieq 'msedge' -and [string]$_.CommandLine -match '(?i)--no-startup-window')
+      )
     })
     foreach ($root in $roots) {
       $rootId = [int]$root.ProcessId
@@ -1597,7 +1601,7 @@ function Invoke-Kickoff {
     return 'failed'
   }
 
-  if ((Start-FreshDevinSession $window 'kickoff') -or $script:LastFreshSessionPromptSent) {
+  if (Start-FreshDevinSession $window 'kickoff') {
     Set-KickoffOutcome 'ok'
     Write-Log ('kickoff sent autopilot prompt to Devin Desktop window "' + $folder + '"')
     return 'ok'
@@ -2357,8 +2361,20 @@ function Invoke-WatchTick {
   if ($sessionHasAge -and $sessionAgeMin -ge $SessionMaxMinutes) {
     $recent3Min = ($null -ne $activity.newestWriteUtc -and ($nowUtc - $activity.newestWriteUtc).TotalMinutes -lt 3)
     if (-not $recent3Min) {
-      $busyHard = @(Get-BusyAutopilotProcesses)
-      if ($busyHard.Count -eq 0) {
+      $hardSoloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
+      $hardSoloState = Read-JsonFile (Join-Path $script:AutopilotDir 'solo-v3.json')
+      $hardSoloPhase = ''
+      if ($hardSoloState) { $hardSoloPhase = ([string](Get-JsonProp $hardSoloState 'phase')).Trim().ToLowerInvariant() }
+      $hardPolling = ($pState -eq 'polling' -or $pState -eq 'done')
+      if ($hardSoloState -and (Test-Path -LiteralPath $hardSoloPlan) -and $hardSoloPhase -ne 'polling' -and $hardSoloPhase -ne 'done') { $hardPolling = $false }
+      $hardSkip = $false
+      if ($hardPolling) {
+        $hardWork = Test-WorkRemains
+        if ($null -eq $hardWork -or -not $hardWork) { $hardSkip = $true }
+      }
+      $busyHard = @()
+      if (-not $hardSkip) { $busyHard = @(Get-BusyAutopilotProcesses) }
+      if (-not $hardSkip -and $busyHard.Count -eq 0) {
         $ageInt = [int][Math]::Round($sessionAgeMin)
         $rotationAttempted = $true
         if (Start-FreshDevinSession $window ('max age ' + $ageInt + ' min')) {
@@ -2505,6 +2521,7 @@ function Invoke-RegisterTask {
     '-IntervalMinutes', [string]$IntervalMinutes,
     '-SessionIdleRotateMinutes', [string]$SessionIdleRotateMinutes,
     '-SessionMaxMinutes', [string]$SessionMaxMinutes,
+    '-StrayApps', $(if (@($StrayApps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0) { Quote-Argument ((@($StrayApps) | ForEach-Object { [string]$_ }) -join ',') } else { 'none' }),
     '-SyncSource', (Quote-Argument $SyncSource),
     '-SyncTarget', (Quote-Argument $SyncTarget)
   )
