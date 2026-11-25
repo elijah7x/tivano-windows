@@ -477,10 +477,8 @@ export function Sidebar(props: {
         </button>
       </div>
       {/* F26 (frozen SidebarHero): the skylight hero folds every visible
-          thread into one weather and creates a thread on tap. Off under
-          Performance Mode (frozen showsSkylightNow). */}
-      {snapshot.settings.showsSkylight !== false &&
-        snapshot.settings.performanceMode !== true && (
+          thread into one weather and creates a thread on tap. */}
+      {snapshot.settings.showsSkylight !== false && (
           <Skylight
             threads={snapshot.threads}
             onNewThread={() => tryCall("threads:create", { projectId: null })}

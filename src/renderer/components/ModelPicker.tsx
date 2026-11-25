@@ -16,6 +16,7 @@ import {
   type ModelPin,
 } from "../../shared/modelList";
 import { useT } from "../locale";
+import { translateError } from "../i18n";
 import { api, tryCall, clientStore } from "../client";
 
 /** Frozen Provider.swift effortRank — low to high ordering whatever
@@ -173,7 +174,7 @@ export function ModelPicker(props: {
                 g.pins.map((p) => {
                   const opt = optionById.get(p.modelID);
                   return (
-                    <option key={p.modelID} value={p.modelID} title={opt?.detail}>
+                    <option key={p.modelID} value={p.modelID} title={opt?.detail ? t(opt.detail) : undefined}>
                       {opt?.name ?? p.modelID}
                       {opt?.isDefault ? " ★" : ""}
                     </option>
@@ -184,7 +185,7 @@ export function ModelPicker(props: {
                   {g.pins.map((p) => {
                     const opt = optionById.get(p.modelID);
                     return (
-                      <option key={p.modelID} value={p.modelID} title={opt?.detail}>
+                      <option key={p.modelID} value={p.modelID} title={opt?.detail ? t(opt.detail) : undefined}>
                         {opt?.name ?? p.modelID}
                         {opt?.isDefault ? " ★" : ""}
                       </option>
@@ -194,7 +195,7 @@ export function ModelPicker(props: {
               ),
             )
           : visibleModels.map((m) => (
-              <option key={m.id} value={m.id} title={m.detail}>
+              <option key={m.id} value={m.id} title={m.detail ? t(m.detail) : undefined}>
                 {m.name}
                 {m.isDefault ? " ★" : ""}
               </option>
@@ -216,11 +217,11 @@ export function ModelPicker(props: {
       >
         <option value="">{t("Default effort")}</option>
         {selectedEffort !== "" && !efforts.includes(selectedEffort) && (
-          <option value={selectedEffort}>{`${effortTitle(selectedEffort)} (${t("saved")})`}</option>
+          <option value={selectedEffort}>{`${t(effortTitle(selectedEffort))} (${t("saved")})`}</option>
         )}
         {efforts.map((e) => (
           <option key={e} value={e}>
-            {effortTitle(e)}
+            {t(effortTitle(e))}
             {selectedModel?.defaultEffort === e ? ` (${t("model default")})` : ""}
           </option>
         ))}
@@ -307,9 +308,9 @@ export function ModelPicker(props: {
         {catalog === null
           ? t("Loading model list…")
           : catalog.state === "pending" || catalog.state === "unavailable"
-            ? catalog.reason
+            ? translateError(t, catalog.reason)
             : catalog.state === "unsupported"
-              ? catalog.reason
+              ? translateError(t, catalog.reason)
               : reported
                 ? `${t("Provider reports")}: ${reported}`
                 : t("Applies to the next turn")}

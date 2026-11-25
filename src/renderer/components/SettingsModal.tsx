@@ -6,17 +6,20 @@
 // block carrying the AGPL attribution this derivative owes upstream.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  AppInfo,
-  ChatThread,
-  CodexSetupState,
-  CodexChooseResult,
-  CodexWriteResult,
-  LanguageId,
-  Project,
-  Settings,
+import {
+  LANGUAGE_IDS,
+  LANGUAGE_LABELS,
+  type AppInfo,
+  type ChatThread,
+  type CodexSetupState,
+  type CodexChooseResult,
+  type CodexWriteResult,
+  type LanguageId,
+  type Project,
+  type Settings,
 } from "../../shared/types";
 import { useT } from "../locale";
+import { translateError } from "../i18n";
 import { api, tryCall } from "../client";
 import { playFinishChime } from "../finishChime";
 import { themeById } from "../theme";
@@ -25,11 +28,13 @@ import { TokenActivitySection } from "./TokenActivitySection";
 import { ShortcutsSection } from "./ShortcutsSection";
 import { HydraSection } from "./HydraSection";
 import { McpSection } from "./McpSection";
+import { RemoteMcpSection } from "./RemoteMcpSection";
 import { ForgeSection } from "./ForgeSection";
 import { WallpaperSection } from "./WallpaperSection";
 import { ModelListSettings } from "./ModelListSettings";
 import { ArchiveSection } from "./ArchiveSection";
 import { ProvidersSection } from "./ProvidersSection";
+import { VersionSection } from "./WhatsNewViews";
 import {
   RUNTIME_MODES,
   RUNTIME_MODE_TITLE,
@@ -338,7 +343,7 @@ export function SettingsModal(props: {
         </p>
         {/* v2.2.x frozen "Shelve projects" — idle days before a project
             shelves itself; running/unread/open chats keep it put. */}
-        <label className="wt-field commit-instructions">
+        <label className="wt-field settings-field-gap">
           <span>{t("Auto-shelve projects")}</span>
           <div
             className="choice-row"
@@ -377,30 +382,10 @@ export function SettingsModal(props: {
         <div className="choice-row">
           <button
             role="switch"
-            aria-checked={settings.performanceMode === true}
-            className={`choice${settings.performanceMode === true ? " active" : ""}`}
-            title={t(
-              "Disable window transparency, blurs, glows and background effects for lowest GPU usage",
-            )}
-            onClick={() =>
-              tryCall("settings:set", {
-                performanceMode: settings.performanceMode !== true,
-              })
-            }
-          >
-            {t("Performance Mode")}
-          </button>
-        </div>
-        <div className="choice-row">
-          <button
-            role="switch"
             aria-checked={settings.showsSkylight !== false}
             className={`choice${settings.showsSkylight !== false ? " active" : ""}`}
-            disabled={settings.performanceMode === true}
             title={t(
-              settings.performanceMode === true
-                ? "Unavailable in Performance Mode"
-                : "A teru teru bozu at the top of the sidebar keeps you company while agents work, and its weather shows how your threads are doing: it sways in the wind while they run, turns overcast when one needs you, brightens when a reply lands and rains when one fails. It animates only while visible.",
+              "A teru teru bozu at the top of the sidebar keeps you company while agents work, and its weather shows how your threads are doing: it sways in the wind while they run, turns overcast when one needs you, brightens when a reply lands and rains when one fails. It animates only while visible.",
             )}
             onClick={() =>
               tryCall("settings:set", {
@@ -418,7 +403,7 @@ export function SettingsModal(props: {
 
         <h3>{t("Language")}</h3>
         <div className="choice-row" role="radiogroup" aria-label={t("Language")}>
-          {(["en", "zh-Hans"] as const).map((l) => (
+          {LANGUAGE_IDS.map((l) => (
             <button
               key={l}
               role="radio"
@@ -426,7 +411,7 @@ export function SettingsModal(props: {
               className={`choice${settings.language === l ? " active" : ""}`}
               onClick={() => setLanguage(l)}
             >
-              {l === "en" ? "English" : "简体中文"}
+              {LANGUAGE_LABELS[l]}
             </button>
           ))}
         </div>
@@ -447,19 +432,6 @@ export function SettingsModal(props: {
             {t("Recent downloads")}
           </button>
         </div>
-        <div className="choice-row">
-          <button
-            role="switch"
-            aria-checked={settings.notifyOnDone === true}
-            className={`choice${settings.notifyOnDone === true ? " active" : ""}`}
-            onClick={() => tryCall("settings:set", { notifyOnDone: settings.notifyOnDone !== true })}
-          >
-            {t("Notify when a turn finishes")}
-          </button>
-        </div>
-        <p className="codex-note">
-          {t("A system notification posts only for a turn you are not looking at — a different thread or an unfocused window.")}
-        </p>
         <div className="choice-row">
           <button
             role="switch"
@@ -510,7 +482,11 @@ export function SettingsModal(props: {
         <h3>{t("Models")}</h3>
         <ModelListSettings />
 
-        <McpSection settings={settings} home={info.home} />
+        <div className="connections-section" data-testid="connections-section">
+          <h3>{t("Connections")}</h3>
+          <McpSection settings={settings} home={info.home} />
+          <RemoteMcpSection settings={settings} />
+        </div>
 
         <h3>{t("Sleep")}</h3>
         <div
@@ -571,7 +547,7 @@ export function SettingsModal(props: {
         <p className="codex-note">
           {t("Automatic uses the thread's own provider to write a title for a new thread and a draft for a commit message. Provider-specific picks are not supported yet.")}
         </p>
-        <label className="wt-field commit-instructions">
+        <label className="wt-field settings-field-gap">
           <span>{t("Thread titles")}</span>
           <div className="choices" role="radiogroup">
             {(
@@ -593,42 +569,6 @@ export function SettingsModal(props: {
             ))}
           </div>
         </label>
-        <label className="wt-field commit-instructions">
-          <span>{t("Commit message instructions")}</span>
-          <input
-            className="wt-input"
-            defaultValue={settings.commitInstructions ?? ""}
-            key={settings.commitInstructions ?? ""}
-            placeholder={t("For example: use conventional commit prefixes")}
-            spellCheck={false}
-            onBlur={(e) => {
-              const v = e.target.value;
-              if (v !== (settings.commitInstructions ?? ""))
-                tryCall("settings:set", { commitInstructions: v });
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-            }}
-          />
-        </label>
-        <p className="codex-note">
-          {t("Appended to the prompt when a commit message is drafted for you.")}
-        </p>
-        <div className="choice-row">
-          <button
-            role="switch"
-            aria-checked={settings.antiSlopEnabled !== false}
-            className={`choice${settings.antiSlopEnabled !== false ? " active" : ""}`}
-            onClick={() =>
-              tryCall("settings:set", { antiSlopEnabled: settings.antiSlopEnabled === false })
-            }
-          >
-            {t("Concise AI replies")}
-          </button>
-        </div>
-        <p className="codex-note">
-          {t("Built-in guidance for shorter replies, useful code comments, and focused work. Changes apply on the next message.")}
-        </p>
 
         <div className="fs-head">
           <h3>{t("Font sizes")}</h3>
@@ -857,7 +797,7 @@ export function SettingsModal(props: {
                 {codex.runtime.reason && (
                   <>
                     <span>{t("Runtime reason")}</span>
-                    <span className="mono">{codex.runtime.reason}</span>
+                    <span className="mono">{translateError(t, codex.runtime.reason)}</span>
                   </>
                 )}
               </>
@@ -875,7 +815,7 @@ export function SettingsModal(props: {
             {codex?.savedInvalidReason && (
               <>
                 <span>{t("Saved path status")}</span>
-                <span className="mono">{codex.savedInvalidReason}</span>
+                <span className="mono">{translateError(t, codex.savedInvalidReason)}</span>
               </>
             )}
             {codex && codex.savedEffect !== "none" && (
@@ -886,7 +826,9 @@ export function SettingsModal(props: {
                     ? t("In effect for this launch")
                     : codex.savedEffect === "pending-restart"
                       ? t("Takes effect on next launch")
-                      : codex.savedBlockReason ?? t("Blocked by an explicit override")}
+                      : codex.savedBlockReason
+                        ? translateError(t, codex.savedBlockReason)
+                        : t("Blocked by an explicit override")}
                 </span>
               </>
             )}
@@ -912,10 +854,10 @@ export function SettingsModal(props: {
           )}
           {codexErr && (
             <p className="codex-setup-error" role="alert">
-              {t(codexErr)}
+              {translateError(t, codexErr)}
             </p>
           )}
-          {loadErr && <p className="codex-setup-error" role="alert">{loadErr}</p>}
+          {loadErr && <p className="codex-setup-error" role="alert">{translateError(t, loadErr)}</p>}
           {executablePath && (
           <div className="choice-row">
             <button
@@ -964,6 +906,12 @@ export function SettingsModal(props: {
           settings={settings}
         />
 
+        <VersionSection
+          appVersion={info.appVersion}
+          settings={settings}
+          whatsNew={info.whatsNew}
+        />
+
         <h3>{t("About")}</h3>
         <div className="about">
           <p>
@@ -1009,7 +957,7 @@ export function SettingsModal(props: {
                 {info.codex.reason && (
                   <>
                     <span>{t("Codex status")}</span>
-                    <span className="mono">{info.codex.reason}</span>
+                    <span className="mono">{translateError(t, info.codex.reason)}</span>
                   </>
                 )}
               </>

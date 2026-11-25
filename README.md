@@ -4,6 +4,8 @@ An independent Windows product, currently implemented with Electron + React + Ty
 
 This is development software, not a release. Nothing here is accepted as a supported Windows product yet, and the full feature/provider support matrix is not complete, so do not assume any given provider is supported.
 
+> **More Windows maintainers and contributors wanted.** Tivano Windows is still in development, its owner is not a daily Windows user, and the current Windows maintainer, @Li-changwu, also has independent projects to look after. A Windows product needs more people using it every day. Try it, and when something is wrong, open an issue or send a PR: no assignment or approval needed. If you want to go further, become a maintainer. See [#153](https://github.com/elijah7x/tivano-windows/issues/153).
+
 ## Maintainers
 
 - Product owner: [@elijah7x](https://github.com/elijah7x), the author of Tivano for macOS. Sets product design and direction, and gives final acceptance of official releases.

@@ -173,6 +173,6 @@ export function formatReset(dateMs: number): string {
   const week = new Date(now);
   week.setDate(now.getDate() + 6);
   if (date < week)
-    return `${date.toLocaleDateString([], { weekday: "long" })} at ${time}`;
+    return `${date.toLocaleDateString("en-US", { weekday: "long" })} at ${time}`;
   return date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }

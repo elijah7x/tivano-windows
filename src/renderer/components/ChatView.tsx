@@ -11,10 +11,13 @@ import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
 import { useT } from "../locale";
 import { translateError, translateNotice } from "../i18n";
 import {
+  prewarmMarkdown,
   renderMarkdown,
   StreamingMarkdownCoordinator,
   type MarkdownLabels,
 } from "../markdown";
+import { appActivity, subscribeMemoryPressure, useAppPaused, useInView } from "../appActivity";
+import { visibleThreads } from "../../shared/threadOrder";
 import { api, callApi, clientStore } from "../client";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
@@ -58,17 +61,23 @@ import {
  *  cancel, and hand-off to a new chat (frozen AutoContinue controls). */
 function LimitWaitRow({ threadId, resumeAt }: { threadId: string; resumeAt: number }): React.JSX.Element {
   const t = useT();
+  const rowRef = useRef<HTMLDivElement>(null);
+  const appPaused = useAppPaused();
+  const inView = useInView(rowRef);
+  const paused = appPaused || !inView;
   const [, forceTick] = useState(0);
   useEffect(() => {
+    if (paused) return;
+    forceTick((x) => x + 1);
     const id = window.setInterval(() => forceTick((x) => x + 1), 1000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [paused]);
   const seconds = Math.max(0, Math.round((resumeAt - Date.now()) / 1000));
   const when = new Date(resumeAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   return (
-    <div className="limit-wait" role="status">
+    <div ref={rowRef} className="limit-wait" role="status">
       <span className="limit-wait-text">
-        {t("Usage limit reached — continuing at")} {when}
+        {t("Usage limit reached — continuing at")} {translateNotice(t, when)}
         {seconds > 0 ? ` (${seconds}s)` : ""}
       </span>
       <button
@@ -316,6 +325,56 @@ export function ChatView(props: {
     mdCoordRef.current.forEach((c) => c.dispose());
     mdCoordRef.current.clear();
   }, [threadId]);
+  useEffect(() => {
+    return subscribeMemoryPressure(() => {
+      veilRef.current.clear();
+      mdCoordRef.current.forEach((c) => c.dispose());
+      mdCoordRef.current.clear();
+    });
+  }, []);
+  const threadsRef = useRef(props.threads);
+  const projectsRef = useRef(props.projects);
+  threadsRef.current = props.threads;
+  projectsRef.current = props.projects;
+  const prewarmedRef = useRef<string>("");
+  useEffect(() => {
+    const threads = threadsRef.current;
+    const projects = projectsRef.current;
+    if (!threadId || !threads || !projects) return;
+    const timer = window.setTimeout(() => {
+      if (appActivity.paused) return;
+      const curThreads = threadsRef.current;
+      const curProjects = projectsRef.current;
+      if (!curThreads || !curProjects) return;
+      const order = visibleThreads(
+        curProjects.filter((p) => !p.isShelved),
+        curThreads.filter((x) => !x.isInPanel || !x.parentThreadId),
+      );
+      const idx = order.findIndex((x) => x.id === threadId);
+      if (idx < 0) return;
+      const neighbor = order[idx + 1] ?? order[idx - 1];
+      if (!neighbor || neighbor.messages.length === 0) return;
+      const key = `${threadId}|${neighbor.id}|${neighbor.updatedAt}`;
+      if (prewarmedRef.current === key) return;
+      prewarmedRef.current = key;
+      const labels: MarkdownLabels = {
+        copy: t("Copy"),
+        copied: t("Copied"),
+        renderDelegation: delegationCard,
+      };
+      const sources = neighbor.messages
+        .slice(-TIMELINE_WINDOW.initial)
+        .filter((m) => m.role === "assistant" && m.status !== "streaming")
+        .map((m) =>
+          m.content.replaceAll(
+            `*${INTERRUPTED_MARKER}*`,
+            `*[${t("interrupted by restart — not resumed")}]*`,
+          ),
+        );
+      prewarmMarkdown(sources, labels);
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [threadId, props.threads?.length, props.projects?.length, t]);
   useEffect(() => {
     if (heads.length > headCount.current) setHydraPanelHidden(false);
     headCount.current = heads.length;
@@ -739,7 +798,9 @@ export function ChatView(props: {
                       <span className="quote-chip-text">{quoteExcerpt(q.text)}</span>
                     </span>
                   ))}
-                  {peeled?.body ?? m.content}
+                  {m.role === "system"
+                    ? translateNotice(t, peeled?.body ?? m.content)
+                    : (peeled?.body ?? m.content)}
                 </div>
               )}
               {m.role === "user" && m.attachments && m.attachments.length > 0 && (
