@@ -251,7 +251,12 @@ function IdentitySection(props: {
                 </span>
                 <span className="hydra-pair-summary">
                   {on
-                    ? (p.pick?.model ?? t("Follow the lead"))
+                    ? [
+                        p.pick?.model ?? t("Follow the lead"),
+                        p.pick?.effort ? t(effortTitle(p.pick.effort)) : undefined,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")
                     : t("Off")}
                 </span>
               </button>
@@ -294,12 +299,11 @@ function IdentitySection(props: {
                    *  at spawn (engine pick filter). */}
                   <label
                     className="kv"
-                    title={`${t("Provider")}: ${providerLabel(
-                      props.providers,
-                      editing.pick?.provider ??
-                        props.providers.find((p) => p.ready)?.id ??
-                        "",
-                    )}`}
+                    title={
+                      editing.pick?.provider
+                        ? `${t("Provider")}: ${providerLabel(props.providers, editing.pick.provider)}`
+                        : t("Follow the lead")
+                    }
                   >
                     <span>{t("Model")}</span>
                     <input
@@ -512,7 +516,7 @@ function ToggleRow(props: {
 // Pair editor — a bounded inline form: every field writes the draft locally
 // and Save persists the whole hydraPairs list through settings:set.
 
-function PairEditor(props: {
+export function PairEditor(props: {
   pair: HydraPair;
   providers: CatalogProvider[];
   onSave: (pair: HydraPair) => void;
@@ -634,6 +638,78 @@ function PairEditor(props: {
       const p = d.headProfiles.find((x) => x.id === id);
       if (p) fn(p);
     });
+
+  // P2-40 frozen compact sub-agent picker: the profile row shows only
+  // model + effort; the provider rides the hover. The menu itself keeps
+  // provider groups so a saved profile can still move providers, while
+  // the closed control no longer spends its width on the provider name.
+  const profileModelSelect = (p: HydraHeadProfile): React.JSX.Element => {
+    const currentProvider = p.provider ?? headsProvider;
+    const profileProviders = [
+      ...readyProviders,
+      ...providers.filter(
+        (x) =>
+          !readyProviders.some((r) => r.id === x.id) &&
+          (x.id === p.provider || x.id === headsProvider),
+      ),
+    ];
+    const encoded = (provider: string, model?: string) =>
+      JSON.stringify(model === undefined ? [provider] : [provider, model]);
+    const value = p.model
+      ? encoded(currentProvider, p.model)
+      : p.provider
+        ? encoded(p.provider)
+        : "";
+    const knownModel = profileProviders.some((provider) =>
+      provider.models.some((m) => m.id === p.model && provider.id === currentProvider),
+    );
+    return (
+      <select
+        className="model-select hydra-model-choice"
+        aria-label={t("Profile model")}
+        title={`${t("Provider")}: ${providerLabel(providers, currentProvider)}`}
+        value={value}
+        onChange={(e) => {
+          const raw = e.target.value;
+          updProfile(p.id, (x) => {
+            if (raw === "") {
+              delete x.provider;
+              delete x.model;
+              delete x.effort;
+              return;
+            }
+            const parts = JSON.parse(raw) as string[];
+            const provider = parts[0]!;
+            const model = parts[1];
+            if (provider === headsProvider) delete x.provider;
+            else x.provider = provider;
+            if (model === undefined) delete x.model;
+            else x.model = model;
+            delete x.effort;
+          });
+        }}
+      >
+        <option value="">{t("Pair's model")}</option>
+        {p.model !== undefined && !knownModel && (
+          <option value={encoded(currentProvider, p.model)}>
+            {`${p.model} (${t("saved")})`}
+          </option>
+        )}
+        {profileProviders.map((provider) => (
+          <optgroup key={provider.id} label={provider.label}>
+            <option value={encoded(provider.id)}>
+              {t("%@'s default", provider.label)}
+            </option>
+            {provider.models.map((m) => (
+              <option key={m.id} value={encoded(provider.id, m.id)}>
+                {m.name}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+    );
+  };
 
   return (
     <div className="hydra-editor" data-testid="hydra-pair-editor">
@@ -810,33 +886,7 @@ function PairEditor(props: {
               spellCheck={false}
               onChange={(e) => updProfile(p.id, (x) => (x.name = e.target.value))}
             />
-            {providerSelect(
-              p.provider ?? "",
-              [
-                { id: "", label: t("Pair's heads provider"), ready: true, models: [] },
-                ...headsOptions,
-              ],
-              (id) =>
-                updProfile(p.id, (x) => {
-                  if (id === "") delete x.provider;
-                  else x.provider = id;
-                  delete x.model;
-                  delete x.effort;
-                }),
-              "Profile provider",
-            )}
-            {modelSelect(
-              p.model,
-              p.provider ? modelsFor(p.provider) : headModels,
-              t("Pair's model"),
-              (id) =>
-                updProfile(p.id, (x) => {
-                  if (id === undefined) delete x.model;
-                  else x.model = id;
-                  delete x.effort;
-                }),
-              "Profile model",
-            )}
+            {profileModelSelect(p)}
             {effortSelect(
               p.effort,
               p.provider ? allEfforts(modelsFor(p.provider)) : headEfforts,

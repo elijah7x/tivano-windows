@@ -32,6 +32,8 @@ import { createElement } from "react";
 import { ChatView } from "../src/renderer/components/ChatView";
 import { HelperPanel } from "../src/renderer/components/HelperPanel";
 import { HydraMark } from "../src/renderer/components/HydraMark";
+import { PairEditor } from "../src/renderer/components/HydraSection";
+import { newHydraPair } from "../src/shared/hydra";
 import type { ChatThread, Settings } from "../src/shared/types";
 
 const lead = (over: Partial<ChatThread> = {}): ChatThread =>
@@ -211,5 +213,42 @@ describe("P2-40 panel chrome (close never stops work)", () => {
     expect(html).toContain("Helper for Lead chat");
     expect(html).toContain('aria-label="Move to sidebar"');
     expect(html).not.toContain("Dismiss");
+  });
+});
+
+describe("P2-40 compact sub-agent model pickers", () => {
+  it("a head profile shows model + effort and carries its provider on hover", () => {
+    const pair = {
+      ...newHydraPair("mock"),
+      headProfiles: [
+        { id: "h1", name: "quick", provider: "other", model: "o-fast", effort: "high" },
+      ],
+    };
+    const html = renderToStaticMarkup(
+      createElement(PairEditor, {
+        pair,
+        providers: [
+          {
+            id: "mock",
+            label: "Mock",
+            ready: true,
+            models: [{ id: "m1", name: "Mock One", efforts: ["low", "high"] }],
+          },
+          {
+            id: "other",
+            label: "Other",
+            ready: true,
+            models: [{ id: "o-fast", name: "Other Fast", efforts: ["low", "high"] }],
+          },
+        ],
+        onSave: () => {},
+        onCancel: () => {},
+      }),
+    );
+    expect(html).not.toContain('aria-label="Profile provider"');
+    expect(html).toContain('aria-label="Profile model"');
+    expect(html).toContain('aria-label="Profile effort"');
+    expect(html).toContain('title="Provider: Other"');
+    expect(html).toContain("Other Fast");
   });
 });
