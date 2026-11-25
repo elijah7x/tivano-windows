@@ -117,6 +117,20 @@ export function legacyAppearanceOfTheme(raw: string): AppearanceMode | null {
   if (LEGACY_DARK_THEMES.has(raw)) return "dark";
   return null;
 }
+
+/** P2-51: normalize an OS accent color string (Electron `systemPreferences.getAccentColor()`
+ *  8-char RGBA hex like `"0078d4ff"`, or 6-char RGB hex) into a 6-char uppercase RGB hex,
+ *  returning null when absent, malformed, or fully transparent (`alpha === "00"`). */
+export function normalizeOsAccentHex(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().replace(/^#/, "");
+  if (/^[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed.toUpperCase();
+  if (/^[0-9a-fA-F]{8}$/.test(trimmed)) {
+    if (trimmed.slice(6, 8) === "00") return null;
+    return trimmed.slice(0, 6).toUpperCase();
+  }
+  return null;
+}
 export const LANGUAGE_IDS = ["en", "zh-Hans", "zh-Hant", "ja", "ko", "fr"] as const;
 export type LanguageId = (typeof LANGUAGE_IDS)[number];
 
@@ -1168,6 +1182,9 @@ export interface AppInfo {
   /** P2-55: release notes since the previous installed version, read from
    *  CHANGELOG.md in main for en + zh-Hans. */
   whatsNew?: WhatsNewInfo;
+  /** P2-51: current OS system accent color as 6-char uppercase RGB hex,
+   *  or null when unavailable on the host platform. */
+  systemAccentColor?: string | null;
 }
 
 /** Per-turn checkpoint record as the renderer may see it — ledger

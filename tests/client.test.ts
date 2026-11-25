@@ -420,3 +420,34 @@ describe("finish-signal notification visibility (P2-62)", () => {
     }
   });
 });
+
+describe("P2-51 system-accent-changed event", () => {
+  it("updates snapshot.info.systemAccentColor and notifies subscribers after hydration", () => {
+    const store = new ClientStore(async () => ({}));
+    const s = snap(5);
+    s.info.systemAccentColor = "0078D4";
+    store.hydrate(s, store.beginHydration());
+
+    let notified = 0;
+    const unsub = store.subscribe(() => {
+      notified += 1;
+    });
+    store.onBridgeEvent({ type: "system-accent-changed", accentColor: "D13438" });
+    unsub();
+
+    expect(notified).toBe(1);
+    expect(store.snapshot!.info.systemAccentColor).toBe("D13438");
+  });
+
+  it("retains pre-hydration system-accent-changed updates when the snapshot lands", () => {
+    const store = new ClientStore(async () => ({}));
+    const gen = store.beginHydration();
+    store.onBridgeEvent({ type: "system-accent-changed", accentColor: "E81123" });
+
+    const s = snap(5);
+    s.info.systemAccentColor = "0078D4";
+    store.hydrate(s, gen);
+
+    expect(store.snapshot!.info.systemAccentColor).toBe("E81123");
+  });
+});

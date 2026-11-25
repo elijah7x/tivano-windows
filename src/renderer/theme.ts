@@ -2,11 +2,13 @@
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P2-51: the 12 named v3.0.0 accent families (AppTheme.swift), paired
 // with AppearanceMode (system / light / dark). Each custom accent pairs
-// a dark-appearance hex with a light-appearance hex (null keeps the
-// system accent). The renderer derives the surrounding token ladder from
-// the dark/light surface base by hue-preserving RGB mixing.
+// a dark-appearance hex with a light-appearance hex; "system" resolves
+// to the OS accent color reported by Electron (`systemPreferences.getAccentColor`),
+// falling back to system blue only when the host OS does not provide one.
+// The renderer derives the surrounding token ladder from the dark/light
+// surface base by hue-preserving RGB mixing.
 
-import type { AppearanceMode, ThemeId } from "../shared/types";
+import { normalizeOsAccentHex, type AppearanceMode, type ThemeId } from "../shared/types";
 
 export interface AccentHexes {
   dark: string;
@@ -107,24 +109,26 @@ export interface ResolvedTokens {
 
 /**
  * Resolve the accent family and appearance mode into concrete CSS tokens.
+ * When `id === "system"`, uses `systemAccentHex` (normalized from the OS
+ * system accent color) when available, falling back to system blue otherwise.
  */
 export function resolveTheme(
   id: ThemeId,
   osDark: boolean,
   appearanceMode: AppearanceMode = "system",
+  systemAccentHex: string | null = null,
 ): ResolvedTokens {
   const entry = themeById(id);
   const scheme: "light" | "dark" =
     appearanceMode === "light" ? "light" : appearanceMode === "dark" ? "dark" : osDark ? "dark" : "light";
   const dark = scheme === "dark";
   const surface = dark ? "1E1E20" : "FFFFFF";
+  const osAccent = entry.accentHexes ? null : normalizeOsAccentHex(systemAccentHex);
   const accent = entry.accentHexes
     ? dark
       ? entry.accentHexes.dark
       : entry.accentHexes.light
-    : dark
-      ? "0A84FF"
-      : "0A6DFF";
+    : osAccent ?? (dark ? "0A84FF" : "0A6DFF");
   return {
     scheme,
     accent: `#${accent}`,
@@ -148,8 +152,9 @@ export function applyTheme(
   id: ThemeId,
   osDark: boolean,
   appearanceMode: AppearanceMode = "system",
+  systemAccentHex: string | null = null,
 ): ResolvedTokens {
-  const t = resolveTheme(id, osDark, appearanceMode);
+  const t = resolveTheme(id, osDark, appearanceMode, systemAccentHex);
   root.dataset.theme = id;
   root.dataset.appearance = t.scheme;
   root.style.colorScheme = t.scheme;
