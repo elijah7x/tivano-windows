@@ -27,6 +27,10 @@ const NOTIFY_BODY = {
   failed: "Stopped with an error.",
 } as const;
 
+/** P2-32 (frozen ThreadRuntime.offscreenFlushMilliseconds): how often an
+ *  off-screen timeline publishes accumulated stream deltas. */
+export const OFFSCREEN_FLUSH_MS = 1000;
+
 function maybeNotifyDone(
   store: ClientStore,
   thread: ChatThread,
@@ -130,7 +134,16 @@ export class ClientStore {
   private sentVersions = new Map<string, number>();
   /** F20: threads waiting for a usage-limit reset (ephemeral mirror). */
   limitResumes: Record<string, number> = {};
-  /** P2-63: paced notification timers for non-visible streaming panels/threads. */
+  /** P2-32 (frozen ThreadRuntime.shownTimelines): count of mounted
+   *  timelines per thread — the selected chat, an open helper panel, and
+   *  panel heads can overlap. Stream chunks landing on any other thread
+   *  coalesce their re-render to `OFFSCREEN_FLUSH_MS` instead of
+   *  notifying per chunk. */
+  private readonly shownThreads = new Map<string, number>();
+  /** Pending off-screen mutations not yet published to subscribers. */
+  private unseenDirty = false;
+  private unseenTimer: ReturnType<typeof setTimeout> | null = null;
+  /** P2-63: paced notification timers for shown-but-not-selected panels. */
   private pacedNotifyTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly invoke: InvokeFn;
 
@@ -148,8 +161,46 @@ export class ClientStore {
   }
 
   private notify(): void {
+    // Any publish lands pending off-screen mutations too (they share the
+    // snapshot object graph), so the deferred flag clears with it.
+    this.unseenDirty = false;
     this.publish();
     for (const fn of this.listeners) fn();
+  }
+
+  /** P2-32 (frozen noteShown/noteHidden): a timeline reports whether it
+   *  is on screen. Becoming shown flushes coalesced off-screen updates
+   *  at once — the chat "catches up" the moment it is opened. */
+  noteTimelineShown(threadId: string, shown: boolean): void {
+    if (shown) {
+      const count = (this.shownThreads.get(threadId) ?? 0) + 1;
+      this.shownThreads.set(threadId, count);
+      if (count === 1) this.flushUnseen();
+    } else {
+      const count = Math.max(0, (this.shownThreads.get(threadId) ?? 0) - 1);
+      if (count === 0) this.shownThreads.delete(threadId);
+      else this.shownThreads.set(threadId, count);
+    }
+  }
+
+  /** Frozen offscreenFlushMilliseconds: unseen timelines flush at ~1 s.
+   *  One shared timer covers every off-screen thread — many streaming
+   *  chats still cost at most one render pass per interval. */
+  private deferUnseen(): void {
+    this.unseenDirty = true;
+    if (this.unseenTimer !== null) return;
+    this.unseenTimer = setTimeout(() => {
+      this.unseenTimer = null;
+      this.flushUnseen();
+    }, OFFSCREEN_FLUSH_MS);
+  }
+
+  private flushUnseen(): void {
+    if (this.unseenTimer !== null) {
+      clearTimeout(this.unseenTimer);
+      this.unseenTimer = null;
+    }
+    if (this.unseenDirty) this.notify();
   }
 
   /** Open a hydration cycle: events buffer until hydrate() lands the snapshot. */
@@ -184,6 +235,13 @@ export class ClientStore {
     if (gen !== this.hydrateGen) return; // superseded cycle (StrictMode replay)
     for (const id of this.pacedNotifyTimers.values()) clearTimeout(id);
     this.pacedNotifyTimers.clear();
+    // Same for a pending off-screen deferral — it must not straddle
+    // the hydration cycle (the trailing notify() already publishes).
+    if (this.unseenTimer !== null) {
+      clearTimeout(this.unseenTimer);
+      this.unseenTimer = null;
+    }
+    this.unseenDirty = false;
     this.snapshot = s;
     this.snapshotRev = s.rev;
     this.limitResumes = { ...(s.limitResumesAt ?? {}) };
@@ -519,6 +577,7 @@ export class ClientStore {
     this.drafts.delete(threadId);
     this.editTargets.delete(threadId);
     this.pendingSends.delete(threadId);
+    this.shownThreads.delete(threadId);
   }
 
   // ---- event application ------------------------------------------------
@@ -586,19 +645,24 @@ export class ClientStore {
           if (event.content !== undefined) m.content = event.content;
           else if (event.delta !== undefined) m.content += event.delta;
         }
-        // P2-63: non-visible panels/threads coalesce renderer notifications
-        // (90ms for an open panel beside the chat, 1000ms for offscreen threads).
+        // Frozen: deltas land on the runtime either way, but a timeline
+        // that is not shown only re-renders on the off-screen cadence —
+        // the mutation is in place, the publish waits for the timer or
+        // the next immediate event/show transition.
+        if (!this.shownThreads.has(event.threadId)) {
+          this.deferUnseen();
+          this.snapshot = { ...s, rev: this.snapshotRev };
+          return;
+        }
+        // P2-63: a shown-but-not-selected timeline (an open panel beside
+        // the chat) coalesces renderer notifications to ~90ms.
         if (s.selectedThreadId !== t.id) {
-          const isOpenPanel =
-            (t.isInPanel === true && t.parentThreadId === s.selectedThreadId) ||
-            (t.hydraHead !== undefined && t.hydraHead.leadId === s.selectedThreadId);
-          const delayMs = isOpenPanel ? 90 : 1000;
           this.snapshot = { ...s, rev: this.snapshotRev };
           if (!this.pacedNotifyTimers.has(t.id)) {
             const id = setTimeout(() => {
               this.pacedNotifyTimers.delete(t.id);
               this.notify();
-            }, delayMs);
+            }, 90);
             this.pacedNotifyTimers.set(t.id, id);
           }
           return;
@@ -734,9 +798,16 @@ export class ClientStore {
   }
 
   flushStreamPacing(): void {
-    if (this.pacedNotifyTimers.size === 0) return;
+    // Window-active flushes BOTH pacing paths — a shown panel's paced
+    // notify and an off-screen thread's deferred publish share the one
+    // notify pass (the mutations already landed on the snapshot).
+    if (this.pacedNotifyTimers.size === 0 && !this.unseenDirty) return;
     for (const id of this.pacedNotifyTimers.values()) clearTimeout(id);
     this.pacedNotifyTimers.clear();
+    if (this.unseenTimer !== null) {
+      clearTimeout(this.unseenTimer);
+      this.unseenTimer = null;
+    }
     this.notify();
   }
 

@@ -241,6 +241,219 @@ describe("per-thread drafts", () => {
   });
 });
 
+describe("P2-32 off-screen stream coalescing (frozen offscreenFlush)", () => {
+  function streamStore(): ClientStore {
+    const store = new ClientStore(async () => ({}));
+    const gen = store.beginHydration();
+    store.hydrate(snap(5, [streamingThread("t1", "u1", "m1")]), gen);
+    return store;
+  }
+
+  function notifies(store: ClientStore): () => number {
+    let n = 0;
+    store.subscribe(() => n++);
+    return () => n;
+  }
+
+  it("coalesces unseen turn-chunks to one publish per off-screen window", () => {
+    vi.useFakeTimers();
+    try {
+      const store = streamStore();
+      const count = notifies(store);
+      for (let seq = 3; seq <= 12; seq++) {
+        store.apply({
+          type: "turn-chunk", threadId: "t1", turnId: "u1", seq, delta: "x", rev: 100 + seq,
+        });
+      }
+      expect(count()).toBe(0); // nothing repaints mid-window
+      expect(store.thread("t1")!.messages[0]!.content).toBe("old" + "x".repeat(10));
+      vi.advanceTimersByTime(999);
+      expect(count()).toBe(0);
+      vi.advanceTimersByTime(1);
+      expect(count()).toBe(1); // ~1 s cadence, a single publish for all ten
+      // The next window coalesces independently.
+      for (let seq = 13; seq <= 20; seq++) {
+        store.apply({
+          type: "turn-chunk", threadId: "t1", turnId: "u1", seq, delta: "y", rev: 100 + seq,
+        });
+      }
+      vi.advanceTimersByTime(1000);
+      expect(count()).toBe(2);
+      expect(store.thread("t1")!.messages[0]!.content).toBe("old" + "x".repeat(10) + "y".repeat(8));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("publishes every chunk immediately while the timeline is shown", () => {
+    const store = streamStore();
+    store.apply({ type: "thread-selected", threadId: "t1", rev: 6 });
+    store.noteTimelineShown("t1", true);
+    const count = notifies(store);
+    for (let seq = 3; seq <= 7; seq++) {
+      store.apply({
+        type: "turn-chunk", threadId: "t1", turnId: "u1", seq, delta: "x", rev: 100 + seq,
+      });
+    }
+    expect(count()).toBe(5);
+  });
+
+  it("paces a shown-but-unselected timeline (open panel) to ~90ms", () => {
+    vi.useFakeTimers();
+    try {
+      const store = streamStore();
+      store.noteTimelineShown("t1", true); // mounted panel, not the selected chat
+      const count = notifies(store);
+      for (let seq = 3; seq <= 7; seq++) {
+        store.apply({
+          type: "turn-chunk", threadId: "t1", turnId: "u1", seq, delta: "x", rev: 100 + seq,
+        });
+      }
+      expect(count()).toBe(0); // coalesced, not per-chunk
+      vi.advanceTimersByTime(90);
+      expect(count()).toBe(1); // a single publish for the window
+      expect(store.thread("t1")!.messages[0]!.content).toBe("old" + "x".repeat(5));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("flushes pending unseen updates the moment the timeline is shown", () => {
+    const store = streamStore();
+    const count = notifies(store);
+    store.apply({
+      type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "NEW", rev: 6,
+    });
+    expect(count()).toBe(0);
+    store.noteTimelineShown("t1", true); // frozen: becoming shown flushes now
+    expect(count()).toBe(1);
+    expect(store.thread("t1")!.messages[0]!.content).toBe("oldNEW");
+  });
+
+  it("an immediate event publishes the pending unseen chunk with it", () => {
+    vi.useFakeTimers();
+    try {
+      const store = streamStore();
+      const count = notifies(store);
+      store.apply({
+        type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "NEW", rev: 6,
+      });
+      store.apply({
+        type: "turn-status", threadId: "t1", turnId: "u1", status: "done", rev: 7,
+      });
+      expect(count()).toBe(1); // the status publish carried the chunk
+      expect(store.thread("t1")!.messages[0]!.content).toBe("oldNEW");
+      vi.advanceTimersByTime(5000);
+      expect(count()).toBe(1); // no duplicate deferred flush
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still drops late/duplicate seq without scheduling a flush", () => {
+    vi.useFakeTimers();
+    try {
+      const store = streamStore();
+      const count = notifies(store);
+      store.apply({
+        type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 2, delta: "OLD", rev: 6,
+      });
+      vi.advanceTimersByTime(5000);
+      expect(count()).toBe(0);
+      expect(store.thread("t1")!.messages[0]!.content).toBe("old");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throttles per thread: a hidden helper defers while the chat stays live", () => {
+    vi.useFakeTimers();
+    try {
+      const store = new ClientStore(async () => ({}));
+      const gen = store.beginHydration();
+      store.hydrate(
+        snap(5, [streamingThread("t1", "u1", "m1"), streamingThread("t2", "u2", "m2")]),
+        gen,
+      );
+      store.apply({ type: "thread-selected", threadId: "t1", rev: 6 });
+      store.noteTimelineShown("t1", true);
+      const count = notifies(store);
+      store.apply({
+        type: "turn-chunk", threadId: "t2", turnId: "u2", seq: 3, delta: "b", rev: 7,
+      });
+      expect(count()).toBe(0);
+      store.apply({
+        type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "a", rev: 8,
+      });
+      expect(count()).toBe(1); // the shown chunk lands t2's pending text too
+      expect(store.thread("t2")!.messages[0]!.content).toBe("oldb");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("window-activity flushes shown-panel and offscreen pacing in one publish", () => {
+    vi.useFakeTimers();
+    try {
+      const store = new ClientStore(async () => ({}));
+      store.hydrate(
+        snap(5, [streamingThread("t1", "u1", "m1"), streamingThread("t2", "u2", "m2")]),
+        store.beginHydration(),
+      );
+      store.noteTimelineShown("t1", true); // shown panel, still unselected
+      const count = notifies(store);
+      store.apply({ type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "a", rev: 6 });
+      store.apply({ type: "turn-chunk", threadId: "t2", turnId: "u2", seq: 3, delta: "b", rev: 7 });
+      expect(count()).toBe(0);
+      store.onBridgeEvent({ type: "window-activity", active: true } as never);
+      expect(count()).toBe(1); // both pacing paths shared this one publish
+      expect(store.thread("t1")!.messages[0]!.content).toBe("olda");
+      expect(store.thread("t2")!.messages[0]!.content).toBe("oldb");
+      vi.advanceTimersByTime(2000);
+      expect(count()).toBe(1); // neither timer fires a duplicate later
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hydrate clears a straddling offscreen timer", () => {
+    vi.useFakeTimers();
+    try {
+      const store = streamStore();
+      store.apply({ type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "NEW", rev: 6 });
+      const count = notifies(store);
+      store.hydrate(snap(7, [streamingThread("t1", "u1", "m1")]), store.beginHydration());
+      expect(count()).toBe(1); // hydration's own publish
+      vi.advanceTimersByTime(5000);
+      expect(count()).toBe(1); // no stale offscreen timer publishes again
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reference-counts overlapping shown timelines before dropping to offscreen pace", () => {
+    vi.useFakeTimers();
+    try {
+      const store = streamStore();
+      store.noteTimelineShown("t1", true);
+      store.noteTimelineShown("t1", true);
+      store.noteTimelineShown("t1", false);
+      const count = notifies(store);
+      store.apply({ type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 3, delta: "x", rev: 6 });
+      vi.advanceTimersByTime(90);
+      expect(count()).toBe(1); // one shown mount remains: panel pace
+      store.noteTimelineShown("t1", false);
+      store.apply({ type: "turn-chunk", threadId: "t1", turnId: "u1", seq: 4, delta: "y", rev: 7 });
+      vi.advanceTimersByTime(90);
+      expect(count()).toBe(1);
+      vi.advanceTimersByTime(910);
+      expect(count()).toBe(2); // all mounts gone: offscreen pace
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("finish-signal notification visibility (P2-62)", () => {
   function withDomMocks(opts: {
     focused: boolean;

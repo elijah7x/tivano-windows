@@ -11,12 +11,17 @@ import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
 import { useT } from "../locale";
 import { translateError, translateNotice } from "../i18n";
 import {
+  mdCoordEntry,
   prewarmMarkdown,
   renderMarkdown,
   StreamingMarkdownCoordinator,
   type MarkdownLabels,
 } from "../markdown";
 import { appActivity, subscribeMemoryPressure, useAppPaused, useInView } from "../appActivity";
+import {
+  clearMdCoordCacheForMemoryPressure,
+  mdCoordMapFor,
+} from "../markdownCoordinatorCache";
 import { visibleThreads } from "../../shared/threadOrder";
 import { api, callApi, clientStore } from "../client";
 import { ApprovalCard } from "./ApprovalCard";
@@ -143,6 +148,8 @@ function statusLabel(t: (k: string) => string, m: Message): string | null {
  *  (frozen HydraDelegationBlock) — injected so markdown stays pure. */
 const delegationCard = (body: string, sent: boolean): React.ReactNode =>
   createElement(HydraDelegationCard, { body, sent });
+
+const EMPTY_MD_MAP: Map<string, StreamingMarkdownCoordinator> = new Map();
 
 export function ChatView(props: {
   thread: ChatThread | null;
@@ -307,29 +314,33 @@ export function ChatView(props: {
   // incremental parse — stable leading blocks are reused element-for-
   // element and just the tail re-renders per chunk; a tail past the sync
   // bound parses deferred and paints the last landed result meanwhile,
-  // so a giant open block never stalls a render.
-  const mdCoordRef = useRef(new Map<string, StreamingMarkdownCoordinator>());
+  // so a giant open block never stalls a render. P2-32: the map itself
+  // comes from the per-thread cache so a remount reuses landed work.
+  const mdMap = useMemo(
+    () => (threadId ? mdCoordMapFor(threadId) : EMPTY_MD_MAP),
+    [threadId],
+  );
   const [, mdBump] = useReducer((x: number) => x + 1, 0);
-  const mdCoordFor = (id: string): StreamingMarkdownCoordinator => {
-    let c = mdCoordRef.current.get(id);
-    if (!c) {
-      c = new StreamingMarkdownCoordinator(() => mdBump());
-      mdCoordRef.current.set(id, c);
-    }
-    return c;
-  };
+  // A pressure flush or LRU eviction can dispose entries the mounted
+  // map still holds — mdCoordEntry replaces them on access.
+  const mdCoordFor = (id: string): StreamingMarkdownCoordinator =>
+    mdCoordEntry(mdMap, id, () => mdBump());
   useEffect(() => {
     setHydraPanelHidden(false);
     headCount.current = 0;
     veilRef.current.clear();
-    mdCoordRef.current.forEach((c) => c.dispose());
-    mdCoordRef.current.clear();
+  }, [threadId]);
+  // P2-32 (frozen noteShown/noteHidden): the client coalesces stream
+  // updates for timelines that are not on screen.
+  useEffect(() => {
+    if (!threadId) return;
+    clientStore.noteTimelineShown(threadId, true);
+    return () => clientStore.noteTimelineShown(threadId, false);
   }, [threadId]);
   useEffect(() => {
     return subscribeMemoryPressure(() => {
       veilRef.current.clear();
-      mdCoordRef.current.forEach((c) => c.dispose());
-      mdCoordRef.current.clear();
+      clearMdCoordCacheForMemoryPressure();
     });
   }, []);
   const threadsRef = useRef(props.threads);
@@ -625,10 +636,10 @@ export function ChatView(props: {
             veil: { chars: number; ms: number } | null,
           ): React.ReactNode => {
             if (m.status !== "streaming") {
-              const c = mdCoordRef.current.get(m.id);
+              const c = mdMap.get(m.id);
               if (c) {
                 c.dispose();
-                mdCoordRef.current.delete(m.id);
+                mdMap.delete(m.id);
               }
               return renderMarkdown(source, labels);
             }
