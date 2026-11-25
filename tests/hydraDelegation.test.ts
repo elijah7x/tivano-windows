@@ -19,6 +19,7 @@ import {
   hydraTeamStatus,
   hydraTurnNote,
   markingDelegationBlockSent,
+  mayOpenHydraFence,
   personaAt,
   personaIndex,
   personaNamed,
@@ -393,6 +394,15 @@ describe("markingDelegationBlockSent / hasSentDelegationBlock (frozen)", () => {
   it("leaves text without a delegation block alone", () => {
     expect(markingDelegationBlockSent("plain reply")).toBe("plain reply");
     expect(hasSentDelegationBlock("plain reply")).toBe(false);
+  });
+
+  it("mayOpenHydraFence pre-check gates non-hydra replies and allows indented/4-backtick openers", () => {
+    expect(mayOpenHydraFence("plain reply")).toBe(false);
+    expect(mayOpenHydraFence("```ts\nconst x = 1;\n```")).toBe(false);
+    expect(mayOpenHydraFence("trailing ```")).toBe(false);
+    expect(mayOpenHydraFence("```  \tHydra\n[]\n```")).toBe(true);
+    expect(mayOpenHydraFence("````hydra\n[]\n```")).toBe(true);
+    expect(mayOpenHydraFence("```hydra-sent\n[]\n```")).toBe(true);
   });
 });
 
