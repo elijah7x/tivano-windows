@@ -2038,4 +2038,23 @@ export const zhHant: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "1 個檔案已變更，新增 %@ 行，刪除 %@ 行",
   "%@ files changed, %@ lines added, %@ lines removed": "%@ 個檔案已變更，新增 %@ 行，刪除 %@ 行",
   "Show this thread's changes": "顯示此對話的變更",
+  // P2-50
+  "Where shall we begin today?": "今天從哪裡開始？",
+  "Work in a project": "在專案中工作",
+  "Agents read and edit this folder, and can run in parallel worktrees.":
+    "代理會讀取並編輯此資料夾，並可在平行 worktree 中執行。",
+  "Add a project folder": "新增專案資料夾",
+  "Just chat": "直接對話",
+  "No project folder needed. Good for questions and drafts.":
+    "無需專案資料夾，適合提問與草稿。",
+  "Start a chat": "開始對話",
+  "Install a coding agent first": "請先安裝一個程式設計代理",
+  "1 provider ready": "1 個供應商可用",
+  "%lld providers ready": "%lld 個供應商可用",
+  "Manage": "管理",
+  "Install": "安裝",
+  "Ready": "已就緒",
+  "ChatGPT plan or API key": "ChatGPT 方案或 API 金鑰",
+  "Synthetic provider": "合成提供方",
+  "Provider checklist": "供應商清單",
 };

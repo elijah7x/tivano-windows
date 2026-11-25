@@ -2038,4 +2038,23 @@ export const ja: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "1 ファイル変更、%@ 行追加、%@ 行削除",
   "%@ files changed, %@ lines added, %@ lines removed": "%@ ファイル変更、%@ 行追加、%@ 行削除",
   "Show this thread's changes": "このスレッドの変更を表示",
+  // P2-50
+  "Where shall we begin today?": "今日はどこから始めましょうか？",
+  "Work in a project": "プロジェクトで作業する",
+  "Agents read and edit this folder, and can run in parallel worktrees.":
+    "エージェントはこのフォルダーを読み書きし、複数の worktree で並列実行できます。",
+  "Add a project folder": "プロジェクトフォルダーを追加",
+  "Just chat": "そのままチャット",
+  "No project folder needed. Good for questions and drafts.":
+    "プロジェクトフォルダーは不要です。質問や下書きに向いています。",
+  "Start a chat": "チャットを開始",
+  "Install a coding agent first": "先にコーディングエージェントをインストールしてください",
+  "1 provider ready": "1 件のプロバイダーが利用可能",
+  "%lld providers ready": "%lld 件のプロバイダーが利用可能",
+  "Manage": "管理",
+  "Install": "インストール",
+  "Ready": "準備完了",
+  "ChatGPT plan or API key": "ChatGPT プランまたは API キー",
+  "Synthetic provider": "合成プロバイダー",
+  "Provider checklist": "プロバイダー一覧",
 };

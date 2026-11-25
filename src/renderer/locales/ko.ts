@@ -2038,4 +2038,23 @@ export const ko: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "파일 1개 변경, %@줄 추가, %@줄 삭제",
   "%@ files changed, %@ lines added, %@ lines removed": "파일 %@개 변경, %@줄 추가, %@줄 삭제",
   "Show this thread's changes": "이 스레드의 변경 사항 표시",
+  // P2-50
+  "Where shall we begin today?": "오늘은 어디서부터 시작할까요?",
+  "Work in a project": "프로젝트에서 작업",
+  "Agents read and edit this folder, and can run in parallel worktrees.":
+    "에이전트가 이 폴더를 읽고 편집하며, 병렬 worktree에서 실행할 수 있습니다.",
+  "Add a project folder": "프로젝트 폴더 추가",
+  "Just chat": "바로 대화",
+  "No project folder needed. Good for questions and drafts.":
+    "프로젝트 폴더가 필요 없습니다. 질문이나 초안 작성에 적합합니다.",
+  "Start a chat": "대화 시작",
+  "Install a coding agent first": "먼저 코딩 에이전트를 설치하세요",
+  "1 provider ready": "제공자 1개 사용 가능",
+  "%lld providers ready": "제공자 %lld개 사용 가능",
+  "Manage": "관리",
+  "Install": "설치",
+  "Ready": "준비됨",
+  "ChatGPT plan or API key": "ChatGPT 플랜 또는 API 키",
+  "Synthetic provider": "합성 제공자",
+  "Provider checklist": "제공자 목록",
 };

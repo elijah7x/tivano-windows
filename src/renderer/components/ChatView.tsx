@@ -4,7 +4,7 @@
 // streaming/approval/error/interruption states, and the composer.
 
 import { createElement, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { ChatThread, CheckpointRecordView, CodexInfo, Message, Project, Settings, Turn } from "../../shared/types";
+import type { AppInfo, ChatThread, CheckpointRecordView, CodexInfo, Message, Project, Settings, Turn } from "../../shared/types";
 import { INTERRUPTED_MARKER } from "../../shared/types";
 import { AttachChip } from "./AttachChip";
 import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
@@ -40,6 +40,8 @@ import { HydraReportRow } from "./HydraReportRow";
 import { watchSelectionResidue } from "../selectionRepaint";
 import { MessagePopover } from "./MessagePopover";
 import { NewThreadPrompt } from "./NewThreadPrompt";
+import { NoThreadView, WelcomeView } from "./WelcomeView";
+import type { SettingsPageId } from "./SettingsModal";
 import type { MessagePopoverState } from "./MessagePopover";
 import { peelQuotes, quoteExcerpt } from "../../shared/replyQuote";
 import { hydraPanelLayout } from "../../shared/hydra";
@@ -165,6 +167,8 @@ export function ChatView(props: {
   providerLabel: string;
   mode: "mock" | "synthetic-stdio" | "codex";
   codex?: CodexInfo;
+  info?: Pick<AppInfo, "mode" | "providerId" | "providerLabel" | "codex"> | undefined;
+  settingsOpen?: boolean | undefined;
   readOnly?: boolean;
   /** F15: the thread's working directory when provably available. */
   directory?: string | null;
@@ -188,8 +192,8 @@ export function ChatView(props: {
   onSetTopControlsExpanded?: (
     next: boolean | ((prev: boolean) => boolean),
   ) => void;
-  /** Hydra intro's "Set up in Settings" — the modal lives on the shell. */
-  onOpenSettings?: () => void;
+  /** Hydra intro's "Set up in Settings" & WelcomeView's Manage — the modal lives on the shell. */
+  onOpenSettings?: ((page?: SettingsPageId) => void) | undefined;
 }): React.JSX.Element {
   const t = useT();
   const endRef = useRef<HTMLDivElement>(null);
@@ -493,6 +497,14 @@ export function ChatView(props: {
   const popsOn = hydraPanelLayout(props.settings ?? {}) === "independent";
 
   if (!thread) {
+    const isFirstLaunch =
+      (props.projects?.length ?? 0) === 0 && (props.threads?.length ?? 0) === 0;
+    const welcomeInfo = props.info ?? {
+      mode: props.mode,
+      providerId: props.mode,
+      providerLabel: props.providerLabel,
+      ...(props.codex ? { codex: props.codex } : {}),
+    };
     return (
       <main className="chat">
         {props.sidebarCollapsed && props.onToggleSidebar && (
@@ -508,9 +520,19 @@ export function ChatView(props: {
             </button>
           </header>
         )}
-        <div className="center-state">
-          <p>{t("Pick a thread or start a new one")}</p>
-        </div>
+        {isFirstLaunch ? (
+          <WelcomeView
+            info={welcomeInfo}
+            readOnly={props.readOnly === true}
+            settingsOpen={props.settingsOpen}
+            onOpenSettings={props.onOpenSettings}
+          />
+        ) : (
+          <NoThreadView
+            readOnly={props.readOnly === true}
+            settings={props.settings}
+          />
+        )}
       </main>
     );
   }
