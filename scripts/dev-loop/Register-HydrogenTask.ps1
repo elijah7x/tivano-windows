@@ -14,7 +14,7 @@ param(
   [ValidateRange(1, 1440)][int]$IntervalMinutes = 15,
   [ValidateRange(5, 240)][int]$ExecutionLimitMinutes = 30,
   [ValidateRange(1, 10)][int]$MaxOpenPrs = 2,
-  [ValidateRange(1, 200)][int]$DailyMergeCap = 20,
+  [ValidateRange(1, 200)][int]$DailyMergeCap = 40,
   [ValidateRange(5, 480)][int]$PrintTimeoutMinutes = 150,
   [ValidateRange(10, 600)][int]$HardKillMinutes = 170,
   [ValidateRange(1, 48)][int]$CooldownHours = 6,
