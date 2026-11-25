@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-26.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F21/F22: the Hydra mark in the chat header — frozen HydraButton
 // parity, bounded. Click: the read-once intro first (until it has been
@@ -12,6 +12,7 @@ import { personaAt } from "../../shared/hydraDelegation";
 import type { ChatThread } from "../../shared/types";
 import { callApi, clientStore } from "../client";
 import { useT } from "../locale";
+import type { SettingsPageId } from "./SettingsModal";
 
 type Pop = "intro" | "idle" | "switch";
 
@@ -25,7 +26,7 @@ export function HydraMark(props: {
   /** Frozen runtime.isHydraPanelHidden — the mark's click toggles it. */
   panelHidden: boolean;
   onTogglePanel: () => void;
-  onOpenSettings?: () => void;
+  onOpenSettings?: (page?: SettingsPageId) => void;
 }): React.JSX.Element {
   const t = useT();
   const rootRef = useRef<HTMLSpanElement>(null);
@@ -203,7 +204,7 @@ export function HydraMark(props: {
               className="hi-btn"
               onClick={() => {
                 seen();
-                props.onOpenSettings?.();
+                props.onOpenSettings?.("hydra");
               }}
             >
               {t("Set up in Settings")}

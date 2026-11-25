@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-26.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P2-53 component tests: floating tray sidebar, lean top bar (capsule +
 // overflow menu + top-bar changes popover anchor), 8 consolidated Settings
@@ -12,9 +12,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { defaultSettings } from "../src/main/store";
 import { clientStore } from "../src/renderer/client";
 import { ChatView } from "../src/renderer/components/ChatView";
+import { CommandPalette } from "../src/renderer/components/CommandPalette";
+import { HydraMark } from "../src/renderer/components/HydraMark";
 import { OpenInItems } from "../src/renderer/components/OpenInMenu";
 import { SETTINGS_PAGES, SettingsModal } from "../src/renderer/components/SettingsModal";
 import { Sidebar } from "../src/renderer/components/Sidebar";
+import { ThreadChangesTab } from "../src/renderer/components/ThreadChangesTab";
 import { translate } from "../src/renderer/i18n";
 import { LanguageContext } from "../src/renderer/locale";
 import type { AppInfo, ChatThread, LanguageId, Settings, Snapshot } from "../src/shared/types";
@@ -228,6 +231,62 @@ describe("P2-53 window chrome simplification", () => {
     expect(openInHtml).toContain('data-openin-item="true"');
     expect(openInHtml).toContain("File Explorer");
     expect(openInHtml).toContain("Copy path");
+
+    for (const [pageId, expectedText] of [
+      ["conversation", "New threads"],
+      ["models", "Codex CLI"],
+      ["hydra", "Sub-agent"],
+      ["shortcuts", "Shortcuts"],
+    ] as const) {
+      const pageHtml = renderInLang(
+        "en",
+        createElement(SettingsModal, {
+          settings,
+          info,
+          threads: [thread],
+          projects: snapshot.projects,
+          tokenActivity: {},
+          initialPage: pageId,
+          onClose: () => {},
+        }),
+      );
+      expect(pageHtml).toContain(`data-page="${pageId}"`);
+      expect(pageHtml).toContain(expectedText);
+    }
+
+    const paletteHtml = renderInLang(
+      "en",
+      createElement(CommandPalette, {
+        snapshot,
+        selectedThreadId: thread.id,
+        onClose: () => {},
+        onToggleDock: () => {},
+        onToggleChanges: () => {},
+        onOpenSettings: () => {},
+      }),
+    );
+    expect(paletteHtml).toContain("Toggle changes");
+
+    const changesIdleHtml = renderInLang(
+      "en",
+      createElement(ThreadChangesTab, {
+        threadId: thread.id,
+        toggleSeq: 0,
+      }),
+    );
+    expect(changesIdleHtml).toBe("");
+
+    const markHtml = renderInLang(
+      "en",
+      createElement(HydraMark, {
+        thread,
+        heads: [],
+        panelHidden: false,
+        onTogglePanel: () => {},
+        onOpenSettings: () => {},
+      }),
+    );
+    expect(markHtml).toContain("hydra-mark");
   });
 
   it("localizes Settings pages and top-bar strings in zh-Hans", () => {
@@ -266,6 +325,9 @@ describe("P2-53 window chrome simplification", () => {
     expect(css).toContain(".chrome-capsule");
     expect(css).toContain(".settings-nav");
     expect(css).toContain("height: 28px");
+    expect(css).toContain(".settings-modal .ml-newgroup");
+    expect(css).toContain(".settings-modal .choice.hydra-remove");
+    expect(css).toContain(".settings-modal .ml-remove:hover:not(:disabled)");
     expect(css).toContain(".settings-btn-compact");
     expect(css).toContain("height: 24px");
     expect(css).toContain(".settings-modal .wp-btn.danger:hover:not(:disabled)");
