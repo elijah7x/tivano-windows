@@ -54,6 +54,7 @@ $commitPctMax = 0
 $desktopMBMax = 0
 $hungSamples = 0
 $dialogSamples = 0
+$orphanMax = 0
 
 $gateRuns = 0
 $gatePass = 0
@@ -64,6 +65,10 @@ $gateTimeoutFails = 0
 $watchdogRestarts = 0
 $watchdogKickoffs = 0
 $watchdogUserDeferred = 0
+$watchdogSessionRotations = 0
+$watchdogRotationUnconfirmed = 0
+$watchdogHangRestarts = 0
+$watchdogStrayClosed = 0
 
 if (-not [string]::IsNullOrWhiteSpace($Root)) {
   # 1. Health samples from <Root>\state\health.jsonl
@@ -108,12 +113,17 @@ if (-not [string]::IsNullOrWhiteSpace($Root)) {
           if ($null -eq $rawDialog) { $rawDialog = Get-JsonProp $obj 'dialog' }
           if ($null -ne $rawDialog) { $dialogVal = [int]$rawDialog }
 
+          $orphanVal = 0
+          $rawOrphan = Get-JsonProp $obj 'orphanCandidates'
+          if ($null -ne $rawOrphan) { $orphanVal = [int]$rawOrphan }
+
           $healthSamples++
           $null = $freeRamValues.Add($freeVal)
           if ($healthSamples -eq 1 -or $commitVal -gt $commitPctMax) { $commitPctMax = $commitVal }
           if ($healthSamples -eq 1 -or $desktopVal -gt $desktopMBMax) { $desktopMBMax = $desktopVal }
           if ($hungVal -gt 0) { $hungSamples++ }
           if ($dialogVal -gt 0) { $dialogSamples++ }
+          if ($healthSamples -eq 1 -or $orphanVal -gt $orphanMax) { $orphanMax = $orphanVal }
         } catch { continue }
       }
 
@@ -192,6 +202,18 @@ if (-not [string]::IsNullOrWhiteSpace($Root)) {
           if ($msg -match 'user active, deferred') {
             $watchdogUserDeferred++
           }
+          if ($msg -match 'session rotated') {
+            $watchdogSessionRotations++
+          }
+          if ($msg -match 'session rotation unconfirmed') {
+            $watchdogRotationUnconfirmed++
+          }
+          if ($msg -match 'Devin Desktop hung for \d+ samples; restarting') {
+            $watchdogHangRestarts++
+          }
+          if ($msg -match 'stray app closed:') {
+            $watchdogStrayClosed++
+          }
         }
       }
     }
@@ -208,6 +230,7 @@ $report = [ordered]@{
     desktopMBMax = $desktopMBMax
     hungSamples = $hungSamples
     dialogSamples = $dialogSamples
+    orphanMax = $orphanMax
   }
   gates = [ordered]@{
     runs = $gateRuns
@@ -220,6 +243,10 @@ $report = [ordered]@{
     restarts = $watchdogRestarts
     kickoffs = $watchdogKickoffs
     userDeferred = $watchdogUserDeferred
+    sessionRotations = $watchdogSessionRotations
+    rotationUnconfirmed = $watchdogRotationUnconfirmed
+    hangRestarts = $watchdogHangRestarts
+    strayClosed = $watchdogStrayClosed
   }
 }
 
