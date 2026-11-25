@@ -8,7 +8,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
-import { ModelListSettings } from "../src/renderer/components/ModelListSettings";
+import {
+  ModelListSettings,
+  createModelListController,
+  type PendingSectionRename,
+} from "../src/renderer/components/ModelListSettings";
 import { ModelPicker } from "../src/renderer/components/ModelPicker";
 import { LanguageContext } from "../src/renderer/locale";
 import { clientStore } from "../src/renderer/client";
@@ -20,6 +24,7 @@ import type {
   Settings,
   Snapshot,
 } from "../src/shared/types";
+import type { ModelPin, ModelPreference, ModelSection } from "../src/shared/modelList";
 
 const prevSnapshot = clientStore.snapshot;
 
@@ -256,5 +261,273 @@ describe("ModelPicker (P2-56 group-aware picker)", () => {
     expect(openZh).toContain("模型分组");
     expect(openZh).toContain("未分组");
     expect(openZh).toContain("全部");
+  });
+});
+
+describe("ModelListSettings P2-33 controller & component regressions", () => {
+  function setupControllerRig(overrides: Partial<Settings> = {}) {
+    setMockSettings(overrides);
+    const writes: Record<string, unknown>[] = [];
+    let editingId: string | null = null;
+    let draft = "";
+    let pendingNewId: string | null = null;
+    const pendingRenameRef: { current: PendingSectionRename | null } = { current: null };
+    const dragRef: { current: string | null } = { current: null };
+    let dropHint: string | null = null;
+    let effortPop: { pin: ModelPin; x: number; y: number } | null = null;
+
+    const getSnap = () => clientStore.snapshot?.settings;
+    const ctrl = createModelListController({
+      getSnapshotSettings: getSnap,
+      fallback: {
+        pins: getSnap()?.modelList ?? [],
+        sections: getSnap()?.modelSections ?? [],
+        collapsed: getSnap()?.collapsedModelSections ?? [],
+        prefs: getSnap()?.modelPreferences ?? {},
+      },
+      getEditingId: () => editingId,
+      setEditingId: (id) => {
+        editingId = id;
+      },
+      getDraft: () => draft,
+      setDraft: (d) => {
+        draft = d;
+      },
+      getPendingNewId: () => pendingNewId,
+      setPendingNewId: (id) => {
+        pendingNewId = id;
+      },
+      pendingRenameRef,
+      dragRef,
+      setDropHint: (h) => {
+        dropHint = h;
+      },
+      setEffortPop: (p) => {
+        effortPop = p;
+      },
+      write: (patch) => {
+        writes.push(patch);
+      },
+    });
+
+    const echoSnapshot = (patch: Partial<Settings>) => {
+      clientStore.snapshot = {
+        ...clientStore.snapshot!,
+        settings: {
+          ...clientStore.snapshot!.settings,
+          ...patch,
+        },
+      };
+    };
+
+    return {
+      ctrl,
+      writes,
+      echoSnapshot,
+      getState: () => ({ editingId, draft, pendingNewId, pendingRename: pendingRenameRef.current, dropHint, effortPop }),
+      setDraftVal: (d: string) => {
+        draft = d;
+      },
+      setDrag: (d: string | null) => {
+        dragRef.current = d;
+      },
+      setPop: (pin: ModelPin) => {
+        effortPop = { pin, x: 10, y: 20 };
+      },
+    };
+  }
+
+  it("renders rename input cleanly in group detail and keeps maxLength=200 bound", () => {
+    setMockSettings({});
+    const html = renderLang(
+      "en",
+      createElement(ModelListSettings, {
+        initialGroup: { kind: "group", sectionId: "sec-a" },
+        initialCatalog: SAMPLE_CATALOG,
+      }),
+    );
+    expect(html).toContain("Rename group");
+    expect(html).toContain("Ungroup. Models stay in the list.");
+  });
+
+  it("preserves a blur-committed rename when removePin runs before IPC echo", () => {
+    const rig = setupControllerRig();
+    const secA = clientStore.snapshot!.settings.modelSections![0]!;
+    rig.ctrl.startRename(secA);
+    rig.setDraftVal("Reasoning v2");
+
+    // Simulate blur firing commitRename (async IPC, snapshot not updated yet).
+    rig.ctrl.commitRename("sec-a");
+    expect(rig.getState().editingId).toBeNull();
+    expect(rig.getState().pendingRename).toEqual({ id: "sec-a", name: "Reasoning v2" });
+
+    // Immediate removePin click before settings-changed echoes must fold the pending rename.
+    rig.ctrl.removePin({ provider: "codex", modelID: "gpt-a1" });
+    expect(rig.writes).toHaveLength(2);
+    const removeWrite = rig.writes[1] as {
+      modelList: ModelPin[];
+      modelSections: ModelSection[];
+    };
+    expect(removeWrite.modelList.map((p) => p.modelID)).toEqual(["gpt-u", "gpt-b1"]);
+    expect(removeWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe("Reasoning v2");
+
+    // Once the store echoes the new name, pendingRename clears.
+    rig.echoSnapshot({
+      modelList: removeWrite.modelList,
+      modelSections: removeWrite.modelSections,
+    });
+    rig.ctrl.syncEffects(removeWrite.modelList, removeWrite.modelSections, null);
+    expect(rig.getState().pendingRename).toBeNull();
+  });
+
+  it("folds an in-flight rename when removing a sibling section and never resurrects a deleted section", () => {
+    const rig = setupControllerRig();
+    const secA = clientStore.snapshot!.settings.modelSections![0]!;
+    rig.ctrl.startRename(secA);
+    rig.setDraftVal("Reasoning Live");
+    rig.ctrl.commitRename("sec-a");
+
+    // Remove sec-b before sec-a rename echoes.
+    rig.ctrl.removeSection("sec-b");
+    const w1 = rig.writes[1] as { modelSections: ModelSection[] };
+    expect(w1.modelSections.map((s) => [s.id, s.name])).toEqual([
+      ["sec-a", "Reasoning Live"],
+      ["sec-empty", "Empty Lane"],
+    ]);
+
+    // Now rename sec-empty and delete sec-empty itself: must not resurrect and clears pendingRename.
+    const secEmpty = clientStore.snapshot!.settings.modelSections![2]!;
+    rig.ctrl.startRename(secEmpty);
+    rig.setDraftVal("Doomed");
+    rig.ctrl.commitRename("sec-empty");
+    rig.ctrl.removeSection("sec-empty");
+    const wLast = rig.writes.at(-1) as { modelSections: ModelSection[] };
+    expect(wLast.modelSections.some((s) => s.id === "sec-empty")).toBe(false);
+    expect(rig.getState().pendingRename).toBeNull();
+  });
+
+  it("folds pending rename into reorder operations (rail drop, pin drop, moveSection, movePinToSection)", () => {
+    const rig = setupControllerRig();
+    const secA = clientStore.snapshot!.settings.modelSections![0]!;
+    rig.ctrl.startRename(secA);
+    rig.setDraftVal("Reasoning Reordered");
+    rig.ctrl.commitRename("sec-a");
+
+    // Reorder sec-b onto sec-a via rail drop before IPC echo.
+    rig.setDrag("section/sec-b");
+    rig.ctrl.dropOnRail("sec-a", false);
+    const dropWrite = rig.writes[1] as {
+      modelList: ModelPin[];
+      modelSections: ModelSection[];
+    };
+    expect(dropWrite.modelSections[0]?.id).toBe("sec-b");
+    expect(dropWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe(
+      "Reasoning Reordered",
+    );
+
+    // Move pin while editing (context-menu path keeps editingId active).
+    rig.ctrl.startRename(secA);
+    rig.setDraftVal("Reasoning Menu");
+    rig.ctrl.movePinToSection({ provider: "codex", modelID: "gpt-u" }, "sec-a");
+    const movePinWrite = rig.writes[2] as {
+      modelList: ModelPin[];
+      modelSections: ModelSection[];
+    };
+    expect(movePinWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe(
+      "Reasoning Menu",
+    );
+    // sec-a position is 0 since gpt-u moved under sec-a.
+    expect(movePinWrite.modelSections.find((s) => s.id === "sec-a")?.position).toBe(0);
+
+    // Move section up while editing.
+    rig.ctrl.moveSection("sec-b", -1);
+    const moveSecWrite = rig.writes[3] as { modelSections: ModelSection[] };
+    expect(moveSecWrite.modelSections[0]?.id).toBe("sec-b");
+    expect(moveSecWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe(
+      "Reasoning Menu",
+    );
+  });
+
+  it("guards mid-drag removal of sections and pins without crashing or writing stale data", () => {
+    const rig = setupControllerRig();
+
+    // Start dragging sec-b, then remove sec-b from store before drop lands.
+    rig.setDrag("section/sec-b");
+    rig.echoSnapshot({
+      modelSections: clientStore.snapshot!.settings.modelSections!.filter(
+        (s) => s.id !== "sec-b",
+      ),
+    });
+    rig.ctrl.dropOnRail("sec-a", false);
+    expect(rig.writes).toHaveLength(0);
+
+    // Start dragging codex/gpt-b1, then remove gpt-b1 from store before drop lands.
+    rig.setDrag("codex/gpt-b1");
+    rig.echoSnapshot({
+      modelList: clientStore.snapshot!.settings.modelList!.filter(
+        (p) => p.modelID !== "gpt-b1",
+      ),
+    });
+    rig.ctrl.dropOnPin({ provider: "codex", modelID: "gpt-a1" }, false);
+    rig.setDrag("codex/gpt-b1");
+    rig.ctrl.dropOnWallGroup("sec-a", false);
+    expect(rig.writes).toHaveLength(0);
+  });
+
+  it("keeps New group rename alive until echoed, then clears vanished editingId/effortPop", () => {
+    const rig = setupControllerRig();
+    rig.ctrl.addNewGroup("New group");
+    const addWrite = rig.writes[0] as { modelSections: ModelSection[] };
+    const newId = addWrite.modelSections.at(-1)!.id;
+    expect(rig.getState().editingId).toBe(newId);
+    expect(rig.getState().pendingNewId).toBe(newId);
+
+    // Before IPC echo, syncEffects sees old sections without newId -> must NOT close editor.
+    rig.ctrl.syncEffects(
+      clientStore.snapshot!.settings.modelList!,
+      clientStore.snapshot!.settings.modelSections!,
+      null,
+    );
+    expect(rig.getState().editingId).toBe(newId);
+
+    // Once echoed, pendingNewId clears while editingId stays open.
+    rig.echoSnapshot({ modelSections: addWrite.modelSections });
+    rig.ctrl.syncEffects(
+      clientStore.snapshot!.settings.modelList!,
+      addWrite.modelSections,
+      null,
+    );
+    expect(rig.getState().pendingNewId).toBeNull();
+    expect(rig.getState().editingId).toBe(newId);
+
+    // When the target section or effortPop pin vanishes later, both clear.
+    rig.setPop({ provider: "codex", modelID: "gpt-a1" });
+    const prunedSections = addWrite.modelSections.filter((s) => s.id !== newId);
+    const prunedPins = clientStore.snapshot!.settings.modelList!.filter(
+      (p) => p.modelID !== "gpt-a1",
+    );
+    rig.ctrl.syncEffects(prunedPins, prunedSections, rig.getState().effortPop);
+    expect(rig.getState().editingId).toBeNull();
+    expect(rig.getState().effortPop).toBeNull();
+  });
+
+  it("EffortCard updatePref reads the latest snapshot modelPreferences", () => {
+    const rig = setupControllerRig();
+    // Another pin's preference arrived in the store after render.
+    rig.echoSnapshot({
+      modelPreferences: {
+        "codex/gpt-a1": { effort: "high", fastMode: true },
+        "codex/gpt-b1": { effort: "medium" },
+      },
+    });
+    rig.ctrl.updatePref({ provider: "codex", modelID: "gpt-u" }, { effort: "low" });
+    const prefWrite = rig.writes[0] as {
+      modelPreferences: Record<string, ModelPreference>;
+    };
+    expect(prefWrite.modelPreferences).toEqual({
+      "codex/gpt-a1": { effort: "high", fastMode: true },
+      "codex/gpt-b1": { effort: "medium" },
+      "codex/gpt-u": { effort: "low" },
+    });
   });
 });

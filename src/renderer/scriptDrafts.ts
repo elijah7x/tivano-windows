@@ -33,3 +33,41 @@ export function makeScriptDraftKeyGen(): () => string {
   let n = 0;
   return () => `new-${++n}`;
 }
+
+export function createScriptDraft(
+  keyGen: () => string,
+  name: string,
+): ScriptDraft {
+  return {
+    key: keyGen(),
+    name,
+    command: "",
+    icon: "play",
+    runOnWorktreeCreate: false,
+  };
+}
+
+export function patchScriptDraft(
+  drafts: readonly ScriptDraft[],
+  key: string,
+  patch: Partial<ScriptDraft>,
+): ScriptDraft[] {
+  return drafts.map((d) => (d.key === key ? { ...d, ...patch } : d));
+}
+
+export function removeScriptDraft(
+  drafts: readonly ScriptDraft[],
+  key: string,
+): ScriptDraft[] {
+  return drafts.filter((d) => d.key !== key);
+}
+
+export function serializeScriptDrafts(drafts: readonly ScriptDraft[]) {
+  return drafts.map((d) => ({
+    ...(d.id ? { id: d.id } : {}),
+    name: d.name,
+    command: d.command,
+    icon: d.icon || "play",
+    runOnWorktreeCreate: d.runOnWorktreeCreate,
+  }));
+}

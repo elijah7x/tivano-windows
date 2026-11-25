@@ -319,7 +319,55 @@ export async function runModelListChecks({
   });
   verify("ML-13 pin removed", (await settingsOf(page)).modelList.length === before - 1);
 
+  // ML-13b (P2-33): rename a group inline, then immediately remove a pin /
+  // reorder a group while editing — both the rename and mutation persist.
+  await page.locator(`.ml-rail-card[data-rail-target="${secondSectionId}"]`).click();
+  await page.waitForSelector(".ml-icobtn", { timeout: 5000 });
+  await page.locator('.ml-icobtn[aria-label="Rename group"]').click();
+  await page.waitForSelector(".ml-rename", { timeout: 5000 });
+  await page.locator(".ml-rename").fill("Pit lane v2");
+  if ((await page.locator(".ml-pin:not(.static) .ml-remove").count()) > 0) {
+    // Click remove directly without pressing Enter first (blur + remove in one click).
+    await page.locator(".ml-pin:not(.static) .ml-remove").first().click();
+    await waitSnapshot(page, async () => {
+      const st = await settingsOf(page);
+      return (
+        st.modelSections?.some((x) => x.id === secondSectionId && x.name === "Pit lane v2") &&
+        st.modelList?.length === before - 2
+      );
+    });
+    verify(
+      "ML-13b blur-commit rename + immediate pin remove both landed",
+      (await settingsOf(page)).modelSections.some(
+        (x) => x.id === secondSectionId && x.name === "Pit lane v2",
+      ),
+    );
+  }
+  const renameTarget = (await settingsOf(page)).modelSections.find((x) => x.id === secondSectionId);
+  if (renameTarget && (await settingsOf(page)).modelSections.length >= 2) {
+    await page.locator('.ml-icobtn[aria-label="Rename group"]').click();
+    await page.waitForSelector(".ml-rename", { timeout: 5000 });
+    await page.locator(".ml-rename").fill("Pit lane v3");
+    await page
+      .locator(`.ml-rail-card[data-rail-target="${secondSectionId}"]`)
+      .click({ button: "right" });
+    await page.locator(".msg-menu .msg-row", { hasText: "Move Down" }).click();
+    await waitSnapshot(page, async () => {
+      const st = await settingsOf(page);
+      return (
+        st.modelSections?.at(-1)?.id === secondSectionId &&
+        st.modelSections?.at(-1)?.name === "Pit lane v3"
+      );
+    });
+    verify(
+      "ML-13c reorder-while-editing preserves rename and moves group",
+      (await settingsOf(page)).modelSections.at(-1)?.name === "Pit lane v3",
+    );
+  }
+  const afterRemoveCount = (await settingsOf(page)).modelList.length;
+
   // ML-14: Ungroup keeps the models (they join the top).
+  await page.locator(".ml-rail-card", { hasText: "All" }).first().click();
   const sectionsBefore = (await settingsOf(page)).modelSections.length;
   await page
     .locator(`.ml-rail-card[data-rail-target="${secondSectionId}"]`)
@@ -333,8 +381,8 @@ export async function runModelListChecks({
   });
   verify(
     "ML-14 heading removed, models stay",
-    (await settingsOf(page)).modelList.length === before - 1 &&
-      (await page.locator(".ml-chip").count()) === before - 1,
+    (await settingsOf(page)).modelList.length === afterRemoveCount &&
+      (await page.locator(".ml-chip").count()) === afterRemoveCount,
   );
 
   // ML-15: zh-Hans labels + screenshot.
@@ -369,7 +417,7 @@ export async function runModelListChecks({
   const afterRestart = await settingsOf(page);
   verify(
     "ML-16b layout + prefs survive restart",
-    afterRestart.modelList?.length === before - 1 &&
+    afterRestart.modelList?.length === afterRemoveCount &&
       afterRestart.modelSections?.length === sectionsBefore - 1 &&
       Object.keys(afterRestart.modelPreferences ?? {}).length === 1,
     {

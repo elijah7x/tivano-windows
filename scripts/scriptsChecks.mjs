@@ -204,6 +204,25 @@ export async function runScriptsChecks({
     return s?.[0]?.name === "HelloRenamed" ? s : undefined;
   });
   verify("SCR-09 edited script saved to the durable record", !!renamed, renamed);
+  // P2-33: deleting a sibling draft while editing another new row keeps each draft bound to its row.
+  await page.locator(".scripts-dialog .primary", { hasText: "Edit scripts" }).click();
+  await page.locator(".scripts-dialog .term-btn", { hasText: "Add script" }).click();
+  await page.locator(".scripts-dialog .term-btn", { hasText: "Add script" }).click();
+  const cards = page.locator(".scripts-dialog .script-card");
+  await cards.nth(2).locator(".wt-input").nth(0).fill("DropMe");
+  await cards.nth(2).locator(".wt-input").nth(1).fill("echo drop");
+  await cards.nth(3).locator(".wt-input").nth(0).fill("KeepMe");
+  await cards.nth(3).locator(".wt-input").nth(1).fill("echo keep");
+  await cards.nth(2).locator(".icon-btn").click();
+  await page.locator(".scripts-dialog .term-btn", { hasText: "Add script" }).click();
+  const keptName = await cards.nth(2).locator(".wt-input").nth(0).inputValue();
+  const keptCmd = await cards.nth(2).locator(".wt-input").nth(1).inputValue();
+  verify(
+    "SCR-09b deleting a sibling draft mid-edit keeps the edited row bound",
+    keptName === "KeepMe" && keptCmd === "echo keep",
+    { keptName, keptCmd },
+  );
+  await page.locator(".scripts-dialog button", { hasText: "Cancel" }).click();
   // Run a script straight from the dialog list.
   await page.locator(".scripts-dialog .script-run").first().click();
   const secondTerm = await until(async () => {
