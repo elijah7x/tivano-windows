@@ -4755,6 +4755,20 @@ html[data-paused="1"] .md-veil { animation: none !important; }
 }
 .hydra-drag-surface { cursor: grab; touch-action: none; user-select: none; }
 .hydra-drag-surface:active { cursor: grabbing; }
+
+/* P2-40: the Off layout's working pill at the end of the chat
+   (frozen "X is working" tail affordance). */
+.hydra-working-pill {
+  align-self: center;
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: calc(12px + var(--fs-ui-off));
+  cursor: pointer;
+}
+.hydra-working-pill:hover { background: var(--surface-3); }
 .hydra-panel.floating {
   border: 1px solid var(--line);
   border-radius: 8px;

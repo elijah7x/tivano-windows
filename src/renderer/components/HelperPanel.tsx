@@ -33,7 +33,7 @@ const SLACK = 56;
 const MIN_COMPOSER_W = 360;
 const INSET = 8;
 
-type Corner = "tl" | "tr" | "bl" | "br";
+export type Corner = "tl" | "tr" | "bl" | "br";
 const sideOf = (c: Corner): "left" | "right" => (c === "tl" || c === "bl" ? "left" : "right");
 const isTop = (c: Corner): boolean => c === "tl" || c === "tr";
 
@@ -43,7 +43,7 @@ export function HelperPanel(props: {
   readOnly: boolean;
   /** Snapshot settings — showReasoning/showsWorkingCard reach the
    *  shared WorkingIndicator (frozen ThreadTimeline parity). */
-  settings?: Settings;
+  settings?: Settings | undefined;
   /** settings.helperPanelSize — the user's dragged size, if any. */
   size?: { width: number; height: number } | undefined;
   /** Docked placement while the chat column must keep clear of it:
@@ -51,6 +51,15 @@ export function HelperPanel(props: {
    *  null = the panel merely overlays a corner. */
   onDock: (dock: { side: "left" | "right"; px: number } | null) => void;
   onClose: () => void;
+  /** P2-40 "One per sub-agent": an auto-popped panel seeds a spread
+   *  corner instead of stacking on "tr" — and cascadeIndex nudges
+   *  repeats of that corner toward the pane's middle so each panel
+   *  stays reachable. */
+  initialCorner?: Corner | undefined;
+  cascadeIndex?: number | undefined;
+  /** Auto-popped panels overlay the pane like the frozen floats: they
+   *  never reserve chat-column width. */
+  overlay?: boolean;
 }): React.JSX.Element {
   const t = useT();
   const { thread, parentTitle, readOnly, onClose } = props;
@@ -58,7 +67,7 @@ export function HelperPanel(props: {
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [pane, setPane] = useState({ w: 0, h: 0 });
-  const [corner, setCorner] = useState<Corner>("tr");
+  const [corner, setCorner] = useState<Corner>(props.initialCorner ?? "tr");
   const [held, setHeld] = useState<{ x: number; y: number } | null>(null);
   const [sizeDrag, setSizeDrag] = useState<{ w: number; h: number } | null>(null);
 
@@ -123,16 +132,27 @@ export function HelperPanel(props: {
   };
 
   // The chat column reserves the panel's room on its docked side —
-  // only while docked (not held) and the pane leaves a box worth
-  // typing in (frozen sitsBesideComposer).
+  // only while docked (not held), the pane leaves a box worth typing
+  // in (frozen sitsBesideComposer), and the panel is not an
+  // auto-popped overlay (frozen floats take no column width).
   const dock: { side: "left" | "right"; px: number } | null =
-    !held && beside ? { side: sideOf(corner), px: w + GAP } : null;
+    !held && beside && props.overlay !== true
+      ? { side: sideOf(corner), px: w + GAP }
+      : null;
   useEffect(() => {
     props.onDock(dock);
     return () => props.onDock(null);
   }, [dock === null ? null : `${dock.side}:${dock.px}`]);
 
-  const pos = held ? clamped(held) : docked(corner);
+  // Auto-popped repeats of one corner cascade toward the pane's middle
+  // so a fourth+ head does not stack exactly on its predecessor.
+  const cascade = (props.cascadeIndex ?? 0) * 26;
+  const pos = held
+    ? clamped(held)
+    : clamped({
+        x: docked(corner).x + (sideOf(corner) === "right" ? -cascade : cascade),
+        y: docked(corner).y + (isTop(corner) ? cascade : -cascade),
+      });
 
   const dragStart = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -249,7 +269,9 @@ export function HelperPanel(props: {
         <div className="helper-head-text">
           <span className="helper-title">{thread.title}</span>
           <span className="helper-sub">
-            {t("Helper for")} {parentTitle}
+            {thread.hydraHead
+              ? `${t("Sub-agent")} · ${parentTitle}`
+              : `${t("Helper for")} ${parentTitle}`}
           </span>
         </div>
         {busy && (
@@ -265,8 +287,8 @@ export function HelperPanel(props: {
         <button
           type="button"
           className="helper-close"
-          title={t("Move to sidebar")}
-          aria-label={t("Move to sidebar")}
+          title={thread.hydraHead ? t("Dismiss") : t("Move to sidebar")}
+          aria-label={thread.hydraHead ? t("Dismiss") : t("Move to sidebar")}
           onClick={onClose}
         >
           ×

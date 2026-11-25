@@ -249,6 +249,11 @@ export interface Settings {
   /** A head's panel shows its whole conversation instead of the progress
    *  bar (frozen default false). */
   hydraShowsHeadDetails?: boolean;
+  /** Floating panels open automatically when heads run (frozen
+   *  settings.hydraAutoOpensPanels, default true). Off keeps heads
+   *  running with a top-bar indicator + a working pill that opens the
+   *  panel on demand. */
+  hydraAutoOpensPanels?: boolean;
   /** Each head after the first gets a panel of its own (frozen default
    *  false — one panel lists every head). */
   hydraAutoPopsHeads?: boolean;
