@@ -278,6 +278,13 @@ describe("extended blocks (F04)", () => {
     expect(found.text).toContain("a");
   });
 
+  // P2-46: tables sit inside a scroll wrap — cells wrap to chat width and
+  // only a genuinely too-wide table scrolls (frozen preview .32).
+  it("wraps tables in a horizontal scroll container", () => {
+    const found = walk(md("| a | b |\n|---|---|\n| x | y |"));
+    expect(found.classes).toContain("md-table-wrap");
+  });
+
   it("renders horizontal rules for all three markers", () => {
     for (const src of ["---", "***", "___", "- - -"]) {
       const found = walk(md(`a\n${src}\nb`));

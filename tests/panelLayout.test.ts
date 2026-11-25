@@ -19,10 +19,15 @@ import { createElement } from "react";
     onEvent: () => () => {},
   },
   matchMedia: () => ({ matches: true }),
+  addEventListener: () => {},
+  removeEventListener: () => {},
 };
 (globalThis as { document?: unknown }).document = {
   documentElement: { dataset: {} },
   hasFocus: () => true,
+  visibilityState: "visible",
+  addEventListener: () => {},
+  removeEventListener: () => {},
 };
 import { ChatView } from "../src/renderer/components/ChatView";
 import { HelperPanel } from "../src/renderer/components/HelperPanel";

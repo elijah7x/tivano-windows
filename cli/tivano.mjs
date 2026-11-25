@@ -56,9 +56,10 @@ function sockPath() {
 
 const out = (v) => process.stdout.write(JSON.stringify(v, null, 2) + "\n");
 
-function usage() {
-  process.stderr.write(
-    `usage: tivano info|providers|projects|threads
+function usage(stream = process.stderr, code = 2) {
+  stream.write(
+    `Tivano local control (the app must already be running and manually enabled under Local control in Settings › Connections).
+usage: tivano info|providers|projects|threads
        tivano thread <uuid> | history <uuid>
        tivano create [--provider ID] [--model ID] [--workspace local] [--project UUID] [--prompt TEXT] [--continuation MODE] [--hydra on|off]
        tivano send <uuid> --text TEXT|--stdin [--continuation automatic|providerSession|fresh|transcript]
@@ -66,7 +67,7 @@ function usage() {
        tivano operation <ticket>
        tivano settings [get [KEY]] [set KEY=VALUE]...\n`,
   );
-  process.exit(2);
+  process.exit(code);
 }
 
 /** One-shot framed session: hello → commands → close.
@@ -160,6 +161,7 @@ const ticket = (instance) => `${instance}/${randomUUID()}/${Date.now()}`;
 async function main() {
   const [verb, ...rest] = process.argv.slice(2);
   if (!verb) usage();
+  if (verb === "--help" || verb === "-h" || verb === "help") usage(process.stdout, 0);
   // Commands may be built lazily once the welcome arrives — write ops
   // need the instance for their idempotency ticket.
   let build;
@@ -309,6 +311,11 @@ async function main() {
 
 main().catch((e) => {
   const rc = /cannot connect/.test(e.message) ? 3 : 4;
+  if (rc === 3) {
+    process.stderr.write(
+      "Open the correct edition of Tivano yourself and enable Local control in Settings › Connections. Use --help for syntax. Never blindly retry a write after a disconnect.\n",
+    );
+  }
   out({ error: e.message, ...(e.detail ? { detail: e.detail } : {}) });
   process.exit(rc);
 });

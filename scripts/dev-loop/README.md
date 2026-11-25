@@ -20,12 +20,23 @@ The owner does **not** participate during development, review, or audit, and ent
 
 | Role | Model | Responsibility |
 | --- | --- | --- |
-| Author & first-fix | Devin | Implements issues, runs `npm run verify`, makes the first fix commit on gate or `nyx/audit` failure, reviews/commits/pushes Neon fixes, and manages PRs/merges. |
-| Auditor & gate second reviewer | GLM-5.3 | Runs the independent `nyx/audit` checks and serves as the read-only second reviewer inside `Invoke-AutopilotGate.ps1`. Never edits code or fixes. |
-| Escalation fixer | Gemini 4 Neon (`agy`) | Fixes escalations via `Invoke-NeonFix.ps1` inside the PR worktree when an audit block survives Devin's fix round, when the gate fails after Devin's first fix round, or at the start of a parked-issue revisit. Never commits or pushes. |
-| Arbiter | Claude Sonnet | Settles post-rebuttal `nyx/audit` disputes inside the independent auditor. |
+| Implementer (Devin lane) | Devin (SWE) | Claims `nyx-auto` issues with `lane-devin` (skipping `lane-hydrogen` issues and `nyx/h-` PRs), implements issues on `nyx/<n>-<slug>`, runs `npm run verify`, makes the first fix commit on gate or `nyx/audit` failure, reviews/commits/pushes Neon fixes, and manages its own PRs (never runs `gh pr merge`; the watchdog is the only merger). |
+| Implementer (Hydrogen lane) | Gemini 4 Hydrogen (`agy`) | Runs in parallel via `Start-HydrogenWorker.ps1` and `hydrogen.md`, claims non-`audit-followup` `nyx-auto` issues from the highest issue number down with `lane-hydrogen`, and uses `nyx/h-<n>-<slug>` branches (never runs `gh pr merge`; the watchdog is the only merger). |
+| Quality gate: auditor & second reviewer | GLM-5.4 | Runs the independent `nyx/audit` checks and serves as the read-only second reviewer inside `Invoke-AutopilotGate.ps1`. Never edits code or fixes. |
+| Quality gate: escalation fixer | Gemini 4 Neon (`agy`) | Fixes escalations via `Invoke-NeonFix.ps1` inside the PR worktree when an audit block survives Devin's fix round, when the gate fails after Devin's first fix round, or at the start of a parked-issue revisit. Never commits or pushes. |
+| Final arbiter | Claude Opus | Settles post-rebuttal `nyx/audit` disputes inside the independent auditor. |
 
-The author, fixer, auditor, and arbiter are always different vendors.
+Both implementers run `Invoke-PrePrSelfCheck.ps1` (the trusted copy under `C:\tivano\audit\tool`) before every push: it checks conflicts with `origin/main`, guarded paths, dependency changes, parity status, missing zh-Hans strings, license headers, attribution, `Closes #<n>` and stray files, and with `-RunChecks` runs typecheck and the changed test files. It never changes the worktree; exit 0 means no `FAIL`, 1 means at least one `FAIL`, 2 means bad parameters.
+
+The watchdog remains the only merger. Implementers are Devin (SWE) and Gemini 4 Hydrogen; quality gates are GLM-5.4 and Gemini 4 Neon; Claude Opus is the final arbiter for `nyx/audit` disputes.
+
+## Hydrogen lane
+
+A second implementer lane powered by **Gemini 4 Hydrogen** via the Antigravity CLI (`Start-HydrogenWorker.ps1`, prompt `hydrogen.md`, scheduled task `\TivanoDevLoop\hydrogen` registered by `Register-HydrogenTask.ps1`) works `nyx-auto` issues in parallel with Devin:
+
+- **Lane contract:** Hydrogen claims issues with label `lane-hydrogen`, works from the highest issue number down, and never takes `audit-followup` issues. Devin claims issues with `lane-devin` when starting them and skips `lane-hydrogen` issues and `nyx/h-` PRs.
+- **Branches and per-lane WIP cap:** Hydrogen uses `nyx/h-<issue>-<slug>` branches while Devin uses `nyx/<issue>-<slug>`. Devin's 3-PR hard WIP cap counts only Devin's own open non-parked `nyx/` PRs (branches not starting with `nyx/h-`), and Devin never works, fixes, or gates `nyx/h-` PRs.
+- **Merging:** the watchdog remains the only merger once both the gate and `nyx/audit` pass on the exact head SHA.
 
 ## Parking and revisits
 
@@ -79,11 +90,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Invoke-
 - Prints one compact JSON line to stdout (`{"pr":n,"headSha":"...","verdict":"pass|fail|unavailable","failures":["..."],"gatePath":"...","glm":{"status":"ok|unavailable|skipped","verdict":"pass|changes","blocking":<count>,"runDir":"..."},"notes":[...]}`) and exits `0` on `pass`, `1` on `fail`, or `2` on `unavailable`.
 - Never merges, labels, or comments itself beyond the review comments from `Invoke-PrReview.ps1` and `Invoke-GlmReview.ps1`.
 
-### GLM-5.3 second reviewer
+### GLM-5.4 second reviewer
 
-- **What it checks and what blocks:** `Invoke-AutopilotGate.ps1` runs `scripts/dev-loop/Invoke-GlmReview.ps1` (GLM-5.3) as an independent read-only second reviewer on the same PR head and posts its own PR comment. Blocking findings appear in `failures` prefixed with `GLM-5.3: ` and fail the gate; non-blocking, out-of-scope, or style-only points are advisory. If the two reviewers contradict each other, autopilot follows the issue text and `AGENTS.md`, takes the safer option, and explains why in the commit message and a short PR comment. If GLM-5.3 is `unavailable`, it never blocks the gate by itself.
-- **Credentials and isolation:** GLM-5.3 runs through the ZCode CLI with an isolated `ZCODE_DATA_BASE_DIR` (`C:\tivano\zcode\home`) whose `provider_config` holds a BigModel Coding Plan API key. That directory sits outside the repository (never committed) and must be readable only by the runner account.
-- **Audit and review only:** GLM-5.3 never edits repository files or commits, and autopilot no longer runs GLM-5.3 consult for stuck gates; escalations go to Gemini 4 Neon (`Invoke-NeonFix.ps1`). Pass `-SkipGlm` to `Invoke-AutopilotGate.ps1` to skip the gate's GLM review (`glm.status` becomes `"skipped"`).
+- **What it checks and what blocks:** `Invoke-AutopilotGate.ps1` runs `scripts/dev-loop/Invoke-GlmReview.ps1` (GLM-5.4) as an independent read-only second reviewer on the same PR head and posts its own PR comment. Blocking findings appear in `failures` prefixed with `GLM-5.4: ` and fail the gate; non-blocking, out-of-scope, or style-only points are advisory. If the two reviewers contradict each other, autopilot follows the issue text and `AGENTS.md`, takes the safer option, and explains why in the commit message and a short PR comment. If GLM-5.4 is `unavailable`, it never blocks the gate by itself. If GLM-5.4 fails, the gate falls back once to Gemini 4 Neon for that review, and its blocking items are prefixed with `Gemini 4 Neon (fallback): ` and handled exactly like `GLM-5.4: ` (including the second-reviewer advisory carve-out rule).
+- **Credentials and isolation:** GLM-5.4 runs through the ZCode CLI with an isolated `ZCODE_DATA_BASE_DIR` (`C:\tivano\zcode\home`) whose `provider_config` holds a BigModel Coding Plan API key. That directory sits outside the repository (never committed) and must be readable only by the runner account.
+- **Audit and review only:** GLM-5.4 never edits repository files or commits, and autopilot no longer runs GLM-5.4 consult for stuck gates; escalations go to Gemini 4 Neon (`Invoke-NeonFix.ps1`). Pass `-SkipGlm` to `Invoke-AutopilotGate.ps1` to skip the gate's GLM review (`glm.status` becomes `"skipped"`).
 
 ### Gemini 4 Neon escalation fixer (`Invoke-NeonFix.ps1`)
 
@@ -117,12 +128,30 @@ Before merging, autopilot PRs require a `success` commit status on context `nyx/
 - **Self-sync before inspecting Devin:** at the start of every watchdog tick (after checking `STOP`), `-Watch` runs `git -C C:\tivano\audit\tool pull --ff-only origin main` (retrying up to 3 times on transient network failures). On success, it compares `HEAD` against `lastSyncedSha` in `watchdog.json`; when unchanged (and both target directories exist), it logs the SHA and skips mirroring. When changed, it mirrors `scripts\dev-loop` and `scripts\pr-review` into `C:\tivano\pr-bot\tool\scripts` via `robocopy /MIR` per folder (treating exit codes `< 8` as success) and logs the synced SHA. Override paths with `-SyncSource` and `-SyncTarget` if needed.
 - **Idle-user rule:** before touching the GUI, `-Watch` checks `GetLastInputInfo`; if the user has been active within `-UserIdleSeconds` (default `120`), it logs `user active, deferred` and exits without touching any window.
 - **Window safety:** immediately before every paste and every keystroke batch, it verifies the foreground window is still the target `<Workspace>` Devin Desktop window; if focus changed, it aborts that attempt and never types into another window.
-- **Devin Desktop liveness:** once idle, if no matching Devin Desktop window is open, `-Watch` automatically relaunches Devin Desktop via `-Kickoff` (`devin desktop <Workspace>`, `/bypass`, and prompt) so the 24/7 loop stays alive across crashes, restarts, milestones, and polling.
+- **Devin Desktop liveness and fresh-session kickoff:** once idle, if no matching Devin Desktop window is open, `-Watch` automatically relaunches Devin Desktop via `-Kickoff` (`devin desktop <Workspace>`). Once the window is ready (whether newly launched or already open), `-Kickoff` starts a fresh session (`Ctrl+N` in the preferred Agents window, pastes the fresh-session prompt instructing Devin to inspect `git status` and `git diff` first, and confirms ACP `session/new` in Devin's logs within 20 seconds, logging `session rotated (kickoff)`); if unconfirmed (`session rotation unconfirmed (kickoff)`), it falls back to `/bypass` and pasting into the current session.
+- **Aggressive session rotation:** `-Watch` tracks `sessionStartedUtc` and `sessionRotations` in `watchdog.json` (initializing `sessionStartedUtc` to now without rotating if missing) and performs at most one rotation per tick after STOP and user-idle checks:
+  1. **Idle rotation (`-SessionIdleRotateMinutes`, default `45`, range `5`-`1440`):** whenever the idle nudge would fire and the current session is at least `-SessionIdleRotateMinutes` old, the watchdog rotates to a fresh session (`session rotated (idle, age N min)`) instead of nudging, falling back to the ordinary nudge if unconfirmed.
+  2. **Hard rotation (`-SessionMaxMinutes`, default `180`, range `15`-`2880`):** when the session is at least `-SessionMaxMinutes` old, no busy autopilot process is running, and Devin's logs show no agent activity in the last 3 minutes, the watchdog rotates (`session rotated (max age N min)`).
+- **Hang recovery:** `-Watch` tracks consecutive hung health samples in `hungStreak` (incremented when `hungWindows > 0` or `notRespondingDialogs > 0`, otherwise reset to `0`). When `hungStreak >= 2`, the user is idle, and no busy autopilot process is running, it logs `Devin Desktop hung for N samples; restarting`, stops Devin Desktop, resets `hungStreak`, and relaunches via `-Kickoff` (deferring with a log entry if busy processes exist).
+- **Stray-app cleanup (`-StrayApps`, default `@('ZCode', 'msedge')`, `none` disables it):** when the user has been idle for at least 600 seconds, `-Watch` closes only auto-started instances (ZCode relaunched by its updater with `--updated`, Edge running in the background with `--no-startup-window`), never a window the user opened, never a process tree whose command lines reference `C:\tivano\` (the GLM audit runtime) and never `msedgewebview2`, via `taskkill /T /F`, logging `stray app closed: <name> (N MB)`. `-Register` keeps the configured list.
 - **Approval and stall recovery:**
   1. **Approval pending `>= -ApprovalMinutes` (default `3`):** detects an unresolved permission prompt in `%APPDATA%\Devin\cli\logs\devin_*.log`, focuses the window, re-sends `/bypass` and waits for confirmation, then pastes a continuation prompt.
-  2. **No log write for `>= -IdleMinutes` (default `25`, range `5`–`240`):** when eligible work remains (or the chat is not in an empty-queue `polling` state) and no worktree, gate, review, packaging, or smoke process is running, focuses the window and pastes a continuation prompt pointing back to `autopilot.md` / `solo-v3.md` and `progress.json`.
+  2. **No log write for `>= -IdleMinutes` (default `25`, range `5`–`240`):** when eligible work remains (or the chat is not in an empty-queue `polling` state) and no worktree, gate, review, packaging, or smoke process is running, rotates the session if due or focuses the window and pastes a continuation prompt pointing back to `autopilot.md` / `solo-v3.md` and `progress.json`.
   3. **Automatic restart after 6 unresponsive nudges:** every nudge is recorded in `<Root>\autopilot\watchdog.json`. If 6 consecutive nudges produce no new agent log activity and no child task process is running, the watchdog posts one informational public-text-safe note to `Automated dev loop: progress log`, stops the unresponsive Devin Desktop process, resets the counter, and relaunches via `-Kickoff` instead of waiting for a person.
-- **Quiet exits:** exits immediately if `<Root>\state\STOP` exists. When Devin Desktop is open and waiting on today's `daily merge cap` or legitimately `polling` with no eligible open `nyx-auto` issues, the watchdog avoids unnecessary nudges.
+- **Health sampling and orphan reporting:** at the start of every watchdog tick (before user-idle deferral or `STOP` exits), `-Watch` records a UTC snapshot of free RAM, commit percentage, Devin Desktop working set, hung top-level window count, "not responding" dialog count, and log-only orphan candidate count/MB (`orphanCandidates`, `orphanMB` for orphaned >2h processes under `C:\tivano` excluding current/busy processes) to `<Root>\state\health.jsonl` (trimmed to the last 5,000 lines when over 2 MB), writes a one-line `health:` log entry, and logs `orphan candidates: N (name:pid:ageH, ...)` (up to 8 entries, killing nothing) when `N > 0`.
+- **Quiet exits:** exits immediately if `<Root>\state\STOP` exists (after recording the tick's health sample). When Devin Desktop is open and waiting on today's `daily merge cap` or legitimately `polling` with no eligible open `nyx-auto` issues, the watchdog avoids unnecessary nudges.
+
+### Loop health report (`Get-LoopHealth.ps1`)
+
+`scripts/dev-loop/Get-LoopHealth.ps1` is a read-only summary script over a trailing window (default `24` hours):
+
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Get-LoopHealth.ps1 `
+  -Root C:\tivano\dev-loop -Hours 24
+```
+
+- Reads `<Root>\state\health.jsonl`, `<Root>\autopilot\gate\*\summary.json` (any non-pass run whose summary reports a timeout counts in `gates.timeoutFails`), and `<Root>\state\logs\autopilot-*.log`.
+- Emits one compact JSON object (`windowHours`, `health` including `orphanMax`, `gates`, `watchdog` including `sessionRotations`, `rotationUnconfirmed`, `hangRestarts`, and `strayClosed`) and exits `0`; missing files report zeros without errors.
 
 ### Guarded paths and trust model
 
@@ -138,12 +167,13 @@ Before merging, autopilot PRs require a `success` commit status on context `nyx/
 - `<Root>\autopilot\parked.json`: parked issues with `issue`, `pr`, `reason`, and `attempt` (`0`, `1`, `2`).
 - `<Root>\autopilot\hands-on.json`: last hands-on build commit SHA, prerelease tag/number, and open `hands-on` issue number.
 - `<Root>\autopilot\solo-v3.json`: phase/queue/worked-row state when running `solo-v3.md`.
-- `<Root>\autopilot\watchdog.json`: `lastSyncedSha`, consecutive nudge counter, nudge history, and `stuckNotified` flag.
+- `<Root>\autopilot\watchdog.json`: `lastSyncedSha`, consecutive nudge counter, nudge history, `stuckNotified` flag, `sessionStartedUtc`, `sessionRotations`, and `hungStreak`.
 - `<Root>\autopilot\builds\<tag>\`: external packaging outputs (`pkg\`) and smoke evidence (`smoke\`), never inside a worktree.
 - `<Root>\autopilot\gate\pr-<n>-<timestamp>\`: gate run logs and `failures.md`.
 - `<Root>\autopilot\neon\`: Gemini 4 Neon escalation fixer runs (`pr-<n>-<timestamp>\` with filled prompt, `agy` logs, git status/diff artifacts, and `result.json`) and `health.json` (6-hour non-retryable unavailability cooldown).
 - `<Root>\autopilot\runs\<n>\`: commit messages, PR bodies, and `neon-<k>.md` failure inputs.
-- `<Root>\state\logs\autopilot-yyyyMMdd.log`: kickoff, self-sync, and watchdog logs.
+- `<Root>\state\health.jsonl`: per-tick watchdog health samples (`utc`, `freeRamMB`, `commitPct`, `desktopMB`, `hungWindows`, `notRespondingDialogs`, `orphanCandidates`, `orphanMB`; trimmed to the last 5,000 lines when over 2 MB).
+- `<Root>\state\logs\autopilot-yyyyMMdd.log`: kickoff, self-sync, health, and watchdog logs.
 - `<Root>\state\STOP`: stop file checked by autopilot and `-Watch` / `-Kickoff`.
 
 ### Prerequisites

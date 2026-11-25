@@ -21,8 +21,7 @@
 // boundary, so worktree is `unsupported`); continuation accepts
 // automatic|providerSession (fresh only on unsent threads; transcript
 // needs a native-API provider we do not have); settings writable keys
-// are the ones that exist in this build (textGeneration,
-// antiSlopEnabled, performanceMode, showsSkylight).
+// are the ones that exist in this build (textGeneration, showsSkylight).
 
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
@@ -53,6 +52,8 @@ type FailCode =
   | "workspacePreparing" | "workspaceFailed" | "directoryUnavailable"
   | "persistence" | "conflict" | "continuationUnavailable" | "shutdown"
   | "corruptHistory" | "cursorInvalid" | "providerFailure" | "internalError";
+
+export type ControlSource = "local" | "remote";
 
 export class ControlFailure extends Error {
   constructor(
@@ -117,6 +118,7 @@ export class LocalControlService {
   private ops = new Map<string, Operation>();
   private readonly dir: string;
   private readonly sockPath: string;
+  private remoteListeningCheck?: () => boolean;
   listening = false;
   listenFailure: string | undefined;
 
@@ -127,6 +129,10 @@ export class LocalControlService {
   ) {
     this.dir = join(dataRoot, "control");
     this.sockPath = join(this.dir, "control.sock");
+  }
+
+  setRemoteListeningCheck(check: () => boolean): void {
+    this.remoteListeningCheck = check;
   }
 
   /** Frozen refreshListening — called on settings changes, library load
@@ -251,9 +257,8 @@ export class LocalControlService {
       maxListPage: 100,
       maxHistoryPage: 50,
       firstDeliverySeconds: 30,
-      // Only keys that exist in this build are settable — all four listed
-      // are real settings here.
-      settings: ["textGeneration", "antiSlopEnabled", "performanceMode", "showsSkylight"],
+      // Only keys that exist in this build are settable.
+      settings: ["textGeneration", "showsSkylight"],
       operationRetentionSeconds: 3600,
       maxOperations: 256,
       restartSemantics: "unknown_after_restart_no_replay",
@@ -277,6 +282,32 @@ export class LocalControlService {
       const f = e instanceof ControlFailure ? e : new ControlFailure("invalidRequest");
       this.send(conn, { error: { code: f.code, detail: f.detail } });
       conn.destroy();
+    }
+  }
+
+  /** Shared dispatch entry for both local socket and Remote MCP. */
+  async handleExternal(
+    method: string,
+    params: Record<string, unknown> = {},
+    source: ControlSource = "local",
+  ): Promise<Record<string, unknown>> {
+    const s = this.engine.snapshot().settings;
+    if (source === "local") {
+      if (!(s.alphaEnabled === true && s.externalControlEnabled === true) || !this.listening)
+        fail("disabled");
+    } else {
+      if (s.remoteMCPEnabled !== true || this.remoteListeningCheck?.() !== true)
+        fail("disabled");
+      if (method === "settingsGet" || method === "settingsSet") fail("permission");
+    }
+    if (this.active >= MAX_CONNECTIONS) fail("busy");
+    if (!(METHODS as readonly string[]).includes(method))
+      fail("invalidRequest", "unknown-method");
+    this.active++;
+    try {
+      return await this.dispatch(method, params, source);
+    } finally {
+      this.active--;
     }
   }
 
@@ -310,6 +341,7 @@ export class LocalControlService {
         const result = await this.dispatch(
           cmd.method,
           (cmd.params ?? {}) as Record<string, unknown>,
+          "local",
         );
         this.send(conn, { id, result });
       } finally {
@@ -363,6 +395,7 @@ export class LocalControlService {
   private async dispatch(
     method: string,
     params: Record<string, unknown>,
+    source: ControlSource = "local",
   ): Promise<Record<string, unknown>> {
     const engine = this.engine;
     const snap = engine.snapshot();
@@ -447,7 +480,7 @@ export class LocalControlService {
         const limit = pageLimit(params);
         // Persisted-only projection: entries from the stored messages —
         // no runtime is created and no bytes are fabricated.
-        const all = t.messages.map((m) => ({
+        const all = this.engine.readThreadMessages(id).map((m) => ({
           id: m.id,
           turnId: m.turnId ?? null,
           turnStatus: t.turn?.id === m.turnId ? (t.turn?.status ?? null) : null,
@@ -476,9 +509,9 @@ export class LocalControlService {
       case "settingsSet":
         return this.writeSettings(params);
       case "create":
-        return this.createThreadOp(params);
+        return this.createThreadOp(params, source);
       case "submit":
-        return this.submitOp(params);
+        return this.submitOp(params, source);
       case "interrupt":
         return this.interruptOp(params);
       default:
@@ -545,7 +578,7 @@ export class LocalControlService {
     });
   }
 
-  private createThreadOp(params: Record<string, unknown>) {
+  private createThreadOp(params: Record<string, unknown>, source: ControlSource = "local") {
     const provider = str(params, "provider");
     const d = this.engine.providerDescriptor;
     if (provider !== undefined && provider !== d.id && provider !== d.mode)
@@ -568,9 +601,9 @@ export class LocalControlService {
     // UI's per-chat default.
     const hydra = params["hydra"];
     if (hydra !== undefined && typeof hydra !== "boolean") fail("invalidRequest");
+    const s = this.engine.snapshot().settings;
     let pair: HydraPair | undefined;
     if (hydra === true) {
-      const s = this.engine.snapshot().settings;
       if (s.hydraEnabled === false) fail("unsupported", "hydra_disabled");
       pair = hydraPairForProvider(s.hydraPairs ?? [], d.mode, model);
       if (!pair) fail("unsupported", "hydra_pair_missing");
@@ -579,7 +612,12 @@ export class LocalControlService {
     const { op, fresh } = this.acceptWrite(ticket, { method: "create", params });
     if (!fresh) return { operation: outcomeOf(op) };
     try {
+      const runtimeMode =
+        source === "remote"
+          ? (s.remoteMCPFullAccess === true ? "fullAccess" : "supervised")
+          : undefined;
       const thread = this.engine.createThread(projectId ?? null, undefined, {
+        ...(runtimeMode ? { runtimeMode } : {}),
         externalHydra: {
           enabled: hydra === true,
           ...(pair ? { pairId: pair.id } : {}),
@@ -620,7 +658,7 @@ export class LocalControlService {
     }
   }
 
-  private submitOp(params: Record<string, unknown>) {
+  private submitOp(params: Record<string, unknown>, source: ControlSource = "local") {
     const threadId = params["threadId"];
     if (!isUuid(threadId)) fail("invalidRequest");
     const text = params["text"];
@@ -636,6 +674,13 @@ export class LocalControlService {
     // submits fine.
     if (t.hydraHead) fail("unsupported", "hydra-head-target");
     if (t.isArchived) fail("archived");
+    // P2-25: heads always run with full access, so a supervised remote
+    // caller cannot reach them through a Hydra-led chat without Remote
+    // MCP full access (the local CLI runs as the owner already).
+    const s = this.engine.snapshot().settings;
+    const hydraOn = s.hydraEnabled !== false && t.hydraEnabled !== false;
+    if (source === "remote" && hydraOn && s.remoteMCPFullAccess !== true)
+      fail("permission", "hydra_requires_remote_full_access");
     if (t.turn && (t.turn.status === "running" || t.turn.status === "waiting-approval"))
       fail("busy");
     // Frozen sendToThread waits for runningHydraHeads == 0: a lead whose
@@ -643,7 +688,8 @@ export class LocalControlService {
     if (this.engine.hydraLeadBusy(threadId)) fail("busy");
     // Frozen rejection surface: slash commands ride no ordinary prompt.
     if (text.trimStart().startsWith("/")) fail("invalidRequest", "slash-command");
-    const hasStarted = t.messages.length > 0;
+    const hasStarted =
+      t.hasStartedTurn === true || this.engine.readThreadMessages(threadId).length > 0;
     if (continuation === "fresh" && hasStarted) fail("continuationUnavailable");
     if (continuation === "transcript") fail("continuationUnavailable", "no native-API provider");
     const ticket = this.ticketParam(params);
@@ -705,27 +751,16 @@ export class LocalControlService {
         effective: { textGeneration: s.textGeneration ?? "automatic" },
       },
       {
-        key: "antiSlopEnabled",
-        preference: { bool: s.antiSlopEnabled !== false },
-        effective: { bool: s.antiSlopEnabled !== false },
-      },
-      {
-        key: "performanceMode",
-        preference: { bool: s.performanceMode === true },
-        effective: { bool: s.performanceMode === true },
-      },
-      {
         key: "showsSkylight",
         preference: { bool: s.showsSkylight !== false },
-        // Frozen showsSkylightNow: the hero rests under Performance Mode.
-        effective: { bool: s.showsSkylight !== false && s.performanceMode !== true },
+        effective: { bool: s.showsSkylight !== false },
       },
     ];
   }
 
   private writeSettings(params: Record<string, unknown>) {
     const key = str(params, "key");
-    if (!key || !["textGeneration", "antiSlopEnabled", "performanceMode", "showsSkylight"].includes(key))
+    if (!key || !["textGeneration", "showsSkylight"].includes(key))
       fail("invalidRequest");
     const ticket = this.ticketParam(params);
     const { op, fresh } = this.acceptWrite(ticket, { method: "settingsSet", params });
@@ -740,9 +775,7 @@ export class LocalControlService {
       } else {
         const b = typeof params["bool"] === "boolean" ? params["bool"] : params["value"];
         if (typeof b !== "boolean") fail("invalidRequest");
-        if (key === "antiSlopEnabled") this.engine.setSettings({ antiSlopEnabled: b });
-        else if (key === "performanceMode") this.engine.setSettings({ performanceMode: b });
-        else this.engine.setSettings({ showsSkylight: b });
+        this.engine.setSettings({ showsSkylight: b });
       }
       op.state = "ended";
       op.expiresAt = op.ticket.issuedAtMs + RETENTION_MS;

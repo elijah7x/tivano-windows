@@ -397,8 +397,81 @@ export function hydraLandingIsEmpty(l: HydraLanding): boolean {
   return l.files.length === 0 && l.patchPath === undefined && l.error === undefined;
 }
 
-export function hydraLandingLanded(l: HydraLanding): boolean {
+export function hydraLandingLanded(l: {
+  files: ReadonlyArray<unknown>;
+  patchPath?: string | undefined;
+  error?: string | undefined;
+}): boolean {
   return l.files.length > 0 && l.patchPath === undefined && l.error === undefined;
+}
+
+/**
+ * P2-63 (frozen AppModel+HydraMerge hydraRecoveryCanSkipHistoryLoad):
+ * a lead whose Hydra jobs are all closed, completed and settled (merged
+ * or nothing to merge) AND whose non-archived heads carry no unmerged
+ * landed work can be skipped by startup recovery without reading history.
+ */
+export function canSkipHydraMergeRecovery(
+  lead: {
+    id: string;
+    isArchived?: boolean | undefined;
+    hydraEnabled?: boolean | undefined;
+    hydraJobs?: ReadonlyArray<{
+      id?: string | undefined;
+      isOpen: boolean;
+      ending?: "completed" | "stopped" | "failed" | undefined;
+      merge?: "merged" | "nothing" | "failed" | "skipped" | undefined;
+    }> | undefined;
+  },
+  heads: ReadonlyArray<{
+    isArchived?: boolean | undefined;
+    hydraHead?: {
+      leadId: string;
+      status?: HydraHeadStatus | undefined;
+      landingPending?: boolean | undefined;
+      mergedAt?: number | undefined;
+      landing?: {
+        files: ReadonlyArray<unknown>;
+        conflicts?: ReadonlyArray<unknown> | undefined;
+        patchPath?: string | undefined;
+        error?: string | undefined;
+      } | undefined;
+    } | undefined;
+  }>,
+): boolean {
+  if (lead.isArchived === true || lead.hydraEnabled === false) return true;
+  const jobs = lead.hydraJobs;
+  if (!jobs || jobs.length === 0) return false;
+  const allJobsSettled = jobs.every(
+    (j) =>
+      !j.isOpen &&
+      j.ending === "completed" &&
+      (j.merge === "merged" || j.merge === "nothing"),
+  );
+  if (!allJobsSettled) return false;
+  for (const h of heads) {
+    if (h.isArchived === true || h.hydraHead?.leadId !== lead.id) continue;
+    const info = h.hydraHead;
+    if (info.status !== undefined && info.status !== "completed") {
+      return false;
+    }
+    if (info.landingPending === true) {
+      return false;
+    }
+    if (info.landing) {
+      if (
+        info.landing.patchPath !== undefined ||
+        info.landing.error !== undefined ||
+        (info.landing.conflicts?.length ?? 0) > 0
+      ) {
+        return false;
+      }
+      if (info.mergedAt === undefined && hydraLandingLanded(info.landing)) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 export interface HydraHeadInfo {

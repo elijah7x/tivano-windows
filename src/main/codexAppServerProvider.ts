@@ -58,6 +58,8 @@ import {
 import {
   CODEX_PROVIDER_ID,
   CODEX_SCHEMA_PIN,
+  codexAppServerArgs,
+  type CodexLaunchOptions,
   type CodexRuntimeConfig,
 } from "./codexRuntimeConfig";
 import {
@@ -80,6 +82,9 @@ import type {
   TurnContext,
   WorkspaceGrant,
 } from "./provider";
+
+export const ORDINARY_CODEX_THREAD_INSTRUCTIONS =
+  "Tivano's helper agents (heads) are off for this conversation. Disregard any earlier instructions about delegating work with a hydra block; do the work and answer directly.";
 
 export class CodexProviderError extends Error {
   constructor(
@@ -158,6 +163,7 @@ export interface CodexProviderLimits {
   turnStartTimeoutMs: number;
   interruptTimeoutMs: number;
   disposeInterruptMs: number;
+  rollbackTimeoutMs: number;
 }
 
 export const DEFAULT_CODEX_LIMITS: CodexProviderLimits = {
@@ -191,6 +197,7 @@ export const DEFAULT_CODEX_LIMITS: CodexProviderLimits = {
   turnStartTimeoutMs: 90_000,
   interruptTimeoutMs: 10_000,
   disposeInterruptMs: 5_000,
+  rollbackTimeoutMs: 30_000,
 };
 
 export interface CodexProviderOptions {
@@ -200,7 +207,7 @@ export interface CodexProviderOptions {
   /** Test seam — defaults: fixture → direct spawn; real → job helper. */
   spawnImpl?: SpawnImpl;
   /** Test seam — full control over the child spec. */
-  makeSpec?(workspaceDir: string): SpawnSpec;
+  makeSpec?(workspaceDir: string, opts?: CodexLaunchOptions): SpawnSpec;
   transportLimits?: Partial<TransportLimits>;
   limits?: Partial<CodexProviderLimits>;
   /** Binding seam owned by the engine/store. */
@@ -473,6 +480,65 @@ function toolUpdate(
   }
 }
 
+async function fetchModelList(
+  rpc: CodexRpc,
+  requestTimeoutMs: number,
+  checkAlive?: () => void,
+): Promise<CodexModelOption[]> {
+  const models: CodexModelOption[] = [];
+  let cursor: unknown = null;
+  for (let page = 0; page < 10 && models.length <= 128; page++) {
+    const params: Record<string, unknown> = {};
+    if (cursor !== null && cursor !== undefined) params.cursor = cursor;
+    const res = await rpc.request("model/list", params, {
+      timeoutMs: requestTimeoutMs,
+    });
+    checkAlive?.();
+    const data = isObj(res) && Array.isArray(res.data) ? res.data : [];
+    for (const m of data.slice(0, 128)) {
+      if (!isObj(m) || m.hidden === true) continue;
+      const id = s(m.id);
+      if (!id || id.length > 200) continue;
+      const efforts: string[] = [];
+      if (Array.isArray(m.supportedReasoningEfforts)) {
+        for (const e of m.supportedReasoningEfforts.slice(0, 16)) {
+          const v = isObj(e) ? s(e.reasoningEffort) : null;
+          if (v && v.length <= 64) efforts.push(v);
+        }
+      }
+      let fastTier: string | undefined;
+      if (Array.isArray(m.serviceTiers)) {
+        for (const t of m.serviceTiers.slice(0, 16)) {
+          if (!isObj(t)) continue;
+          const tid = s(t.id);
+          if (!tid) continue;
+          const label = `${tid} ${s(t.name) ?? ""}`.toLowerCase();
+          if (label.includes("fast") || label.includes("priority")) {
+            fastTier = tid;
+            break;
+          }
+        }
+      }
+      const name = s(m.displayName);
+      const detail = s(m.description);
+      const defaultEffort = s(m.defaultReasoningEffort);
+      models.push({
+        id,
+        name: name && name.length <= 200 ? name : id,
+        ...(detail && detail.length <= 1000 ? { detail } : {}),
+        efforts,
+        ...(defaultEffort && defaultEffort.length <= 64 ? { defaultEffort } : {}),
+        isDefault: m.isDefault === true,
+        ...(fastTier ? { fastTier } : {}),
+      });
+    }
+    const next = isObj(res) ? res.nextCursor : null;
+    if (next === null || next === undefined) break;
+    cursor = next;
+  }
+  return models;
+}
+
 class CodexSession {
   phase: Phase = "idle";
   private gen = 0;
@@ -526,9 +592,14 @@ class CodexSession {
   /** Latest turn's runtime mode (F06) — a RECONNECT binds with the
    *  newest mode, mirroring desiredModel. */
   private desiredMode: RuntimeMode = "supervised";
+  /** Latest Hydra lead developer instructions (P2-58) — undefined when
+   *  sub-agents are off or on a head. A change forces a reconnect via
+   *  thread/resume so the new developerInstructions take effect. */
+  private desiredHydraPolicy: string | undefined;
   /** Server-reported bound pair (frozen activeModel). */
   private boundModel: string | undefined;
   private boundEffort: string | undefined;
+  private boundHydraPolicy: string | undefined;
   private finalError: string | null = null;
   dropped = 0;
   private disposed = false;
@@ -565,7 +636,7 @@ class CodexSession {
    */
   private async requestThread(
     rpc: CodexRpc,
-    method: "thread/start" | "thread/resume",
+    method: "thread/start" | "thread/resume" | "thread/fork",
     params: Record<string, unknown>,
   ): Promise<unknown> {
     const servers = this.provider.mcpServersForThread();
@@ -668,14 +739,48 @@ class CodexSession {
     this.desiredModel = ctx.model;
     this.desiredEffort = ctx.effort;
     this.desiredMode = ctx.runtimeMode ?? "supervised";
+    this.desiredHydraPolicy = ctx.hydraPolicy;
     void this.driveTurn(ctx).catch(() => {
       /* driveTurn reports every failure through terminate() itself */
     });
   }
 
+  private async disconnectForRebind(): Promise<void> {
+    const tr = this.transport;
+    const rpc = this.rpc;
+    this.gen++;
+    this.phase = "idle";
+    this.transport = null;
+    this.rpc = null;
+    rpc?.failAllPending(
+      "CODEX_CONNECTION_CLOSED: reconnecting session with updated instructions",
+    );
+    if (tr) {
+      const res = await tr.dispose();
+      if (!res.confirmed && tr.hasChild) {
+        throw new CodexProtocolError(
+          `CODEX_CONNECTION_CLOSED: previous child pid ${tr.pid ?? "?"} still unconfirmed — refusing a new spawn`,
+          "CODEX_CONNECTION_CLOSED",
+        );
+      }
+    }
+  }
+
   private async driveTurn(ctx: TurnContext): Promise<void> {
     const turn = this.turn!;
     try {
+      if (
+        this.phase === "ready" &&
+        this.boundHydraPolicy !== this.desiredHydraPolicy
+      ) {
+        await this.disconnectForRebind();
+      }
+      if (this.turn !== turn || turn.terminal) return;
+      if (turn.cancelIntent) {
+        // Cancelled before a server turn existed — never send turn/start.
+        this.terminate("interrupted");
+        return;
+      }
       await this.ensureBound();
     } catch (err) {
       // Bind failure must still terminate THIS turn — the generation check
@@ -795,6 +900,7 @@ class CodexSession {
       return;
     }
     turn.providerTurnId = providerTurnId;
+    turn.cb.onTurnStarted?.(providerTurnId);
     const queued = this.preAdmission;
     this.preAdmission = [];
     for (const f of queued) {
@@ -1106,15 +1212,32 @@ class CodexSession {
   // ---- connection ---------------------------------------------------------
 
   /** Serialized spawn + handshake + thread bind. Reconnects a dead session. */
-  private ensureBound(): Promise<void> {
+  private ensureBound(allowNewSession = true): Promise<void> {
     if (this.phase === "ready" && this.transport && this.rpc) return Promise.resolve();
-    this.bindPromise ??= this.spawnAndBind().finally(() => {
+    this.bindPromise ??= this.spawnAndBind(allowNewSession).finally(() => {
       this.bindPromise = null;
     });
     return this.bindPromise;
   }
 
-  private async spawnAndBind(): Promise<void> {
+  private threadParameters(): Record<string, unknown> {
+    const params: Record<string, unknown> = {
+      cwd: this.workspace.directory,
+      ...bindPolicy(this.desiredMode),
+      ...(this.desiredModel ? { model: this.desiredModel } : {}),
+    };
+    if (this.desiredHydraPolicy) {
+      params.config = {
+        features: { multi_agent: false, multi_agent_v2: false },
+      };
+      params.developerInstructions = this.desiredHydraPolicy;
+    } else {
+      params.developerInstructions = ORDINARY_CODEX_THREAD_INSTRUCTIONS;
+    }
+    return params;
+  }
+
+  private async spawnAndBind(allowNewSession = true): Promise<void> {
     if (this.disposed) throw new CodexProtocolError("session disposed", "CODEX_CONNECTION_CLOSED");
     // Never let an unconfirmed teardown trail an unbounded chain of new
     // connections: settle the previous transport's cleanup first; if the
@@ -1297,11 +1420,9 @@ class CodexSession {
           rpc,
           "thread/resume",
           {
+            ...this.threadParameters(),
             threadId: binding.codexThreadId,
-            cwd: this.workspace.directory,
-            ...bindPolicy(this.desiredMode),
             excludeTurns: true,
-            ...(this.desiredModel ? { model: this.desiredModel } : {}),
           },
         );
       } catch (err) {
@@ -1331,14 +1452,18 @@ class CodexSession {
       this.codexThreadId = threadId;
       this.reportThreadModel(res);
     } else {
+      if (!allowNewSession) {
+        throw new CodexProviderError(
+          "The original Codex conversation is unavailable.",
+          "CODEX_RESUME_FAILED",
+        );
+      }
       const res = await this.requestThread(
         rpc,
         "thread/start",
         {
-          cwd: this.workspace.directory,
-          ...bindPolicy(this.desiredMode),
+          ...this.threadParameters(),
           ephemeral: false,
-          ...(this.desiredModel ? { model: this.desiredModel } : {}),
         },
       );
       if (gen !== this.gen || this.rpc !== rpc)
@@ -1364,6 +1489,7 @@ class CodexSession {
       this.codexThreadId = threadId;
       this.reportThreadModel(res);
     }
+    this.boundHydraPolicy = this.desiredHydraPolicy;
     this.phase = "ready";
     } catch (err) {
       // A half-bound connection must not linger until the next request
@@ -1411,60 +1537,11 @@ class CodexSession {
     const rpc = this.rpc;
     if (this.phase !== "ready" || !rpc)
       throw new CodexProtocolError("session is not bound", "CODEX_CONNECTION_CLOSED");
-    const models: CodexModelOption[] = [];
-    let cursor: unknown = null;
     const gen = this.gen;
-    for (let page = 0; page < 10 && models.length <= 128; page++) {
-      const params: Record<string, unknown> = {};
-      if (cursor !== null && cursor !== undefined) params.cursor = cursor;
-      const res = await rpc.request("model/list", params, {
-        timeoutMs: this.limits.requestTimeoutMs,
-      });
+    return fetchModelList(rpc, this.limits.requestTimeoutMs, () => {
       if (gen !== this.gen || this.rpc !== rpc)
         throw new CodexProtocolError("connection recycled", "CODEX_CONNECTION_CLOSED");
-      const data = isObj(res) && Array.isArray(res.data) ? res.data : [];
-      for (const m of data.slice(0, 128)) {
-        if (!isObj(m) || m.hidden === true) continue;
-        const id = s(m.id);
-        if (!id || id.length > 200) continue;
-        const efforts: string[] = [];
-        if (Array.isArray(m.supportedReasoningEfforts)) {
-          for (const e of m.supportedReasoningEfforts.slice(0, 16)) {
-            const v = isObj(e) ? s(e.reasoningEffort) : null;
-            if (v && v.length <= 64) efforts.push(v);
-          }
-        }
-        let fastTier: string | undefined;
-        if (Array.isArray(m.serviceTiers)) {
-          for (const t of m.serviceTiers.slice(0, 16)) {
-            if (!isObj(t)) continue;
-            const tid = s(t.id);
-            if (!tid) continue;
-            const label = `${tid} ${s(t.name) ?? ""}`.toLowerCase();
-            if (label.includes("fast") || label.includes("priority")) {
-              fastTier = tid;
-              break;
-            }
-          }
-        }
-        const name = s(m.displayName);
-        const detail = s(m.description);
-        const defaultEffort = s(m.defaultReasoningEffort);
-        models.push({
-          id,
-          name: name && name.length <= 200 ? name : id,
-          ...(detail && detail.length <= 1000 ? { detail } : {}),
-          efforts,
-          ...(defaultEffort && defaultEffort.length <= 64 ? { defaultEffort } : {}),
-          isDefault: m.isDefault === true,
-          ...(fastTier ? { fastTier } : {}),
-        });
-      }
-      const next = isObj(res) ? res.nextCursor : null;
-      if (next === null || next === undefined) break;
-      cursor = next;
-    }
-    return models;
+    });
   }
 
   /**
@@ -1484,6 +1561,225 @@ class CodexSession {
       { threadId: this.codexThreadId },
       { timeoutMs: 120_000, mutating: true },
     );
+  }
+
+  isTurnActive(): boolean {
+    return !!this.turn && !this.turn.terminal;
+  }
+
+  /**
+   * P2-58: frozen CodexSession.rollback(from:) — pages thread/turns/list
+   * to confirm targetTurnId and its preceding turn, tries thread/revert,
+   * and falls back to thread/fork + thread/archive on server RPC errors.
+   */
+  async rollback(
+    targetTurnId: string,
+    opts: { runtimeMode?: RuntimeMode; model?: string; hydraPolicy?: string },
+  ): Promise<string | null> {
+    if (this.isTurnActive()) {
+      throw new CodexProviderError(
+        "CODEX_BUSY: a turn is already active on this session",
+        "CODEX_BUSY",
+      );
+    }
+    this.desiredModel = opts.model;
+    this.desiredMode = opts.runtimeMode ?? "supervised";
+    this.desiredHydraPolicy = opts.hydraPolicy;
+    await this.ensureBound(false);
+    const rpc = this.rpc;
+    const threadId = this.codexThreadId;
+    if (!rpc || !threadId || this.phase !== "ready") {
+      throw new CodexProviderError(
+        "CODEX_NOT_RUNNING: the session is not live",
+        "CODEX_NOT_RUNNING",
+      );
+    }
+    const gen = this.gen;
+    const watchdog = setTimeout(() => {
+      if (gen === this.gen && this.rpc === rpc) {
+        this.fatal(
+          new CodexProtocolError(
+            "CODEX_REQUEST_TIMEOUT: rollback timed out",
+            "CODEX_REQUEST_TIMEOUT",
+          ),
+        );
+      }
+    }, this.limits.rollbackTimeoutMs);
+    watchdog.unref?.();
+    try {
+      let cursor: string | null = null;
+      let found = false;
+      let previousId: string | null = null;
+      do {
+        const page = await rpc.request(
+          "thread/turns/list",
+          {
+            threadId,
+            cursor,
+            limit: 100,
+            sortDirection: "desc",
+            itemsView: "notLoaded",
+          },
+          { timeoutMs: this.limits.requestTimeoutMs },
+        );
+        if (gen !== this.gen || this.rpc !== rpc) {
+          throw new CodexProtocolError(
+            "connection closed during rollback",
+            "CODEX_CONNECTION_CLOSED",
+          );
+        }
+        const turns = isObj(page) && Array.isArray(page.data) ? page.data : null;
+        if (!turns) {
+          throw new CodexProviderError(
+            "Codex did not return its conversation history.",
+            "CODEX_PROTOCOL_ERROR",
+          );
+        }
+        for (const t of turns) {
+          const tid = isObj(t) ? s(t.id) : null;
+          if (!tid) {
+            throw new CodexProviderError(
+              "Codex returned a turn without an ID.",
+              "CODEX_PROTOCOL_ERROR",
+            );
+          }
+          if (found) {
+            previousId = tid;
+            break;
+          }
+          if (tid === targetTurnId) found = true;
+        }
+        const next = isObj(page) ? s(page.nextCursor) : null;
+        if (next !== null && next === cursor) {
+          throw new CodexProviderError(
+            "Codex could not page its conversation history.",
+            "CODEX_PROTOCOL_ERROR",
+          );
+        }
+        cursor = next;
+      } while (cursor !== null && previousId === null);
+
+      if (!found) {
+        throw new CodexProviderError(
+          "Codex could not find the selected turn. The conversation was kept.",
+          "CODEX_PROTOCOL_ERROR",
+        );
+      }
+
+      let revertRes: unknown;
+      try {
+        revertRes = await rpc.request(
+          "thread/revert",
+          { threadId, beforeTurnId: targetTurnId },
+          { timeoutMs: 60_000, mutating: true },
+        );
+      } catch (err) {
+        if (err instanceof CodexProtocolError && err.rpcError !== undefined) {
+          return await this.forkHistory(rpc, gen, threadId, targetTurnId, previousId);
+        }
+        throw err;
+      }
+      if (gen !== this.gen || this.rpc !== rpc) {
+        throw new CodexProtocolError(
+          "connection closed during rollback",
+          "CODEX_CONNECTION_CLOSED",
+        );
+      }
+      const confirmedId =
+        isObj(revertRes) && isObj(revertRes.thread) ? s(revertRes.thread.id) : null;
+      if (confirmedId !== threadId) {
+        throw new CodexProviderError(
+          "Codex did not confirm the requested conversation rollback.",
+          "CODEX_PROTOCOL_ERROR",
+        );
+      }
+      return threadId;
+    } finally {
+      clearTimeout(watchdog);
+    }
+  }
+
+  private async forkHistory(
+    rpc: CodexRpc,
+    gen: number,
+    originalId: string,
+    targetTurnId: string,
+    previousId: string | null,
+  ): Promise<string | null> {
+    if (!previousId) {
+      await rpc.request(
+        "thread/archive",
+        { threadId: originalId },
+        { timeoutMs: this.limits.requestTimeoutMs, mutating: true },
+      );
+      if (gen !== this.gen || this.rpc !== rpc) {
+        throw new CodexProtocolError(
+          "connection closed during rollback",
+          "CODEX_CONNECTION_CLOSED",
+        );
+      }
+      this.codexThreadId = null;
+      return null;
+    }
+    const res = await this.requestThread(rpc, "thread/fork", {
+      ...this.threadParameters(),
+      threadId: originalId,
+      lastTurnId: previousId,
+      excludeTurns: true,
+    });
+    if (gen !== this.gen || this.rpc !== rpc) {
+      throw new CodexProtocolError(
+        "connection closed during rollback",
+        "CODEX_CONNECTION_CLOSED",
+      );
+    }
+    const newId = isObj(res) && isObj(res.thread) ? s(res.thread.id) : null;
+    if (!newId || newId === originalId) {
+      throw new CodexProviderError(
+        "Codex did not create a conversation at the revert point.",
+        "CODEX_PROTOCOL_ERROR",
+      );
+    }
+    try {
+      const page = await rpc.request(
+        "thread/turns/list",
+        {
+          threadId: newId,
+          limit: 1,
+          sortDirection: "desc",
+          itemsView: "notLoaded",
+        },
+        { timeoutMs: this.limits.requestTimeoutMs },
+      );
+      const turns = isObj(page) && Array.isArray(page.data) ? page.data : null;
+      const headId = turns && isObj(turns[0]) ? s(turns[0].id) : null;
+      if (!turns || headId !== previousId || headId === targetTurnId) {
+        throw new CodexProviderError(
+          "Codex did not confirm the reverted conversation history.",
+          "CODEX_PROTOCOL_ERROR",
+        );
+      }
+      await rpc.request(
+        "thread/archive",
+        { threadId: originalId },
+        { timeoutMs: this.limits.requestTimeoutMs, mutating: true },
+      );
+    } catch (err) {
+      if (gen === this.gen && this.rpc === rpc) {
+        void rpc
+          .request(
+            "thread/archive",
+            { threadId: newId },
+            { timeoutMs: this.limits.requestTimeoutMs, mutating: true },
+          )
+          .catch(() => {});
+      }
+      throw err;
+    }
+    this.codexThreadId = newId;
+    const forkedModel = isObj(res) ? s(res.model) : null;
+    if (forkedModel) this.boundModel = forkedModel;
+    return newId;
   }
 
   private async interrupt(): Promise<void> {
@@ -2649,6 +2945,9 @@ export class CodexAppServerProvider implements ProviderAdapter {
   /** Sessions whose shutdown is unconfirmed — they keep their living
    *  child attribution until provider.dispose confirms the close. */
   private retired = new Set<CodexSession>();
+  private oneShotTransports = new Set<StdioTransport<CodexMessage>>();
+  private oneShotRpcs = new Set<CodexRpc>();
+  private oneShotCleanupFailures = new Map<StdioTransport<CodexMessage>, ChildCleanupResult>();
   private disposed = false;
 
   constructor(opts: CodexProviderOptions) {
@@ -2694,22 +2993,56 @@ export class CodexAppServerProvider implements ProviderAdapter {
     return this.opts.mcpServers?.();
   }
 
-  buildSpec(workspaceDir: string): SpawnSpec {
-    if (this.opts.makeSpec) return this.opts.makeSpec(workspaceDir);
+  buildSpec(workspaceDir: string, opts: CodexLaunchOptions = {}): SpawnSpec {
+    if (this.opts.makeSpec) return this.opts.makeSpec(workspaceDir, opts);
     if (this.config.mode === "fixture") {
       return {
         executable: this.config.fixtureNode!,
-        args: [this.config.fixtureScript!],
+        args: codexAppServerArgs([this.config.fixtureScript!], opts),
         cwd: workspaceDir,
         env: this.config.env,
       };
     }
     return {
       executable: this.config.executable!,
-      args: this.config.args,
+      args: codexAppServerArgs(this.config.args, opts),
       cwd: workspaceDir,
       env: this.config.env,
     };
+  }
+
+  private assertCanLaunch(): void {
+    if (this.cleanupUnproven)
+      throw new CodexProviderError("CODEX_BUSY: previous job cleanup is unproven", "CODEX_BUSY");
+    if (this.disposed)
+      throw new CodexProviderError("CODEX_BUSY: provider is disposed", "CODEX_BUSY");
+    if (this.config.mode === "unconfigured")
+      throw new CodexProviderError(
+        "CODEX_NOT_CONFIGURED: set TIVANO_CODEX_EXECUTABLE to a codex.exe absolute path " +
+          "(or TIVANO_CODEX_FIXTURE for the offline protocol fixture)",
+        "CODEX_NOT_CONFIGURED",
+      );
+    if (this.config.mode === "real" && !this.config.treeCapability.supported)
+      throw new CodexProviderError(
+        `CODEX_REAL_UNAVAILABLE: ${this.config.treeCapability.reason ?? "process-tree cleanup unproven"}`,
+        "CODEX_REAL_UNAVAILABLE",
+      );
+  }
+
+  private recordOneShotCleanupFailure(
+    tr: StdioTransport<CodexMessage>,
+    code: number | null,
+    signal: string | null,
+  ): void {
+    if (this.config.mode !== "real" || code !== 4) return;
+    this.oneShotCleanupFailures.set(tr, {
+      pid: tr.pid,
+      confirmed: false,
+      exitCode: code,
+      signal,
+      problem: "CLEANUP_INCOMPLETE: job-helper exited 4; tree cleanup unproven",
+    });
+    this.noteUnprovenCleanup();
   }
 
   spawnImplForMode(): SpawnImpl | undefined {
@@ -2732,21 +3065,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
   }
 
   start(context: TurnContext, callbacks: ProviderCallbacks): ProviderTurnHandle {
-    if (this.cleanupUnproven)
-      throw new CodexProviderError("CODEX_BUSY: previous job cleanup is unproven", "CODEX_BUSY");
-    if (this.disposed)
-      throw new CodexProviderError("CODEX_BUSY: provider is disposed", "CODEX_BUSY");
-    if (this.config.mode === "unconfigured")
-      throw new CodexProviderError(
-        "CODEX_NOT_CONFIGURED: set TIVANO_CODEX_EXECUTABLE to a codex.exe absolute path " +
-          "(or TIVANO_CODEX_FIXTURE for the offline protocol fixture)",
-        "CODEX_NOT_CONFIGURED",
-      );
-    if (this.config.mode === "real" && !this.config.treeCapability.supported)
-      throw new CodexProviderError(
-        `CODEX_REAL_UNAVAILABLE: ${this.config.treeCapability.reason ?? "process-tree cleanup unproven"}`,
-        "CODEX_REAL_UNAVAILABLE",
-      );
+    this.assertCanLaunch();
     if (!context.workspace)
       throw new CodexProviderError(
         "CODEX_WORKSPACE_REQUIRED: codex requires a main-authorized workspace",
@@ -2831,6 +3150,195 @@ export class CodexAppServerProvider implements ProviderAdapter {
     await s.compact();
   }
 
+  async rollback(
+    localThreadId: string,
+    targetTurnId: string,
+    opts: {
+      workspace?: WorkspaceGrant;
+      runtimeMode?: RuntimeMode;
+      model?: string;
+      hydraPolicy?: string;
+    },
+  ): Promise<string | null> {
+    this.assertCanLaunch();
+    if (!opts.workspace)
+      throw new CodexProviderError(
+        "CODEX_WORKSPACE_REQUIRED: codex requires a main-authorized workspace",
+        "CODEX_WORKSPACE_REQUIRED",
+      );
+    if (!this.lookupBinding(localThreadId))
+      throw new CodexProviderError(
+        "The original Codex conversation is unavailable.",
+        "CODEX_RESUME_FAILED",
+      );
+    let session = this.sessions.get(localThreadId);
+    if (session && session.workspaceDirectory !== realpathSync(opts.workspace.directory))
+      throw new CodexProviderError(
+        "CODEX_WORKSPACE_REQUIRED: this thread's session is bound to a different workspace",
+        "CODEX_WORKSPACE_REQUIRED",
+      );
+    if (session?.isTurnActive())
+      throw new CodexProviderError("CODEX_BUSY: a turn is already active on this session", "CODEX_BUSY");
+    if (!session) {
+      if (this.sessions.size + this.retired.size >= this.limits.maxSessions)
+        throw new CodexProviderError(
+          `CODEX_SESSION_LIMIT: ${this.limits.maxSessions} sessions`,
+          "CODEX_SESSION_LIMIT",
+        );
+      session = new CodexSession(this, localThreadId, opts.workspace);
+      this.sessions.set(localThreadId, session);
+    }
+    try {
+      return await session.rollback(targetTurnId, opts);
+    } finally {
+      if (this.sessions.get(localThreadId) === session) {
+        this.sessions.delete(localThreadId);
+        this.retired.add(session);
+        await session.shutdown();
+        if (!session.hasUnconfirmedChild()) this.retired.delete(session);
+      }
+    }
+  }
+
+  /**
+   * Run a lightweight one-shot `app-server` background session (no plugins,
+   * apps, or telemetry via `CODEX_ONE_SHOT_CONFIG_ARGS`), handshake
+   * `initialize`/`initialized`, execute `fn`, and dispose its transport.
+   * Regular chat sessions keep `lightweight` unset and retain plugins.
+   */
+  async runOneShot<T>(
+    workspaceDir: string,
+    fn: (rpc: CodexRpc, initResult: Record<string, unknown>) => Promise<T>,
+  ): Promise<T> {
+    this.assertCanLaunch();
+    if (
+      !workspaceDir ||
+      workspaceDir.includes("\0") ||
+      workspaceDir.startsWith("\\\\") ||
+      workspaceDir.startsWith("//") ||
+      /^file:/i.test(workspaceDir) ||
+      !isAbsolute(workspaceDir)
+    ) {
+      throw new CodexProviderError(
+        "CODEX_WORKSPACE_REQUIRED: codex requires a local main-authorized workspace",
+        "CODEX_WORKSPACE_REQUIRED",
+      );
+    }
+    let cwd: string;
+    try {
+      cwd = realpathSync(workspaceDir);
+    } catch {
+      throw new CodexProviderError(
+        "CODEX_WORKSPACE_REQUIRED: workspace directory cannot be resolved",
+        "CODEX_WORKSPACE_REQUIRED",
+      );
+    }
+    const spec = this.buildSpec(cwd, { lightweight: true });
+    let rpc: CodexRpc | null = null;
+    let alive = true;
+    const transport = new StdioTransport<CodexMessage>(
+      spec,
+      { ...DEFAULT_TRANSPORT_LIMITS, ...this.transportLimits },
+      {
+        onFrame: (m) => {
+          if (alive && rpc) rpc.onFrame(m);
+        },
+        onProtocolError: (err) => {
+          alive = false;
+          rpc?.failAllPending(err.message);
+          void transport.dispose();
+        },
+        onExit: () => {},
+        onClose: (code, signal) => {
+          alive = false;
+          this.oneShotTransports.delete(transport);
+          this.recordOneShotCleanupFailure(transport, code, signal);
+          const tail = transport.stderrTail().trim();
+          rpc?.failAllPending(
+            `CODEX_CONNECTION_CLOSED: one-shot connection closed (code ${code ?? "?"}, signal ${signal ?? "?"})` +
+              (tail ? ` — stderr tail: ${bounded(tail, 400)}` : ""),
+          );
+        },
+        onSpawnError: (err) => {
+          alive = false;
+          rpc?.failAllPending(`CODEX_PROTOCOL_ERROR: spawn failed: ${err.message}`);
+          void transport.dispose();
+        },
+      },
+      this.spawnImplForMode(),
+      codexWireCodec(256 * 1024),
+    );
+    rpc = new CodexRpc(
+      { send: (m, ack) => transport.send(m, ack) },
+      {
+        onServerRequest: (id, method) => {
+          rpc?.respondError(id, -32601, `unsupported server request in one-shot session: ${method}`);
+        },
+        onNotification: () => {},
+        onClosed: () => {},
+        onFatal: (err) => {
+          alive = false;
+          rpc?.failAllPending(err.message);
+          void transport.dispose();
+        },
+      },
+      {
+        requestTimeoutMs: this.limits.requestTimeoutMs,
+        onMutatingTimeout: (method) => {
+          alive = false;
+          rpc?.failAllPending(
+            `CODEX_REQUEST_TIMEOUT: mutating request ${method} timed out — wire state unknown`,
+          );
+          void transport.dispose();
+        },
+      },
+    );
+    this.oneShotTransports.add(transport);
+    this.oneShotRpcs.add(rpc);
+    try {
+      transport.start();
+      const init = await rpc.request(
+        "initialize",
+        {
+          clientInfo: {
+            name: this.clientName,
+            title: "Tivano",
+            version: this.clientVersion,
+          },
+        },
+        { timeoutMs: this.limits.initializeTimeoutMs, mutating: true },
+      );
+      if (!isObj(init)) {
+        throw new CodexProtocolError("initialize response is not an object", "CODEX_PROTOCOL_ERROR");
+      }
+      if (s(init.codexHome) && s(init.codexHome) !== this.config.codexHome) {
+        throw new CodexProtocolError(
+          `CODEX_HOME mismatch: server reports ${s(init.codexHome)}`,
+          "CODEX_PROTOCOL_ERROR",
+        );
+      }
+      rpc.notify("initialized");
+      return await fn(rpc, init);
+    } finally {
+      alive = false;
+      this.oneShotRpcs.delete(rpc);
+      rpc.failAllPending("CODEX_CONNECTION_CLOSED: one-shot connection closed");
+      const res = await transport.dispose();
+      this.recordOneShotCleanupFailure(transport, res.exitCode, res.signal);
+      if (res.confirmed || !transport.hasChild) this.oneShotTransports.delete(transport);
+    }
+  }
+
+  /**
+   * Fetch the provider-owned model catalog using a fresh lightweight
+   * one-shot `app-server` process (no plugins, apps, or telemetry).
+   */
+  async fetchModelCatalogOneShot(workspaceDir: string): Promise<CodexModelOption[]> {
+    return this.runOneShot(workspaceDir, (rpc) =>
+      fetchModelList(rpc, this.limits.requestTimeoutMs),
+    );
+  }
+
   async modelCatalog(): Promise<CodexModelOption[] | null> {
     for (const s of this.sessions.values()) {
       if (s.phase === "ready") return s.fetchModelCatalog();
@@ -2842,6 +3350,18 @@ export class CodexAppServerProvider implements ProviderAdapter {
     this.disposed = true;
     const children: ChildCleanupResult[] = [];
     let orphaned = 0;
+    for (const r of [...this.oneShotRpcs]) {
+      orphaned += r.pendingCount;
+      r.failAllPending("CODEX_CONNECTION_CLOSED: provider disposed");
+      this.oneShotRpcs.delete(r);
+    }
+    for (const tr of [...this.oneShotTransports]) {
+      const result = await tr.dispose();
+      this.recordOneShotCleanupFailure(tr, result.exitCode, result.signal);
+      children.push(result);
+      if (result.confirmed || !tr.hasChild) this.oneShotTransports.delete(tr);
+    }
+    children.push(...this.oneShotCleanupFailures.values());
     for (const s of [...this.sessions.values(), ...this.retired]) {
       const { children: c, orphaned: o } = await s.shutdown();
       children.push(...c);

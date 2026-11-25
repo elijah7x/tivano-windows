@@ -55,7 +55,6 @@ import { runFolderChecks } from "./folderChecks.mjs";
 import { runUnreadChecks } from "./unreadChecks.mjs";
 import { runPaletteChecks } from "./paletteChecks.mjs";
 import { runSleepChecks } from "./sleepChecks.mjs";
-import { runAntiSlopChecks } from "./antiSlopChecks.mjs";
 import { runFontSizeChecks } from "./fontSizeChecks.mjs";
 import { runLocalControlChecks } from "./localControlChecks.mjs";
 import { runHydraChecks } from "./hydraChecks.mjs";
@@ -84,6 +83,7 @@ import { runNewThreadPromptChecks } from "./newThreadPromptChecks.mjs";
 import { runGeneralSettingsChecks } from "./generalSettingsChecks.mjs";
 import { runWorkingIndicatorChecks } from "./workingIndicatorChecks.mjs";
 import { runLayoutChecks, runShelfChecks, runQuickChecks } from "./layoutChecks.mjs";
+import { runRemoteMcpChecks } from "./remoteMcpChecks.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "package.json"));
@@ -1691,15 +1691,6 @@ try {
     boundedClose,
   });
 
-  // ---- session 24+: F31 anti-slop guidance (frozen AntiSlopPolicy) ----
-  await runAntiSlopChecks({
-    launch,
-    instances,
-    snap,
-    check,
-    boundedClose,
-  });
-
   // ---- session 25+: F26 font-size stepping (frozen TypeScale) ---------
   await runFontSizeChecks({
     launch,
@@ -1890,7 +1881,7 @@ try {
     dataRoot,
   });
 
-  // ---- A48: F04 link popover + F26 performanceMode (local state) --------
+  // ---- A48: F04 link popover + P2-62 retired Performance Mode -----------
   await runAppearanceChecks({
     launch,
     instances,
@@ -2069,6 +2060,15 @@ try {
     instances,
     snap,
     outDir,
+    check,
+    boundedClose,
+  });
+
+  // ---- session 32: P2-25 Remote MCP — Connections, OAuth, full-access gate --
+  await runRemoteMcpChecks({
+    launch,
+    instances,
+    snap,
     check,
     boundedClose,
   });

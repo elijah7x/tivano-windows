@@ -46,6 +46,8 @@ export interface IpcOptions {
   };
   /** F33 local control — absent only in builds without the slice. */
   localControl?: import("./localControl").LocalControlService;
+  /** P2-25 Remote MCP — absent only in builds without the slice. */
+  remoteMcp?: import("./remoteMcp").RemoteMcpService;
   /** Embedded terminal service — absent only in builds without the slice. */
   terminals?: import("./terminalService").TerminalService;
   /** F26 wallpaper library — absent only in builds without the slice. */
@@ -408,6 +410,11 @@ export function registerIpc(opts: IpcOptions): () => void {
       failure: opts.localControl?.listenFailure ?? null,
     };
   });
+  handle("remoteMcp:status", () => opts.remoteMcp?.status() ?? null);
+  handle("remoteMcp:retry", async () => (await opts.remoteMcp?.retry()) ?? null);
+  handle("remoteMcp:decide", (p) => opts.remoteMcp?.decide(p.id, p.decision) ?? null);
+  handle("remoteMcp:revoke", (p) => opts.remoteMcp?.revoke(p.id) ?? null);
+  handle("remoteMcp:revoke-all", () => opts.remoteMcp?.revokeAll() ?? null);
   // F33 frozen CLIInstallationSettings — install/uninstall on request
   // only; never enables local control; conflict refuses rather than
   // replacing a foreign command. The receipt lands in settings.

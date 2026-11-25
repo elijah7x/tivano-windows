@@ -330,33 +330,25 @@ describe("local control (F33)", () => {
     await wait(30);
     const got = await call(sock, svc.instance, "settingsGet");
     const list = (got.result as Record<string, unknown>).settings as { key: string }[];
-    expect(list.map((s) => s.key)).toContain("textGeneration");
-    const set = await call(sock, svc.instance, "settingsSet", {
+    expect(list.map((s) => s.key)).toEqual(["textGeneration", "showsSkylight"]);
+    const tg = await call(sock, svc.instance, "settingsSet", {
       ticket: ticket(svc),
-      key: "antiSlopEnabled",
-      bool: false,
+      key: "textGeneration",
+      textGeneration: "off",
     });
-    expect(((set.result as Record<string, unknown>).operation as { state: string }).state).toBe(
+    expect(((tg.result as Record<string, unknown>).operation as { state: string }).state).toBe(
       "ended",
     );
-    expect(engine.snapshot().settings.antiSlopEnabled).toBe(false);
-    // Keys outside the bounded set are refused as invalid requests.
-    const un = await call(sock, svc.instance, "settingsSet", {
-      ticket: ticket(svc),
-      key: "sidebarActivityView",
-      bool: true,
-    });
-    expect((un.error as Record<string, unknown>).code).toBe("invalidRequest");
-    // performanceMode/showsSkylight are real settings in this build.
-    const pm = await call(sock, svc.instance, "settingsSet", {
-      ticket: ticket(svc),
-      key: "performanceMode",
-      bool: true,
-    });
-    expect(((pm.result as Record<string, unknown>).operation as { state: string }).state).toBe(
-      "ended",
-    );
-    expect(engine.snapshot().settings.performanceMode).toBe(true);
+    expect(engine.snapshot().settings.textGeneration).toBe("off");
+    // Keys outside the bounded set (including retired v2.x keys) are refused as invalid requests.
+    for (const retiredKey of ["sidebarActivityView", "antiSlopEnabled", "performanceMode"]) {
+      const un = await call(sock, svc.instance, "settingsSet", {
+        ticket: ticket(svc),
+        key: retiredKey,
+        bool: true,
+      });
+      expect((un.error as Record<string, unknown>).code).toBe("invalidRequest");
+    }
     const sky = await call(sock, svc.instance, "settingsSet", {
       ticket: ticket(svc),
       key: "showsSkylight",

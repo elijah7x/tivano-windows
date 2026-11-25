@@ -15,6 +15,7 @@ import {
   MODEL_LIST_LIMIT,
   addPin,
   addSection,
+  applyDraftRename,
   modelListItems,
   moveModelListItem,
   moveModelSection,
@@ -28,6 +29,7 @@ import {
   removePin,
   removeSection,
   renameSection,
+  sectionEditTargetAlive,
   setModelListItems,
   simplifiedModels,
   toggleSectionCollapsed,
@@ -376,5 +378,54 @@ describe("protectedModelIds (frozen protectedModelIDs)", () => {
     expect(ids).toEqual(
       new Set(["thread-m", "pinned-m", "pin2", "lead-m", "work-m", "prof-m", "home-worker"]),
     );
+  });
+});
+
+describe("applyDraftRename (P2-33 edit-then-remove fold)", () => {
+  it("folds the in-flight rename into the written list", () => {
+    const out = applyDraftRename([S("a", "A", 0), S("b", "B", 1)], "b", "Bee");
+    expect(out.map((s) => s.name)).toEqual(["A", "Bee"]);
+    expect(out.map((s) => s.id)).toEqual(["a", "b"]);
+  });
+
+  it("leaves the list untouched with no edit or a blank draft", () => {
+    const secs = [S("a", "A", 0)];
+    expect(applyDraftRename(secs, null, "x")).toBe(secs);
+    expect(applyDraftRename(secs, "a", "   ")).toBe(secs);
+  });
+
+  it("rename-then-remove lands both changes in one write", () => {
+    const folded = applyDraftRename([S("a", "A", 0), S("b", "B", 1)], "a", "Aye");
+    const removed = removeSection(folded, ["b"], "b");
+    expect(removed.modelSections.map((s) => s.name)).toEqual(["Aye"]);
+    expect(removed.collapsedModelSections).toEqual([]);
+  });
+
+  it("a rename aimed at a gone section is a no-op (no resurrection)", () => {
+    const secs = [S("a", "A", 0)];
+    const out = applyDraftRename(secs, "ghost", "G");
+    expect(out.map((s) => s.name)).toEqual(["A"]);
+  });
+});
+
+describe("sectionEditTargetAlive (P2-33 un-echoed write grace)", () => {
+  it("keeps a just-added section alive before the store echoes it", () => {
+    const before = [S("a", "A", 0)];
+    const added = addSection(before, "New group", 3);
+    const newId = added[added.length - 1]!.id;
+    // The click sets editingId to the new id but the snapshot still
+    // holds the old list — the target must survive that gap.
+    expect(sectionEditTargetAlive(before, newId, newId)).toBe(true);
+    // Once the echo lands the pending marker is released and the
+    // echoed list alone keeps it alive.
+    expect(sectionEditTargetAlive(added, newId, null)).toBe(true);
+  });
+
+  it("clears a vanished or stale target, and never a null one", () => {
+    const secs = [S("a", "A", 0)];
+    expect(sectionEditTargetAlive(secs, "a", null)).toBe(true);
+    expect(sectionEditTargetAlive(secs, "gone", null)).toBe(false);
+    expect(sectionEditTargetAlive(secs, "other", "pending")).toBe(false);
+    expect(sectionEditTargetAlive(secs, null, "pending")).toBe(false);
   });
 });

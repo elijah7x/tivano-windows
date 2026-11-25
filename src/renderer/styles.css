@@ -218,7 +218,6 @@ button.primary:hover {
 @media (prefers-reduced-motion: reduce) {
   .sky-doll.sway { animation: none; }
 }
-html[data-performance] .sky-doll.sway { animation: none; }
 
 .search {
   margin: 4px 12px 8px;
@@ -408,6 +407,37 @@ html[data-performance] .sky-doll.sway { animation: none; }
   color: var(--text);
 }
 
+/* P2-34 thread-row ⋯/context menu (frozen RowActionsButton popover +
+   AppKit context menu). Fixed so it anchors at the pointer or the button. */
+.row-menu {
+  position: fixed;
+  min-width: 190px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  z-index: 60;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+.row-menu.align-end {
+  transform: translateX(-100%);
+}
+.row-menu [role="menuitem"] {
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: calc(12.5px + var(--fs-ui-off));
+  cursor: pointer;
+}
+.row-menu [role="menuitem"]:hover:not(:disabled) { background: var(--surface-3); }
+.row-menu [role="menuitem"].danger { color: var(--danger); }
+
 .sidebar-foot {
   border-top: 1px solid var(--border);
   padding: 6px 8px 10px;
@@ -578,7 +608,7 @@ html[data-performance] .sky-doll.sway { animation: none; }
   padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .msg {
@@ -625,14 +655,14 @@ html[data-performance] .sky-doll.sway { animation: none; }
 }
 
 .msg p {
-  margin: 0.4em 0;
+  margin: 0.55em 0;
 }
 
 .msg h1,
 .msg h2,
 .msg h3,
 .msg h4 {
-  margin: 0.6em 0 0.3em;
+  margin: 0.85em 0 0.35em;
 }
 
 .msg pre,
@@ -640,15 +670,16 @@ html[data-performance] .sky-doll.sway { animation: none; }
   background: var(--surface-3);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 10px;
+  padding: 0.7em 0.85em;
   overflow-x: auto;
+  line-height: 1.55;
 }
 
 .md-preblock {
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
-  margin: 0.4em 0;
+  margin: 0.55em 0;
 }
 
 .md-preblock .md-pre {
@@ -726,21 +757,26 @@ html[data-performance] .sky-doll.sway { animation: none; }
 }
 
 .msg blockquote {
-  margin: 0.4em 0;
-  padding-left: 10px;
+  margin: 0.55em 0;
+  padding: 0.1em 0 0.1em 0.85em;
   border-left: 3px solid var(--border);
   color: var(--text-2);
 }
 
 .msg ul,
 .msg ol {
-  margin: 0.3em 0;
-  padding-left: 1.4em;
+  margin: 0.45em 0;
+  padding-left: 1.5em;
+}
+
+.msg li ul,
+.msg li ol {
+  margin: 0.15em 0;
 }
 
 .msg li.md-task {
   list-style: none;
-  margin-left: -1.4em;
+  margin-left: -1.5em;
 }
 
 .msg .md-taskbox {
@@ -754,17 +790,29 @@ html[data-performance] .sky-doll.sway { animation: none; }
   margin: 0.7em 0;
 }
 
+/* P2-46: cells wrap to chat width; only a genuinely too-wide table
+   scrolls inside its wrap (frozen "wrap long cells … less horizontal
+   scrolling"). */
+.msg .md-table-wrap {
+  overflow-x: auto;
+  margin: 0.55em 0;
+}
+
 .msg .md-table {
   border-collapse: collapse;
-  margin: 0.4em 0;
   font-size: calc(13px + var(--fs-content-off));
 }
 
 .msg .md-table th,
 .msg .md-table td {
   border: 1px solid var(--border);
-  padding: 4px 8px;
+  padding: 0.4em 0.65em;
   text-align: left;
+  overflow-wrap: anywhere;
+  /* Frozen: only a table whose columns would each fall below seven
+   * resolved sizes scrolls sideways — the floor keeps a genuinely wide
+   * table scrolling instead of squeezing cells to unreadable ribbons. */
+  min-width: 7em;
 }
 
 .msg .md-table .md-al-center {
@@ -2004,31 +2052,29 @@ select.runtime-mode:disabled {
   font-size: calc(11.5px + var(--fs-ui-off));
 }
 
-/* working dots */
+/* working dots — opacity pulse on own layer (no layout-triggering content swaps) */
 
 .dots::after {
-  content: "";
-  animation: dots 1.2s steps(4) infinite;
+  content: "…";
+  display: inline-block;
+  will-change: opacity;
+  animation: dots 1.2s ease-in-out infinite;
 }
 
 @keyframes dots {
-  0% {
-    content: "";
-  }
-  25% {
-    content: ".";
+  0%, 100% {
+    opacity: 0.3;
   }
   50% {
-    content: "..";
-  }
-  75% {
-    content: "...";
+    opacity: 1;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .dots::after {
     animation: none;
+    will-change: auto;
+    opacity: 1;
     content: "…";
   }
 }
@@ -2965,9 +3011,15 @@ select.runtime-mode:disabled {
 }
 .work-more:hover { color: var(--text); }
 /* F03: the label breathes while the turn runs (frozen WorkingTitle —
-   a slow opacity cycle), the elapsed counter stays steady mono-digits. */
+   a slow opacity cycle on its own composited layer), the elapsed counter
+   stays steady mono-digits. */
 .work-label {
+  will-change: opacity;
   animation: work-breathe 3.2s ease-in-out infinite;
+}
+.work-label.paused {
+  animation-play-state: paused;
+  will-change: auto;
 }
 .work-elapsed {
   font-variant-numeric: tabular-nums;
@@ -2981,9 +3033,19 @@ select.runtime-mode:disabled {
 }
 @media (prefers-reduced-motion: reduce) {
   .work-card .stave { animation: none; }
-  .work-label { animation: none; }
+  .work-label { animation: none; will-change: auto; }
 }
-html[data-performance] .work-label { animation: none; }
+
+/* P2-63: pause animations and drop layer hints while inactive, minimized or out of view. */
+html[data-paused="1"] .work-label,
+html[data-paused="1"] .spin-cell,
+html[data-paused="1"] .sky-doll.sway,
+html[data-paused="1"] .dots::after,
+html[data-paused="1"] .work-dots::after,
+html[data-paused="1"] .stave-bar .stave {
+  animation-play-state: paused !important;
+  will-change: auto !important;
+}
 
 /* F03 frozen spinners — cell grids pulsing once per 750ms, each cell
    phase-lagged so the bright edge travels. Row tints follow the frozen
@@ -3011,7 +3073,6 @@ html[data-performance] .work-label { animation: none; }
 @media (prefers-reduced-motion: reduce) {
   .spin-cell { animation: none; }
 }
-html[data-performance] .spin-cell { animation: none; }
 
 /* A84 frozen StreamVeil — the freshly flushed tail of a streaming reply
    dissolves in once, paced by the stream's own cadence (--veil-d, set from
@@ -3025,7 +3086,7 @@ html[data-performance] .spin-cell { animation: none; }
 @media (prefers-reduced-motion: reduce) {
   .md-veil { animation: none; }
 }
-html[data-performance] .md-veil { animation: none; }
+html[data-paused="1"] .md-veil { animation: none !important; }
 
 /* Spinner placement helpers (frozen call sites). */
 .plan-spin { margin-left: 6px; vertical-align: middle; }
@@ -3249,7 +3310,7 @@ html[data-performance] .md-veil { animation: none; }
   color: var(--text);
 }
 .commit-push input { accent-color: var(--accent); }
-.commit-instructions { margin-top: 12px; }
+.settings-field-gap { margin-top: 12px; }
 
 /* F26 font-size stepper — frozen FontSizeButtons: minus / "N pt" / plus. */
 .fs-head {
@@ -3598,20 +3659,6 @@ html[data-performance] .md-veil { animation: none; }
 .ta-dim { color: var(--text-2); }
 .ta-ladder { width: 10px; height: 10px; aspect-ratio: auto; display: inline-block; }
 .ta { --ta-quiet: color-mix(in srgb, var(--text) 7%, transparent); --ta-future: color-mix(in srgb, var(--text) 3.5%, transparent); }
-
-/* F26 Performance Mode — frozen performanceMode. This build's window is
-   already opaque, so the honest port strips the effects it actually
-   renders: drop shadows, glows, filters, transitions and animations. */
-[data-performance="1"] *,
-[data-performance="1"] *::before,
-[data-performance="1"] *::after {
-  box-shadow: none !important;
-  text-shadow: none !important;
-  filter: none !important;
-  backdrop-filter: none !important;
-  transition: none !important;
-  animation: none !important;
-}
 
 /* F04 link popover — frozen LinkPopover: transient menu under the
    link's own bounds; rows take no focus, Escape/outside closes. */
@@ -4116,7 +4163,6 @@ html[data-performance] .md-veil { animation: none; }
 .app.has-wp .chat-stack {
   background: transparent;
 }
-html[data-performance] .wp-backdrop { display: none; }
 
 .wp-card {
   display: flex;
@@ -4795,8 +4841,8 @@ html[data-performance] .wp-backdrop { display: none; }
  * right while a low-alpha base stays put, rows fading upward. The
  * composer runs it while a turn runs; a one-shot sweep crosses the
  * delegation card when it goes out and the heads panel when a head
- * finishes, tinted by the head's persona colour. performanceMode and
- * reduced motion take it down to nothing (or a static field). */
+ * finishes, tinted by the head's persona colour. reduced motion takes
+ * it down to nothing (or a static field). */
 .work-dots, .sweep-dots {
   position: absolute;
   pointer-events: none;
@@ -4837,8 +4883,6 @@ html[data-performance] .wp-backdrop { display: none; }
   from { -webkit-mask-position: -60% 0; mask-position: -60% 0; }
   to { -webkit-mask-position: 180% 0; mask-position: 180% 0; }
 }
-html[data-performance] .work-dots,
-html[data-performance] .sweep-dots { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .work-dots::after { display: none; }
   .work-dots::before { opacity: 0.28; }
@@ -4905,4 +4949,214 @@ html[data-performance] .sweep-dots { display: none; }
 .quick-hint {
   font-size: 10px; opacity: 0.45; text-align: right;
   -webkit-app-region: drag;
+}
+
+/* P2-55: Settings > Version What's new banner and expandable card */
+.version-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.whatsnew-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px 11px 14px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.whatsnew-banner-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--surface-1);
+  color: var(--accent);
+}
+
+.whatsnew-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.whatsnew-banner-title {
+  font-size: calc(13px + var(--fs-ui-off));
+  font-weight: 500;
+  color: var(--text-1);
+}
+
+.whatsnew-banner-summary {
+  font-size: calc(11.5px + var(--fs-ui-off));
+  color: var(--text-2);
+  margin-top: 2px;
+}
+
+.whatsnew-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.whatsnew-dismiss {
+  width: 24px;
+  height: 24px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.version-card {
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.version-card-head {
+  padding: 12px 14px;
+}
+
+.version-card-name {
+  font-size: calc(14px + var(--fs-ui-off));
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.version-card-ver {
+  font-size: calc(12px + var(--fs-ui-off));
+  color: var(--text-2);
+  margin-top: 2px;
+}
+
+.whatsnew-row-wrap {
+  border-top: 1px solid var(--border);
+}
+
+.whatsnew-row-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.whatsnew-row-btn:hover {
+  background: var(--surface-1);
+}
+
+.whatsnew-row-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.whatsnew-row-title {
+  font-size: calc(13px + var(--fs-ui-off));
+  color: var(--text-1);
+}
+
+.whatsnew-row-detail {
+  font-size: calc(11.5px + var(--fs-ui-off));
+  color: var(--text-2);
+  margin-top: 2px;
+}
+
+.whatsnew-chevron {
+  font-size: 12px;
+  color: var(--text-2);
+  transition: transform 0.14s ease;
+  display: inline-block;
+}
+
+.whatsnew-chevron.open {
+  transform: rotate(90deg);
+}
+
+.whatsnew-body {
+  padding: 4px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.whatsnew-cat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.whatsnew-cat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: calc(12.5px + var(--fs-ui-off));
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.whatsnew-cat-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.whatsnew-bullets {
+  margin: 0;
+  padding-left: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: calc(12.5px + var(--fs-ui-off));
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.whatsnew-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: calc(11.5px + var(--fs-ui-off));
+  color: var(--text-2);
+}
+
+.whatsnew-releases-link {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.whatsnew-releases-link:hover {
+  text-decoration: underline;
+}
+
+/* ---- P2-25: Connections / Remote MCP ------------------------------ */
+.connections-section { margin-top: 8px; }
+.remote-mcp-section { margin-top: 14px; }
+.remote-mcp-url-field { margin-top: 6px; }
+.remote-mcp-url-row { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.remote-mcp-url-row .choice { padding: 2px 8px; font-size: 12px; }
+.remote-mcp-grant {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
 }
