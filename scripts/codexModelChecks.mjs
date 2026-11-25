@@ -79,17 +79,20 @@ export async function runCodexModelChecks({
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
   const threadId = await newCodexThread(page, "Model Proj");
 
-  // The picker exists only for codex mode and the catalog is honestly
-  // pending before any session binds — never a fabricated list.
+  // The picker exists only for codex mode and serves the provider-owned
+  // catalog via lightweight one-shot before any chat session binds.
   await page.waitForSelector(".model-picker", { timeout: 10000 });
-  const pending = await modelsList(page);
+  const preCat = await modelsList(page);
   verify(
-    "models:list pending before first turn (no fabricated catalog)",
-    pending.state === "pending",
-    pending,
+    "models:list ready before first turn via lightweight one-shot; hidden rows filtered",
+    preCat.state === "ready" &&
+      preCat.models.some((m) => m.id === "fixture-model") &&
+      preCat.models.some((m) => m.id === "fixture-max") &&
+      !preCat.models.some((m) => m.id === "fixture-hidden"),
+    preCat,
   );
 
-  // Turn 1 binds the session — the picker may now serve the real catalog.
+  // Turn 1 binds the session — the picker continues serving the catalog.
   await sendAndWaitDone(page, threadId, "hello");
   let cat = await modelsList(page);
   verify(

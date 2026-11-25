@@ -7,11 +7,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { CodexAppServerProvider } from "../src/main/codexAppServerProvider";
-import type { CodexRuntimeConfig } from "../src/main/codexRuntimeConfig";
-import type { ProviderCallbacks, TurnContext, WorkspaceGrant } from "../src/main/provider";
+import { CODEX_ONE_SHOT_CONFIG_ARGS, type CodexRuntimeConfig } from "../src/main/codexRuntimeConfig";
+import type { ProviderAdapter, ProviderCallbacks, TurnContext, WorkspaceGrant } from "../src/main/provider";
 import type { ProviderThreadBinding } from "../src/shared/types";
 import { Store } from "../src/main/store";
 import { Engine } from "../src/main/engine";
@@ -244,16 +245,38 @@ describe("Codex model/effort overrides (F17)", () => {
     await p.dispose();
   });
 
-  it("modelCatalog returns the provider-owned list — hidden rows filtered", async () => {
-    const { p } = provider();
-    // No session yet → null (engine maps to "pending"), never a fake list.
-    await expect(p.modelCatalog()).resolves.toBeNull();
+  it("modelCatalog returns the provider-owned list via lightweight one-shot before a session binds — hidden rows filtered", async () => {
+    const spawnedArgs: string[][] = [];
+    const bindings = new Map<string, ProviderThreadBinding>();
+    const p = new CodexAppServerProvider({
+      config: cfg(),
+      lookupBinding: (t) => bindings.get(t),
+      bindThread: async (t, b) => {
+        bindings.set(t, b);
+      },
+      spawnImpl: (spec) => {
+        spawnedArgs.push([...spec.args]);
+        return spawn(spec.executable, spec.args, {
+          cwd: spec.cwd,
+          env: spec.env,
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+        });
+      },
+    });
+    // Before any chat session starts, modelCatalog() uses a lightweight one-shot.
+    const oneShotModels = await p.modelCatalog();
+    expect(oneShotModels).not.toBeNull();
+    expect(p.sessionCount()).toBe(0);
+    expect(spawnedArgs[0]).toEqual([FIXTURE, ...CODEX_ONE_SHOT_CONFIG_ARGS]);
+
     const { cb, c } = cbCollect();
     p.start(
       { prompt: "hello", threadId: "local-1", turnId: "t-1", workspace: grant() },
       cb,
     );
     await waitFor(() => c.done || c.errors.length > 0);
+    expect(spawnedArgs[1]).toEqual([FIXTURE]);
     const models = await p.modelCatalog();
     expect(models).not.toBeNull();
     const ids = models!.map((m) => m.id);
@@ -329,11 +352,49 @@ describe("engine model selection (F17)", () => {
     store.close();
   });
 
-  it("codexModels reports pending before a session binds, ready after", async () => {
+  it("codexModels reports pending when adapter returns null and unavailable when unconfigured", async () => {
+    const root = tmp("tivano-engmodel-");
+    const store = new Store(root);
+    store.open();
+    const pendingAdapter: ProviderAdapter = {
+      descriptor: { id: "codex", label: "Codex", mode: "codex", synthetic: true },
+      start: () => {
+        throw new Error("unused");
+      },
+      modelCatalog: async () => null,
+      dispose: async () => ({ children: [], orphanedPending: 0 }),
+    };
+    const pendingEngine = new Engine(store, pendingAdapter, root, "0.0.0-test");
+    expect((await pendingEngine.codexModels()).state).toBe("pending");
+    pendingEngine.shutdown();
+
+    const home = tmp("tivano-codexhome-");
+    const unconfCodex = new CodexAppServerProvider({
+      config: {
+        mode: "unconfigured",
+        codexHome: home,
+        codexHomeId: home,
+        args: ["app-server"],
+        env: { CODEX_HOME: home },
+        treeCapability: { supported: false, platform: "win32", reason: "test" },
+      },
+      lookupBinding: () => undefined,
+      bindThread: async () => {},
+    });
+    const unconfEngine = new Engine(store, unconfCodex, root, "0.0.0-test");
+    const unconfCat = await unconfEngine.codexModels();
+    expect(unconfCat.state).toBe("unavailable");
+    unconfEngine.shutdown();
+    await unconfCodex.dispose();
+    store.close();
+  });
+
+  it("codexModels serves lightweight one-shot catalog before a session binds and keeps working after", async () => {
     const root = tmp("tivano-engmodel-");
     const store = new Store(root);
     store.open();
     const bindings = new Map<string, ProviderThreadBinding>();
+    const spawnedArgs: string[][] = [];
     const codex = new CodexAppServerProvider({
       config: cfg(),
       lookupBinding: (t) => bindings.get(t),
@@ -346,10 +407,23 @@ describe("engine model selection (F17)", () => {
           store.update(() => {});
         }
       },
+      spawnImpl: (spec) => {
+        spawnedArgs.push([...spec.args]);
+        return spawn(spec.executable, spec.args, {
+          cwd: spec.cwd,
+          env: spec.env,
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+        });
+      },
     });
     const paths = new ProjectRuntimePaths([], join(root, "grants.json"), root);
     const engine = new Engine(store, codex, root, "0.0.0-test", paths);
-    expect((await engine.codexModels()).state).toBe("pending");
+    const preCat = await engine.codexModels();
+    expect(preCat.state).toBe("ready");
+    if (preCat.state === "ready") expect(preCat.models.map((m) => m.id)).toContain("fixture-max");
+    expect(codex.sessionCount()).toBe(0);
+    expect(spawnedArgs[0]).toEqual([FIXTURE, ...CODEX_ONE_SHOT_CONFIG_ARGS]);
 
     const ws = tmp("tivano-codex-ws-");
     const proj = engine.createProject("p1");
@@ -368,6 +442,7 @@ describe("engine model selection (F17)", () => {
     const msg = t.messages.find((m) => m.role === "assistant")!;
     expect(msg.content).toContain("[m=fixture-max e=high]");
     expect(t.codexModelReported).toBe("fixture-max");
+    expect(spawnedArgs[1]).toEqual([FIXTURE]);
 
     const cat = await engine.codexModels();
     expect(cat.state).toBe("ready");

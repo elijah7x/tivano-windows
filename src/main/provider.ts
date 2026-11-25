@@ -284,9 +284,9 @@ export interface ProviderAdapter {
   endSession?(localThreadId: string): void;
   /**
    * Codex only: fetch the provider-owned model catalog via a live
-   * session's model/list. Returns null when no session is bound yet —
-   * the caller maps that to "pending", never to a fabricated list.
-   * Optional — adapters without catalogs omit it.
+   * session's model/list or a lightweight one-shot app-server run when no
+   * ready session is bound yet. Returns null only when an adapter has no
+   * session/catalog yet ("pending"), never a fabricated list.
    */
   modelCatalog?(): Promise<CodexModelOption[] | null>;
   /**
