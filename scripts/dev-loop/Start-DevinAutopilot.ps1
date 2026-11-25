@@ -1,6 +1,6 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-22.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-25.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-ApprovalRecoveryAttempts <n>] [-StalePrHours <h>] [-StalePrGateRuns <n>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
+# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-ApprovalRecoveryAttempts <n>] [-StalePrHours <h>] [-StalePrGateRuns <n>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SessionIdleRotateMinutes <min>] [-SessionMaxMinutes <min>] [-StrayApps <names>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
 # Launches and watches a single Devin Desktop autopilot chat following autopilot.md.
 
 param(
@@ -19,6 +19,9 @@ param(
   [ValidateRange(1, 100)][int]$StalePrGateRuns = 5,
   [ValidateRange(0, 3600)][int]$UserIdleSeconds = 120,
   [ValidateRange(1, 1440)][int]$IntervalMinutes = 15,
+  [ValidateRange(5, 1440)][int]$SessionIdleRotateMinutes = 45,
+  [ValidateRange(15, 2880)][int]$SessionMaxMinutes = 180,
+  [string[]]$StrayApps = @('ZCode', 'msedge'),
   [string]$SyncSource = 'C:\tivano\audit\tool',
   [string]$SyncTarget = 'C:\tivano\pr-bot\tool\scripts'
 )
@@ -47,6 +50,7 @@ $script:RobocopyPath = $null
 $script:DevinPath = $null
 $script:Redactions = @()
 $script:GuiTypesLoaded = $false
+$script:LastFreshSessionDeferred = $false
 $script:AutoMergeDailyCap = 20
 $script:AttributionLinePattern = '(?i)co-authored-by|generated (with|by) \[?devin|devin\.ai'
 
@@ -309,7 +313,8 @@ function Invoke-SelfSync {
 function Initialize-GuiTypes {
   if ($script:GuiTypesLoaded) { return }
   Add-Type -AssemblyName System.Windows.Forms
-  Add-Type -TypeDefinition @'
+  if ($null -eq ('DevLoopWindows' -as [type])) {
+    Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -326,6 +331,10 @@ public static class DevLoopWindows {
     public string ClassName { get; set; }
     public string ProcessName { get; set; }
     public bool HasShellFlyoutOpen { get; set; }
+  }
+  public sealed class HealthWindowCounts {
+    public int HungWindows { get; set; }
+    public int NotRespondingDialogs { get; set; }
   }
   delegate bool EnumProc(IntPtr h, IntPtr p);
   [StructLayout(LayoutKind.Sequential)]
@@ -345,6 +354,7 @@ public static class DevLoopWindows {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsHungAppWindow(IntPtr h);
   [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
@@ -425,17 +435,32 @@ public static class DevLoopWindows {
       return false;
     }
   }
-  static bool MatchesBare(string title, string bare) {
+  // Returns 2 for a clean Agents/workspace title (no open editor prefix/suffix or dirty marker),
+  // 1 when an open editor file is indicated in the title, and 0 when the title does not match.
+  static int GetBareMatchQuality(string title, string bare) {
+    bool isDirty = title.IndexOf('\u25CF') >= 0;
     string tail = " " + bare;
-    return title.Equals(bare, StringComparison.OrdinalIgnoreCase) ||
-      title.EndsWith(tail, StringComparison.OrdinalIgnoreCase) ||
-      title.StartsWith(bare + " - ", StringComparison.OrdinalIgnoreCase) ||
-      title.IndexOf(tail + " - ", StringComparison.OrdinalIgnoreCase) >= 0;
+    if (title.Equals(bare, StringComparison.OrdinalIgnoreCase)) {
+      return isDirty ? 1 : 2;
+    }
+    if (title.EndsWith(tail, StringComparison.OrdinalIgnoreCase)) {
+      bool hasEditorPrefix = title.EndsWith(" - " + bare, StringComparison.OrdinalIgnoreCase);
+      return (isDirty || hasEditorPrefix) ? 1 : 2;
+    }
+    if (title.StartsWith(bare + " - ", StringComparison.OrdinalIgnoreCase) ||
+        title.IndexOf(tail + " - ", StringComparison.OrdinalIgnoreCase) >= 0) {
+      return 1;
+    }
+    return 0;
   }
   static int GetWindowRank(string title, string folder) {
     if (string.IsNullOrEmpty(folder) || string.IsNullOrEmpty(title)) return 0;
-    if (MatchesBare(title, folder + " (Workspace) - Devin")) return 2;
-    if (MatchesBare(title, folder + " - Devin")) return 1;
+    int wsQuality = GetBareMatchQuality(title, folder + " (Workspace) - Devin");
+    if (wsQuality == 2) return 4;
+    int plainQuality = GetBareMatchQuality(title, folder + " - Devin");
+    if (plainQuality == 2) return 3;
+    if (wsQuality == 1) return 2;
+    if (plainQuality == 1) return 1;
     return 0;
   }
   static bool HasVisibleShellFlyout() {
@@ -510,6 +535,25 @@ public static class DevLoopWindows {
     if (all.Length > 0 && all[0].Rank > 0) return all[0].Handle;
     return IntPtr.Zero;
   }
+  public static HealthWindowCounts GetHealthWindowCounts(int[] pids) {
+    var counts = new HealthWindowCounts { HungWindows = 0, NotRespondingDialogs = 0 };
+    if (pids == null || pids.Length == 0) return counts;
+    var pidSet = new Dictionary<uint, bool>();
+    for (int i = 0; i < pids.Length; i++) {
+      if (pids[i] > 0) pidSet[(uint)pids[i]] = true;
+    }
+    if (pidSet.Count == 0) return counts;
+    EnumWindows((h, p) => {
+      if (!IsWindowVisible(h)) return true;
+      uint pid = 0;
+      GetWindowThreadProcessId(h, out pid);
+      if (pid == 0 || !pidSet.ContainsKey(pid)) return true;
+      if (IsHungAppWindow(h)) counts.HungWindows++;
+      if (GetWindowClass(h) == "#32770" && GetWindowTitle(h) == "Devin") counts.NotRespondingDialogs++;
+      return true;
+    }, IntPtr.Zero);
+    return counts;
+  }
   public static double GetUserIdleSeconds() {
     var info = new LASTINPUTINFO();
     info.cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO));
@@ -520,6 +564,7 @@ public static class DevLoopWindows {
   }
 }
 '@
+  }
   $script:GuiTypesLoaded = $true
 }
 
@@ -797,6 +842,130 @@ function Send-DevinBypassCommandSafe {
   return (Wait-DevinBypass $modeSince 20)
 }
 
+function Wait-DevinSessionNew {
+  param([DateTime]$Since, [int]$Seconds)
+  $logs = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Devin\cli\logs'
+  $deadline = [DateTime]::Now.AddSeconds($Seconds)
+  $styles = [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+  $sinceUtc = $Since.ToUniversalTime().AddSeconds(-1)
+  while ($true) {
+    if (Test-Stop) { return $false }
+    if (Test-Path -LiteralPath $logs -PathType Container) {
+      $files = @(Get-DevinLogFiles $logs)
+      foreach ($file in $files) {
+        foreach ($line in (Read-LogLinesShared $file.FullName)) {
+          if ($line -notmatch '(?i)session/new') { continue }
+          if ($line -notmatch '^(\S+Z)(?:\s|$)') { continue }
+          $parsed = [DateTime]::MinValue
+          if ([DateTime]::TryParse($Matches[1], [Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) {
+            if ($parsed -ge $sinceUtc) { return $true }
+          }
+        }
+      }
+    }
+    if ([DateTime]::Now -ge $deadline) { break }
+    Start-Sleep -Seconds 2
+  }
+  return $false
+}
+
+function Get-AutopilotMessage {
+  param(
+    [switch]$Nudge,
+    [switch]$FreshSession
+  )
+  $soloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
+  $soloStatePath = Join-Path $script:AutopilotDir 'solo-v3.json'
+  $soloState = Read-JsonFile $soloStatePath
+  $soloPhase = ''
+  if ($soloState) { $soloPhase = ([string](Get-JsonProp $soloState 'phase')).Trim().ToLowerInvariant() }
+  if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and $soloPhase -ne 'done') {
+    $message = 'Continue the mission: first re-read ' + $soloPlan + ' and ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub, ' + $script:ProgressPath + ', and ' + $soloStatePath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains. With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
+  } elseif ($Nudge) {
+    $message = 'Continue the autopilot task: first re-read ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep going (queue, parked revisits, hands-on milestone, and 30-minute polling). With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
+  } else {
+    $message = 'First re-read ' + $script:PromptPath + ' and carry it out exactly as written. Then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Work through the whole queue, parked revisits, hands-on milestone, and 30-minute polling loop without asking questions or waiting for a person. Re-read ' + $script:PromptPath + ' after every issue. Use these values wherever the file names its defaults: repository ' + $Repo + ', label ' + $Label + ', root folder ' + $script:WorkRoot + ' (progress.json and parked.json in its autopilot subfolder, STOP in its state subfolder). With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
+  }
+  if ($FreshSession) {
+    $message = $message + ' This is a fresh session started by the watchdog to keep Devin Desktop responsive. The previous session may have left uncommitted edits in ' + $script:WorkspacePath + ' on the current branch: inspect git status and git diff first, then finish or discard them deliberately.'
+  }
+  return $message
+}
+
+function Start-FreshDevinSession {
+  param([IntPtr]$Window, [string]$Reason)
+  $script:LastFreshSessionDeferred = $false
+    if (Test-Stop) {
+    $script:LastFreshSessionDeferred = $true
+    return $false
+  }
+  Initialize-GuiTypes
+  $idleSec = [DevLoopWindows]::GetUserIdleSeconds()
+  if ($idleSec -lt $UserIdleSeconds) {
+    Write-Log ('user active, deferred fresh session (idle ' + [Math]::Round($idleSec, 1) + 's < ' + $UserIdleSeconds + 's)')
+    $script:LastFreshSessionDeferred = $true
+    return $false
+  }
+
+  $folder = Split-Path -Leaf $script:WorkspacePath
+  $preferred = [DevLoopWindows]::Find($folder)
+  if ($preferred -ne [IntPtr]::Zero) { $Window = $preferred }
+  if ($Window -eq [IntPtr]::Zero) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + ')')
+    return $false
+  }
+  if (-not (Set-DevinForeground $Window)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + ')')
+    return $false
+  }
+  if (Test-Stop) {
+    $script:LastFreshSessionDeferred = $true
+    return $false
+  }
+
+  $pressSince = [DateTime]::Now
+  if (-not (Send-DevinKeysSafe $Window '^n')) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; Ctrl+N not sent)')
+    return $false
+  }
+  Start-Sleep -Seconds 3
+  if (Test-Stop) {
+    $script:LastFreshSessionDeferred = $true
+    return $false
+  }
+  # Turn on bypass in the new chat and confirm it from the log before any mission text goes out.
+  # If Ctrl+N landed in an editor instead of a new chat, /bypass is never confirmed and nothing
+  # else is sent, so the caller falls back to its normal path.
+  if (-not (Send-DevinBypassCommandSafe $Window)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; /bypass not confirmed after Ctrl+N)')
+    return $false
+  }
+  if (-not (Wait-DevinSessionNew $pressSince 10)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; no session/new in log)')
+    return $false
+  }
+  if (Test-Stop) {
+    $script:LastFreshSessionDeferred = $true
+    return $false
+  }
+  if (-not (Set-DevinForeground $Window) -or -not (Focus-DevinChatInput $Window)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; focus lost before mission)')
+    return $false
+  }
+  $freshMessage = Get-AutopilotMessage -FreshSession
+  if (-not (Send-DevinTextSafe $Window $freshMessage)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; mission paste failed)')
+    return $false
+  }
+
+  $state = Read-WatchdogState
+  $state['sessionStartedUtc'] = [DateTime]::UtcNow.ToString('o')
+  $state['sessionRotations'] = [int]$state['sessionRotations'] + 1
+  Save-WatchdogState $state
+  Write-Log ('session rotated (' + $Reason + ')')
+  return $true
+}
+
 function Get-DevinLogActivity {
   param([DateTime]$SinceUtc)
   $logs = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Devin\cli\logs'
@@ -854,14 +1023,17 @@ function Read-WatchdogState {
     nudges = @()
     approvalPendingKey = ''
     approvalFailures = 0
+    sessionStartedUtc = ''
+    sessionRotations = 0
+    hungStreak = 0
   }
   $data = Read-JsonFile $script:WatchdogPath
   if (-not $data) { return $state }
-  foreach ($key in @('lastSyncedSha', 'lastKickoffUtc', 'lastKickoffOutcome', 'lastKickoffAttemptUtc', 'firstSeenUtc', 'lastSeenLogWriteUtc', 'lastNudgeUtc', 'lastNudgeReason', 'lastNudgeLogWriteUtc', 'approvalPendingKey')) {
+  foreach ($key in @('lastSyncedSha', 'lastKickoffUtc', 'lastKickoffOutcome', 'lastKickoffAttemptUtc', 'firstSeenUtc', 'lastSeenLogWriteUtc', 'lastNudgeUtc', 'lastNudgeReason', 'lastNudgeLogWriteUtc', 'approvalPendingKey', 'sessionStartedUtc')) {
     $val = Get-JsonProp $data $key
     if ($null -ne $val) { $state[$key] = [string]$val }
   }
-  foreach ($key in @('trackingIssue', 'kickoffFailures', 'consecutiveNudges', 'totalNudges', 'approvalFailures')) {
+  foreach ($key in @('trackingIssue', 'kickoffFailures', 'consecutiveNudges', 'totalNudges', 'approvalFailures', 'sessionRotations', 'hungStreak')) {
     $val = Get-JsonProp $data $key
     if ($null -ne $val) { $state[$key] = [int]$val }
   }
@@ -1046,15 +1218,21 @@ function Set-KickoffOutcome {
   Save-WatchdogState $watchdog
 }
 
-function Stop-DevinDesktop {
-  # Stop only Devin Desktop's own process trees; the Devin CLI (bin\devin.exe) used by the
-  # PR reviewer and the audit arbiter must keep running.
-  $procs = @(Get-CimInstance Win32_Process -Filter "Name='Devin.exe'" -ErrorAction SilentlyContinue | Where-Object {
+function Get-DevinDesktopProcesses {
+  # Select only Devin Desktop's own root processes; exclude the Devin CLI (bin\devin.exe) used by
+  # the PR reviewer and the audit arbiter, and exclude Electron child/helper processes.
+  return @(Get-CimInstance Win32_Process -Filter "Name='Devin.exe'" -ErrorAction SilentlyContinue | Where-Object {
     $_.ExecutablePath -and
     $_.ExecutablePath -notmatch '\\bin\\devin\.exe$' -and
     [string]$_.CommandLine -notmatch '--type=' -and
     [string]$_.CommandLine -notmatch '--require='
   })
+}
+
+function Stop-DevinDesktop {
+  # Stop only Devin Desktop's own process trees; the Devin CLI (bin\devin.exe) used by the
+  # PR reviewer and the audit arbiter must keep running.
+  $procs = @(Get-DevinDesktopProcesses)
   foreach ($desk in $procs) {
     $null = & taskkill.exe /T /F /PID ([int]$desk.ProcessId) 2>&1
   }
@@ -1063,6 +1241,282 @@ function Stop-DevinDesktop {
     Start-Sleep -Seconds 3
   }
   return $procs.Count
+}
+
+function Stop-StrayApps {
+  # -File passes a list as one comma-joined string; 'none' disables the cleanup.
+  $strayNames = @(@($StrayApps) | ForEach-Object { ([string]$_) -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -ine 'none' })
+  if ($strayNames.Count -eq 0) { return }
+  $allProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  if ($allProcs.Count -eq 0) { return }
+  foreach ($rawName in $strayNames) {
+    if ([string]::IsNullOrWhiteSpace([string]$rawName)) { continue }
+    $baseName = ([string]$rawName).Trim()
+    if ($baseName.EndsWith('.exe', [StringComparison]::OrdinalIgnoreCase)) {
+      $baseName = $baseName.Substring(0, $baseName.Length - 4)
+    }
+    if ([string]::IsNullOrWhiteSpace($baseName)) { continue }
+    if ($baseName -ieq 'msedgewebview2') { continue }
+    $exeName = $baseName + '.exe'
+
+    $sameNamePids = New-Object 'Collections.Generic.HashSet[int]'
+    foreach ($p in $allProcs) {
+      if ([string]$p.Name -ieq $exeName) {
+        $null = $sameNamePids.Add([int]$p.ProcessId)
+      }
+    }
+    if ($sameNamePids.Count -eq 0) { continue }
+
+    $roots = @($allProcs | Where-Object {
+      [string]$_.Name -ieq $exeName -and
+      [string]$_.CommandLine -notmatch '--type=' -and
+      [string]$_.CommandLine -notmatch '(?i)zcode\.cjs' -and
+      -not $sameNamePids.Contains([int]$_.ParentProcessId) -and
+      (
+        ($baseName -ieq 'ZCode' -and [string]$_.CommandLine -match '(?i)--updated') -or
+        ($baseName -ieq 'msedge' -and [string]$_.CommandLine -match '(?i)--no-startup-window')
+      )
+    })
+    foreach ($root in $roots) {
+      $rootId = [int]$root.ProcessId
+      if ($rootId -le 0) { continue }
+      $treeIds = New-Object 'Collections.Generic.HashSet[int]'
+      $null = $treeIds.Add($rootId)
+      $grew = $true
+      while ($grew) {
+        $grew = $false
+        foreach ($cp in $allProcs) {
+          if ($treeIds.Contains([int]$cp.ParentProcessId) -and $treeIds.Add([int]$cp.ProcessId)) {
+            $grew = $true
+          }
+        }
+      }
+      $protected = $false
+      $wsBytes = 0.0
+      foreach ($cp in $allProcs) {
+        if (-not $treeIds.Contains([int]$cp.ProcessId)) { continue }
+        if ([string]$cp.CommandLine -match '(?i)C:\\tivano\\' -or [string]$cp.Name -ieq 'msedgewebview2.exe') {
+          $protected = $true
+          break
+        }
+        if ($null -ne $cp.WorkingSetSize) { $wsBytes += [double]$cp.WorkingSetSize }
+      }
+      if ($protected) { continue }
+      $mb = [int][Math]::Round($wsBytes / 1048576.0)
+      $null = & taskkill.exe /T /F /PID $rootId 2>&1
+      if ($LASTEXITCODE -eq 0) {
+        Write-Log ('stray app closed: ' + $baseName + ' (' + $mb + ' MB)')
+      }
+    }
+  }
+}
+
+function Get-OrphanCandidates {
+  param($AllProcs = $null)
+  if ($null -eq $AllProcs) {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  } else {
+    $all = @($AllProcs)
+  }
+  if ($all.Count -eq 0) { return @() }
+
+  $livePids = New-Object 'Collections.Generic.HashSet[int]'
+  foreach ($p in $all) {
+    $id = [int]$p.ProcessId
+    if ($id -gt 0) { $null = $livePids.Add($id) }
+  }
+
+  $excludeIds = New-Object 'Collections.Generic.HashSet[int]'
+  $null = $excludeIds.Add([int]$PID)
+  if (-not [string]::IsNullOrWhiteSpace($script:WorkRoot)) {
+    foreach ($bp in @(Get-BusyAutopilotProcesses)) {
+      $bpid = [int]$bp.ProcessId
+      if ($bpid -gt 0) { $null = $excludeIds.Add($bpid) }
+    }
+  }
+
+  $nowLocal = [DateTime]::Now
+  $targetNames = @('node.exe', 'electron.exe', 'esbuild.exe', 'cmd.exe', 'powershell.exe', 'pwsh.exe', 'npm.exe', 'npx.exe')
+  $results = New-Object Collections.Generic.List[object]
+
+  foreach ($p in $all) {
+    $procId = [int]$p.ProcessId
+    if ($procId -le 0 -or $excludeIds.Contains($procId)) { continue }
+    $parentId = [int]$p.ParentProcessId
+    if ($parentId -le 0 -or $livePids.Contains($parentId)) { continue }
+
+    $nameLower = ([string]$p.Name).Trim().ToLowerInvariant()
+    $exe = [string]$p.ExecutablePath
+    $cmd = [string]$p.CommandLine
+
+    $isTarget = $false
+    $displayName = ''
+    if ($targetNames -contains $nameLower) {
+      $isTarget = $true
+      $displayName = [IO.Path]::GetFileNameWithoutExtension($nameLower)
+    } elseif ($nameLower -eq 'devin.exe' -and ($exe -match '(?i)\\bin\\devin\.exe$' -or $cmd -match '(?i)\\bin\\devin\.exe')) {
+      $isTarget = $true
+      $displayName = 'devin-cli'
+    } elseif ($nameLower -like 'npm*' -or $nameLower -like 'npx*') {
+      $isTarget = $true
+      $displayName = [IO.Path]::GetFileNameWithoutExtension($nameLower)
+    }
+    if (-not $isTarget) { continue }
+
+    if ($cmd.IndexOf('C:\tivano', [StringComparison]::OrdinalIgnoreCase) -lt 0 -and
+        $exe.IndexOf('C:\tivano', [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+
+    $created = $p.CreationDate
+    if ($null -eq $created -or -not ($created -is [DateTime])) { continue }
+    $ageHours = ($nowLocal - [DateTime]$created).TotalHours
+    if ($ageHours -le 2.0) { continue }
+
+    $ws = 0.0
+    if ($null -ne $p.WorkingSetSize) { $ws = [double]$p.WorkingSetSize }
+    $null = $results.Add([pscustomobject]@{
+      name = $displayName
+      processId = $procId
+      ageHours = [Math]::Round($ageHours, 1)
+      workingSetBytes = $ws
+    })
+  }
+
+  return @($results.ToArray())
+}
+
+function Write-HealthSample {
+  try {
+    Initialize-GuiTypes
+
+    $freeRamMB = 0
+    $commitPct = 0
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+    if ($null -ne $os) {
+      $freeRamMB = [int][Math]::Round(([double]$os.FreePhysicalMemory) / 1024.0)
+      $totalVirtKb = [double]$os.TotalVirtualMemorySize
+      $freeVirtKb = [double]$os.FreeVirtualMemory
+      if ($totalVirtKb -gt 0) {
+        $usedVirtKb = $totalVirtKb - $freeVirtKb
+        if ($usedVirtKb -lt 0) { $usedVirtKb = 0.0 }
+        $commitPct = [int][Math]::Round(($usedVirtKb / $totalVirtKb) * 100.0)
+      }
+    }
+
+    $desktopProcs = @(Get-DevinDesktopProcesses)
+    $pidList = New-Object Collections.Generic.List[int]
+    foreach ($proc in $desktopProcs) {
+      $procId = [int]$proc.ProcessId
+      if ($procId -gt 0) { $null = $pidList.Add($procId) }
+    }
+    # Electron keeps most of its memory in renderer/GPU/utility children, so sum each
+    # desktop root's whole process tree (children of children included).
+    $wsBytes = 0.0
+    $allProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $treeIds = New-Object 'Collections.Generic.HashSet[int]'
+    foreach ($rootId in $pidList) { $null = $treeIds.Add([int]$rootId) }
+    $grew = $true
+    while ($grew) {
+      $grew = $false
+      foreach ($cp in $allProcs) {
+        if ($treeIds.Contains([int]$cp.ParentProcessId) -and $treeIds.Add([int]$cp.ProcessId)) { $grew = $true }
+      }
+    }
+    foreach ($cp in $allProcs) {
+      if ($treeIds.Contains([int]$cp.ProcessId) -and $null -ne $cp.WorkingSetSize) { $wsBytes += [double]$cp.WorkingSetSize }
+    }
+    $desktopMB = [int][Math]::Round($wsBytes / 1048576.0)
+
+    $hungWindows = 0
+    $notRespondingDialogs = 0
+    if ($treeIds.Count -gt 0) {
+      [int[]]$pidArr = @($treeIds)
+      $counts = [DevLoopWindows]::GetHealthWindowCounts($pidArr)
+      if ($null -ne $counts) {
+        $hungWindows = [int]$counts.HungWindows
+        $notRespondingDialogs = [int]$counts.NotRespondingDialogs
+      }
+    }
+
+    $orphans = @(Get-OrphanCandidates $allProcs)
+    $orphanCandidates = $orphans.Count
+    $orphanBytes = 0.0
+    foreach ($orp in $orphans) {
+      $orphanBytes += [double]$orp.workingSetBytes
+    }
+    $orphanMB = [int][Math]::Round($orphanBytes / 1048576.0)
+
+    $sample = [ordered]@{
+      utc = [DateTime]::UtcNow.ToString('o')
+      freeRamMB = $freeRamMB
+      commitPct = $commitPct
+      desktopMB = $desktopMB
+      hungWindows = $hungWindows
+      notRespondingDialogs = $notRespondingDialogs
+      orphanCandidates = $orphanCandidates
+      orphanMB = $orphanMB
+    }
+    $jsonLine = ConvertTo-Json -InputObject $sample -Compress -Depth 3
+
+    $stateDir = $script:StateDir
+    if ([string]::IsNullOrWhiteSpace($stateDir) -and -not [string]::IsNullOrWhiteSpace($script:WorkRoot)) {
+      $stateDir = Join-Path $script:WorkRoot 'state'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($stateDir)) {
+      [IO.Directory]::CreateDirectory($stateDir) | Out-Null
+      $healthPath = Join-Path $stateDir 'health.jsonl'
+      $utf8NoBom = New-Object Text.UTF8Encoding($false)
+      [IO.File]::AppendAllText($healthPath, ($jsonLine + "`n"), $utf8NoBom)
+
+      $fi = New-Object IO.FileInfo($healthPath)
+      if ($fi.Exists -and $fi.Length -gt 2097152) {
+        $raw = [IO.File]::ReadAllText($healthPath, [Text.Encoding]::UTF8)
+        $allLines = @($raw -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($allLines.Count -gt 5000) {
+          $kept = @($allLines[($allLines.Count - 5000)..($allLines.Count - 1)])
+          $trimmed = ($kept -join "`n") + "`n"
+          $tmpPath = $healthPath + '.tmp'
+          try {
+            [IO.File]::WriteAllText($tmpPath, $trimmed, $utf8NoBom)
+            try {
+              [IO.File]::Replace($tmpPath, $healthPath, [NullString]::Value)
+            } catch {
+              [IO.File]::Copy($tmpPath, $healthPath, $true)
+            }
+          } finally {
+            try {
+              if (Test-Path -LiteralPath $tmpPath -PathType Leaf) { [IO.File]::Delete($tmpPath) }
+            } catch { }
+          }
+        }
+      }
+    }
+
+    Write-Log ('health: freeRamMB=' + $freeRamMB + ' commitPct=' + $commitPct + ' desktopMB=' + $desktopMB + ' hung=' + $hungWindows + ' dialog=' + $notRespondingDialogs + ' orphans=' + $orphanCandidates + ' orphanMB=' + $orphanMB)
+    if ($orphanCandidates -gt 0) {
+      $topOrphans = @($orphans | Sort-Object @{ Expression = { [double]$_.ageHours }; Descending = $true } | Select-Object -First 8)
+      $orphanParts = @($topOrphans | ForEach-Object {
+        $ageText = ([Math]::Round([double]$_.ageHours, 1)).ToString('0.#', [Globalization.CultureInfo]::InvariantCulture)
+        $_.name + ':' + $_.processId + ':' + $ageText + 'h'
+      })
+      Write-Log ('orphan candidates: ' + $orphanCandidates + ' (' + ($orphanParts -join ', ') + ')')
+    }
+    return $sample
+  } catch {
+    $msg = ''
+    try { $msg = [string]$_.Exception.Message } catch { $msg = 'unknown error' }
+    $msg = Protect-PublicText $msg
+    $msg = [regex]::Replace($msg, '(?i)[A-Za-z]:\\Users\\[^\\\s''"]+', '<user-path>')
+    if (-not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
+      $msg = [regex]::Replace($msg, [regex]::Escape($env:USERNAME), '<user>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
+      $msg = [regex]::Replace($msg, [regex]::Escape($env:COMPUTERNAME), '<host>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    $msg = ConvertTo-SingleLine $msg 160
+    if ([string]::IsNullOrWhiteSpace($msg)) { $msg = 'unknown error' }
+    Write-Log ('health: sample failed (' + $msg + ')')
+    return $null
+  }
 }
 
 function Restart-StuckDevin {
@@ -1084,6 +1538,7 @@ function Restart-StuckDevin {
   $Watchdog['stuckNotified'] = $false
   $Watchdog['approvalFailures'] = 0
   $Watchdog['approvalPendingKey'] = ''
+  $Watchdog['hungStreak'] = 0
   Save-WatchdogState $Watchdog
   $null = Invoke-Kickoff -WaitForIdle $false
 }
@@ -1146,13 +1601,17 @@ function Invoke-Kickoff {
     return 'failed'
   }
 
-  $message = 'First re-read ' + $script:PromptPath + ' and carry it out exactly as written. Then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Work through the whole queue, parked revisits, hands-on milestone, and 30-minute polling loop without asking questions or waiting for a person. Re-read ' + $script:PromptPath + ' after every issue. Use these values wherever the file names its defaults: repository ' + $Repo + ', label ' + $Label + ', root folder ' + $script:WorkRoot + ' (progress.json and parked.json in its autopilot subfolder, STOP in its state subfolder). With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
-  $soloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
-  $soloStatePath = Join-Path $script:AutopilotDir 'solo-v3.json'
-  $soloState = Read-JsonFile $soloStatePath
-  if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and [string](Get-JsonProp $soloState 'phase') -ne 'done') {
-    $message = 'Continue the mission: first re-read ' + $soloPlan + ' and ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub, ' + $script:ProgressPath + ', and ' + $soloStatePath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains. With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
+  if (Start-FreshDevinSession $window 'kickoff') {
+    Set-KickoffOutcome 'ok'
+    Write-Log ('kickoff sent autopilot prompt to Devin Desktop window "' + $folder + '"')
+    return 'ok'
   }
+  if ($script:LastFreshSessionDeferred -or (Test-Stop)) {
+    Write-Log 'kickoff deferred after fresh-session check'
+    return 'deferred'
+  }
+
+  $message = Get-AutopilotMessage
   $sent = $false
   for ($try = 0; $try -lt 3 -and -not $sent; $try++) {
     $window = [DevLoopWindows]::Find($folder)
@@ -1711,6 +2170,8 @@ function Invoke-AutoMerge {
 }
 
 function Invoke-WatchTick {
+  try { Initialize-GuiTypes } catch { }
+  $healthSample = Write-HealthSample
   if (Test-Stop) { return }
 
   $env:GH_PROMPT_DISABLED = '1'
@@ -1719,6 +2180,13 @@ function Invoke-WatchTick {
   $env:GCM_INTERACTIVE = 'never'
 
   $watchdog = Read-WatchdogState
+  if ($null -ne $healthSample) {
+    if ([int]$healthSample['hungWindows'] -gt 0 -or [int]$healthSample['notRespondingDialogs'] -gt 0) {
+      $watchdog['hungStreak'] = [int]$watchdog['hungStreak'] + 1
+    } else {
+      $watchdog['hungStreak'] = 0
+    }
+  }
   Invoke-SelfSync $watchdog
 
   $gh = Get-Command -Name 'gh' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -1767,6 +2235,38 @@ function Invoke-WatchTick {
   $userIdleSec = [DevLoopWindows]::GetUserIdleSeconds()
   if ($userIdleSec -lt $UserIdleSeconds) {
     Write-Log ('user active, deferred (idle ' + [Math]::Round($userIdleSec, 1) + 's < ' + $UserIdleSeconds + 's)')
+    return
+  }
+  if (Test-Stop) { return }
+
+  if ($userIdleSec -ge 600) {
+    try {
+      Stop-StrayApps
+    } catch {
+      $strayErr = Protect-PublicText ([string]$_.Exception.Message)
+      $strayErr = [regex]::Replace($strayErr, '(?i)[A-Za-z]:\\Users\\[^\\\s''"]+', '<user-path>')
+      if (-not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
+        $strayErr = [regex]::Replace($strayErr, [regex]::Escape($env:USERNAME), '<user>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+      }
+      if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
+        $strayErr = [regex]::Replace($strayErr, [regex]::Escape($env:COMPUTERNAME), '<host>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+      }
+      Write-Log ('stray-app cleanup error: ' + (ConvertTo-SingleLine $strayErr 160))
+    }
+  }
+
+  if ([int]$watchdog['hungStreak'] -ge 2) {
+    $busyHang = @(Get-BusyAutopilotProcesses)
+    if ($busyHang.Count -gt 0) {
+      Write-Log ('Devin Desktop hung for ' + $watchdog['hungStreak'] + ' samples, but ' + $busyHang.Count + ' task process(es) are running; restart deferred')
+      return
+    }
+    $streakCount = [int]$watchdog['hungStreak']
+    Write-Log ('Devin Desktop hung for ' + $streakCount + ' samples; restarting')
+    $null = Stop-DevinDesktop
+    $watchdog['hungStreak'] = 0
+    Save-WatchdogState $watchdog
+    $null = Invoke-Kickoff -WaitForIdle $false
     return
   }
 
@@ -1846,6 +2346,45 @@ function Invoke-WatchTick {
     return
   }
 
+  $sessionStartedUtc = Parse-UtcTimestamp ([string]$watchdog['sessionStartedUtc'])
+  $sessionHasAge = $false
+  $sessionAgeMin = 0.0
+  if ($null -eq $sessionStartedUtc) {
+    $watchdog['sessionStartedUtc'] = $nowUtc.ToString('o')
+    Save-WatchdogState $watchdog
+  } else {
+    $sessionAgeMin = ($nowUtc - $sessionStartedUtc).TotalMinutes
+    $sessionHasAge = $true
+  }
+
+  $rotationAttempted = $false
+  if ($sessionHasAge -and $sessionAgeMin -ge $SessionMaxMinutes) {
+    $recent3Min = ($null -ne $activity.newestWriteUtc -and ($nowUtc - $activity.newestWriteUtc).TotalMinutes -lt 3)
+    if (-not $recent3Min) {
+      $hardSoloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
+      $hardSoloState = Read-JsonFile (Join-Path $script:AutopilotDir 'solo-v3.json')
+      $hardSoloPhase = ''
+      if ($hardSoloState) { $hardSoloPhase = ([string](Get-JsonProp $hardSoloState 'phase')).Trim().ToLowerInvariant() }
+      $hardPolling = ($pState -eq 'polling' -or $pState -eq 'done')
+      if ($hardSoloState -and (Test-Path -LiteralPath $hardSoloPlan) -and $hardSoloPhase -ne 'polling' -and $hardSoloPhase -ne 'done') { $hardPolling = $false }
+      $hardSkip = $false
+      if ($hardPolling) {
+        $hardWork = Test-WorkRemains
+        if ($null -eq $hardWork -or -not $hardWork) { $hardSkip = $true }
+      }
+      $busyHard = @()
+      if (-not $hardSkip) { $busyHard = @(Get-BusyAutopilotProcesses) }
+      if (-not $hardSkip -and $busyHard.Count -eq 0) {
+        $ageInt = [int][Math]::Round($sessionAgeMin)
+        $rotationAttempted = $true
+        if (Start-FreshDevinSession $window ('max age ' + $ageInt + ' min')) {
+          return
+        }
+        if ($script:LastFreshSessionDeferred -or (Test-Stop)) { return }
+      }
+    }
+  }
+
   $recentWork = ($null -ne $activity.newestWriteUtc -and ($nowUtc - $activity.newestWriteUtc).TotalMinutes -lt $IdleMinutes)
   if ($null -ne $activity.pendingApprovalUtc -and $recentWork) {
     Write-Log ('approval prompt from ' + $activity.pendingApprovalUtc.ToString('o') + ' looks stale: agent work seen ' + [Math]::Round(($nowUtc - $activity.newestWriteUtc).TotalMinutes, 1) + 'm ago; not recovering')
@@ -1920,6 +2459,14 @@ function Invoke-WatchTick {
       Write-Log ('no log write for ' + [Math]::Round($idleMin, 1) + 'm, but ' + $busy.Count + ' task process(es) are running; not nudging')
       return
     }
+    if (-not $rotationAttempted -and $sessionHasAge -and $sessionAgeMin -ge $SessionIdleRotateMinutes) {
+      $ageInt = [int][Math]::Round($sessionAgeMin)
+      $rotationAttempted = $true
+      if (Start-FreshDevinSession $window ('idle, age ' + $ageInt + ' min')) {
+        return
+      }
+      if ($script:LastFreshSessionDeferred -or (Test-Stop)) { return }
+    }
     Write-Log ('no log write for ' + [Math]::Round($idleMin, 1) + 'm (>= ' + $IdleMinutes + 'm) while work remains; nudging')
     if (-not (Set-DevinForeground $window)) {
       Write-Log 'idle nudge aborted: could not focus Devin window'
@@ -1929,11 +2476,7 @@ function Invoke-WatchTick {
       Write-Log 'idle nudge aborted: focus changed before clear'
       return
     }
-    $nudgeMessage = 'Continue the autopilot task: first re-read ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep going (queue, parked revisits, hands-on milestone, and 30-minute polling). With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
-    # The v3 solo mission supersedes the per-issue loop while its state file says it is not finished.
-    if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and $soloPhase -ne 'done') {
-      $nudgeMessage = 'Continue the mission: first re-read ' + $soloPlan + ' and ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub, ' + $script:ProgressPath + ', and ' + $soloStatePath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains. With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
-    }
+    $nudgeMessage = Get-AutopilotMessage -Nudge
     if (-not (Send-DevinTextSafe $window $nudgeMessage)) {
       Write-Log 'idle nudge aborted: focus changed before paste'
       return
@@ -1976,6 +2519,9 @@ function Invoke-RegisterTask {
     '-ApprovalMinutes', [string]$ApprovalMinutes,
     '-UserIdleSeconds', [string]$UserIdleSeconds,
     '-IntervalMinutes', [string]$IntervalMinutes,
+    '-SessionIdleRotateMinutes', [string]$SessionIdleRotateMinutes,
+    '-SessionMaxMinutes', [string]$SessionMaxMinutes,
+    '-StrayApps', $(if (@($StrayApps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0) { Quote-Argument ((@($StrayApps) | ForEach-Object { [string]$_ }) -join ',') } else { 'none' }),
     '-SyncSource', (Quote-Argument $SyncSource),
     '-SyncTarget', (Quote-Argument $SyncTarget)
   )
@@ -2039,7 +2585,11 @@ try {
   $script:WatchdogPath = Join-Path $script:AutopilotDir 'watchdog.json'
   $script:LogPath = Join-Path $script:LogsDir ('autopilot-' + [DateTime]::Now.ToString('yyyyMMdd') + '.log')
 
-  if ($Watch -and (Test-Stop)) { exit 0 }
+  if ($Watch -and (Test-Stop)) {
+    [IO.Directory]::CreateDirectory($script:LogsDir) | Out-Null
+    $null = Write-HealthSample
+    exit 0
+  }
 
   [IO.Directory]::CreateDirectory($script:WorkRoot) | Out-Null
   [IO.Directory]::CreateDirectory($script:LogsDir) | Out-Null

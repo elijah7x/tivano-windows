@@ -712,6 +712,7 @@ rl.on("line", (line) => {
         codexHome: process.env.CODEX_HOME ?? "",
         platformFamily: PLATFORM_FAMILY,
         platformOs: process.platform === "win32" ? "windows" : process.platform === "darwin" ? "macos" : "linux",
+        launchArgs: process.argv.slice(2),
       });
       break;
     case "initialized":
