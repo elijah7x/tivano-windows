@@ -572,6 +572,10 @@ const vSettings = vObject({
   // Optional so every pre-A21 store loads verbatim — absent means off.
   taskSleepMode: vOptional(vEnum(["off", "system", "display"] as const)),
   textGeneration: vOptional(vEnum(["automatic", "off"] as const)),
+  threadTitles: vOptional(vEnum(["once", "updated"] as const)),
+  autoShelveDays: vOptional(vInt(0, 14)),
+  shelvedGroupName: vOptional(vNullable(vNonEmptyString(60))),
+  quickChatEnabled: vOptional(vBoolean),
   // Optional so every pre-A35 store loads verbatim — overrides only;
   // a stored null chord means the shortcut was cleared (frozen Override).
   shortcuts: vOptional(vShortcuts),

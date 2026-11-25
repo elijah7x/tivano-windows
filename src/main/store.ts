@@ -8,6 +8,7 @@
 // a newer schema fails closed instead of being silently wiped.
 
 import {
+  copyFileSync,
   mkdirSync,
   openSync,
   closeSync,
@@ -436,10 +437,8 @@ export class Store {
       // start clean. If the preservation itself fails we fail CLOSED — the
       // original file stays byte-identical and nothing is ever overwritten.
       if (err instanceof CorruptStoreError || err instanceof SyntaxError) {
-        const backup = join(
-          this.root,
-          `store.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
-        );
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const backup = join(this.root, `store.corrupt-${stamp}.json`);
         try {
           renameSync(this.file, backup);
         } catch (backupErr) {
@@ -448,6 +447,23 @@ export class Store {
           throw new Error(
             `corrupt store could not be preserved aside (${(backupErr as Error).message}); ` +
               `refusing to start clean and lose the evidence`,
+          );
+        }
+        try {
+          this.preserveSegmentsOnCorruptHead(stamp);
+        } catch (segBackupErr) {
+          // Restore the corrupt head file if segment preservation fails so we
+          // fail closed with original evidence intact and never wipe turns/.
+          try {
+            renameSync(backup, this.file);
+          } catch {
+            /* best effort; backup stays on disk */
+          }
+          this.lock.release();
+          this.closed = true;
+          throw new Error(
+            `corrupt store turn segments could not be preserved aside (${(segBackupErr as Error).message}); ` +
+              `refusing to start clean and lose conversation history`,
           );
         }
         this.recoveredFrom = backup;
@@ -459,6 +475,54 @@ export class Store {
       this.lock.release();
       this.closed = true;
       throw err;
+    }
+  }
+
+  /**
+   * Preserve existing turn segments when a corrupt or unreadable store head
+   * is moved aside so a subsequent atomicWrite() orphan sweep against the
+   * empty recovered head never deletes conversation history. Throws if any
+   * live segment cannot be durably backed up so open() fails closed.
+   */
+  private preserveSegmentsOnCorruptHead(stamp: string): void {
+    const turnsDir = join(this.root, TURNS_DIRNAME);
+    if (!existsSync(turnsDir)) return;
+    const stat = lstatSync(turnsDir);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`turns path is not a physical directory: ${turnsDir}`);
+    }
+    const entries = readdirSync(turnsDir);
+    if (entries.length === 0) return;
+    let turnsBackup = join(this.root, `${TURNS_DIRNAME}.corrupt-${stamp}`);
+    if (existsSync(turnsBackup)) {
+      turnsBackup = join(this.root, `${TURNS_DIRNAME}.corrupt-${stamp}-${randomUUID().slice(0, 8)}`);
+    }
+    try {
+      renameSync(turnsDir, turnsBackup);
+      return;
+    } catch {
+      // Directory rename failed (e.g., an open handle on Windows); quarantine
+      // individual segment files in place or copy stubborn files into a
+      // durable turns.corrupt-* backup directory.
+    }
+    let backupDirCreated = false;
+    for (const f of entries) {
+      if (!f.endsWith(".json") || f.includes(".corrupt-")) continue;
+      const src = join(turnsDir, f);
+      const id = f.slice(0, -".json".length);
+      let dest = join(turnsDir, `${id}.corrupt-${stamp}.json`);
+      if (existsSync(dest)) {
+        dest = join(turnsDir, `${id}.corrupt-${stamp}-${randomUUID().slice(0, 8)}.json`);
+      }
+      try {
+        renameSync(src, dest);
+      } catch {
+        if (!backupDirCreated) {
+          mkdirSync(turnsBackup, { recursive: true, mode: 0o700 });
+          backupDirCreated = true;
+        }
+        copyFileSync(src, join(turnsBackup, f));
+      }
     }
   }
 
