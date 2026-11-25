@@ -1187,7 +1187,7 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
             ["adaptive", "Adaptive sub-agents"],
           ] as const
         }
-        value={settings.subagentModeDefault ?? ""}
+        value={settings.subagentModeDefault ?? (settings.lastHydraPairId ? "preset" : "same")}
         aria="Sub-agent mode"
         onPick={(v) => tryCall("settings:set", { subagentModeDefault: v })}
       />
