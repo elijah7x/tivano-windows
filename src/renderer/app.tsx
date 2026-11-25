@@ -21,7 +21,7 @@ import { applyTheme } from "./theme";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { CommandPalette } from "./components/CommandPalette";
-import { SettingsModal } from "./components/SettingsModal";
+import { SettingsModal, type SettingsPageId } from "./components/SettingsModal";
 import { LinkPopover, type LinkPopoverState } from "./components/LinkPopover";
 import { HelperPanel } from "./components/HelperPanel";
 import { ensureTerminalBridge, setCodeFontOffset } from "./terminalRegistry";
@@ -166,7 +166,9 @@ function SidebarEdge(props: {
 export function App(): React.JSX.Element {
   const [ready, setReady] = useState(false);
   const [fatal, setFatal] = useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPage, setSettingsPage] = useState<SettingsPageId | null>(null);
+  const settingsOpen = settingsPage !== null;
+  const openSettings = (page: SettingsPageId = "appearance") => setSettingsPage(page);
   /** One dock slot shared by the terminal and Git panels — hiding the
    *  terminal never stops its sessions (they live in the registry pool). */
   const [dock, setDock] = useState<"terminal" | "git" | null>(null);
@@ -260,7 +262,7 @@ export function App(): React.JSX.Element {
           setPaletteOpen((v) => !v);
           return;
         case "openSettings":
-          setSettingsOpen(true);
+          openSettings();
           return;
         case "toggleSidebar":
           setSidebarCollapsed((v) => !v);
@@ -609,7 +611,7 @@ export function App(): React.JSX.Element {
         {sidebarLive > 0 && (
           <Sidebar
             snapshot={snapshot}
-            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenSettings={() => openSettings()}
             onOpenPalette={() => setPaletteOpen(true)}
           />
         )}
@@ -643,6 +645,8 @@ export function App(): React.JSX.Element {
             providerLabel={snapshot.info.providerLabel}
             mode={snapshot.info.mode}
             {...(snapshot.info.codex ? { codex: snapshot.info.codex } : {})}
+            info={snapshot.info}
+            settingsOpen={settingsOpen}
             readOnly={!!snapshot.readOnly}
             projects={snapshot.projects}
             dock={dock}
@@ -656,7 +660,7 @@ export function App(): React.JSX.Element {
             settings={snapshot.settings}
             topControlsExpanded={topControlsExpanded}
             onSetTopControlsExpanded={setTopControlsExpanded}
-            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenSettings={(page) => openSettings(page)}
           />
           </div>
           {helper && (
@@ -681,14 +685,15 @@ export function App(): React.JSX.Element {
             <GitPanel key={selected.id} thread={selected} readOnly={!!snapshot.readOnly} />
           )}
         </div>
-        {settingsOpen && (
+        {settingsPage && (
           <SettingsModal
             settings={snapshot.settings}
             info={snapshot.info}
             threads={snapshot.threads}
             projects={snapshot.projects}
             tokenActivity={snapshot.tokenActivity}
-            onClose={() => setSettingsOpen(false)}
+            initialPage={settingsPage}
+            onClose={() => setSettingsPage(null)}
           />
         )}
         {paletteOpen && (
@@ -700,7 +705,7 @@ export function App(): React.JSX.Element {
             onToggleChanges={() => setChangesToggleSeq((n) => n + 1)}
             onOpenSettings={() => {
               setPaletteOpen(false);
-              setSettingsOpen(true);
+              openSettings();
             }}
           />
         )}

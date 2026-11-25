@@ -2038,4 +2038,23 @@ export const fr: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "1 fichier modifié, %@ lignes ajoutées, %@ lignes supprimées",
   "%@ files changed, %@ lines added, %@ lines removed": "%@ fichiers modifiés, %@ lignes ajoutées, %@ lignes supprimées",
   "Show this thread's changes": "Afficher les modifications de cette conversation",
+  // P2-50
+  "Where shall we begin today?": "Par où commençons-nous aujourd’hui ?",
+  "Work in a project": "Travailler dans un projet",
+  "Agents read and edit this folder, and can run in parallel worktrees.":
+    "Les agents lisent et modifient ce dossier, et peuvent fonctionner en parallèle dans des worktrees.",
+  "Add a project folder": "Ajouter un dossier de projet",
+  "Just chat": "Simplement discuter",
+  "No project folder needed. Good for questions and drafts.":
+    "Aucun dossier de projet requis. Idéal pour les questions et les brouillons.",
+  "Start a chat": "Démarrer une discussion",
+  "Install a coding agent first": "Installez d’abord un agent de code",
+  "1 provider ready": "1 fournisseur prêt",
+  "%lld providers ready": "%lld fournisseurs prêts",
+  "Manage": "Gérer",
+  "Install": "Installer",
+  "Ready": "Prêt",
+  "ChatGPT plan or API key": "Forfait ChatGPT ou clé API",
+  "Synthetic provider": "Fournisseur synthétique",
+  "Provider checklist": "Liste des fournisseurs",
 };
