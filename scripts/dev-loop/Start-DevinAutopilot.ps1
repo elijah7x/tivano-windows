@@ -1,6 +1,6 @@
 # Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-25.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-ApprovalRecoveryAttempts <n>] [-StalePrHours <h>] [-StalePrGateRuns <n>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SessionIdleRotateMinutes <min>] [-SessionMaxMinutes <min>] [-StrayApps <names>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
+# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-ApprovalRecoveryAttempts <n>] [-StalePrHours <h>] [-StalePrGateRuns <n>] [-AutoParkStale <0|1>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SessionIdleRotateMinutes <min>] [-SessionMaxMinutes <min>] [-StrayApps <names>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
 # Launches and watches a single Devin Desktop autopilot chat following autopilot.md.
 
 param(
@@ -17,6 +17,7 @@ param(
   [ValidateRange(1, 20)][int]$ApprovalRecoveryAttempts = 3,
   [ValidateRange(1, 720)][int]$StalePrHours = 48,
   [ValidateRange(1, 100)][int]$StalePrGateRuns = 5,
+  [ValidateSet(0, 1)][int]$AutoParkStale = 1,
   [ValidateRange(0, 3600)][int]$UserIdleSeconds = 120,
   [ValidateRange(1, 1440)][int]$IntervalMinutes = 15,
   [ValidateRange(5, 1440)][int]$SessionIdleRotateMinutes = 45,
@@ -157,6 +158,10 @@ function Read-JsonFile {
 function Get-JsonProp {
   param($Object, [string]$Name)
   if ($null -eq $Object) { return $null }
+  if ($Object -is [Collections.IDictionary]) {
+    if ($Object.Contains($Name)) { return $Object[$Name] }
+    return $null
+  }
   if ($Object.PSObject.Properties[$Name]) { return $Object.$Name }
   return $null
 }
@@ -1800,10 +1805,257 @@ function Add-AuditLogComment {
   }
 }
 
+function Read-JsonFileChecked {
+  param([string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return [pscustomobject]@{ ok = $true; exists = $false; data = $null; error = '' }
+  }
+  $text = $null
+  try {
+    $text = Read-Text $Path
+  } catch {
+    return [pscustomobject]@{ ok = $false; exists = $true; data = $null; error = $_.Exception.Message }
+  }
+  if ([string]::IsNullOrWhiteSpace($text)) {
+    return [pscustomobject]@{ ok = $true; exists = $true; data = $null; error = '' }
+  }
+  try {
+    $parsed = $text.TrimStart([char]0xFEFF) | ConvertFrom-Json
+    return [pscustomobject]@{ ok = $true; exists = $true; data = $parsed; error = '' }
+  } catch {
+    return [pscustomobject]@{ ok = $false; exists = $true; data = $null; error = $_.Exception.Message }
+  }
+}
+
+function Save-JsonAtomic {
+  param(
+    [string]$Path,
+    $Object,
+    [int]$Depth = 8
+  )
+  $parentDir = Split-Path -Parent $Path
+  if (-not [string]::IsNullOrWhiteSpace($parentDir)) {
+    [IO.Directory]::CreateDirectory($parentDir) | Out-Null
+  }
+  $temporary = $Path + '.' + $PID + '.' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.tmp'
+  $json = ConvertTo-Json -InputObject $Object -Depth $Depth
+  Write-Text $temporary ($json + "`n")
+  for ($attempt = 1; $attempt -le 8; $attempt++) {
+    try {
+      if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        # PowerShell turns $null into an empty string for a string parameter; File.Replace needs a real null.
+        [IO.File]::Replace($temporary, $Path, [NullString]::Value)
+      } else {
+        [IO.File]::Move($temporary, $Path)
+      }
+      return
+    } catch {
+      if ($attempt -lt 8) {
+        Start-Sleep -Milliseconds (250 * $attempt)
+      }
+    }
+  }
+  try {
+    [IO.File]::Copy($temporary, $Path, $true)
+    try {
+      if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+        [IO.File]::Delete($temporary)
+      }
+    } catch { }
+    return
+  } catch {
+    $fallbackErr = $_
+    try {
+      if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+        [IO.File]::Delete($temporary)
+      }
+    } catch { }
+    throw $fallbackErr
+  }
+}
+
+function Get-StalePrLinkedIssue {
+  param(
+    [int]$PrNumber,
+    [AllowEmptyString()][string]$PrBody
+  )
+  $viewRes = Invoke-Gh ('pr view ' + $PrNumber + ' -R ' + $Repo + ' --json closingIssuesReferences')
+  if ($viewRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$viewRes.text)) {
+    try {
+      $obj = $viewRes.text | ConvertFrom-Json
+      $refs = Get-JsonProp $obj 'closingIssuesReferences'
+      foreach ($ref in @($refs)) {
+        if ($null -eq $ref) { continue }
+        $rawNum = Get-JsonProp $ref 'number'
+        if ($null -ne $rawNum) {
+          $n = 0
+          try { $n = [int]$rawNum } catch { $n = 0 }
+          if ($n -gt 0) { return $n }
+        }
+      }
+    } catch {
+      Write-Log ('auto-park PR #' + $PrNumber + ': could not parse closingIssuesReferences JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+    }
+  } elseif ($viewRes.exitCode -ne 0) {
+    Write-Log ('auto-park PR #' + $PrNumber + ': gh pr view closingIssuesReferences failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $viewRes) 160))
+  }
+  if (-not [string]::IsNullOrWhiteSpace($PrBody)) {
+    $closingPattern = '(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(?:' + [regex]::Escape($Repo) + ')?#([0-9]+)\b'
+    $m = [regex]::Match($PrBody, $closingPattern)
+    if ($m.Success) {
+      $n = 0
+      try { $n = [int]$m.Groups[1].Value } catch { $n = 0 }
+      if ($n -gt 0) { return $n }
+    }
+  }
+  return 0
+}
+
+function Test-DevinParkedIssue {
+  param(
+    $ParkedData,
+    [int]$IssueNumber
+  )
+  if ($null -eq $ParkedData -or $IssueNumber -le 0) { return $false }
+  foreach ($entry in @($ParkedData)) {
+    if ($null -eq $entry) { continue }
+    $rawIssue = Get-JsonProp $entry 'issue'
+    if ($null -ne $rawIssue) {
+      $pi = 0
+      try { $pi = [int]$rawIssue } catch { $pi = 0 }
+      if ($pi -eq $IssueNumber) { return $true }
+    }
+  }
+  return $false
+}
+
+function Test-HydrogenParkedEntry {
+  param(
+    $ParkedEntries,
+    [int]$IssueNumber,
+    [int]$PrNumber,
+    [AllowEmptyString()][string]$HeadSha
+  )
+  if ($null -eq $ParkedEntries) { return $false }
+  foreach ($entry in @($ParkedEntries)) {
+    if ($null -eq $entry) { continue }
+    if ($entry -is [int] -or $entry -is [long]) {
+      if ($IssueNumber -gt 0 -and [int]$entry -eq $IssueNumber) { return $true }
+      continue
+    }
+    $pi = 0
+    $rawIssue = Get-JsonProp $entry 'issue'
+    if ($null -ne $rawIssue) {
+      try { $pi = [int]$rawIssue } catch { $pi = 0 }
+    }
+    if ($IssueNumber -gt 0 -and $pi -eq $IssueNumber) { return $true }
+    $pp = 0
+    $rawPr = Get-JsonProp $entry 'pr'
+    if ($null -ne $rawPr) {
+      try { $pp = [int]$rawPr } catch { $pp = 0 }
+    }
+    if ($PrNumber -gt 0 -and $pp -eq $PrNumber) {
+      $psha = ''
+      $rawSha = Get-JsonProp $entry 'headSha'
+      if ($null -ne $rawSha) { $psha = ([string]$rawSha).Trim() }
+      if ([string]::IsNullOrWhiteSpace($psha) -or
+          ([string]::IsNullOrWhiteSpace($HeadSha) -or $psha.Equals($HeadSha, [StringComparison]::OrdinalIgnoreCase))) {
+        return $true
+      }
+    }
+  }
+  return $false
+}
+
+function Remove-IssueFromProgressAwaitingAudit {
+  param(
+    [int]$IssueNumber,
+    [int]$PrNumber
+  )
+  try {
+    $progRead = Read-JsonFileChecked $script:ProgressPath
+    if (-not $progRead.exists) { return }
+    if (-not $progRead.ok) {
+      Write-Log ('auto-park PR #' + $PrNumber + ' (issue #' + $IssueNumber + '): could not parse progress.json to update awaitingAudit: ' + (ConvertTo-SingleLine $progRead.error 160))
+      return
+    }
+    if ($null -eq $progRead.data -or -not ($progRead.data -is [pscustomobject])) { return }
+    $awaitProp = $progRead.data.PSObject.Properties['awaitingAudit']
+    if ($null -eq $awaitProp -or $null -eq $awaitProp.Value) { return }
+    $kept = New-Object Collections.Generic.List[object]
+    $removed = $false
+    foreach ($entry in @($awaitProp.Value)) {
+      if ($null -eq $entry) { continue }
+      $ei = 0
+      $rawEi = Get-JsonProp $entry 'issue'
+      if ($null -ne $rawEi) {
+        try { $ei = [int]$rawEi } catch { $ei = 0 }
+      }
+      $ep = 0
+      $rawEp = Get-JsonProp $entry 'pr'
+      if ($null -ne $rawEp) {
+        try { $ep = [int]$rawEp } catch { $ep = 0 }
+      }
+      if (($IssueNumber -gt 0 -and $ei -eq $IssueNumber) -or ($PrNumber -gt 0 -and $ep -eq $PrNumber)) {
+        $removed = $true
+        continue
+      }
+      $null = $kept.Add($entry)
+    }
+    if ($removed) {
+      Add-Member -InputObject $progRead.data -MemberType NoteProperty -Name 'awaitingAudit' -Value ([object[]]$kept.ToArray()) -Force
+      Save-JsonAtomic -Path $script:ProgressPath -Object $progRead.data -Depth 8
+    }
+  } catch {
+    Write-Log ('auto-park PR #' + $PrNumber + ' (issue #' + $IssueNumber + '): failed to remove issue from progress.json awaitingAudit: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+  }
+}
+
+function Send-AutoParkTrackingComment {
+  param(
+    $Watchdog,
+    [int]$IssueNumber,
+    [AllowEmptyString()][string]$IssueTitle,
+    [int]$PrNumber,
+    [int]$AgeHours,
+    [int]$GateRuns
+  )
+  $state = $Watchdog
+  if ($null -eq $state) { $state = Read-WatchdogState }
+  $trackingNo = Resolve-TrackingIssue $state
+  if ($trackingNo -le 0) {
+    Write-Log ('auto-park PR #' + $PrNumber + ': could not locate open tracking issue to post park comment')
+    return $false
+  }
+  $safeTitle = Protect-PublicText ([string]$IssueTitle)
+  $safeTitle = [regex]::Replace($safeTitle, '(?i)[A-Za-z]:\\[^\s''"]+', '<redacted>')
+  $safeTitle = [regex]::Replace($safeTitle, '\\\\[^\s''"]+', '<redacted>')
+  if (-not [string]::IsNullOrWhiteSpace($env:USERNAME) -and $env:USERNAME.Length -ge 6) {
+    $safeTitle = [regex]::Replace($safeTitle, [regex]::Escape($env:USERNAME), '<redacted>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  }
+  $safeTitle = ConvertTo-SingleLine $safeTitle 200
+  if ([string]::IsNullOrWhiteSpace($safeTitle)) { $safeTitle = 'issue' }
+  $stamp = [DateTime]::Now.ToString('yyyy-MM-ddTHH:mm:ssK')
+  $message = '#' + $IssueNumber + ' ' + $safeTitle + ': parked (attempt 0): long-running PR #' + $PrNumber + ' (' + $AgeHours + 'h, ' + $GateRuns + ' gate runs), auto-parked by the watchdog'
+  $clean = ConvertTo-SingleLine (Protect-PublicText $message) 500
+  $bodyPath = Join-Path $script:AutopilotDir ('tracking-autopark-' + $PrNumber + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.md')
+  try {
+    Write-Text $bodyPath ($stamp + ' ' + $clean + "`n")
+    $result = Invoke-Gh ('issue comment ' + $trackingNo + ' -R ' + $Repo + ' --body-file ' + (Quote-Argument $bodyPath))
+    if ($result.exitCode -ne 0) {
+      Write-Log ('auto-park PR #' + $PrNumber + ': failed to comment on tracking issue #' + $trackingNo + ': ' + (ConvertTo-SingleLine (Get-ErrorSummary $result) 180))
+      return $false
+    }
+    return $true
+  } finally {
+    Remove-Item -LiteralPath $bodyPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Write-StalePrReport {
   # Lists open nyx/ PRs that have been open for at least $StalePrHours hours and have used at least
-  # $StalePrGateRuns gate runs, in <autopilot>\stale-prs.json. autopilot.md section 11 parks them so they
-  # stop consuming gate runs; the report itself changes nothing.
+  # $StalePrGateRuns gate runs, in <autopilot>\stale-prs.json, and returns the list for
+  # Invoke-AutoParkStale; the report itself changes nothing.
   param($OpenPrs)
   $gateRoot = Join-Path $script:AutopilotDir 'gate'
   $nowUtc = [DateTime]::UtcNow
@@ -1832,10 +2084,240 @@ function Write-StalePrReport {
     $names = @($stale.ToArray() | ForEach-Object { '#' + $_.pr + ' (' + $_.gateRuns + ' runs, ' + [int]$_.ageHours + 'h)' })
     Write-Log ('stale PRs to park: ' + ($names -join ', '))
   }
+  return @($stale.ToArray())
+}
+
+function Invoke-AutoParkStale {
+  param(
+    $StalePrs,
+    $OpenPrs = @(),
+    $Watchdog = $null
+  )
+  $staleList = @($StalePrs | Where-Object { $null -ne $_ })
+  if ($staleList.Count -eq 0) { return }
+
+  $openPrByNum = @{}
+  foreach ($pr in @($OpenPrs)) {
+    if ($null -eq $pr) { continue }
+    $rawNum = Get-JsonProp $pr 'number'
+    if ($null -ne $rawNum) {
+      $n = 0
+      try { $n = [int]$rawNum } catch { $n = 0 }
+      if ($n -gt 0) { $openPrByNum[$n] = $pr }
+    }
+  }
+
+  $parkedPath = Join-Path $script:AutopilotDir 'parked.json'
+  $hydrogenProgressPath = Join-Path (Join-Path (Join-Path $script:WorkRoot 'hydrogen') 'state') 'progress-hydrogen.json'
+  $maxPerTick = 5
+  $parkedThisTick = 0
+
+  foreach ($staleItem in $staleList) {
+    if (Test-Stop) {
+      Write-Log 'auto-park: STOP file present; stopping'
+      break
+    }
+    if ($parkedThisTick -ge $maxPerTick) {
+      Write-Log ('auto-park: reached cap of ' + $maxPerTick + ' PRs this tick; deferring remaining stale PRs')
+      break
+    }
+
+    $prNum = 0
+    $rawPr = Get-JsonProp $staleItem 'pr'
+    if ($null -ne $rawPr) {
+      try { $prNum = [int]$rawPr } catch { $prNum = 0 }
+    }
+    $branch = [string](Get-JsonProp $staleItem 'branch')
+    if ($prNum -le 0 -or [string]::IsNullOrWhiteSpace($branch)) { continue }
+
+    $isHydrogen = $branch.StartsWith('nyx/h-', [StringComparison]::Ordinal)
+    $isDevin = $branch.StartsWith('nyx/', [StringComparison]::Ordinal) -and (-not $isHydrogen)
+    if (-not $isDevin -and -not $isHydrogen) { continue }
+
+    $hoursInt = 0
+    $rawHours = Get-JsonProp $staleItem 'ageHours'
+    if ($null -ne $rawHours) {
+      try { $hoursInt = [int]$rawHours } catch { $hoursInt = 0 }
+    }
+    $runsInt = 0
+    $rawRuns = Get-JsonProp $staleItem 'gateRuns'
+    if ($null -ne $rawRuns) {
+      try { $runsInt = [int]$rawRuns } catch { $runsInt = 0 }
+    }
+
+    try {
+      $prObj = $null
+      if ($openPrByNum.ContainsKey($prNum)) { $prObj = $openPrByNum[$prNum] }
+      $prBody = ''
+      $headSha = ''
+      $prLabels = @()
+      if ($null -ne $prObj) {
+        $prBody = [string](Get-JsonProp $prObj 'body')
+        $headSha = ([string](Get-JsonProp $prObj 'headRefOid')).Trim()
+        $prLabels = @(Get-LabelNames (Get-JsonProp $prObj 'labels'))
+      }
+
+      if ($isHydrogen) {
+        if ($prLabels -contains 'parked' -or $prLabels -contains 'audit-parked') { continue }
+      }
+
+      $issueNum = Get-StalePrLinkedIssue -PrNumber $prNum -PrBody $prBody
+      if ($issueNum -le 0) {
+        Write-Log ('auto-park PR #' + $prNum + ': skipped (no linked issue found)')
+        continue
+      }
+
+      $reason = 'long-running PR: open ' + $hoursInt + 'h with ' + $runsInt + ' gate runs; restart from main as a smaller change'
+
+      if ($isDevin) {
+        $preRead = Read-JsonFileChecked $parkedPath
+        if ($preRead.exists -and -not $preRead.ok) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unreadable parked.json: ' + (ConvertTo-SingleLine $preRead.error 160) + ')')
+          continue
+        }
+        if ($null -ne $preRead.data -and -not ($preRead.data -is [Array]) -and -not ($preRead.data -is [pscustomobject])) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unexpected parked.json structure)')
+          continue
+        }
+        if (Test-DevinParkedIssue -ParkedData $preRead.data -IssueNumber $issueNum) { continue }
+
+        $issueRes = Invoke-Gh ('issue view ' + $issueNum + ' -R ' + $Repo + ' --json number,title,labels')
+        if ($issueRes.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$issueRes.text)) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (gh issue view failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $issueRes) 180) + ')')
+          continue
+        }
+        $issueObj = $null
+        try {
+          $issueObj = $issueRes.text | ConvertFrom-Json
+        } catch {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (could not parse gh issue view JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 160) + ')')
+          continue
+        }
+        $issueLabels = @(Get-LabelNames (Get-JsonProp $issueObj 'labels'))
+        if ($issueLabels -contains 'parked') { continue }
+        $issueTitle = [string](Get-JsonProp $issueObj 'title')
+
+        # Read-modify-write right before saving to keep the race window with Devin small.
+        $saveRead = Read-JsonFileChecked $parkedPath
+        if ($saveRead.exists -and -not $saveRead.ok) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unreadable parked.json: ' + (ConvertTo-SingleLine $saveRead.error 160) + ')')
+          continue
+        }
+        if ($null -ne $saveRead.data -and -not ($saveRead.data -is [Array]) -and -not ($saveRead.data -is [pscustomobject])) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unexpected parked.json structure)')
+          continue
+        }
+        if (Test-DevinParkedIssue -ParkedData $saveRead.data -IssueNumber $issueNum) { continue }
+
+        $parkedList = New-Object Collections.Generic.List[object]
+        if ($null -ne $saveRead.data) {
+          foreach ($existing in @($saveRead.data)) {
+            if ($null -ne $existing) { $null = $parkedList.Add($existing) }
+          }
+        }
+        $null = $parkedList.Add([ordered]@{
+          issue = $issueNum
+          pr = $prNum
+          reason = $reason
+          attempt = 0
+        })
+        Save-JsonAtomic -Path $parkedPath -Object ([object[]]$parkedList.ToArray()) -Depth 6
+
+        Remove-IssueFromProgressAwaitingAudit -IssueNumber $issueNum -PrNumber $prNum
+        $null = Send-AutoParkTrackingComment -Watchdog $Watchdog -IssueNumber $issueNum -IssueTitle $issueTitle -PrNumber $prNum -AgeHours $hoursInt -GateRuns $runsInt
+        Write-Log ('auto-parked PR #' + $prNum + ' (issue #' + $issueNum + '): ' + $hoursInt + 'h, ' + $runsInt + ' gate runs')
+        $parkedThisTick++
+      } elseif ($isHydrogen) {
+        $hPreRead = Read-JsonFileChecked $hydrogenProgressPath
+        if ($hPreRead.exists -and -not $hPreRead.ok) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unreadable progress-hydrogen.json: ' + (ConvertTo-SingleLine $hPreRead.error 160) + ')')
+          continue
+        }
+        if ($null -ne $hPreRead.data -and -not ($hPreRead.data -is [pscustomobject])) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unexpected progress-hydrogen.json structure)')
+          continue
+        }
+        if ($null -ne $hPreRead.data) {
+          $preParked = Get-JsonProp $hPreRead.data 'parked'
+          if (Test-HydrogenParkedEntry -ParkedEntries $preParked -IssueNumber $issueNum -PrNumber $prNum -HeadSha $headSha) { continue }
+        }
+
+        $issueRes = Invoke-Gh ('issue view ' + $issueNum + ' -R ' + $Repo + ' --json number,title,labels')
+        if ($issueRes.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$issueRes.text)) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (gh issue view failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $issueRes) 180) + ')')
+          continue
+        }
+        $issueObj = $null
+        try {
+          $issueObj = $issueRes.text | ConvertFrom-Json
+        } catch {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (could not parse gh issue view JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 160) + ')')
+          continue
+        }
+        $issueLabels = @(Get-LabelNames (Get-JsonProp $issueObj 'labels'))
+        if ($issueLabels -contains 'parked' -or $issueLabels -contains 'needs-human') { continue }
+        $issueTitle = [string](Get-JsonProp $issueObj 'title')
+
+        # Read-modify-write right before saving to keep the race window with Hydrogen small.
+        $hSaveRead = Read-JsonFileChecked $hydrogenProgressPath
+        if ($hSaveRead.exists -and -not $hSaveRead.ok) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unreadable progress-hydrogen.json: ' + (ConvertTo-SingleLine $hSaveRead.error 160) + ')')
+          continue
+        }
+        if ($null -ne $hSaveRead.data -and -not ($hSaveRead.data -is [pscustomobject])) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unexpected progress-hydrogen.json structure)')
+          continue
+        }
+
+        $newHydrogenEntry = [ordered]@{
+          issue = $issueNum
+          pr = $prNum
+          headSha = $headSha
+          reason = $reason
+          at = [DateTime]::UtcNow.ToString('o')
+        }
+        if ($null -ne $hSaveRead.data) {
+          $curParked = Get-JsonProp $hSaveRead.data 'parked'
+          if (Test-HydrogenParkedEntry -ParkedEntries $curParked -IssueNumber $issueNum -PrNumber $prNum -HeadSha $headSha) { continue }
+          $hParkedList = New-Object Collections.Generic.List[object]
+          if ($null -ne $curParked) {
+            foreach ($existing in @($curParked)) {
+              if ($null -ne $existing) { $null = $hParkedList.Add($existing) }
+            }
+          }
+          $null = $hParkedList.Add($newHydrogenEntry)
+          Add-Member -InputObject $hSaveRead.data -MemberType NoteProperty -Name 'parked' -Value ([object[]]$hParkedList.ToArray()) -Force
+          Save-JsonAtomic -Path $hydrogenProgressPath -Object $hSaveRead.data -Depth 8
+        } else {
+          $hObj = [ordered]@{
+            state = 'idle'
+            kind = ''
+            issue = 0
+            pr = 0
+            branch = ''
+            step = ''
+            updatedAt = ''
+            neonRuns = [ordered]@{}
+            parked = [object[]]@($newHydrogenEntry)
+          }
+          Save-JsonAtomic -Path $hydrogenProgressPath -Object $hObj -Depth 8
+        }
+
+        $null = Send-AutoParkTrackingComment -Watchdog $Watchdog -IssueNumber $issueNum -IssueTitle $issueTitle -PrNumber $prNum -AgeHours $hoursInt -GateRuns $runsInt
+        Write-Log ('auto-parked PR #' + $prNum + ' (issue #' + $issueNum + '): ' + $hoursInt + 'h, ' + $runsInt + ' gate runs')
+        $parkedThisTick++
+      }
+    } catch {
+      Write-Log ('auto-park PR #' + $prNum + ': skipped (unexpected error: ' + (ConvertTo-SingleLine $_.Exception.Message 180) + ')')
+    }
+  }
 }
 
 function Invoke-AutoMerge {
-  param([switch]$DryRun)
+  param(
+    [switch]$DryRun,
+    $Watchdog = $null
+  )
   $whatIfVar = Get-Variable -Name 'WhatIfPreference' -ErrorAction SilentlyContinue
   $isDryRun = [bool]$DryRun
   if ($null -ne $whatIfVar -and [bool]$whatIfVar.Value) { $isDryRun = $true }
@@ -1867,10 +2349,18 @@ function Invoke-AutoMerge {
     return
   }
 
+  $stalePrs = @()
   try {
-    Write-StalePrReport $openPrs
+    $stalePrs = @(Write-StalePrReport $openPrs)
   } catch {
     Write-Log ('stale-pr report error: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
+  }
+  if ($AutoParkStale -eq 1 -and -not $isDryRun -and @($stalePrs).Count -gt 0) {
+    try {
+      Invoke-AutoParkStale -StalePrs $stalePrs -OpenPrs $openPrs -Watchdog $Watchdog
+    } catch {
+      Write-Log ('auto-park error: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
+    }
   }
 
   $mergedTodayLoaded = $false
@@ -2193,7 +2683,7 @@ function Invoke-WatchTick {
   if ($gh) {
     $script:GhPath = $gh.Source
     try {
-      Invoke-AutoMerge
+      Invoke-AutoMerge -Watchdog $watchdog
     } catch {
       Write-Log ('auto-merge error: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
     }
@@ -2517,6 +3007,7 @@ function Invoke-RegisterTask {
     '-Label', (Quote-Argument $Label),
     '-IdleMinutes', [string]$IdleMinutes,
     '-ApprovalMinutes', [string]$ApprovalMinutes,
+    '-AutoParkStale', [string]$AutoParkStale,
     '-UserIdleSeconds', [string]$UserIdleSeconds,
     '-IntervalMinutes', [string]$IntervalMinutes,
     '-SessionIdleRotateMinutes', [string]$SessionIdleRotateMinutes,

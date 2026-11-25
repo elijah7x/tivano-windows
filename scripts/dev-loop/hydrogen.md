@@ -1,4 +1,4 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-23.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-25.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 
 Mission prompt for **Gemini 4 Hydrogen** running headless via Antigravity CLI (`agy`) on a Windows test machine as the second unattended implementer lane for `elijah7x/tivano-windows` (working in parallel with Devin's GUI lane).
@@ -103,7 +103,8 @@ Follow the **Gate**, **Independent audit**, **Merge on pass**, and **Escalation 
 - **When to park:**
   - Auditor posted `## Nyx audit - <sha7> - PARKED` for the current head SHA; OR
   - Gate or `nyx/audit` still fails after Hydrogen's fix round and up to 2 Neon runs (or Neon returned `no-change`/`unavailable` with no valid rebuttal); OR
-  - Gate stays `unavailable` after 3 retries, or the issue cannot be implemented without modifying a guarded path or `package.json` dependencies.
+  - Gate stays `unavailable` after 3 retries, or the issue cannot be implemented without modifying a guarded path or `package.json` dependencies; OR
+  - **Long-running PR:** open for at least 48 hours and at least 5 gate runs (listed in `C:\tivano\dev-loop\autopilot\stale-prs.json`). The watchdog automatically adds a `parked` entry (`issue`, `pr`, `headSha`, `reason`, `at`) to `C:\tivano\dev-loop\hydrogen\state\progress-hydrogen.json`, leaves the PR open, and posts the park line to `#34`. Treat a watchdog-added entry in `progress-hydrogen.json` `parked` exactly like your own park: stop working that PR and finish the session so `Start-HydrogenWorker.ps1` skips it and moves on.
 - **How to park:**
   1. Leave the PR open.
   2. Ensure label `parked` exists and add it to issue `#<n>` (`gh issue edit <n> -R elijah7x/tivano-windows --add-label parked`).

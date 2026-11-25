@@ -1,4 +1,4 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-21.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-25.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 
 Master prompt for Devin Desktop (single long GUI chat, bypass mode, Windows 11, PowerShell) working through open `nyx-auto` issues in `elijah7x/tivano-windows` completely unattended, packaging a verified hands-on build once the queue clears, and polling continuously for new owner feedback.
@@ -279,7 +279,7 @@ Then:
   - The issue fails its own gate after Devin's first fix round and up to 2 Gemini 4 Neon fix runs on that head lineage (or Neon returns `no-change`/`unavailable`).
   - A `nyx/audit` block survives Devin's fix round and up to 2 Gemini 4 Neon fix runs on that head lineage (or Neon returns `no-change`/`unavailable`) with no valid rebuttal.
   - The gate stays `unavailable` after 3 retries, or the same `npm run verify` test still fails after Neon escalation (or Neon returns `no-change`/`unavailable`).
-  - **Long-running PR:** the PR is listed in `C:\tivano\dev-loop\autopilot\stale-prs.json` (the watchdog writes it every tick: open for at least 48 hours and at least 5 gate runs). Park it right away instead of running another gate; the revisit (below) restarts it from current `origin/main` as a smaller change.
+  - **Long-running PR:** the PR is listed in `C:\tivano\dev-loop\autopilot\stale-prs.json` (the watchdog writes it every tick: open for at least 48 hours and at least 5 gate runs). The watchdog now adds stale Devin PRs to `C:\tivano\dev-loop\autopilot\parked.json` automatically (`attempt: 0`), removes the issue from `progress.json` `awaitingAudit`, leaves the PR open, and posts the park line to `#34`. Treat such a watchdog-added entry in `parked.json` exactly like your own park: stop working that PR, move on to other issues, and revisit it later from current `origin/main` as a smaller change per section 11. (If a stale PR has not yet been added by the watchdog, park it right away instead of running another gate.)
 - **How to park (initial failure or revisit failure):**
   1. **Leave the PR open.** Remove the issue from `awaitingAudit` if present.
   2. Read `C:\tivano\dev-loop\autopilot\parked.json` (default `[]`).
