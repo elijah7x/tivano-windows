@@ -1136,4 +1136,126 @@ describe("P2-62 Hydra finish-signal & unread suppression (frozen AppModel.turnFi
     });
     store.close();
   });
+
+  it("clears persisted landingPending and stale running heads on startup recovery so future lead turns signal", async () => {
+    const { engine, store, root } = make();
+    const watcher = engine.createThread(null, "watcher");
+    const lead = engine.createThread(null, "lead");
+    const head = engine.createThread(null, "head-mid-landing");
+    const runningHead = engine.createThread(null, "head-mid-run");
+    const now = Date.now();
+    store.update((d) => {
+      const landingThread = d.threads.find((t) => t.id === head.id)!;
+      landingThread.worktreeDir = join(root, "head-copy");
+      landingThread.messages = [
+        {
+          id: "m-done",
+          role: "assistant",
+          content: "Landed work",
+          ts: now - 500,
+          turnId: "t-done",
+          status: "done",
+        },
+      ];
+      landingThread.turn = {
+        id: "t-done",
+        threadId: head.id,
+        seq: 1,
+        assistantMessageId: "m-done",
+        status: "done",
+        startedAt: now - 500,
+        endedAt: now - 100,
+      };
+      landingThread.hydraHead = {
+        leadId: lead.id,
+        headIndex: 1,
+        name: "Hank",
+        task: "land changes",
+        batchId: "b-recover",
+        status: "completed",
+        spawnedAt: now - 500,
+        finishedAt: now - 100,
+        landingPending: true,
+      };
+      const interruptedThread = d.threads.find((t) => t.id === runningHead.id)!;
+      interruptedThread.messages = [
+        {
+          id: "m-run",
+          role: "assistant",
+          content: "Working",
+          ts: now - 400,
+          turnId: "t-run",
+          status: "streaming",
+        },
+      ];
+      interruptedThread.turn = {
+        id: "t-run",
+        threadId: runningHead.id,
+        seq: 1,
+        assistantMessageId: "m-run",
+        status: "running",
+        startedAt: now - 400,
+      };
+      interruptedThread.hydraHead = {
+        leadId: lead.id,
+        headIndex: 2,
+        name: "Walter",
+        task: "still running",
+        batchId: "b-recover",
+        status: "running",
+        spawnedAt: now - 400,
+      };
+    });
+    store.close();
+
+    const store2 = new Store(root);
+    store2.open();
+    const engine2 = new Engine(store2, new MockProvider({ tickMs: 1 }), root, "0.0.0-test");
+    expect(engine2.hydraLeadBusy(lead.id)).toBe(true);
+
+    const recovered = engine2.recoverInFlight();
+    expect(recovered).toContain(head.id);
+    expect(recovered).toContain(runningHead.id);
+
+    const recoveredLandingHead = thread(engine2, head.id);
+    expect(recoveredLandingHead.turn?.status).toBe("done");
+    expect(recoveredLandingHead.hasUnread).toBeFalsy();
+    expect(recoveredLandingHead.hydraHead?.landingPending).toBeUndefined();
+    expect(recoveredLandingHead.hydraHead?.landing).toEqual({
+      files: [],
+      conflicts: [],
+      error: "the app closed before the landing finished",
+    });
+    expect(recoveredLandingHead.hydraHead?.copyKept).toBe(true);
+
+    const recoveredRunningHead = thread(engine2, runningHead.id);
+    expect(recoveredRunningHead.turn?.status).toBe("interrupted");
+    expect(recoveredRunningHead.hydraHead?.status).toBe("stopped");
+    expect(recoveredRunningHead.hasUnread).toBeFalsy();
+
+    expect(engine2.hydraLeadBusy(lead.id)).toBe(false);
+
+    const signals: {
+      threadId: string;
+      status: string;
+      chime: boolean;
+      notify: string | null;
+      silent: boolean;
+    }[] = [];
+    engine2.onEvent((e) => {
+      if (e.type === "finish-signal") signals.push(e);
+    });
+    engine2.selectThread(watcher.id);
+    engine2.sendTurn(lead.id, "after restart");
+    await waitFor(() => signals.some((s) => s.threadId === lead.id));
+
+    expect(signals.filter((s) => s.threadId === lead.id).at(-1)).toMatchObject({
+      status: "done",
+      chime: true,
+      notify: "done",
+      silent: true,
+    });
+    expect(thread(engine2, lead.id).hasUnread).toBe(true);
+    store2.close();
+  });
 });

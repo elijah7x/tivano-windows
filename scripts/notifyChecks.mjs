@@ -112,7 +112,7 @@ export async function runNotifyChecks({
     (await page.getByRole("switch", { name: "Chime when a turn finishes" }).count()) === 1 &&
       (await page.getByRole("switch", { name: "Notify when a turn finishes" }).count()) === 0 &&
       (await page.getByRole("switch", { name: "Concise AI replies" }).count()) === 0 &&
-      (await page.locator(".modal", { hasText: "Commit-message instructions" }).count()) === 0,
+      (await page.locator(".modal", { hasText: "Commit message instructions" }).count()) === 0,
   );
   await page.evaluate(() =>
     window.tivano.invoke("settings:set", { language: "zh-Hans" }),

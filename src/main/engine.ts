@@ -702,25 +702,13 @@ export class Engine {
     this.updateSleepGuard();
   }
 
-  /** Mark an in-flight turn interrupted; true when anything changed. */
+  /** Mark an in-flight turn or stale Hydra landing interrupted; true when anything changed. */
   private markInterrupted(t: ChatThread, now: number): boolean {
-    const turn = t.turn;
-    if (!turn || (turn.status !== "running" && turn.status !== "waiting-approval"))
-      return false;
-    turn.status = "interrupted";
-    turn.endedAt = now;
-    // F28: a recovered in-flight turn is an unseen result — its
-    // interruption happened while the app was gone (frozen parity).
-    t.hasUnread = true;
-    t.unreadStatus = "interrupted";
-    // F22: a head killed mid-run persists as stopped — never "running"
-    // into the next launch.
-    if (t.hydraHead && t.hydraHead.status === "running") {
-      t.hydraHead.status = "stopped";
-      t.hydraHead.finishedAt = now;
-    }
+    let changed = false;
     // F22: a landing in flight when the app died is honestly lost —
-    // the copy stays on disk with its work unclaimed.
+    // the copy stays on disk with its work unclaimed. Run before the
+    // turn-status guard because finishHydraHead sets landingPending
+    // after endTurn already finished the head's turn ("done").
     if (t.hydraHead?.landingPending === true) {
       t.hydraHead.landingPending = undefined;
       t.hydraHead.landing = {
@@ -729,6 +717,33 @@ export class Engine {
         error: "the app closed before the landing finished",
       };
       t.hydraHead.copyKept = t.worktreeDir !== undefined;
+      changed = true;
+    }
+    const turn = t.turn;
+    if (!turn || (turn.status !== "running" && turn.status !== "waiting-approval")) {
+      // F22: a head left "running" without an active turn still must not
+      // persist as running into the next launch.
+      if (t.hydraHead && t.hydraHead.status === "running") {
+        t.hydraHead.status = "stopped";
+        t.hydraHead.finishedAt = now;
+        changed = true;
+      }
+      return changed;
+    }
+    turn.status = "interrupted";
+    turn.endedAt = now;
+    // F28: a recovered in-flight turn is an unseen result — its
+    // interruption happened while the app was gone (frozen parity).
+    // Hydra heads never mark unread (frozen AppModel.turnFinished / recovery).
+    if (!t.hydraHead) {
+      t.hasUnread = true;
+      t.unreadStatus = "interrupted";
+    }
+    // F22: a head killed mid-run persists as stopped — never "running"
+    // into the next launch.
+    if (t.hydraHead && t.hydraHead.status === "running") {
+      t.hydraHead.status = "stopped";
+      t.hydraHead.finishedAt = now;
     }
     if (turn.approval && turn.approval.status === "pending") {
       turn.approval.status = "expired";
