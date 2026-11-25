@@ -162,6 +162,7 @@ export function ModelListSettings(props: ModelListSettingsProps): React.JSX.Elem
 
   useEffect(() => {
     if (props.initialCatalog !== undefined) return;
+    if (clientStore.snapshot?.settings?.codexProviderEnabled === false) return;
     let live = true;
     api()
       .invoke("models:list", {})
@@ -175,7 +176,7 @@ export function ModelListSettings(props: ModelListSettingsProps): React.JSX.Elem
     return () => {
       live = false;
     };
-  }, [props.initialCatalog]);
+  }, [props.initialCatalog, settings?.codexProviderEnabled]);
 
   useEffect(() => {
     return () => {
@@ -228,6 +229,14 @@ export function ModelListSettings(props: ModelListSettingsProps): React.JSX.Elem
     if (effortPop !== null && !pins.some((p) => pinId(p) === pinId(effortPop.pin)))
       setEffortPop(null);
   }, [editingId, effortPop, pendingNewId, pins, sections]);
+
+  if (settings?.codexProviderEnabled === false) {
+    return (
+      <div className="ml-settings ml-hidden-provider">
+        <div className="empty-hint">{t("Codex is hidden in Providers")}</div>
+      </div>
+    );
+  }
 
   const trimmed = query.trim().toLowerCase();
   const isSearching = trimmed !== "";

@@ -2075,6 +2075,197 @@ select.runtime-mode:disabled {
   margin-top: 8px;
 }
 
+/* P2-39 providers page (frozen SettingsIconRail + ProvidersSettingsPage):
+   the provider list collapses to an icon rail; hovering floats the full
+   list out over the page without scrolling it. */
+.prov-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.prov-head h3 { margin-bottom: 0; }
+.prov-search {
+  width: 170px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.prov-search:focus { outline: none; border-color: var(--accent); }
+.prov-cols {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  margin-top: 10px;
+}
+.prov-rail {
+  position: sticky;
+  top: 8px;
+  align-self: flex-start;
+  overscroll-behavior: contain;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 44px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.prov-rail-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.prov-rail-btn:hover { background: var(--surface-3); }
+.prov-rail-btn.sel { background: var(--surface-3); color: var(--text); }
+.prov-glyph { font-size: 15px; }
+.prov-dot {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.prov-dot.ready { background: var(--success); }
+.prov-dot.attention { background: var(--warning, #e5a50a); }
+.prov-dot.notInstalled { background: var(--text-2); opacity: 0.5; }
+.prov-rail-expand {
+  position: absolute;
+  /* The 6px visual gap lives in the flyout's own padding so the strip
+     between rail and card still counts as hovered — a pointer crossing
+     it must not drop :hover and hide the flyout. */
+  left: 100%;
+  top: 0;
+  min-width: 180px;
+  max-height: min(420px, 70vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 5px 5px 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+  display: none;
+  flex-direction: column;
+  gap: 1px;
+  z-index: 45;
+}
+.prov-rail:hover .prov-rail-expand,
+.prov-rail:has(:focus-visible) .prov-rail-expand { display: flex; }
+.prov-expand-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: calc(12.5px + var(--fs-ui-off));
+  text-align: left;
+  cursor: pointer;
+}
+.prov-expand-row:hover { background: var(--surface-3); }
+.prov-expand-row.sel { background: var(--surface-3); }
+.prov-expand-row .prov-dot { position: static; flex: none; }
+.prov-expand-row .grow { flex: 1; }
+.prov-active-card {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.prov-active-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.prov-active-text { display: flex; flex-direction: column; gap: 2px; }
+.prov-small-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text);
+  cursor: pointer;
+}
+.prov-choice-area { margin-top: 10px; }
+.prov-choice-tile {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-3);
+  color: var(--text);
+  cursor: pointer;
+}
+.prov-choice-tile.sel { border-color: var(--accent); }
+.prov-accounts { margin-top: 10px; border-top: 1px solid var(--border); }
+.prov-accounts-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.prov-accounts-title { font-weight: 600; }
+.prov-accounts-summary { flex: 1; color: var(--text-2); font-size: calc(11.5px + var(--fs-ui-off)); }
+.prov-accounts-chevron { color: var(--text-2); }
+.prov-account-row { padding: 2px 0 10px; }
+.prov-account-main { display: flex; flex-direction: column; gap: 3px; }
+
+.prov-detail { flex: 1; min-width: 0; }
+.prov-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+}
+.prov-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.prov-name { font-weight: 600; color: var(--text); }
+.prov-route { font-size: calc(11.5px + var(--fs-ui-off)); }
+.prov-switches {
+  display: flex;
+  gap: 18px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.prov-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: calc(12.5px + var(--fs-ui-off));
+  color: var(--text);
+}
+.prov-switch input:disabled + span { opacity: 0.5; }
+.prov-switch .dim { font-size: calc(11px + var(--fs-ui-off)); }
+
 /* F27 keyboard shortcuts */
 
 .shortcut-section {

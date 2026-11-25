@@ -67,7 +67,7 @@ export interface ModelPickerProps {
   initialQuery?: string;
 }
 
-export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
+export function ModelPicker(props: ModelPickerProps): React.JSX.Element | null {
   const t = useT();
   const { thread } = props;
   const [catalog, setCatalog] = useState<CodexModelCatalog | null>(
@@ -78,9 +78,11 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   const [selectedCategory, setSelectedCategory] = useState<PickerCategory | null>(null);
   const gen = useRef(0);
   const popRef = useRef<HTMLDivElement | null>(null);
+  const settings = clientStore.snapshot?.settings;
 
   const refresh = () => {
     if (props.initialCatalog !== undefined) return;
+    if (clientStore.snapshot?.settings?.codexProviderEnabled === false) return;
     const g = ++gen.current;
     api()
       .invoke("models:list", {})
@@ -95,7 +97,11 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
 
   // First fetch on mount/thread switch; the dropdown ALSO refreshes on
   // open so "no session yet" self-heals once a turn binds one.
-  useEffect(refresh, [thread.id, props.initialCatalog]);
+  useEffect(refresh, [thread.id, props.initialCatalog, settings?.codexProviderEnabled]);
+
+  useEffect(() => {
+    if (settings?.codexProviderEnabled === false) setGroupOpen(false);
+  }, [settings?.codexProviderEnabled]);
 
   useEffect(() => {
     if (!groupOpen) return;
@@ -119,7 +125,6 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   }, [groupOpen]);
 
   const models: CodexModelOption[] = catalog?.state === "ready" ? catalog.models : [];
-  const settings = clientStore.snapshot?.settings;
   const pinnedList: ModelPin[] = settings?.modelList ?? [];
   const pinnedSections = settings?.modelSections ?? [];
   const usePins = pinnedList.length > 0;
@@ -158,6 +163,8 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
     !thread.hydraHead;
   const subagentMode =
     thread.subagentMode ?? (thread.hydraPairId ? "preset" : "same");
+  const providerEnabled = settings?.codexProviderEnabled !== false;
+  if (!providerEnabled && !subagentVisible) return null;
   const selectedModel = models.find((m) => m.id === selected);
   const efforts = orderedEfforts(selectedModel?.efforts ?? []);
   const selectedEffort = thread.codexEffort ?? "";
@@ -327,7 +334,8 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   };
 
   return (
-    <div className="model-picker" data-cat={catalog?.state ?? "loading"}>
+    <div className="model-picker" data-cat={providerEnabled ? (catalog?.state ?? "loading") : "hidden"}>
+      {providerEnabled && (
       <select
         className="model-select"
         aria-label={t("Model")}
@@ -361,8 +369,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
               </option>
             ))}
       </select>
+      )}
 
-      {hasUserGroups && (
+      {providerEnabled && hasUserGroups && (
         <div className="model-pop-wrap" ref={popRef}>
           <button
             type="button"
@@ -456,6 +465,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         </div>
       )}
 
+      {providerEnabled && (
       <select
         className="effort-select"
         aria-label={t("Effort")}
@@ -481,6 +491,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
           </option>
         ))}
       </select>
+      )}
       {subagentVisible && (
         <select
           className="subagent-mode-select"
@@ -538,7 +549,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
           {t("Auto-dispatch")}
         </label>
       )}
-      {tierId !== null && (
+      {providerEnabled && tierId !== null && (
         <label
           className="fast-tier"
           title={t("Fast service tier — applies to the next turn")}
@@ -559,6 +570,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
           {t("Fast tier")}
         </label>
       )}
+      {providerEnabled && (
       <span className="model-note">
         {catalog === null
           ? t("Loading model list…")
@@ -570,6 +582,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
                 ? `${t("Provider reports")}: ${reported}`
                 : t("Applies to the next turn")}
       </span>
+      )}
     </div>
   );
 }

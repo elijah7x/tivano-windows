@@ -33,6 +33,7 @@ import { ForgeSection } from "./ForgeSection";
 import { WallpaperSection } from "./WallpaperSection";
 import { ModelListSettings } from "./ModelListSettings";
 import { ArchiveSection } from "./ArchiveSection";
+import { ProvidersSection } from "./ProvidersSection";
 import { VersionSection } from "./WhatsNewViews";
 import {
   RUNTIME_MODES,
@@ -763,9 +764,20 @@ export function SettingsModal(props: {
           <p className="codex-note" data-testid="cli-error">{cliErr}</p>
         )}
 
-        <h3>{t("Codex CLI")}</h3>
-        <div className="about codex-setup" aria-busy={busy !== null}>
-          <div className="kv">
+        <ProvidersSection
+          codex={codex}
+          codexProviderEnabled={settings.codexProviderEnabled !== false}
+          onCodexProviderEnabled={(v) =>
+            tryCall("settings:set", { codexProviderEnabled: v })
+          }
+          executablePathVisible={settings.providersShowExecutablePath ?? false}
+          onExecutablePathVisible={(v) =>
+            tryCall("settings:set", { providersShowExecutablePath: v })
+          }
+          codexRoute={t("Codex CLI")}
+          renderCodexCard={({ executablePath }) => (
+            <div className="about codex-setup" aria-busy={busy !== null}>
+              <div className="kv">
             <span>{t("This launch")}</span>
             <span>
               {t(info.providerLabel)}
@@ -791,23 +803,27 @@ export function SettingsModal(props: {
                 )}
               </>
             )}
-            {codex?.effectiveExecutable && (
+            {executablePath && codex?.effectiveExecutable && (
               <>
                 <span>{t("Executable in use")}</span>
                 <span className="mono">{codex.effectiveExecutable}</span>
               </>
             )}
-            <span>{t("Saved program")}</span>
-            <span className="mono">
-              {codex ? codex.savedExecutable ?? t("None saved") : t(loadErr ? "Failed to load" : "Loading")}
-            </span>
-            {codex?.savedInvalidReason && (
+            {executablePath && (
+              <>
+                <span>{t("Saved program")}</span>
+                <span className="mono">
+                  {codex ? codex.savedExecutable ?? t("None saved") : t(loadErr ? "Failed to load" : "Loading")}
+                </span>
+              </>
+            )}
+            {executablePath && codex?.savedInvalidReason && (
               <>
                 <span>{t("Saved path status")}</span>
                 <span className="mono">{translateError(t, codex.savedInvalidReason)}</span>
               </>
             )}
-            {codex && codex.savedEffect !== "none" && (
+            {executablePath && codex && codex.savedEffect !== "none" && (
               <>
                 <span>{t("Saved effect")}</span>
                 <span>
@@ -821,30 +837,33 @@ export function SettingsModal(props: {
                 </span>
               </>
             )}
-            {codex && codex.savedExecutable === null && (
+            {executablePath && codex && codex.savedExecutable === null && (
               <>
                 <span>{t("After restart")}</span>
                 <span>{t("No saved program will be used. Explicit provider and environment settings still apply; without them, the default provider is used. This launch is unchanged.")}</span>
               </>
             )}
-            {codex?.pendingExecutable && (
+            {executablePath && codex?.pendingExecutable && (
               <>
                 <span>{t("Selected, not saved")}</span>
                 <span className="mono">{codex.pendingExecutable}</span>
               </>
             )}
           </div>
-          <p>
-            {t(
-              "Choosing only selects a candidate. Saving or clearing changes the saved setting, not this launch, and never starts the program. On restart, explicit provider and environment settings take priority. A saved path is not installed or verified.",
-            )}
-          </p>
+          {executablePath && (
+            <p>
+              {t(
+                "Choosing only selects a candidate. Saving or clearing changes the saved setting, not this launch, and never starts the program. On restart, explicit provider and environment settings take priority. A saved path is not installed or verified.",
+              )}
+            </p>
+          )}
           {codexErr && (
             <p className="codex-setup-error" role="alert">
               {translateError(t, codexErr)}
             </p>
           )}
           {loadErr && <p className="codex-setup-error" role="alert">{translateError(t, loadErr)}</p>}
+          {executablePath && (
           <div className="choice-row">
             <button
               className="choice"
@@ -869,11 +888,16 @@ export function SettingsModal(props: {
             >
               {busy === "clear" ? t("Clearing…") : t("Clear")}
             </button>
+          </div>
+          )}
+          <div className="choice-row">
             <button className="choice" disabled={busy !== null} onClick={() => void run("load")}>
               {busy === "load" ? t("Loading") : t(loadErr ? "Retry" : "Refresh status")}
             </button>
           </div>
-        </div>
+            </div>
+          )}
+        />
 
         <ShortcutsSection
           shortcuts={settings.shortcuts}
