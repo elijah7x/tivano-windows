@@ -132,8 +132,8 @@ interface EffortState {
 }
 
 export interface PendingSectionRename {
-  id: string;
   name: string;
+  atSections: readonly ModelSection[];
 }
 
 export interface ModelListControllerContext {
@@ -157,7 +157,7 @@ export interface ModelListControllerContext {
   setDraft: (draft: string) => void;
   getPendingNewId: () => string | null;
   setPendingNewId: (id: string | null) => void;
-  pendingRenameRef: { current: PendingSectionRename | null };
+  pendingRenamesRef: { current: Record<string, PendingSectionRename> };
   dragRef: { current: string | null };
   setDropHint: (hint: string | null) => void;
   setEffortPop: (pop: EffortState | null) => void;
@@ -183,10 +183,11 @@ export function createModelListController(ctx: ModelListControllerContext) {
 
   const foldRename = (list: ModelSection[]): ModelSection[] => {
     const editingId = ctx.getEditingId();
-    const pending = ctx.pendingRenameRef.current;
     let out = list;
-    if (pending !== null && pending.id !== editingId) {
-      out = applyDraftRename(out, pending.id, pending.name);
+    for (const [id, entry] of Object.entries(ctx.pendingRenamesRef.current)) {
+      if (id !== editingId) {
+        out = applyDraftRename(out, id, entry.name);
+      }
     }
     if (editingId !== null) {
       out = applyDraftRename(out, editingId, ctx.getDraft());
@@ -206,25 +207,21 @@ export function createModelListController(ctx: ModelListControllerContext) {
   const commitRename = (id: string) => {
     const name = ctx.getDraft().trim();
     const f = freshLists();
-    const pending = ctx.pendingRenameRef.current;
-    const baseSections =
-      pending !== null && pending.id !== id
-        ? applyDraftRename(f.sections, pending.id, pending.name)
-        : f.sections;
-    const cur = baseSections.find((s) => s.id === id);
-    if (cur && name !== "" && name !== cur.name) {
-      ctx.pendingRenameRef.current = { id, name };
-      ctx.write({ modelSections: renameSection(baseSections, id, name) });
-    } else if (pending?.id === id) {
-      ctx.pendingRenameRef.current = null;
+    const cur = f.sections.find((s) => s.id === id);
+    const lastWrittenName = ctx.pendingRenamesRef.current[id]?.name ?? cur?.name;
+    if (cur && name !== "" && name !== lastWrittenName) {
+      ctx.pendingRenamesRef.current[id] = { name, atSections: f.sections };
+      let nextSections = f.sections;
+      for (const [pid, entry] of Object.entries(ctx.pendingRenamesRef.current)) {
+        nextSections = applyDraftRename(nextSections, pid, entry.name);
+      }
+      ctx.write({ modelSections: nextSections });
     }
     ctx.setEditingId(null);
   };
 
   const cancelRename = (id: string) => {
-    if (ctx.pendingRenameRef.current?.id === id) {
-      ctx.pendingRenameRef.current = null;
-    }
+    void id;
     ctx.setEditingId(null);
   };
 
@@ -233,11 +230,8 @@ export function createModelListController(ctx: ModelListControllerContext) {
     if (curEditing !== null && curEditing !== section.id) {
       commitRename(curEditing);
     }
-    const pending = ctx.pendingRenameRef.current;
-    const initial = pending?.id === section.id ? pending.name : section.name;
-    if (pending?.id === section.id) {
-      ctx.pendingRenameRef.current = null;
-    }
+    const pending = ctx.pendingRenamesRef.current[section.id];
+    const initial = pending ? pending.name : section.name;
     ctx.setEditingId(section.id);
     ctx.setDraft(initial);
   };
@@ -252,9 +246,7 @@ export function createModelListController(ctx: ModelListControllerContext) {
   const removeSectionAction = (sectionId: string) => {
     const f = freshLists();
     const folded = foldRename(f.sections);
-    if (ctx.pendingRenameRef.current?.id === sectionId) {
-      ctx.pendingRenameRef.current = null;
-    }
+    delete ctx.pendingRenamesRef.current[sectionId];
     ctx.setEditingId(null);
     ctx.write(removeSection(folded, f.collapsed, sectionId));
   };
@@ -355,11 +347,11 @@ export function createModelListController(ctx: ModelListControllerContext) {
     if (pendingNewId !== null && sections.some((s) => s.id === pendingNewId)) {
       ctx.setPendingNewId(null);
     }
-    const pendingRename = ctx.pendingRenameRef.current;
-    if (pendingRename !== null) {
-      const match = sections.find((s) => s.id === pendingRename.id);
-      if (!match || match.name === pendingRename.name) {
-        ctx.pendingRenameRef.current = null;
+    for (const [id, entry] of Object.entries(ctx.pendingRenamesRef.current)) {
+      if (sections === entry.atSections) continue;
+      const match = sections.find((s) => s.id === id);
+      if (!match || match.name === entry.name) {
+        delete ctx.pendingRenamesRef.current[id];
       }
     }
     if (!sectionEditTargetAlive(sections, ctx.getEditingId(), pendingNewId)) {
@@ -420,7 +412,7 @@ export function ModelListSettings(props: ModelListSettingsProps): React.JSX.Elem
   const editingIdRef = useRef<string | null>(editingId);
   const draftRef = useRef(draft);
   const pendingNewIdRef = useRef<string | null>(pendingNewId);
-  const pendingRenameRef = useRef<PendingSectionRename | null>(null);
+  const pendingRenamesRef = useRef<Record<string, PendingSectionRename>>({});
   editingIdRef.current = editingId;
   draftRef.current = draft;
   pendingNewIdRef.current = pendingNewId;
@@ -493,7 +485,7 @@ export function ModelListSettings(props: ModelListSettingsProps): React.JSX.Elem
       pendingNewIdRef.current = id;
       setPendingNewId(id);
     },
-    pendingRenameRef,
+    pendingRenamesRef,
     dragRef,
     setDropHint,
     setEffortPop,

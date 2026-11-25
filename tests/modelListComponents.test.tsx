@@ -271,7 +271,7 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
     let editingId: string | null = null;
     let draft = "";
     let pendingNewId: string | null = null;
-    const pendingRenameRef: { current: PendingSectionRename | null } = { current: null };
+    const pendingRenamesRef: { current: Record<string, PendingSectionRename> } = { current: {} };
     const dragRef: { current: string | null } = { current: null };
     let dropHint: string | null = null;
     let effortPop: { pin: ModelPin; x: number; y: number } | null = null;
@@ -297,7 +297,7 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
       setPendingNewId: (id) => {
         pendingNewId = id;
       },
-      pendingRenameRef,
+      pendingRenamesRef,
       dragRef,
       setDropHint: (h) => {
         dropHint = h;
@@ -324,7 +324,16 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
       ctrl,
       writes,
       echoSnapshot,
-      getState: () => ({ editingId, draft, pendingNewId, pendingRename: pendingRenameRef.current, dropHint, effortPop }),
+      getState: () => ({
+        editingId,
+        draft,
+        pendingNewId,
+        pendingRenames: Object.fromEntries(
+          Object.entries(pendingRenamesRef.current).map(([k, v]) => [k, v.name]),
+        ),
+        dropHint,
+        effortPop,
+      }),
       setDraftVal: (d: string) => {
         draft = d;
       },
@@ -350,7 +359,7 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
     expect(html).toContain("Ungroup. Models stay in the list.");
   });
 
-  it("preserves both live and blur-committed renames across removePin, commitRename, cancelRename, and startRename", () => {
+  it("preserves multiple per-section pending renames, revert-before-echo, live removePin, cancelRename, and startRename", () => {
     const rig = setupControllerRig();
     const secA = clientStore.snapshot!.settings.modelSections![0]!;
     const secB = clientStore.snapshot!.settings.modelSections![1]!;
@@ -360,22 +369,44 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
     // Simulate blur firing commitRename (async IPC, snapshot not updated yet).
     rig.ctrl.commitRename("sec-a");
     expect(rig.getState().editingId).toBeNull();
-    expect(rig.getState().pendingRename).toEqual({ id: "sec-a", name: "Reasoning v2" });
+    expect(rig.getState().pendingRenames).toEqual({ "sec-a": "Reasoning v2" });
 
-    // Switching straight to rename secB and committing must fold secA's un-echoed pendingRename.
+    // Reverting sec-a back to its original snapshot name before IPC echo must STILL write!
+    rig.ctrl.startRename(secA);
+    expect(rig.getState().draft).toBe("Reasoning v2");
+    rig.setDraftVal("Reasoning");
+    rig.ctrl.commitRename("sec-a");
+    expect(rig.writes).toHaveLength(2);
+    expect(rig.getState().pendingRenames).toEqual({ "sec-a": "Reasoning" });
+    // Immediate syncEffects on the same stale snapshot array must NOT prematurely drop pending.
+    rig.ctrl.syncEffects(
+      clientStore.snapshot!.settings.modelList!,
+      clientStore.snapshot!.settings.modelSections!,
+      null,
+    );
+    expect(rig.getState().pendingRenames).toEqual({ "sec-a": "Reasoning" });
+
+    // Rename secA to "Reasoning v2" and secB to "Small v2" before any echo arrives: both stay pending and fold together.
+    rig.ctrl.startRename(secA);
+    rig.setDraftVal("Reasoning v2");
+    rig.ctrl.commitRename("sec-a");
     rig.ctrl.startRename(secB);
     rig.setDraftVal("Small v2");
     rig.ctrl.commitRename("sec-b");
-    const secondCommit = rig.writes[1] as { modelSections: ModelSection[] };
-    expect(secondCommit.modelSections.find((s) => s.id === "sec-a")?.name).toBe("Reasoning v2");
-    expect(secondCommit.modelSections.find((s) => s.id === "sec-b")?.name).toBe("Small v2");
+    expect(rig.getState().pendingRenames).toEqual({
+      "sec-a": "Reasoning v2",
+      "sec-b": "Small v2",
+    });
+    const bothCommit = rig.writes[3] as { modelSections: ModelSection[] };
+    expect(bothCommit.modelSections.find((s) => s.id === "sec-a")?.name).toBe("Reasoning v2");
+    expect(bothCommit.modelSections.find((s) => s.id === "sec-b")?.name).toBe("Small v2");
 
-    // Start renaming secA without blurring, then removePin directly -> live draft folds before editingId clears.
+    // Start renaming secA without blurring, then removePin directly -> live draft folds AND secB's pending rename stays folded!
     rig.ctrl.startRename(secA);
     rig.setDraftVal("Reasoning Live Remove");
     rig.ctrl.removePin({ provider: "codex", modelID: "gpt-a1" });
     expect(rig.getState().editingId).toBeNull();
-    const removeWrite = rig.writes[2] as {
+    const removeWrite = rig.writes[4] as {
       modelList: ModelPin[];
       modelSections: ModelSection[];
     };
@@ -383,21 +414,33 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
     expect(removeWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe(
       "Reasoning Live Remove",
     );
+    expect(removeWrite.modelSections.find((s) => s.id === "sec-b")?.name).toBe("Small v2");
 
-    // startRename while already editing another section commits the first before switching, and cancelRename clears editing + pending.
+    // startRename while already editing another section commits the first before switching, and cancelRename closes edit without dropping secB's pending rename.
     rig.ctrl.startRename(secA);
     rig.setDraftVal("Reasoning Before Switch");
     rig.ctrl.startRename(secB);
     expect(rig.getState().editingId).toBe("sec-b");
-    expect(rig.getState().pendingRename).toEqual({ id: "sec-a", name: "Reasoning Before Switch" });
+    expect(rig.getState().pendingRenames).toEqual({
+      "sec-a": "Reasoning Before Switch",
+      "sec-b": "Small v2",
+    });
     rig.ctrl.cancelRename("sec-b");
     expect(rig.getState().editingId).toBeNull();
+    expect(rig.getState().pendingRenames).toEqual({
+      "sec-a": "Reasoning Before Switch",
+      "sec-b": "Small v2",
+    });
 
-    // Once the store echoes the new name, pendingRename clears.
+    // Once the store echoes secA + secB, both pending renames clear.
     rig.echoSnapshot({
       modelList: removeWrite.modelList,
       modelSections: removeWrite.modelSections.map((s) =>
-        s.id === "sec-a" ? { ...s, name: "Reasoning Before Switch" } : s,
+        s.id === "sec-a"
+          ? { ...s, name: "Reasoning Before Switch" }
+          : s.id === "sec-b"
+            ? { ...s, name: "Small v2" }
+            : s,
       ),
     });
     rig.ctrl.syncEffects(
@@ -405,7 +448,7 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
       clientStore.snapshot!.settings.modelSections!,
       null,
     );
-    expect(rig.getState().pendingRename).toBeNull();
+    expect(rig.getState().pendingRenames).toEqual({});
   });
 
   it("folds an in-flight rename when removing a sibling section and never resurrects a deleted section", () => {
@@ -423,7 +466,7 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
       ["sec-empty", "Empty Lane"],
     ]);
 
-    // Now rename sec-empty and delete sec-empty itself: must not resurrect and clears pendingRename.
+    // Now rename sec-empty and delete sec-empty itself: must not resurrect and clears only sec-empty's pending rename.
     const secEmpty = clientStore.snapshot!.settings.modelSections![2]!;
     rig.ctrl.startRename(secEmpty);
     rig.setDraftVal("Doomed");
@@ -431,7 +474,7 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
     rig.ctrl.removeSection("sec-empty");
     const wLast = rig.writes.at(-1) as { modelSections: ModelSection[] };
     expect(wLast.modelSections.some((s) => s.id === "sec-empty")).toBe(false);
-    expect(rig.getState().pendingRename).toBeNull();
+    expect(rig.getState().pendingRenames).toEqual({ "sec-a": "Reasoning Live" });
   });
 
   it("folds pending and live renames into reorder and catalog operations (rail drop, pin drop, wall drop, moveSection, movePinToSection, toggleCatalogPin)", () => {

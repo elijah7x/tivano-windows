@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-02.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F17 model-list e2e — OFFLINE Codex fixture only. Pins/sections/prefs
 // persist through settings:set; the picker restricts to the pinned set
@@ -338,14 +338,14 @@ export async function runModelListChecks({
     const st = await settingsOf(page);
     return (
       st.modelSections?.some((x) => x.id === firstSectionId && x.name === "Fast lane v2") &&
-      st.modelList?.length === before - 2
+      (st.modelList ?? []).length === before - 2
     );
   });
   verify(
     "ML-13b blur-commit rename + immediate pin remove both landed",
     (await settingsOf(page)).modelSections.some(
       (x) => x.id === firstSectionId && x.name === "Fast lane v2",
-    ) && (await settingsOf(page)).modelList.length === before - 2,
+    ) && ((await settingsOf(page)).modelList ?? []).length === before - 2,
   );
 
   // ML-13c (P2-33): select secondSectionId (at index 0, not in edit mode),
@@ -370,7 +370,7 @@ export async function runModelListChecks({
     "ML-13c reorder-while-editing preserves rename and moves group",
     (await settingsOf(page)).modelSections.at(-1)?.name === "Pit lane v3",
   );
-  const afterRemoveCount = (await settingsOf(page)).modelList.length;
+  const afterRemoveCount = ((await settingsOf(page)).modelList ?? []).length;
 
   // ML-14: Ungroup keeps the models (they join the top).
   await page.locator(".ml-rail-card", { hasText: "All" }).first().click();
@@ -387,7 +387,7 @@ export async function runModelListChecks({
   });
   verify(
     "ML-14 heading removed, models stay",
-    (await settingsOf(page)).modelList.length === afterRemoveCount &&
+    ((await settingsOf(page)).modelList ?? []).length === afterRemoveCount &&
       (await page.locator(".ml-chip").count()) === afterRemoveCount,
   );
 
@@ -423,11 +423,11 @@ export async function runModelListChecks({
   const afterRestart = await settingsOf(page);
   verify(
     "ML-16b layout + prefs survive restart",
-    afterRestart.modelList?.length === afterRemoveCount &&
+    (afterRestart.modelList ?? []).length === afterRemoveCount &&
       afterRestart.modelSections?.length === sectionsBefore - 1 &&
       Object.keys(afterRestart.modelPreferences ?? {}).length === 1,
     {
-      pins: afterRestart.modelList?.length,
+      pins: (afterRestart.modelList ?? []).length,
       sections: afterRestart.modelSections?.length,
       prefs: Object.keys(afterRestart.modelPreferences ?? {}).length,
     },
