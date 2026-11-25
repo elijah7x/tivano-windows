@@ -56,6 +56,7 @@ $script:Redactions = @()
 $script:GuiTypesLoaded = $false
 $script:LastFreshSessionDeferred = $false
 $script:AutoMergeDailyCap = 40
+$script:IdentifiedTaskPattern = 'Invoke-AutopilotGate|Invoke-PrReview|Invoke-GlmReview|package-windows|packaged-smoke'
 $script:AttributionLinePattern = '(?i)co-authored-by|generated (with|by) \[?devin|devin\.ai'
 
 function Write-Text {
@@ -1392,6 +1393,9 @@ function Get-OrphanedLoopRoots {
 
     if ($cmd.IndexOf('C:\tivano', [StringComparison]::OrdinalIgnoreCase) -lt 0 -and
         $exe.IndexOf('C:\tivano', [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+    # An identified task (gate, reviews, packaging, smoke) keeps its busy protection even after its
+    # launcher exits, so its tree is never treated as orphaned while it runs.
+    if ($cmd -match $script:IdentifiedTaskPattern) { continue }
 
     $created = $p.CreationDate
     if ($null -eq $created -or -not ($created -is [DateTime])) { continue }
@@ -1485,7 +1489,13 @@ function Stop-OrphanedTestApps {
   $roots = @(Get-OrphanedLoopRoots $all)
   if ($roots.Count -eq 0) { return }
 
-  $testElectronPattern = '(?i)C:\\tivano(?:\\[^:"\r\n]*)?\\node_modules\\electron\\dist\\electron\.exe'
+  # Only test app instances started from the loop's own worktrees (Devin's <Root>\work and the
+  # Hydrogen lane), and only while the user is away, so an app someone opened by hand is left alone.
+  if ([DevLoopWindows]::GetUserIdleSeconds() -lt 600) { return }
+  $loopRoots = @((Join-Path $script:WorkRoot 'work'), (Join-Path $script:WorkRoot 'hydrogen'))
+  if (-not [string]::IsNullOrWhiteSpace($HydrogenLaneRoot)) { $loopRoots += $HydrogenLaneRoot }
+  $rootAlt = (@($loopRoots | ForEach-Object { [regex]::Escape($_.TrimEnd('\')) }) -join '|')
+  $testElectronPattern = '(?i)(?:' + $rootAlt + ')\\[^:"\r\n]*\\node_modules\\electron\\dist\\electron\.exe'
   foreach ($root in $roots) {
     if ([string]$root.processName -ne 'electron.exe') { continue }
     $exe = [string]$root.executablePath
@@ -1821,7 +1831,7 @@ function Get-BusyAutopilotProcesses {
     (-not $orphanedIds.Contains([int]$_.ProcessId)) -and
     $_.CommandLine -and (
       $_.CommandLine -like ('*' + $workDir + '*') -or
-      $_.CommandLine -match 'Invoke-AutopilotGate|Invoke-PrReview|Invoke-GlmReview|package-windows|packaged-smoke'
+      $_.CommandLine -match $script:IdentifiedTaskPattern
     )
   })
 }
