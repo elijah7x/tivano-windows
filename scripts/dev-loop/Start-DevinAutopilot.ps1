@@ -1,6 +1,6 @@
 # Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-25.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-ApprovalRecoveryAttempts <n>] [-StalePrHours <h>] [-StalePrGateRuns <n>] [-AutoParkStale <0|1>] [-HydrogenLaneRoot <dir>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SessionIdleRotateMinutes <min>] [-SessionMaxMinutes <min>] [-StrayApps <names>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
+# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-ApprovalRecoveryAttempts <n>] [-StalePrHours <h>] [-StalePrGateRuns <n>] [-AutoParkStale <0|1>] [-HydrogenLaneRoot <dir>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SessionIdleRotateMinutes <min>] [-SessionMaxMinutes <min>] [-StrayApps <names>] [-OrphanMinutes <min>] [-ReapOrphanedTestApps <0|1>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
 # Launches and watches a single Devin Desktop autopilot chat following autopilot.md.
 
 param(
@@ -24,6 +24,8 @@ param(
   [ValidateRange(5, 1440)][int]$SessionIdleRotateMinutes = 45,
   [ValidateRange(15, 2880)][int]$SessionMaxMinutes = 180,
   [string[]]$StrayApps = @('ZCode', 'msedge'),
+  [ValidateRange(1, 10080)][int]$OrphanMinutes = 120,
+  [ValidateSet(0, 1)][int]$ReapOrphanedTestApps = 1,
   [string]$SyncSource = 'C:\tivano\audit\tool',
   [string]$SyncTarget = 'C:\tivano\pr-bot\tool\scripts'
 )
@@ -1317,7 +1319,31 @@ function Stop-StrayApps {
   }
 }
 
-function Get-OrphanCandidates {
+function Get-ProtectedProcessIds {
+  param($AllProcs)
+  $parentByPid = @{}
+  foreach ($p in @($AllProcs)) {
+    if ($null -eq $p -or $null -eq $p.ProcessId) { continue }
+    $id = [int]$p.ProcessId
+    if ($id -gt 0) {
+      $ppid = 0
+      if ($null -ne $p.ParentProcessId) { $ppid = [int]$p.ParentProcessId }
+      $parentByPid[$id] = $ppid
+    }
+  }
+  $protectedIds = New-Object 'Collections.Generic.HashSet[int]'
+  $walkPid = [int]$PID
+  while ($walkPid -gt 0 -and $protectedIds.Add($walkPid)) {
+    if ($parentByPid.ContainsKey($walkPid)) {
+      $walkPid = [int]$parentByPid[$walkPid]
+    } else {
+      break
+    }
+  }
+  return ,$protectedIds
+}
+
+function Get-OrphanedLoopRoots {
   param($AllProcs = $null)
   if ($null -eq $AllProcs) {
     $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
@@ -1328,27 +1354,22 @@ function Get-OrphanCandidates {
 
   $livePids = New-Object 'Collections.Generic.HashSet[int]'
   foreach ($p in $all) {
+    if ($null -eq $p -or $null -eq $p.ProcessId) { continue }
     $id = [int]$p.ProcessId
     if ($id -gt 0) { $null = $livePids.Add($id) }
   }
 
-  $excludeIds = New-Object 'Collections.Generic.HashSet[int]'
-  $null = $excludeIds.Add([int]$PID)
-  if (-not [string]::IsNullOrWhiteSpace($script:WorkRoot)) {
-    foreach ($bp in @(Get-BusyAutopilotProcesses)) {
-      $bpid = [int]$bp.ProcessId
-      if ($bpid -gt 0) { $null = $excludeIds.Add($bpid) }
-    }
-  }
-
+  $protectedIds = Get-ProtectedProcessIds $all
   $nowLocal = [DateTime]::Now
-  $targetNames = @('node.exe', 'electron.exe', 'esbuild.exe', 'cmd.exe', 'powershell.exe', 'pwsh.exe', 'npm.exe', 'npx.exe')
+  $targetNames = @('node.exe', 'electron.exe', 'esbuild.exe', 'cmd.exe', 'powershell.exe', 'pwsh.exe')
   $results = New-Object Collections.Generic.List[object]
 
   foreach ($p in $all) {
+    if ($null -eq $p -or $null -eq $p.ProcessId) { continue }
     $procId = [int]$p.ProcessId
-    if ($procId -le 0 -or $excludeIds.Contains($procId)) { continue }
-    $parentId = [int]$p.ParentProcessId
+    if ($procId -le 0 -or $protectedIds.Contains($procId)) { continue }
+    $parentId = 0
+    if ($null -ne $p.ParentProcessId) { $parentId = [int]$p.ParentProcessId }
     if ($parentId -le 0 -or $livePids.Contains($parentId)) { continue }
 
     $nameLower = ([string]$p.Name).Trim().ToLowerInvariant()
@@ -1360,12 +1381,12 @@ function Get-OrphanCandidates {
     if ($targetNames -contains $nameLower) {
       $isTarget = $true
       $displayName = [IO.Path]::GetFileNameWithoutExtension($nameLower)
+    } elseif ($nameLower -like 'npm*.exe' -or $nameLower -like 'npx*.exe') {
+      $isTarget = $true
+      $displayName = [IO.Path]::GetFileNameWithoutExtension($nameLower)
     } elseif ($nameLower -eq 'devin.exe' -and ($exe -match '(?i)\\bin\\devin\.exe$' -or $cmd -match '(?i)\\bin\\devin\.exe')) {
       $isTarget = $true
       $displayName = 'devin-cli'
-    } elseif ($nameLower -like 'npm*' -or $nameLower -like 'npx*') {
-      $isTarget = $true
-      $displayName = [IO.Path]::GetFileNameWithoutExtension($nameLower)
     }
     if (-not $isTarget) { continue }
 
@@ -1374,20 +1395,142 @@ function Get-OrphanCandidates {
 
     $created = $p.CreationDate
     if ($null -eq $created -or -not ($created -is [DateTime])) { continue }
-    $ageHours = ($nowLocal - [DateTime]$created).TotalHours
-    if ($ageHours -le 2.0) { continue }
+    $createdDt = [DateTime]$created
+    if ($createdDt.Kind -eq [DateTimeKind]::Utc) { $createdDt = $createdDt.ToLocalTime() }
+    $ageMinutes = ($nowLocal - $createdDt).TotalMinutes
+    if ($ageMinutes -le [double]$OrphanMinutes) { continue }
+    $ageHours = $ageMinutes / 60.0
 
     $ws = 0.0
     if ($null -ne $p.WorkingSetSize) { $ws = [double]$p.WorkingSetSize }
     $null = $results.Add([pscustomobject]@{
       name = $displayName
+      processName = $nameLower
       processId = $procId
       ageHours = [Math]::Round($ageHours, 1)
       workingSetBytes = $ws
+      executablePath = $exe
+      commandLine = $cmd
     })
   }
 
   return @($results.ToArray())
+}
+
+function Get-OrphanedLoopTrees {
+  param($AllProcs = $null)
+  $treeIds = New-Object 'Collections.Generic.HashSet[int]'
+  if ($null -eq $AllProcs) {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  } else {
+    $all = @($AllProcs)
+  }
+  if ($all.Count -eq 0) { return ,$treeIds }
+
+  $protectedIds = Get-ProtectedProcessIds $all
+  $roots = @(Get-OrphanedLoopRoots $all)
+  if ($roots.Count -eq 0) { return ,$treeIds }
+
+  foreach ($r in $roots) {
+    $rid = [int]$r.processId
+    if ($rid -gt 0 -and -not $protectedIds.Contains($rid)) {
+      $null = $treeIds.Add($rid)
+    }
+  }
+
+  $grew = $true
+  while ($grew) {
+    $grew = $false
+    foreach ($cp in $all) {
+      if ($null -eq $cp -or $null -eq $cp.ProcessId -or $null -eq $cp.ParentProcessId) { continue }
+      $childId = [int]$cp.ProcessId
+      $childParentId = [int]$cp.ParentProcessId
+      if ($childId -le 0 -or $protectedIds.Contains($childId)) { continue }
+      if ($treeIds.Contains($childParentId) -and $treeIds.Add($childId)) {
+        $grew = $true
+      }
+    }
+  }
+
+  return ,$treeIds
+}
+
+function Get-OrphanCandidates {
+  param($AllProcs = $null)
+  $roots = @(Get-OrphanedLoopRoots $AllProcs)
+  if ($roots.Count -eq 0) { return @() }
+  $results = New-Object Collections.Generic.List[object]
+  foreach ($r in $roots) {
+    $null = $results.Add([pscustomobject]@{
+      name = $r.name
+      processId = [int]$r.processId
+      ageHours = [double]$r.ageHours
+      workingSetBytes = [double]$r.workingSetBytes
+    })
+  }
+  return @($results.ToArray())
+}
+
+function Stop-OrphanedTestApps {
+  param($AllProcs = $null)
+  if ($ReapOrphanedTestApps -ne 1) { return }
+  if ($null -eq $AllProcs) {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  } else {
+    $all = @($AllProcs)
+  }
+  if ($all.Count -eq 0) { return }
+
+  $protectedIds = Get-ProtectedProcessIds $all
+  $roots = @(Get-OrphanedLoopRoots $all)
+  if ($roots.Count -eq 0) { return }
+
+  $testElectronPattern = '(?i)C:\\tivano(?:\\[^:"\r\n]*)?\\node_modules\\electron\\dist\\electron\.exe'
+  foreach ($root in $roots) {
+    if ([string]$root.processName -ne 'electron.exe') { continue }
+    $exe = [string]$root.executablePath
+    $cmd = [string]$root.commandLine
+    if ($exe -notmatch $testElectronPattern -and $cmd -notmatch $testElectronPattern) { continue }
+
+    $rootId = [int]$root.processId
+    if ($rootId -le 0 -or $protectedIds.Contains($rootId)) { continue }
+
+    $treeIds = New-Object 'Collections.Generic.HashSet[int]'
+    $null = $treeIds.Add($rootId)
+    $grew = $true
+    while ($grew) {
+      $grew = $false
+      foreach ($cp in $all) {
+        if ($null -eq $cp -or $null -eq $cp.ProcessId -or $null -eq $cp.ParentProcessId) { continue }
+        $cid = [int]$cp.ProcessId
+        if ($cid -le 0) { continue }
+        if ($treeIds.Contains([int]$cp.ParentProcessId) -and $treeIds.Add($cid)) {
+          $grew = $true
+        }
+      }
+    }
+
+    $touchesProtected = $false
+    $wsBytes = 0.0
+    foreach ($cp in $all) {
+      if ($null -eq $cp -or $null -eq $cp.ProcessId) { continue }
+      $cid = [int]$cp.ProcessId
+      if (-not $treeIds.Contains($cid)) { continue }
+      if ($protectedIds.Contains($cid)) {
+        $touchesProtected = $true
+        break
+      }
+      if ($null -ne $cp.WorkingSetSize) { $wsBytes += [double]$cp.WorkingSetSize }
+    }
+    if ($touchesProtected) { continue }
+
+    $mb = [int][Math]::Round($wsBytes / 1048576.0)
+    $ageText = ([Math]::Round([double]$root.ageHours, 1)).ToString('0.#', [Globalization.CultureInfo]::InvariantCulture)
+    $null = & taskkill.exe /T /F /PID $rootId 2>&1
+    if ($LASTEXITCODE -eq 0) {
+      Write-Log ('orphaned test app closed: electron pid ' + $rootId + ' (' + $ageText + 'h, ' + $mb + ' MB)')
+    }
+  }
 }
 
 function Write-HealthSample {
@@ -1663,8 +1806,19 @@ function Invoke-Kickoff {
 }
 
 function Get-BusyAutopilotProcesses {
+  param($AllProcs = $null)
+  if ($null -eq $AllProcs) {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  } else {
+    $all = @($AllProcs)
+  }
+  if ($all.Count -eq 0) { return @() }
+  $orphanedIds = Get-OrphanedLoopTrees $all
   $workDir = Join-Path $script:WorkRoot 'work'
-  return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+  return @($all | Where-Object {
+    $null -ne $_ -and
+    $null -ne $_.ProcessId -and
+    (-not $orphanedIds.Contains([int]$_.ProcessId)) -and
     $_.CommandLine -and (
       $_.CommandLine -like ('*' + $workDir + '*') -or
       $_.CommandLine -match 'Invoke-AutopilotGate|Invoke-PrReview|Invoke-GlmReview|package-windows|packaged-smoke'
@@ -2737,6 +2891,21 @@ function Invoke-WatchTick {
   try { Initialize-GuiTypes } catch { }
   $healthSample = Write-HealthSample
   if (Test-Stop) { return }
+  if ($ReapOrphanedTestApps -eq 1) {
+    try {
+      Stop-OrphanedTestApps
+    } catch {
+      $reapErr = Protect-PublicText ([string]$_.Exception.Message)
+      $reapErr = [regex]::Replace($reapErr, '(?i)[A-Za-z]:\\Users\\[^\\\s''"]+', '<user-path>')
+      if (-not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
+        $reapErr = [regex]::Replace($reapErr, [regex]::Escape($env:USERNAME), '<user>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+      }
+      if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
+        $reapErr = [regex]::Replace($reapErr, [regex]::Escape($env:COMPUTERNAME), '<host>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+      }
+      Write-Log ('orphaned test app cleanup error: ' + (ConvertTo-SingleLine $reapErr 160))
+    }
+  }
 
   $env:GH_PROMPT_DISABLED = '1'
   $env:GH_NO_UPDATE_NOTIFIER = '1'
@@ -3087,6 +3256,8 @@ function Invoke-RegisterTask {
     '-SessionIdleRotateMinutes', [string]$SessionIdleRotateMinutes,
     '-SessionMaxMinutes', [string]$SessionMaxMinutes,
     '-StrayApps', $(if (@($StrayApps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0) { Quote-Argument ((@($StrayApps) | ForEach-Object { [string]$_ }) -join ',') } else { 'none' }),
+    '-OrphanMinutes', [string]$OrphanMinutes,
+    '-ReapOrphanedTestApps', [string]$ReapOrphanedTestApps,
     '-SyncSource', (Quote-Argument $SyncSource),
     '-SyncTarget', (Quote-Argument $SyncTarget)
   )
