@@ -8,6 +8,7 @@
 // a newer schema fails closed instead of being silently wiped.
 
 import {
+  copyFileSync,
   mkdirSync,
   openSync,
   closeSync,
@@ -448,7 +449,23 @@ export class Store {
               `refusing to start clean and lose the evidence`,
           );
         }
-        this.preserveSegmentsOnCorruptHead(stamp);
+        try {
+          this.preserveSegmentsOnCorruptHead(stamp);
+        } catch (segBackupErr) {
+          // Restore the corrupt head file if segment preservation fails so we
+          // fail closed with original evidence intact and never wipe turns/.
+          try {
+            renameSync(backup, this.file);
+          } catch {
+            /* best effort; backup stays on disk */
+          }
+          this.lock.release();
+          this.closed = true;
+          throw new Error(
+            `corrupt store turn segments could not be preserved aside (${(segBackupErr as Error).message}); ` +
+              `refusing to start clean and lose conversation history`,
+          );
+        }
         this.recoveredFrom = backup;
         this.data = emptyStore();
         this.opened = true;
@@ -464,24 +481,17 @@ export class Store {
   /**
    * Preserve existing turn segments when a corrupt or unreadable store head
    * is moved aside so a subsequent atomicWrite() orphan sweep against the
-   * empty recovered head never deletes conversation history.
+   * empty recovered head never deletes conversation history. Throws if any
+   * live segment cannot be durably backed up so open() fails closed.
    */
   private preserveSegmentsOnCorruptHead(stamp: string): void {
     const turnsDir = join(this.root, TURNS_DIRNAME);
     if (!existsSync(turnsDir)) return;
-    let stat: ReturnType<typeof lstatSync>;
-    try {
-      stat = lstatSync(turnsDir);
-    } catch {
-      return;
+    const stat = lstatSync(turnsDir);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`turns path is not a physical directory: ${turnsDir}`);
     }
-    if (stat.isSymbolicLink() || !stat.isDirectory()) return;
-    let entries: string[];
-    try {
-      entries = readdirSync(turnsDir);
-    } catch {
-      return;
-    }
+    const entries = readdirSync(turnsDir);
     if (entries.length === 0) return;
     let turnsBackup = join(this.root, `${TURNS_DIRNAME}.corrupt-${stamp}`);
     if (existsSync(turnsBackup)) {
@@ -492,19 +502,26 @@ export class Store {
       return;
     } catch {
       // Directory rename failed (e.g., an open handle on Windows); quarantine
-      // individual segment files in place and protect any stubborn ones.
+      // individual segment files in place or copy stubborn files into a
+      // durable turns.corrupt-* backup directory.
     }
+    let backupDirCreated = false;
     for (const f of entries) {
       if (!f.endsWith(".json") || f.includes(".corrupt-")) continue;
+      const src = join(turnsDir, f);
       const id = f.slice(0, -".json".length);
       let dest = join(turnsDir, `${id}.corrupt-${stamp}.json`);
       if (existsSync(dest)) {
         dest = join(turnsDir, `${id}.corrupt-${stamp}-${randomUUID().slice(0, 8)}.json`);
       }
       try {
-        renameSync(join(turnsDir, f), dest);
+        renameSync(src, dest);
       } catch {
-        this.protectedSegments.add(id);
+        if (!backupDirCreated) {
+          mkdirSync(turnsBackup, { recursive: true, mode: 0o700 });
+          backupDirCreated = true;
+        }
+        copyFileSync(src, join(turnsBackup, f));
       }
     }
   }

@@ -1,4 +1,5 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-30.
+// Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F30 segmented turn storage (frozen StoredTurnFile port): the head
 // holds metadata only; turns/<id>.json holds messages + the latest turn.
 // Covers the legacy-monolith migration, hydration, quarantine on a
