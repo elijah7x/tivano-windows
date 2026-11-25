@@ -71,7 +71,6 @@ import {
 } from "./gitExec";
 import { FileIndexService } from "./fileIndex";
 import { DownloadsService } from "./downloadsService";
-import { scoreMentionPaths } from "../shared/fileMention";
 import { GIT_POSIX_EXECUTABLE, resolveGitExecutable } from "./gitRuntimeConfig";
 import { CheckpointService } from "./checkpointService";
 import { WallpaperService } from "./wallpaperService";
@@ -1031,8 +1030,7 @@ bootstrap = app.whenReady().then(async () => {
           const dir = eng.threadDirectory(threadId);
           if (dir === null || !FileIndexService.exists(dir))
             return { paths: [] };
-          const paths = await index.list(dir);
-          return { paths: scoreMentionPaths(paths, query) };
+          return { paths: await index.search(dir, query) };
         },
       };
     })(),
