@@ -13,9 +13,12 @@
  *  write→reflow→reset which Blink collapses to none→none with no
  *  PrePaint/Paint/Raster at all. */
 export function repaintNextFrame(el: HTMLElement): void {
-  el.style.transform = "translateZ(0)";
-  el.ownerDocument.defaultView?.requestAnimationFrame(() => {
-    el.style.transform = "";
+  const win = el.ownerDocument.defaultView;
+  win?.requestAnimationFrame(() => {
+    el.style.transform = "translateZ(0)";
+    win.requestAnimationFrame(() => {
+      el.style.transform = "";
+    });
   });
 }
 
@@ -27,18 +30,17 @@ export function watchSelectionResidue(el: HTMLElement): () => void {
   let hadInside = false;
   const onChange = (): void => {
     const sel = doc.getSelection();
-    const inside =
-      !!sel &&
-      !sel.isCollapsed &&
-      (el.contains(sel.anchorNode) || el.contains(sel.focusNode));
+    const inside = selectionIntersects(sel, el);
     if (hadInside && !inside) repaintNextFrame(el);
     hadInside = inside;
   };
   // Frozen resignFirstResponder: the window losing focus drops the
   // selection's painted state without a selectionchange — repaint too.
+  // Chromium itself keeps the selection across blur, though, so keep
+  // hadInside live: select → switch app → return → click away is still a
+  // had→cleared transition and must repaint instead of being forgotten.
   const onBlur = (): void => {
     if (hadInside) repaintNextFrame(el);
-    hadInside = false;
   };
   doc.addEventListener("selectionchange", onChange);
   win?.addEventListener("blur", onBlur);

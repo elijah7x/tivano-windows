@@ -5,7 +5,11 @@
 // SidebarView RowActionsButton + ThreadActions.make order.
 
 import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
+import type { ChatThread, Snapshot } from "../src/shared/types";
 import {
+  Sidebar,
   THREAD_ROW_HOVER_ACTIONS,
   threadRowMenuItems,
 } from "../src/renderer/components/Sidebar";
@@ -32,6 +36,67 @@ describe("P2-34 thread row action surfaces", () => {
   it("reveal only appears when the thread owns a worktree", () => {
     expect(threadRowMenuItems({ isHelper: false, hasWorktree: false })).not.toContain("reveal");
     expect(threadRowMenuItems({ isHelper: false, hasWorktree: true })).toContain("reveal");
+  });
+
+  it("renders the row hover strip without an archive affordance", () => {
+    const thread: ChatThread = {
+      id: "t1",
+      projectId: null,
+      title: "Demo thread",
+      createdAt: 1,
+      updatedAt: 1,
+      messages: [],
+      turn: null,
+      sessionGrants: [],
+    };
+    const snapshot: Snapshot = {
+      projects: [],
+      threads: [thread],
+      settings: {
+        theme: "system",
+        language: "en",
+        alwaysAllow: [],
+        showsSkylight: false,
+      },
+      selectedThreadId: null,
+      info: {
+        appVersion: "test",
+        baselineTag: "v3.0.0",
+        baselineCommit: "15e03374f077343e500e8e5e3574c8c598162171",
+        dataRoot: "C:/tivano-test",
+        providerId: "mock",
+        providerLabel: "Mock",
+        mock: true,
+        mode: "mock",
+        realCli: { status: "not-configured" },
+        home: "C:/tivano-test",
+        worktreesDir: "C:/tivano-test/worktrees",
+      },
+      rev: 0,
+      tokenActivity: {},
+    };
+    const g = globalThis as { window?: unknown };
+    const priorWindow = g.window;
+    g.window = {
+      tivano: {
+        platform: "win32",
+        invoke: () => Promise.resolve(null),
+        onEvent: () => () => {},
+      },
+    };
+    try {
+      const html = renderToStaticMarkup(
+        createElement(Sidebar, { snapshot, onOpenSettings: () => {}, onOpenPalette: () => {} }),
+      );
+      const rowActions = html.match(/<span class="row-actions">(.*?)<\/span>/)?.[1] ?? "";
+      expect(rowActions).toContain('title="Pin thread"');
+      expect(rowActions).toContain('title="Thread actions"');
+      expect(rowActions).not.toContain('title="Archive thread"');
+      expect(html).not.toContain('title="Archive thread"');
+    } finally {
+      if (priorWindow === undefined) delete g.window;
+      else g.window = priorWindow;
+    }
   });
 });
 
@@ -84,26 +149,37 @@ describe("P2-34 selection residue repaint", () => {
     h.sel.anchorNode = h.OUTSIDE;
     h.sel.focusNode = h.OUTSIDE;
     h.fire();
-    // The layer stays promoted until the next painted frame — a same-task
-    // reset would collapse to none→none and repaint nothing.
+    // The first painted frame promotes the layer; the second demotes it.
+    // Writing both in the selectionchange task (or clearing in the first
+    // rAF) collapses to none→none before paint and repaints nothing.
+    expect(h.writes).toEqual([]);
+    h.paintFrame();
     expect(h.writes).toEqual(["translateZ(0)"]);
     h.paintFrame();
     expect(h.writes).toEqual(["translateZ(0)", ""]);
   });
 
-  it("repaints on window blur while a touched selection is live (frozen resign)", async () => {
+  it("keeps a live selection across window blur and repaints when it later clears", async () => {
     const { watchSelectionResidue } = await import("../src/renderer/selectionRepaint");
     const h = harness();
     watchSelectionResidue(h.el);
     h.fire(); // live selection inside
     h.blur();
+    expect(h.writes).toEqual([]);
+    h.paintFrame();
     expect(h.writes).toEqual(["translateZ(0)"]);
     h.paintFrame();
     expect(h.writes).toEqual(["translateZ(0)", ""]);
-    // A second blur without a new inside-selection is a no-op.
-    h.blur();
-    h.paintFrame();
+    // Chromium keeps the selection across blur. When the user returns and
+    // clicks away, this is still a had→cleared transition and repaints.
+    h.sel.anchorNode = h.OUTSIDE;
+    h.sel.focusNode = h.OUTSIDE;
+    h.fire();
     expect(h.writes).toEqual(["translateZ(0)", ""]);
+    h.paintFrame();
+    expect(h.writes).toEqual(["translateZ(0)", "", "translateZ(0)"]);
+    h.paintFrame();
+    expect(h.writes).toEqual(["translateZ(0)", "", "translateZ(0)", ""]);
   });
 
   it("does nothing when the selection never touched the element or stays", async () => {
@@ -128,6 +204,8 @@ describe("P2-34 selection residue repaint", () => {
     // this from a still-live selection (anchor position alone cannot).
     h.sel.isCollapsed = true;
     h.fire();
+    expect(h.writes).toEqual([]);
+    h.paintFrame();
     expect(h.writes).toEqual(["translateZ(0)"]);
     h.paintFrame();
     expect(h.writes).toEqual(["translateZ(0)", ""]);
