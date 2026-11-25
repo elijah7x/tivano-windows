@@ -188,7 +188,7 @@ describe("mcpServers settings persistence (F18)", () => {
   it("a server with a bad env key makes the document unreadable, never silently kept", () => {
     const dir = root();
     const { store, engine } = makeEngine(dir);
-    engine.setSettings({ notifyOnDone: true }); // force a pending write
+    engine.setSettings({ chimeWhenFinished: false }); // force a pending write
     store.flushNow(); // …onto disk now, not at the scheduled flush
     const raw = JSON.parse(readFileSync(join(dir, "store.json"), "utf8"));
     raw.settings.mcpServers = [

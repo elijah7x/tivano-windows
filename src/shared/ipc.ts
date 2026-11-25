@@ -466,7 +466,6 @@ export const requestValidators = {
   "settings:set": vObject({
     theme: vOptional(vTheme),
     language: vOptional(vLanguage),
-    notifyOnDone: vOptional(vBoolean),
     // F28: frozen chimeWhenFinished (default on) — a soft chime when a
     // turn finishes, whether or not the thread is in view.
     chimeWhenFinished: vOptional(vBoolean),
@@ -484,9 +483,6 @@ export const requestValidators = {
     defaultWorkspaceMode: vOptional(vEnum(["local", "worktree", "auto"] as const)),
     showReasoning: vOptional(vBoolean),
     showsWorkingCard: vOptional(vBoolean),
-    // F26: strips rendered effects for lowest GPU usage (frozen
-    // performanceMode, default false).
-    performanceMode: vOptional(vBoolean),
     // F26: sidebar weather hero (frozen showsSkylight, default true).
     showsSkylight: vOptional(vBoolean),
     // F33: CLI install receipt (frozen cliInstallationTarget) — the shim
@@ -498,13 +494,9 @@ export const requestValidators = {
     autoShelveDays: vOptional(vInt(0, 14)),
     quickChatEnabled: vOptional(vBoolean),
     shelvedGroupName: vOptional(vNullable(vNonEmptyString(60))),
-    // F13: free-form commit-message guidance (frozen commitInstructions).
-    commitInstructions: vOptional(vMaxString(4096)),
     // F27: whole overrides map (id → chord|null); structural shape only —
     // the refusal/conflict rules live in the recorder + shortcut model.
     shortcuts: vOptional(vShortcuts),
-    // F31: frozen antiSlopEnabled toggle ("Concise AI replies").
-    antiSlopEnabled: vOptional(vBoolean),
     // F33: double gate — both must be true before the socket listens.
     alphaEnabled: vOptional(vBoolean),
     externalControlEnabled: vOptional(vBoolean),

@@ -5,8 +5,8 @@
 // a cell grid whose cells pulse once per 750ms, phase-offset so the bright
 // edge travels as a wave. WorkingSpinner is 3×3 with lag = distance from
 // bottom-center ÷ 2.5; MiniSpinner is 2×3, cells snaking the perimeter ring.
-// Three row tints — accent light / base / deep. prefers-reduced-motion and
-// F26 performanceMode freeze the wave at t=0 instead of animating.
+// Three row tints — accent light / base / deep. prefers-reduced-motion
+// freezes the wave at t=0 instead of animating.
 
 import type { CSSProperties } from "react";
 import { useAppPaused } from "../appActivity";
@@ -64,8 +64,7 @@ function workingCells(): Cell[] {
 
 function prefersStill(): boolean {
   if (typeof window === "undefined") return true;
-  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return true;
-  return document.documentElement.dataset.performance === "1";
+  return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
 }
 
 function SpinnerGrid({

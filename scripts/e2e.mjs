@@ -55,7 +55,6 @@ import { runFolderChecks } from "./folderChecks.mjs";
 import { runUnreadChecks } from "./unreadChecks.mjs";
 import { runPaletteChecks } from "./paletteChecks.mjs";
 import { runSleepChecks } from "./sleepChecks.mjs";
-import { runAntiSlopChecks } from "./antiSlopChecks.mjs";
 import { runFontSizeChecks } from "./fontSizeChecks.mjs";
 import { runLocalControlChecks } from "./localControlChecks.mjs";
 import { runHydraChecks } from "./hydraChecks.mjs";
@@ -1692,15 +1691,6 @@ try {
     boundedClose,
   });
 
-  // ---- session 24+: F31 anti-slop guidance (frozen AntiSlopPolicy) ----
-  await runAntiSlopChecks({
-    launch,
-    instances,
-    snap,
-    check,
-    boundedClose,
-  });
-
   // ---- session 25+: F26 font-size stepping (frozen TypeScale) ---------
   await runFontSizeChecks({
     launch,
@@ -1891,7 +1881,7 @@ try {
     dataRoot,
   });
 
-  // ---- A48: F04 link popover + F26 performanceMode (local state) --------
+  // ---- A48: F04 link popover + P2-62 retired Performance Mode -----------
   await runAppearanceChecks({
     launch,
     instances,

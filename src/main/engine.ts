@@ -16,8 +16,6 @@ import {
 } from "./continuation";
 import { MockProvider, MOCK_ACTION_ID } from "./mockProvider";
 import { probeForgeClis, type ForgeCliStatus } from "./forgeProbe";
-import { antiSlopInstructions } from "./antiSlop";
-import { builtinSlashCommands } from "../shared/slashCommands";
 import { clampFontSize } from "../shared/typeScale";
 import { buildWhatsNewInfo, recordWhatsNewLaunch } from "../shared/whatsNew";
 import {
@@ -318,15 +316,6 @@ export class Engine {
     { id: string; name: string; size: number; path: string }[]
   >();
   static readonly ATTACHMENT_LIMIT = 8;
-  /**
-   * F31 anti-slop delivery ledger (frozen `antiSlopFallbackSent` /
-   * sessionEpoch). threadId → the session key guidance was delivered
-   * under; a new provider binding re-delivers once, an app restart
-   * re-delivers once (the frozen flag is in-memory too). The value the
-   * user set at send time decides WHICH block goes out — "off" still
-   * delivers the disregard notice rather than silence.
-   */
-  private readonly antiSlopDelivered = new Map<string, string>();
   /** P2-58: threads currently running an async provider rewind (frozen
    *  ThreadRuntime.isReverting). Prevents concurrent sends or rewinds. */
   private readonly revertingThreads = new Set<string>();
@@ -713,25 +702,13 @@ export class Engine {
     this.updateSleepGuard();
   }
 
-  /** Mark an in-flight turn interrupted; true when anything changed. */
+  /** Mark an in-flight turn or stale Hydra landing interrupted; true when anything changed. */
   private markInterrupted(t: ChatThread, now: number): boolean {
-    const turn = t.turn;
-    if (!turn || (turn.status !== "running" && turn.status !== "waiting-approval"))
-      return false;
-    turn.status = "interrupted";
-    turn.endedAt = now;
-    // F28: a recovered in-flight turn is an unseen result — its
-    // interruption happened while the app was gone (frozen parity).
-    t.hasUnread = true;
-    t.unreadStatus = "interrupted";
-    // F22: a head killed mid-run persists as stopped — never "running"
-    // into the next launch.
-    if (t.hydraHead && t.hydraHead.status === "running") {
-      t.hydraHead.status = "stopped";
-      t.hydraHead.finishedAt = now;
-    }
+    let changed = false;
     // F22: a landing in flight when the app died is honestly lost —
-    // the copy stays on disk with its work unclaimed.
+    // the copy stays on disk with its work unclaimed. Run before the
+    // turn-status guard because finishHydraHead sets landingPending
+    // after endTurn already finished the head's turn ("done").
     if (t.hydraHead?.landingPending === true) {
       t.hydraHead.landingPending = undefined;
       t.hydraHead.landing = {
@@ -740,6 +717,33 @@ export class Engine {
         error: "the app closed before the landing finished",
       };
       t.hydraHead.copyKept = t.worktreeDir !== undefined;
+      changed = true;
+    }
+    const turn = t.turn;
+    if (!turn || (turn.status !== "running" && turn.status !== "waiting-approval")) {
+      // F22: a head left "running" without an active turn still must not
+      // persist as running into the next launch.
+      if (t.hydraHead && t.hydraHead.status === "running") {
+        t.hydraHead.status = "stopped";
+        t.hydraHead.finishedAt = now;
+        changed = true;
+      }
+      return changed;
+    }
+    turn.status = "interrupted";
+    turn.endedAt = now;
+    // F28: a recovered in-flight turn is an unseen result — its
+    // interruption happened while the app was gone (frozen parity).
+    // Hydra heads never mark unread (frozen AppModel.turnFinished / recovery).
+    if (!t.hydraHead) {
+      t.hasUnread = true;
+      t.unreadStatus = "interrupted";
+    }
+    // F22: a head killed mid-run persists as stopped — never "running"
+    // into the next launch.
+    if (t.hydraHead && t.hydraHead.status === "running") {
+      t.hydraHead.status = "stopped";
+      t.hydraHead.finishedAt = now;
     }
     if (turn.approval && turn.approval.status === "pending") {
       turn.approval.status = "expired";
@@ -2117,14 +2121,6 @@ export class Engine {
       }
     }
     const threadId = thread.id;
-    // F31: anti-slop guidance rides the FIRST ordinary message of each
-    // provider session (frozen AntiSlopPolicy + antiSlopFallbackSent —
-    // skipped for slash commands, which consume no ordinary prompt, and
-    // spent only when the provider actually starts).
-    const sessionKey = live.providerThread?.codexThreadId ?? "local";
-    const antiSlopPending =
-      !this.opensWithKnownCommand(text) &&
-      this.antiSlopDelivered.get(threadId) !== sessionKey;
     // F09: an unsent forwarded snapshot prefixes the FIRST ordinary
     // prompt only; delivery is spent when the provider actually starts
     // (frozen: failed sends leave delivery pending).
@@ -2135,11 +2131,6 @@ export class Engine {
     // the report note instead of the delegation request.
     const hydraPrefix = this.hydraWirePrefix(thread, opts?.hydraReport !== undefined);
     if (hydraPrefix) wireText = hydraPrefix + wireText;
-    if (antiSlopPending)
-      wireText =
-        antiSlopInstructions(this.store.state.settings.antiSlopEnabled ?? true) +
-        "\n\n" +
-        wireText;
     const pendingContinuation =
       live.continuation && !live.continuation.sent ? live.continuation : null;
     if (pendingContinuation)
@@ -2212,13 +2203,6 @@ export class Engine {
           const t = this.store.state.threads.find((x) => x.id === threadId);
           if (t) t.hasStartedTurn = true;
         });
-      }
-      if (antiSlopPending) {
-        // Spent only on an actual start — like the frozen epoch check,
-        // a session rebound in the meantime keeps the delivery pending.
-        const cur = this.store.state.threads.find((t) => t.id === threadId);
-        if ((cur?.providerThread?.codexThreadId ?? "local") === sessionKey)
-          this.antiSlopDelivered.set(threadId, sessionKey);
       }
       if (pendingContinuation) {
         this.store.update(() => {
@@ -2921,7 +2905,6 @@ export class Engine {
   setSettings(patch: {
     theme?: import("../shared/types").ThemeId | undefined;
     language?: import("../shared/types").LanguageId | undefined;
-    notifyOnDone?: boolean | undefined;
     chimeWhenFinished?: boolean | undefined;
     autoContinueAfterLimit?: boolean | undefined;
     confirmBeforeDeleting?: boolean | undefined;
@@ -2931,7 +2914,6 @@ export class Engine {
     defaultWorkspaceMode?: "local" | "worktree" | "auto" | undefined;
     showReasoning?: boolean | undefined;
     showsWorkingCard?: boolean | undefined;
-    performanceMode?: boolean | undefined;
     showsSkylight?: boolean | undefined;
     cliInstallationTarget?: string | null | undefined;
     taskSleepMode?: "off" | "system" | "display" | undefined;
@@ -2939,9 +2921,7 @@ export class Engine {
     threadTitles?: "once" | "updated" | undefined;
     autoShelveDays?: number | undefined;
     shelvedGroupName?: string | null | undefined;
-    commitInstructions?: string | undefined;
     shortcuts?: Record<string, import("../shared/shortcuts").KeyChord | null> | undefined;
-    antiSlopEnabled?: boolean | undefined;
     alphaEnabled?: boolean | undefined;
     externalControlEnabled?: boolean | undefined;
     remoteMCPEnabled?: boolean | undefined;
@@ -2990,7 +2970,6 @@ export class Engine {
     this.store.update((d) => {
       if (patch.theme) d.settings.theme = patch.theme;
       if (patch.language) d.settings.language = patch.language;
-      if (patch.notifyOnDone !== undefined) d.settings.notifyOnDone = patch.notifyOnDone;
       if (patch.chimeWhenFinished !== undefined)
         d.settings.chimeWhenFinished = patch.chimeWhenFinished;
       if (patch.autoContinueAfterLimit !== undefined)
@@ -3010,8 +2989,6 @@ export class Engine {
         d.settings.showReasoning = patch.showReasoning;
       if (patch.showsWorkingCard !== undefined)
         d.settings.showsWorkingCard = patch.showsWorkingCard;
-      if (patch.performanceMode !== undefined)
-        d.settings.performanceMode = patch.performanceMode;
       if (patch.showsSkylight !== undefined) d.settings.showsSkylight = patch.showsSkylight;
       // F33: null clears the install receipt (frozen uninstall path).
       if (patch.cliInstallationTarget !== undefined) {
@@ -3030,20 +3007,12 @@ export class Engine {
             : 0;
       if (patch.shelvedGroupName !== undefined)
         d.settings.shelvedGroupName = patch.shelvedGroupName?.trim() || null;
-      // F13: empty instructions mean "no extra guidance" — drop the field
-      // rather than persist a meaningless empty string (frozen default).
-      if (patch.commitInstructions !== undefined) {
-        if (patch.commitInstructions === "") delete d.settings.commitInstructions;
-        else d.settings.commitInstructions = patch.commitInstructions;
-      }
       // F27: the whole overrides map arrives validated — replace wholesale
       // so a removed override truly unsets (frozen Override semantics).
       if (patch.shortcuts !== undefined) {
         if (Object.keys(patch.shortcuts).length === 0) delete d.settings.shortcuts;
         else d.settings.shortcuts = patch.shortcuts;
       }
-      if (patch.antiSlopEnabled !== undefined)
-        d.settings.antiSlopEnabled = patch.antiSlopEnabled;
       if (patch.alphaEnabled !== undefined) d.settings.alphaEnabled = patch.alphaEnabled;
       if (patch.externalControlEnabled !== undefined)
         d.settings.externalControlEnabled = patch.externalControlEnabled;
@@ -3190,6 +3159,12 @@ export class Engine {
       }
     });
     this.emit({ type: "settings-changed", settings: this.store.state.settings });
+    if (patch.hydraEnabled === false) {
+      for (const leadId of [...this.hydraWaiting.keys()]) {
+        this.hydraWaiting.delete(leadId);
+        this.flushHydraReports(leadId);
+      }
+    }
     this.updateSleepGuard();
     // Turning the auto-shelve picker on applies the new window right
     // away — frozen parity, and the exemption set is re-evaluated here.
@@ -3578,26 +3553,6 @@ export class Engine {
     return out;
   }
 
-  /** F06: Build/Plan — persisted per thread, next turn only. */
-  /** Frozen `SlashCommand.name(in:)` — non-empty only when the text
-   *  opens with a KNOWN command word. This build never loads provider
-   *  commands, so the known set is the builtin list plus names this
-   *  provider has actually recorded using (the only provider-command
-   *  evidence available here). An unknown `/foo` is ordinary text. */
-  private opensWithKnownCommand(text: string): boolean {
-    const m = /^\/([a-z0-9-]+)/i.exec(text);
-    if (!m) return false;
-    const name = m[1]!.toLowerCase();
-    const mode = this.provider.descriptor.mode;
-    if (
-      builtinSlashCommands(this.provider.descriptor.compact === true).some(
-        (c) => c.name === name,
-      )
-    )
-      return true;
-    return (this.store.state.recentCommands?.[mode] ?? []).includes(name);
-  }
-
   /**
    * F05 frozen `recordCommand`: a slash command was actually used —
    * prepend it to this provider's recency list (dedupe, cap 100) and
@@ -3826,6 +3781,10 @@ export class Engine {
     });
     this.emit({ type: "thread-updated", thread });
     this.emit({ type: "settings-changed", settings: this.store.state.settings });
+    if (!enabled) {
+      this.hydraWaiting.delete(threadId);
+      this.flushHydraReports(threadId);
+    }
   }
 
   /** P1-36: the chat's sub-agent mode (frozen picker row taps — the
@@ -4535,7 +4494,7 @@ export class Engine {
       const raw = await gen(
         summary,
         patch,
-        this.store.state.settings.commitInstructions ?? "",
+        "",
       );
       const message = (raw ?? "").replace(/```/g, "").trim();
       if (!message) return { kind: "unavailable", reason: "generation-empty" };
@@ -4818,51 +4777,65 @@ export class Engine {
     // F28 frozen turnFinished — completion signals. `continues` = a
     // queued message picks up right away (a send-now fires on ANY end
     // status; the queue itself drains only after a completed turn whose
-    // first bundle holds real text). `userStopped` = the user cancelled
+    // first bundle holds real text), or a lead whose Hydra heads are
+    // still out/queued/pending report. `userStopped` = the user cancelled
     // or answered the turn away — both witnessed. A thread still working
-    // (a successor or a limit wait) claims neither the chime nor a
-    // notification.
+    // (a successor, a limit wait, or a lead with active heads) claims
+    // neither the chime nor a notification; Hydra head threads never
+    // chime, notify, or mark unread (frozen AppModel.turnFinished).
+    const isHead = thread.hydraHead !== undefined;
+    if (!isHead && this.hydraWaiting.has(thread.id) && this.hydraLaunchFor(thread) === undefined) {
+      this.hydraWaiting.delete(thread.id);
+    }
+    const leadHeadsBusy =
+      !isHead &&
+      (this.hydraLeadBusy(thread.id) ||
+        (this.hydraWaiting.get(thread.id)?.length ?? 0) > 0);
     const pending = this.pendingSends.get(thread.id);
     const continues =
       pending !== undefined ||
-      (status === "done" && this.nextBundleHasText(thread));
+      (status === "done" && (this.nextBundleHasText(thread) || leadHeadsBusy));
     const userStopped = status === "cancelled" || status === "denied";
-    const stillWorking = continues || waitingForLimit;
-    const chimed =
-      this.store.state.settings.chimeWhenFinished !== false &&
-      status !== "interrupted" &&
-      !stillWorking &&
-      !userStopped;
-    const notifyKind =
-      status === "done"
-        ? ("done" as const)
-        : status === "interrupted"
-          ? ("stopped" as const)
-          : status === "error"
-            ? ("failed" as const)
-            : null;
-    const wantsNotify =
-      notifyKind !== null &&
-      this.store.state.settings.notifyOnDone === true &&
-      !stillWorking &&
-      !userStopped;
-    this.emit({
-      type: "finish-signal",
-      threadId: thread.id,
-      status,
-      chime: chimed,
-      notify: wantsNotify ? notifyKind : null,
-      silent: chimed,
-    });
+    const stillWorking = continues || waitingForLimit || leadHeadsBusy;
+    if (!isHead) {
+      const chimed =
+        this.store.state.settings.chimeWhenFinished !== false &&
+        status !== "interrupted" &&
+        !stillWorking &&
+        !userStopped;
+      const notifyKind =
+        status === "done"
+          ? ("done" as const)
+          : status === "interrupted"
+            ? ("stopped" as const)
+            : status === "error"
+              ? ("failed" as const)
+              : null;
+      const wantsNotify =
+        notifyKind !== null &&
+        !stillWorking &&
+        !userStopped;
+      this.emit({
+        type: "finish-signal",
+        threadId: thread.id,
+        status,
+        chime: chimed,
+        notify: wantsNotify ? notifyKind : null,
+        silent: chimed,
+      });
+    }
 
     // F28: a finished/errored/interrupted result on a thread the user
     // is NOT looking at becomes an unread mark (frozen turnFinished).
     // "cancelled" is a user stop and "denied" is a user answer — both
-    // were witnessed, never unread. A queued successor (pendingSend /
+    // were witnessed, never unread. Hydra heads and leads whose heads
+    // are still out stay silent; a queued successor (pendingSend /
     // drain) does not suppress the mark: the result still happened.
     if (
+      !isHead &&
       (status === "done" || status === "error" || status === "interrupted") &&
       !waitingForLimit &&
+      !leadHeadsBusy &&
       this.store.state.ui.selectedThreadId !== thread.id
     ) {
       thread.hasUnread = true;
@@ -5184,7 +5157,10 @@ export class Engine {
     const queue = this.hydraWaiting.get(leadId);
     if (!queue?.length) return;
     const launch = this.hydraLaunchFor(lead);
-    if (!launch) return;
+    if (!launch) {
+      this.hydraWaiting.delete(leadId);
+      return;
+    }
     while (queue.length) {
       const running = this.store.state.threads.filter(
         (t) => t.hydraHead?.leadId === leadId && t.hydraHead.status === "running",
@@ -6619,6 +6595,9 @@ export class Engine {
         )
         .map((t) => t.hydraHead!.batchId),
     );
+    if (this.hydraWaiting.has(leadId) && this.hydraLaunchFor(lead) === undefined) {
+      this.hydraWaiting.delete(leadId);
+    }
     for (const w of this.hydraWaiting.get(leadId) ?? [])
       runningBatches.add(w.batchId);
     const flushable = pending.filter((r) => !runningBatches.has(r.batchId ?? ""));

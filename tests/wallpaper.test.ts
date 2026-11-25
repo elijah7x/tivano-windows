@@ -206,7 +206,7 @@ describe("wallpaper + backdropOpacity settings (F26)", () => {
   it("a document with a renderer-named wallpaper file is unreadable", () => {
     const dir = root();
     const { store, engine } = makeEngine(dir);
-    engine.setSettings({ notifyOnDone: true });
+    engine.setSettings({ chimeWhenFinished: false });
     store.flushNow();
     const raw = JSON.parse(readFileSync(join(dir, "store.json"), "utf8"));
     raw.settings.wallpaper = { file: "../../secrets.png", softness: 0 };
