@@ -28,6 +28,7 @@ import {
   LANGUAGE_IDS,
   SCHEMA_VERSION,
   THEME_IDS,
+  WEATHER_WINDOW_MODES,
   legacyAppearanceOfTheme,
   migrateLegacyTheme,
   type ChatThread,
@@ -560,6 +561,8 @@ const vSettings = vObject({
   defaultWorkspaceMode: vOptional(vEnum(["local", "worktree", "auto"] as const)),
   showReasoning: vOptional(vBoolean),
   showsWorkingCard: vOptional(vBoolean),
+  weatherWindowMode: vOptional(vEnum(WEATHER_WINDOW_MODES)),
+  lastWeatherWindowMode: vOptional(vEnum(["porthole", "full"] as const)),
   showsSkylight: vOptional(vBoolean),
   // F33: CLI install receipt — path of the client our shim points at.
   cliInstallationTarget: vOptional(vNonEmptyString(4000)),

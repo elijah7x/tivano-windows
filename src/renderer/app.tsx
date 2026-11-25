@@ -29,6 +29,8 @@ import { fontSizeOffsets, resolveFontSizes, TYPE_DEFAULT } from "../shared/typeS
 import { wallpaperBlurPx, wallpaperOpacity } from "../shared/wallpaper";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { GitPanel } from "./components/GitPanel";
+import { WeatherWindowLayer } from "./components/Skylight";
+import { resolveWeatherWindowMode } from "../shared/skylight";
 
 const store = clientStore;
 
@@ -604,6 +606,13 @@ export function App(): React.JSX.Element {
               opacity: wallpaperOpacity(snapshot.settings.backdropOpacity),
               filter: `blur(${wallpaperBlurPx(wp?.softness ?? 0)}px)`,
             }}
+          />
+        )}
+        {resolveWeatherWindowMode(snapshot.settings) === "full" && (
+          <WeatherWindowLayer
+            threads={snapshot.threads}
+            projects={snapshot.projects}
+            backdropOpacity={snapshot.settings.backdropOpacity}
           />
         )}
         {sidebarLive > 0 && (

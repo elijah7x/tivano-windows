@@ -2038,4 +2038,13 @@ export const zhHant: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "1 個檔案已變更，新增 %@ 行，刪除 %@ 行",
   "%@ files changed, %@ lines added, %@ lines removed": "%@ 個檔案已變更，新增 %@ 行，刪除 %@ 行",
   "Show this thread's changes": "顯示此對話的變更",
+  // P2-47
+  "Weather window": "天氣窗",
+  "Porthole": "舷窗",
+  "Full window": "落地窗",
+  "No weather.": "不顯示天氣。",
+  "A small window above the thread list: wind when waiting on you, sunlight when a turn finishes, rain when one fails.":
+    "對話列表上方的一扇小窗：等你回覆時起風，回合完成時出太陽，失敗時下雨。",
+  "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
+    "在等待你回答或確認時拂過微風、完成時灑下暖陽、失敗時落下細雨。",
 };

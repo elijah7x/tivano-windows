@@ -2038,4 +2038,13 @@ export const ja: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "1 ファイル変更、%@ 行追加、%@ 行削除",
   "%@ files changed, %@ lines added, %@ lines removed": "%@ ファイル変更、%@ 行追加、%@ 行削除",
   "Show this thread's changes": "このスレッドの変更を表示",
+  // P2-47
+  "Weather window": "天気ウィンドウ",
+  "Porthole": "舷窓",
+  "Full window": "フルウィンドウ",
+  "No weather.": "天気を表示しません。",
+  "A small window above the thread list: wind when waiting on you, sunlight when a turn finishes, rain when one fails.":
+    "スレッド一覧の上にある小さな窓。返信待ちのときは風、ターン完了時は日差し、失敗時は雨が表れます。",
+  "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
+    "応答や承認を待っているときはそよ風、完了時は日差し、失敗時は雨をさりげなく表示します。",
 };

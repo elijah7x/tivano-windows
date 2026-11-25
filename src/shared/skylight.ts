@@ -1,13 +1,14 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-01.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 //
-// A84 F26 — port of frozen ThreadActivityStatus.resolve + HeroWeather.resolve:
-// every visible thread folds into one weather for the sidebar's skylight
-// card. A failure outranks a pending decision, which outranks live work,
-// which outranks an unread reply; the count is how many threads share the
-// winning state.
+// P2-47 — v3.0.0 Weather window (AppModel+Weather.swift, HeroWeather.swift,
+// ThreadActivityStatus.swift, SidebarPorthole.swift, AppSettings.swift):
+// replaces the interactive v2 Skylight card with a three-mode Weather window
+// (Porthole / Full window / Off) whose sky follows the time of day and whose
+// weather folds visible threads — including sub-agents waiting on approval
+// or answer — into wind (awaiting), sunlight (done) or rain (failed).
 
-import type { ChatThread } from "./types";
+import type { ChatThread, Project, Settings, WeatherWindowMode } from "./types";
 
 export type ThreadActivityStatus =
   | "idle"
@@ -18,16 +19,34 @@ export type ThreadActivityStatus =
   | "failed"
   | "interrupted";
 
+export interface ThreadActivityOverrides {
+  needsApproval?: boolean;
+  needsAnswer?: boolean;
+  isWorking?: boolean;
+}
+
 /**
  * Frozen ThreadActivityStatus.resolve: pending decisions and live work stay
  * visible; terminal results are reminders only until they have been read.
  */
-export function threadActivityStatus(th: ChatThread): ThreadActivityStatus {
+export function threadActivityStatus(
+  th: ChatThread,
+  overrides?: ThreadActivityOverrides,
+): ThreadActivityStatus {
   const turn = th.turn;
-  if (turn?.approval?.status === "pending" || turn?.status === "waiting-approval")
+  if (
+    overrides?.needsApproval ||
+    turn?.approval?.status === "pending" ||
+    turn?.status === "waiting-approval"
+  ) {
     return "approval";
-  if (turn?.question?.status === "pending") return "question";
-  if (turn?.status === "running") return "running";
+  }
+  if (overrides?.needsAnswer || turn?.question?.status === "pending") {
+    return "question";
+  }
+  if (overrides?.isWorking || turn?.status === "running") {
+    return "running";
+  }
   if (!th.hasUnread) return "idle";
   switch (th.unreadStatus) {
     case "error":
@@ -39,45 +58,209 @@ export function threadActivityStatus(th: ChatThread): ThreadActivityStatus {
   }
 }
 
-export type HeroWeatherKind = "idle" | "failed" | "awaiting" | "running" | "done";
+export type WeatherKind = "idle" | "awaiting" | "done" | "failed";
 
 export interface HeroWeather {
-  kind: HeroWeatherKind;
+  kind: WeatherKind;
   /** How many threads share the winning state; 0 for idle. */
   count: number;
 }
 
-/** Frozen HeroWeather.resolve — the fold's precedence order. */
-export function resolveHeroWeather(statuses: Iterable<ThreadActivityStatus>): HeroWeather {
-  let failed = 0,
-    awaiting = 0,
-    running = 0,
-    done = 0;
+export interface HeroWeatherSnapshot {
+  kind: WeatherKind;
+  count: number;
+  hasRunningWork: boolean;
+  failed: number;
+  awaiting: number;
+  done: number;
+}
+
+export const IDLE_WEATHER_SNAPSHOT: HeroWeatherSnapshot = {
+  kind: "idle",
+  count: 0,
+  hasRunningWork: false,
+  failed: 0,
+  awaiting: 0,
+  done: 0,
+};
+
+/**
+ * Frozen HeroWeather.resolveSnapshot — folds thread statuses into counts and
+ * the global window weather (failure > awaiting > done > idle; live work stays quiet).
+ */
+export function resolveHeroWeatherSnapshot(
+  statuses: Iterable<ThreadActivityStatus>,
+): HeroWeatherSnapshot {
+  let failed = 0;
+  let awaiting = 0;
+  let done = 0;
+  let hasRunningWork = false;
   for (const s of statuses) {
     if (s === "failed" || s === "interrupted") failed++;
     else if (s === "approval" || s === "question") awaiting++;
-    else if (s === "running") running++;
     else if (s === "completed") done++;
+    else if (s === "running") hasRunningWork = true;
   }
-  if (failed > 0) return { kind: "failed", count: failed };
-  if (awaiting > 0) return { kind: "awaiting", count: awaiting };
-  if (running > 0) return { kind: "running", count: running };
-  if (done > 0) return { kind: "done", count: done };
+  if (failed > 0) {
+    return { kind: "failed", count: failed, hasRunningWork, failed, awaiting, done };
+  }
+  if (awaiting > 0) {
+    return { kind: "awaiting", count: awaiting, hasRunningWork, failed, awaiting, done };
+  }
+  if (done > 0) {
+    return { kind: "done", count: done, hasRunningWork, failed, awaiting, done };
+  }
+  return { kind: "idle", count: 0, hasRunningWork, failed, awaiting, done };
+}
+
+/** Frozen SidebarPorthole.portholeWeather — waiting wind outranks rain and sun. */
+export function portholeWeatherFromSnapshot(snapshot: HeroWeatherSnapshot): HeroWeather {
+  if (snapshot.awaiting > 0) return { kind: "awaiting", count: snapshot.awaiting };
+  if (snapshot.failed > 0) return { kind: "failed", count: snapshot.failed };
+  if (snapshot.done > 0) return { kind: "done", count: snapshot.done };
   return { kind: "idle", count: 0 };
 }
 
-/** Frozen HeroWeather.tag — the drafting tag beside the doll; idle shows none. */
-export function heroWeatherTag(w: HeroWeather): string | null {
+/**
+ * Frozen AppModel.globalWeatherSnapshot: excludes archived threads, Hydra heads,
+ * open panel helpers, and shelved-project threads; folds sub-agents (Hydra heads
+ * and in-panel helpers) waiting on approval/question or running onto their parent
+ * thread so a waiting sub-agent always brings the wind.
+ */
+export function resolveGlobalWeatherSnapshot(
+  threads: readonly ChatThread[],
+  projects?: readonly Project[],
+): HeroWeatherSnapshot {
+  const shelvedIds = new Set<string>();
+  if (projects) {
+    for (const p of projects) {
+      if (p.isShelved) shelvedIds.add(p.id);
+    }
+  }
+
+  const workingParents = new Set<string>();
+  const approvalParents = new Set<string>();
+  const questionParents = new Set<string>();
+
+  for (const th of threads) {
+    if (th.isArchived) continue;
+    const parentId = th.hydraHead?.leadId ?? (th.isInPanel ? th.parentThreadId : undefined);
+    if (!parentId) continue;
+
+    // A finished/stopped Hydra head must not linger as waiting/working; only active
+    // heads (or active turns on helpers) propagate to the parent.
+    const active = th.hydraHead
+      ? th.hydraHead.status === "running" ||
+        th.turn?.status === "running" ||
+        th.turn?.status === "waiting-approval"
+      : true;
+    if (!active) continue;
+
+    if (th.turn?.approval?.status === "pending" || th.turn?.status === "waiting-approval") {
+      approvalParents.add(parentId);
+    }
+    if (th.turn?.question?.status === "pending") {
+      questionParents.add(parentId);
+    }
+    if (th.turn?.status === "running" || th.hydraHead?.status === "running") {
+      workingParents.add(parentId);
+    }
+  }
+
+  const visibleStatuses: ThreadActivityStatus[] = [];
+  for (const th of threads) {
+    if (th.isArchived) continue;
+    if (th.hydraHead) continue;
+    if (th.isInPanel && th.parentThreadId) continue;
+    if (th.projectId && shelvedIds.has(th.projectId)) continue;
+    visibleStatuses.push(
+      threadActivityStatus(th, {
+        needsApproval: approvalParents.has(th.id),
+        needsAnswer: questionParents.has(th.id),
+        isWorking: workingParents.has(th.id),
+      }),
+    );
+  }
+
+  return resolveHeroWeatherSnapshot(visibleStatuses);
+}
+
+/** Frozen AppSettings.resolveWeatherWindowMode: defaults to "porthole", migrates showsSkylight=false -> "off". */
+export function resolveWeatherWindowMode(
+  settings?: Pick<Settings, "weatherWindowMode" | "showsSkylight"> | null,
+): WeatherWindowMode {
+  if (
+    settings?.weatherWindowMode === "porthole" ||
+    settings?.weatherWindowMode === "full" ||
+    settings?.weatherWindowMode === "off"
+  ) {
+    return settings.weatherWindowMode;
+  }
+  if (settings?.showsSkylight === false) return "off";
+  return "porthole";
+}
+
+export type SkyPeriod = "dawn" | "day" | "dusk" | "night";
+
+/** Frozen PortholeWeatherView.SkyPeriod.resolve: sky follows local time of day. */
+export function resolveSkyPeriod(date: Date = new Date()): SkyPeriod {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 8) return "dawn";
+  if (hour >= 8 && hour < 17) return "day";
+  if (hour >= 17 && hour < 20) return "dusk";
+  return "night";
+}
+
+export const PORTHOLE_HOLD_MS = 8000;
+export const FULL_WINDOW_PULSE_MS = 7300;
+export const FULL_WINDOW_RELEASE_MS = 950;
+
+export function portholeStrength(w: HeroWeather): [number, number] {
   switch (w.kind) {
-    case "failed":
-      return `FAIL · ${w.count}`;
-    case "awaiting":
-      return `WAIT · ${w.count}`;
-    case "running":
-      return `RUN · ${w.count}`;
+    case "idle":
+      return [0, 0];
     case "done":
-      return `DONE · ${w.count}`;
-    default:
-      return null;
+      return [1, w.count];
+    case "failed":
+      return [2, w.count];
+    case "awaiting":
+      return [3, w.count];
   }
 }
+
+export function comparePortholeStrength(a: HeroWeather, b: HeroWeather): number {
+  const [ar, ac] = portholeStrength(a);
+  const [br, bc] = portholeStrength(b);
+  return ar !== br ? ar - br : ac - bc;
+}
+
+/** Frozen SidebarPorthole.shouldStartHold: hold brief finish/error flashes for 8s. */
+export function shouldStartPortholeHold(previous: HeroWeather, live: HeroWeather): boolean {
+  if (
+    (previous.kind === "idle" || previous.kind === "awaiting") &&
+    (live.kind === "done" || live.kind === "failed")
+  ) {
+    return true;
+  }
+  if (previous.kind === "done" && live.kind === "failed") return true;
+  if (
+    (previous.kind === "done" && live.kind === "done") ||
+    (previous.kind === "failed" && live.kind === "failed")
+  ) {
+    return live.count > previous.count;
+  }
+  return false;
+}
+
+export const WEATHER_WINDOW_LABEL: Record<WeatherWindowMode, string> = {
+  porthole: "Porthole",
+  full: "Full window",
+  off: "Off",
+};
+
+export const WEATHER_WINDOW_DETAIL: Record<WeatherWindowMode, string> = {
+  porthole:
+    "A small window above the thread list: wind when waiting on you, sunlight when a turn finishes, rain when one fails.",
+  full: "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.",
+  off: "No weather.",
+};

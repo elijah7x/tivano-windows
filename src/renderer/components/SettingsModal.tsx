@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   LANGUAGE_IDS,
   LANGUAGE_LABELS,
+  WEATHER_WINDOW_MODES,
   type AppInfo,
   type ChatThread,
   type CodexSetupState,
@@ -18,6 +19,12 @@ import {
   type Project,
   type Settings,
 } from "../../shared/types";
+import {
+  WEATHER_WINDOW_DETAIL,
+  WEATHER_WINDOW_LABEL,
+  resolveWeatherWindowMode,
+} from "../../shared/skylight";
+import { WeatherWindowThumbnail } from "./Skylight";
 import { useT } from "../locale";
 import { translateError } from "../i18n";
 import { api, tryCall } from "../client";
@@ -277,23 +284,38 @@ export function SettingsModal(props: {
               />
             </div>
             <p className="codex-note">{t("Colors controls and highlighted text.")}</p>
-            <div className="choice-row">
-              <button
-                role="switch"
-                aria-checked={settings.showsSkylight !== false}
-                className={`choice${settings.showsSkylight !== false ? " active" : ""}`}
-                title={t(
-                  "A teru teru bozu at the top of the sidebar keeps you company while agents work, and its weather shows how your threads are doing: it sways in the wind while they run, turns overcast when one needs you, brightens when a reply lands and rains when one fails. It animates only while visible.",
-                )}
-                onClick={() =>
-                  tryCall("settings:set", {
-                    showsSkylight: settings.showsSkylight === false,
-                  })
-                }
-              >
-                {t("Skylight")}
-              </button>
-            </div>
+            <h3>{t("Weather window")}</h3>
+            {(() => {
+              const weatherMode = resolveWeatherWindowMode(settings);
+              return (
+                <>
+                  <div
+                    className="choice-row weather-picker"
+                    role="radiogroup"
+                    aria-label={t("Weather window")}
+                  >
+                    {WEATHER_WINDOW_MODES.map((mode) => {
+                      const active = weatherMode === mode;
+                      return (
+                        <button
+                          key={mode}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          data-weather-mode={mode}
+                          className={`choice weather-choice${active ? " active" : ""}`}
+                          onClick={() => tryCall("settings:set", { weatherWindowMode: mode })}
+                        >
+                          <WeatherWindowThumbnail mode={mode} />
+                          <span>{t(WEATHER_WINDOW_LABEL[mode])}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="codex-note">{t(WEATHER_WINDOW_DETAIL[weatherMode])}</p>
+                </>
+              );
+            })()}
 
             {/* F26: frozen WallpaperCard + Transparency slider — opaque window, honest semantics. */}
             <WallpaperSection settings={settings} />
