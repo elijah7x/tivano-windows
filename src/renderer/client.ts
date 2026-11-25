@@ -18,9 +18,9 @@ import { clearMarkdownCache } from "./markdown";
 
 /** F28: OS notification on a turn's completion — only for an UNSEEN
  *  result: the finished thread isn't the one on screen, or the window
- *  isn't focused. Opt-in via settings; never fires while the user is
- *  watching the thread complete. `silent` when the finish chime already
- *  sounded (frozen: the chime replaces the notification's own sound). */
+ *  isn't focused. Never fires while the user is watching the thread
+ *  complete. `silent` when the finish chime already sounded (frozen: the
+ *  chime replaces the notification's own sound). */
 const NOTIFY_BODY = {
   done: "Turn finished",
   stopped: "Stopped.",
@@ -33,9 +33,17 @@ function maybeNotifyDone(
   kind: keyof typeof NOTIFY_BODY,
   silent: boolean,
 ): void {
+  if (thread.hydraHead) return;
   const s = store.snapshot;
-  if (!s || s.settings.notifyOnDone !== true) return;
-  const unseen = s.selectedThreadId !== thread.id || !document.hasFocus();
+  if (!s) return;
+  const isOpenPanel =
+    thread.isInPanel === true && thread.parentThreadId === s.selectedThreadId;
+  const isOnScreen = s.selectedThreadId === thread.id || isOpenPanel;
+  const focused =
+    typeof document !== "undefined" && typeof document.hasFocus === "function"
+      ? document.hasFocus()
+      : false;
+  const unseen = !isOnScreen || !focused;
   if (!unseen) return;
   if (typeof Notification === "undefined") return;
   const fire = () => {
@@ -55,9 +63,11 @@ function maybeNotifyDone(
   };
   if (Notification.permission === "granted") fire();
   else if (Notification.permission === "default") {
-    void Notification.requestPermission().then((p) => {
-      if (p === "granted") fire();
-    });
+    void Notification.requestPermission()
+      .then((p) => {
+        if (p === "granted") fire();
+      })
+      .catch(() => {});
   }
 }
 
@@ -608,7 +618,7 @@ export class ClientStore {
         break;
       }
       case "finish-signal": {
-        // F28 frozen turnFinished — the engine applied the setting and
+        // F28 frozen turnFinished — the engine applied the
         // stillWorking/userStopped gates; here remains the on-screen check.
         if (event.chime) playFinishChime();
         const t = this.thread(event.threadId);

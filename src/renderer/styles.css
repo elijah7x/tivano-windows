@@ -218,7 +218,6 @@ button.primary:hover {
 @media (prefers-reduced-motion: reduce) {
   .sky-doll.sway { animation: none; }
 }
-html[data-performance] .sky-doll.sway { animation: none; }
 
 .search {
   margin: 4px 12px 8px;
@@ -3005,7 +3004,6 @@ select.runtime-mode:disabled {
   .work-card .stave { animation: none; }
   .work-label { animation: none; will-change: auto; }
 }
-html[data-performance] .work-label { animation: none; will-change: auto; }
 
 /* P2-63: pause animations and drop layer hints while inactive, minimized or out of view. */
 html[data-paused="1"] .work-label,
@@ -3044,7 +3042,6 @@ html[data-paused="1"] .stave-bar .stave {
 @media (prefers-reduced-motion: reduce) {
   .spin-cell { animation: none; }
 }
-html[data-performance] .spin-cell { animation: none; }
 
 /* A84 frozen StreamVeil — the freshly flushed tail of a streaming reply
    dissolves in once, paced by the stream's own cadence (--veil-d, set from
@@ -3058,7 +3055,6 @@ html[data-performance] .spin-cell { animation: none; }
 @media (prefers-reduced-motion: reduce) {
   .md-veil { animation: none; }
 }
-html[data-performance] .md-veil,
 html[data-paused="1"] .md-veil { animation: none !important; }
 
 /* Spinner placement helpers (frozen call sites). */
@@ -3283,7 +3279,7 @@ html[data-paused="1"] .md-veil { animation: none !important; }
   color: var(--text);
 }
 .commit-push input { accent-color: var(--accent); }
-.commit-instructions { margin-top: 12px; }
+.settings-field-gap { margin-top: 12px; }
 
 /* F26 font-size stepper — frozen FontSizeButtons: minus / "N pt" / plus. */
 .fs-head {
@@ -3632,20 +3628,6 @@ html[data-paused="1"] .md-veil { animation: none !important; }
 .ta-dim { color: var(--text-2); }
 .ta-ladder { width: 10px; height: 10px; aspect-ratio: auto; display: inline-block; }
 .ta { --ta-quiet: color-mix(in srgb, var(--text) 7%, transparent); --ta-future: color-mix(in srgb, var(--text) 3.5%, transparent); }
-
-/* F26 Performance Mode — frozen performanceMode. This build's window is
-   already opaque, so the honest port strips the effects it actually
-   renders: drop shadows, glows, filters, transitions and animations. */
-[data-performance="1"] *,
-[data-performance="1"] *::before,
-[data-performance="1"] *::after {
-  box-shadow: none !important;
-  text-shadow: none !important;
-  filter: none !important;
-  backdrop-filter: none !important;
-  transition: none !important;
-  animation: none !important;
-}
 
 /* F04 link popover — frozen LinkPopover: transient menu under the
    link's own bounds; rows take no focus, Escape/outside closes. */
@@ -4150,7 +4132,6 @@ html[data-paused="1"] .md-veil { animation: none !important; }
 .app.has-wp .chat-stack {
   background: transparent;
 }
-html[data-performance] .wp-backdrop { display: none; }
 
 .wp-card {
   display: flex;
@@ -4815,8 +4796,8 @@ html[data-performance] .wp-backdrop { display: none; }
  * right while a low-alpha base stays put, rows fading upward. The
  * composer runs it while a turn runs; a one-shot sweep crosses the
  * delegation card when it goes out and the heads panel when a head
- * finishes, tinted by the head's persona colour. performanceMode and
- * reduced motion take it down to nothing (or a static field). */
+ * finishes, tinted by the head's persona colour. reduced motion takes
+ * it down to nothing (or a static field). */
 .work-dots, .sweep-dots {
   position: absolute;
   pointer-events: none;
@@ -4857,8 +4838,6 @@ html[data-performance] .wp-backdrop { display: none; }
   from { -webkit-mask-position: -60% 0; mask-position: -60% 0; }
   to { -webkit-mask-position: 180% 0; mask-position: 180% 0; }
 }
-html[data-performance] .work-dots,
-html[data-performance] .sweep-dots { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .work-dots::after { display: none; }
   .work-dots::before { opacity: 0.28; }

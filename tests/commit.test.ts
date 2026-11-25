@@ -259,4 +259,24 @@ describe("commit message generation (F13/F31)", () => {
     expect(res.kind).toBe("unavailable");
     expect(res.kind === "unavailable" && res.reason).toBe("generation-empty");
   });
+
+  it("forwards an empty instructions string to generateCommitMessage (P2-62)", async () => {
+    const repo = mkRepo();
+    let seenInstructions: string | undefined;
+    const spy: ProviderAdapter = {
+      descriptor: { id: "spy", label: "Spy", mode: "mock", synthetic: true },
+      start() {
+        throw new Error("unreachable");
+      },
+      generateCommitMessage: async (_summary, _patch, instructions) => {
+        seenInstructions = instructions;
+        return "Update a.txt";
+      },
+      dispose: () => Promise.resolve({ children: [], orphanedPending: 0 }),
+    };
+    const r = rig(repo, { provider: spy });
+    const res = await r.engine.commitMessageFor("M a.txt", "patch");
+    expect(res).toEqual({ kind: "ok", message: "Update a.txt" });
+    expect(seenInstructions).toBe("");
+  });
 });
