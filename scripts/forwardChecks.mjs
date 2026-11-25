@@ -54,12 +54,20 @@ export async function runForwardChecks({
   const srcId = src.id;
   await send(page, srcId, "FWD-SOURCE unique question text");
 
+  if (await page.locator('.more-controls-btn[aria-expanded="false"]').count()) {
+    await page.locator(".more-controls-btn").click();
+  }
   await page.locator('button[title="Forward to new thread"]').click();
   const s1 = await waitSnapshot(
     page,
     (x) => x.threads.some((t) => t.title.startsWith("Continued: ")),
   );
   const dest = s1.threads.find((t) => t.title.startsWith("Continued: "));
+  verify(
+    "FWD-00 More controls stays expanded across chat switch",
+    (await page.locator('.more-controls-btn[aria-expanded="true"]').count()) === 1 &&
+      (await page.locator('button[title="Forward to new thread"]').count()) === 1,
+  );
   verify(
     "FWD-01 forward created a selected Continued: thread",
     dest && s1.selectedThreadId === dest.id && dest.messages.length === 0,
@@ -139,6 +147,9 @@ export async function runForwardChecks({
   );
 
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "zh-Hans" }));
+  if (await page.locator('.more-controls-btn[aria-expanded="false"]').count()) {
+    await page.locator(".more-controls-btn").click();
+  }
   verify(
     "FWD-10 zh-Hans forward title renders",
     (await page.locator('button[title="转发到新对话"]').count()) === 1,

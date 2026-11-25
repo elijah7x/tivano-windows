@@ -177,6 +177,10 @@ export function ChatView(props: {
    *  showsWorkingCard picks the live working indicator's card/line
    *  form (frozen Conversation defaults). */
   settings?: Settings;
+  /** P2-51: whether the chat header's More controls (…) are expanded; owned
+   *  by the shell so switching chats keeps the expanded state. */
+  topControlsExpanded?: boolean;
+  onToggleTopControls?: () => void;
   /** Hydra intro's "Set up in Settings" — the modal lives on the shell. */
   onOpenSettings?: () => void;
 }): React.JSX.Element {
@@ -193,6 +197,12 @@ export function ChatView(props: {
   const [previewTurn, setPreviewTurn] = useState<string | null>(null);
   const [worktreeOpen, setWorktreeOpen] = useState(false);
   const [scriptsOpen, setScriptsOpen] = useState(false);
+  const [localTopControlsExpanded, setLocalTopControlsExpanded] = useState(false);
+  const topControlsExpanded = props.topControlsExpanded ?? localTopControlsExpanded;
+  const toggleTopControls = () => {
+    if (props.onToggleTopControls) props.onToggleTopControls();
+    else setLocalTopControlsExpanded((v) => !v);
+  };
   const [msgMenu, setMsgMenu] = useState<MessagePopoverState | null>(null);
   const ckptGen = useRef(0);
   const threadId = thread?.id ?? null;
@@ -521,7 +531,35 @@ export function ChatView(props: {
           onTogglePanel={() => setHydraPanelHidden((h) => !h)}
           {...(props.onOpenSettings ? { onOpenSettings: props.onOpenSettings } : {})}
         />
-        {thread && (
+        {thread && (props.directory !== undefined && props.directory !== null) && (
+          <BranchMenu
+            threadId={thread.id}
+            worktree={thread.worktreeDir !== undefined}
+            running={turn?.status === "running" || turn?.status === "waiting-approval"}
+            readOnly={props.readOnly === true}
+          />
+        )}
+        {props.onToggleDock && (
+          <>
+            <button
+              className={`term-toggle ${props.dock === "terminal" ? "on" : ""}`}
+              onClick={() => props.onToggleDock!("terminal")}
+              aria-pressed={props.dock === "terminal"}
+              title={t("Terminal")}
+            >
+              {t("Terminal")}
+            </button>
+            <button
+              className={`term-toggle ${props.dock === "git" ? "on" : ""}`}
+              onClick={() => props.onToggleDock!("git")}
+              aria-pressed={props.dock === "git"}
+              title={t("Git")}
+            >
+              {t("Git")}
+            </button>
+          </>
+        )}
+        {thread && topControlsExpanded && (
           <>
             <button
               className="head-action"
@@ -539,14 +577,6 @@ export function ChatView(props: {
               hasDirectory={props.directory !== undefined && props.directory !== null}
               readOnly={props.readOnly === true}
             />
-            {(props.directory !== undefined && props.directory !== null) && (
-              <BranchMenu
-                threadId={thread.id}
-                worktree={thread.worktreeDir !== undefined}
-                running={turn?.status === "running" || turn?.status === "waiting-approval"}
-                readOnly={props.readOnly === true}
-              />
-            )}
             <button
               className="head-action"
               title={
@@ -574,25 +604,18 @@ export function ChatView(props: {
             {/* Copy path lives inside the Open-in menu (frozen OpenInMenu). */}
           </>
         )}
-        {props.onToggleDock && (
-          <>
-            <button
-              className={`term-toggle ${props.dock === "terminal" ? "on" : ""}`}
-              onClick={() => props.onToggleDock!("terminal")}
-              aria-pressed={props.dock === "terminal"}
-              title={t("Terminal")}
-            >
-              {t("Terminal")}
-            </button>
-            <button
-              className={`term-toggle ${props.dock === "git" ? "on" : ""}`}
-              onClick={() => props.onToggleDock!("git")}
-              aria-pressed={props.dock === "git"}
-              title={t("Git")}
-            >
-              {t("Git")}
-            </button>
-          </>
+        {thread && (
+          <button
+            type="button"
+            className={`head-action more-controls-btn${topControlsExpanded ? " active" : ""}`}
+            aria-expanded={topControlsExpanded}
+            aria-label={t("More controls")}
+            title={t("More controls")}
+            disabled={props.readOnly === true}
+            onClick={toggleTopControls}
+          >
+            ⋯
+          </button>
         )}
       </header>
       {thread && props.threads && (!hydraPanelHidden || !!thread.hydraHead) && (
@@ -815,11 +838,10 @@ export function ChatView(props: {
             if (turn?.status === "running" && m.turnId === turn.id) return null;
             return <ToolMsgRow key={m.id} m={m} />;
           }
-          // F04 (frozen MessagePopoverMenu): right-click opens the
-          // message's context menu at the pointer — Copy, Copy as
-          // markdown, the last fenced code block and Add to reply on
-          // replies. A link target stays with the link popover; the
-          // frozen "Edit from here" is revert, not in this build.
+          // F04 / P2-51 (v3.0.0 MessagePopoverMenu): right-click opens the
+          // message's context menu at the pointer — single Copy (for a
+          // selection) or Copy all (whole message as Markdown), plus Add
+          // to reply on replies or rewind rows on user prompts.
           const openMsgMenu = (e: React.MouseEvent) => {
             if (m.role !== "assistant" && m.role !== "user") return;
             const el = e.target as HTMLElement;
@@ -831,17 +853,9 @@ export function ChatView(props: {
               sel && !sel.isCollapsed && article && article.contains(sel.anchorNode)
                 ? sel.toString()
                 : null;
-            const bodyEl = article?.querySelector(".msg-body");
-            const plain = bodyEl
-              ? Array.from(bodyEl.childNodes)
-                  .map((n) => n.textContent ?? "")
-                  .filter((s) => s !== "")
-                  .join("\n")
-              : m.content;
             setMsgMenu({
               text: m.content,
               selection: selection === "" ? null : selection,
-              plain,
               role: m.role,
               threadId: thread.id,
               messageId: m.id,
@@ -1128,7 +1142,11 @@ export function ChatView(props: {
         readOnly={!!props.readOnly}
       />
       {msgMenu && (
-        <MessagePopover state={msgMenu} onClose={() => setMsgMenu(null)} />
+        <MessagePopover
+          key={`${msgMenu.messageId}:${msgMenu.x}:${msgMenu.y}`}
+          state={msgMenu}
+          onClose={() => setMsgMenu(null)}
+        />
       )}
       {previewTurn && (
         <CheckpointPreviewDialog

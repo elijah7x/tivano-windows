@@ -23,39 +23,96 @@ export const SCHEMA_VERSION = 1;
  *  renderer localizes it for display; stored content stays stable. */
 export const INTERRUPTED_MARKER = "[interrupted by restart — not resumed]";
 
-/** F26: the full frozen AppTheme catalog (raw case values, allCases order). */
+/** P2-51: the 12 named v3.0.0 accent families (AppTheme.swift raw case values, allCases order). */
 export const THEME_IDS = [
-  "breeze",
-  "breezeLight",
-  "breezeDark",
   "system",
+  "breeze",
+  "everforest",
+  "matrix",
+  "nord",
+  "github",
+  "nightOwl",
+  "catppuccin",
+  "rosePine",
+  "monokai",
+  "claude",
+  "ayu",
+] as const;
+export type ThemeId = (typeof THEME_IDS)[number];
+
+/** P2-51: appearance mode (AppearanceMode.swift), paired with the 12 named accent colors. */
+export const APPEARANCE_MODES = ["system", "light", "dark"] as const;
+export type AppearanceMode = (typeof APPEARANCE_MODES)[number];
+
+const LEGACY_THEME_MAP: Record<string, ThemeId> = {
+  breezeLight: "breeze",
+  breezeDark: "breeze",
+  light: "system",
+  dark: "system",
+  catppuccinMocha: "catppuccin",
+  catppuccinLatte: "catppuccin",
+  dracula: "catppuccin",
+  codex: "catppuccin",
+  tokyoNight: "nightOwl",
+  kanagawa: "nightOwl",
+  cursor: "nord",
+  oneDark: "github",
+  githubDark: "github",
+  githubLight: "github",
+  solarized: "github",
+  solarizedDark: "github",
+  solarizedLight: "github",
+  claudeLight: "claude",
+  gruvbox: "claude",
+  gruvboxLight: "claude",
+  creation: "claude",
+};
+
+const LEGACY_LIGHT_THEMES = new Set([
+  "breezeLight",
   "light",
+  "catppuccinLatte",
+  "gruvboxLight",
+  "solarizedLight",
+  "githubLight",
+  "claudeLight",
+]);
+
+const LEGACY_DARK_THEMES = new Set([
+  "breezeDark",
   "dark",
   "catppuccinMocha",
-  "catppuccinLatte",
   "dracula",
   "tokyoNight",
   "nord",
   "gruvbox",
-  "gruvboxLight",
   "oneDark",
   "everforest",
   "kanagawa",
   "rosePine",
   "solarizedDark",
-  "solarizedLight",
   "githubDark",
-  "githubLight",
   "ayu",
   "nightOwl",
   "monokai",
   "claude",
-  "claudeLight",
   "codex",
   "cursor",
   "matrix",
-] as const;
-export type ThemeId = (typeof THEME_IDS)[number];
+]);
+
+/** Map current and retired v2.x theme ids onto the 12 v3.0.0 accent families. */
+export function migrateLegacyTheme(raw: string): ThemeId | null {
+  if ((THEME_IDS as readonly string[]).includes(raw)) return raw as ThemeId;
+  return LEGACY_THEME_MAP[raw] ?? null;
+}
+
+/** Return the fixed appearance a retired v2.x theme implied, or null for follow-OS / unknown. */
+export function legacyAppearanceOfTheme(raw: string): AppearanceMode | null {
+  if (LEGACY_LIGHT_THEMES.has(raw)) return "light";
+  if (LEGACY_DARK_THEMES.has(raw)) return "dark";
+  return null;
+}
 export const LANGUAGE_IDS = ["en", "zh-Hans", "zh-Hant", "ja", "ko", "fr"] as const;
 export type LanguageId = (typeof LANGUAGE_IDS)[number];
 
@@ -70,6 +127,8 @@ export const LANGUAGE_LABELS: Record<LanguageId, string> = {
 
 export interface Settings {
   theme: ThemeId;
+  /** P2-51: light / dark / match-system appearance mode (absent = "system"). */
+  appearanceMode?: AppearanceMode;
   language: LanguageId;
   /** Mock-scope "always allow" grants, keyed by synthetic action kind. */
   alwaysAllow: string[];

@@ -178,6 +178,8 @@ export function App(): React.JSX.Element {
   /** F27 archiveThread (⌘W): frozen "asks to archive; Delete is a click
    *  away" prompt for the SELECTED thread. */
   const [archivePrompt, setArchivePrompt] = useState(false);
+  /** P2-51: chat header More controls (…) expanded state shared across chats. */
+  const [topControlsExpanded, setTopControlsExpanded] = useState(false);
   const [remoteApproval, setRemoteApproval] = useState<RemoteMcpApprovalRequest | null>(null);
   /** F04 link popover — frozen LinkPopover: one transient menu anchored
    *  under the right-clicked chat link; null = closed. */
@@ -424,17 +426,18 @@ export function App(): React.JSX.Element {
     }
   }, [snapshot?.settings.language]);
 
-  // F26: frozen AppTheme — resolve the palette onto :root; themes with no
-  // fixed scheme (Breeze, System) follow the OS and re-resolve live.
+  // P2-51 / F26: resolve the 12 accent families + appearanceMode onto :root;
+  // "system" follows the OS prefers-color-scheme and re-resolves live.
   useEffect(() => {
     if (!snapshot) return;
     const theme = snapshot.settings.theme;
+    const appearanceMode = snapshot.settings.appearanceMode ?? "system";
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => applyTheme(document.documentElement, theme, mq.matches);
+    const apply = () => applyTheme(document.documentElement, theme, mq.matches, appearanceMode);
     apply();
     mq.addEventListener("change", apply);
     return () => mq.removeEventListener("change", apply);
-  }, [snapshot?.settings.theme]);
+  }, [snapshot?.settings.theme, snapshot?.settings.appearanceMode]);
 
   // F26: push the frozen TypeScale offsets into the three CSS vars; the
   // code offset also reaches live xterm instances (terminals scale with
@@ -645,6 +648,8 @@ export function App(): React.JSX.Element {
               ? { limitResumeAt: store.limitResumes[selected.id] }
               : {})}
             settings={snapshot.settings}
+            topControlsExpanded={topControlsExpanded}
+            onToggleTopControls={() => setTopControlsExpanded((v) => !v)}
             onOpenSettings={() => setSettingsOpen(true)}
           />
           </div>

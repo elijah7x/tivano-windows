@@ -80,6 +80,9 @@ export async function runFolderChecks({
   // Select the bound thread — both actions must be enabled.
   await page.evaluate((id) => window.tivano.invoke("threads:select", { id }), tid);
   await page.waitForSelector(".chat-head h1", { timeout: 10000 });
+  if (await page.locator('.more-controls-btn[aria-expanded="false"]').count()) {
+    await page.locator(".more-controls-btn").click();
+  }
   // Reveal/Copy now live inside the "Open in" menu (frozen OpenInMenu).
   await page.waitForSelector('button[title="Open in another app"]', { timeout: 10000 });
   await page.locator('button[title="Open in another app"]').click();

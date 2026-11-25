@@ -2904,6 +2904,7 @@ export class Engine {
 
   setSettings(patch: {
     theme?: import("../shared/types").ThemeId | undefined;
+    appearanceMode?: import("../shared/types").AppearanceMode | undefined;
     language?: import("../shared/types").LanguageId | undefined;
     chimeWhenFinished?: boolean | undefined;
     autoContinueAfterLimit?: boolean | undefined;
@@ -2970,6 +2971,7 @@ export class Engine {
     this.assertMutable();
     this.store.update((d) => {
       if (patch.theme) d.settings.theme = patch.theme;
+      if (patch.appearanceMode !== undefined) d.settings.appearanceMode = patch.appearanceMode;
       if (patch.language) d.settings.language = patch.language;
       if (patch.chimeWhenFinished !== undefined)
         d.settings.chimeWhenFinished = patch.chimeWhenFinished;

@@ -1,36 +1,52 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-01.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-// F04 message popover — frozen MessagePopoverMenu/messageActions: a
-// right-click on a chat message opens a transient menu at the pointer.
-// Assistant replies carry Copy, Copy message as markdown, Copy last
-// code block when the text holds a fenced block, and Add to reply;
-// user prompts carry the two copy rows plus the F09 rewind rows,
-// bounded: "Edit from here" loads the prompt into the composer and
-// the next send rewinds first; "Rewind to this turn" drops that turn
-// and everything after it. File changes are always KEPT — the
-// destructive "revert files too" variant stays unbuilt, so the rows
-// say what happens to files right in the menu.
+// F04 / P2-51 message popover — v3.0.0 MessagePopoverMenu/messageActions:
+// a right-click on a chat message opens a transient menu at the pointer.
+// Every message opens with a single Copy row: "Copy" for an active
+// selection, or "Copy all" copying the whole message as Markdown (code
+// blocks keep their own copy button). Assistant replies also carry Add
+// to reply; user prompts carry the F09 rewind rows ("Edit from here" /
+// "Rewind to this turn", file changes kept).
 //
 // Transient like the frozen NSPopover(.transient): outside mousedown,
 // Escape and scroll all close it; the rows take no focus. Action rows
 // swap to their frozen confirm label ("Copied"/"Added") for a beat
 // before the menu closes; the rewind row needs a second click.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useT } from "../locale";
 import { api, clientStore, tryCall } from "../client";
-import { lastCodeBlock } from "../../shared/replyQuote";
+
+/** Port of v3.0.0 `MessageText.markdown`: returns the markdown source
+ *  without Hydra delegation fences (which render as cards), trimmed. */
+export function markdownMessageText(source: string): string {
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of source.split(/\r\n|\r|\n/)) {
+    const trimmed = line.trimStart();
+    if (skipping) {
+      if (trimmed.startsWith("```")) skipping = false;
+      continue;
+    }
+    if (trimmed.startsWith("```")) {
+      const info = trimmed.slice(3).trim().toLowerCase();
+      if (info === "hydra" || info === "hydra-sent" || info === "hydra-leaving") {
+        skipping = true;
+        continue;
+      }
+    }
+    kept.push(line);
+  }
+  return kept.join("\n").trim();
+}
 
 export interface MessagePopoverState {
   /** The message snapshot frozen at menu-open time — a body update
    *  while the menu is open never replaces these values. */
   text: string;
   /** Selection text owned by this message at open time, if any —
-   *  Copy takes it over the whole-message fallback. */
+   *  Copy takes it over the whole-message Copy all markdown fallback. */
   selection: string | null;
-  /** Plain display text of the message body — Copy's no-selection
-   *  fallback (frozen MessageText.plain). */
-  plain: string;
   role: "assistant" | "user";
   threadId: string;
   /** F09: message id + owning turn — present when the rewind rows show. */
@@ -49,6 +65,12 @@ export function MessagePopover(props: {
   const { state, onClose } = props;
   const [confirmed, setConfirmed] = useState<string | null>(null);
   const [confirmLabel, setConfirmLabel] = useState("");
+  const closeTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
+    };
+  }, []);
   /** F09: how many files the rewound turns touched — fills the armed
    *  confirm label. undefined = still loading / unavailable. */
   const [previewFiles, setPreviewFiles] = useState<number | undefined>(undefined);
@@ -104,10 +126,9 @@ export function MessagePopover(props: {
     run();
     setConfirmed(row);
     setConfirmLabel(t(done));
-    window.setTimeout(onClose, 650);
+    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = window.setTimeout(onClose, 650);
   };
-
-  const code = state.role === "assistant" ? lastCodeBlock(state.text) : null;
 
   const row = (
     key: string,
@@ -143,16 +164,9 @@ export function MessagePopover(props: {
       style={{ left: x, top: y }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {row("copy", "📄", "Copy", "Copied", false, () => {
-        void navigator.clipboard.writeText(state.selection ?? state.plain);
+      {row("copy", "📄", state.selection !== null ? "Copy" : "Copy all", "Copied", false, () => {
+        void navigator.clipboard.writeText(state.selection ?? markdownMessageText(state.text));
       })}
-      {row("markdown", "#", "Copy message as markdown", "Copied", false, () => {
-        void navigator.clipboard.writeText(state.text);
-      })}
-      {code !== null &&
-        row("code", "‹/›", "Copy last code block", "Copied", false, () => {
-          void navigator.clipboard.writeText(code);
-        })}
       {state.role === "assistant" &&
         row("reply", "↩", "Add to reply", "Added", true, () => {
           clientStore.addDraftQuote(

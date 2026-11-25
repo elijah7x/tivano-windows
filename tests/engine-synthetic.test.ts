@@ -230,7 +230,7 @@ describe("engine × synthetic-stdio", () => {
       () => engine.deleteThread(thread.id),
       () => engine.deleteProject(project.id),
       () => engine.toggleProject(project.id, false),
-      () => engine.setSettings({ theme: "dark" }),
+      () => engine.setSettings({ theme: "nord" }),
       () => engine.setSettings({ language: "zh-Hans" }),
       () => engine.cancelTurn(thread.id),
       () => engine.resolveApproval(thread.id, "nope", "once"),
@@ -256,7 +256,7 @@ describe("engine × synthetic-stdio", () => {
     expect(snap.rev).toBeGreaterThanOrEqual(revBefore);
     expect(store.state.projects).toHaveLength(1);
     expect(store.state.threads).toHaveLength(1);
-    expect(store.state.settings.theme).not.toBe("dark");
+    expect(store.state.settings.theme).not.toBe("nord");
     expect(store.state.ui.selectedThreadId).toBe(thread.id);
   });
 

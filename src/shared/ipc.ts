@@ -21,7 +21,7 @@ import {
   ValidationError,
   type Validator,
 } from "./validate";
-import { LANGUAGE_IDS, THEME_IDS } from "./types";
+import { APPEARANCE_MODES, LANGUAGE_IDS, THEME_IDS } from "./types";
 import { SHORTCUT_COMMANDS, type KeyChord } from "./shortcuts";
 import type { ModelPreference } from "./modelList";
 
@@ -467,6 +467,7 @@ export const requestValidators = {
   "approvals:resolve": vObject({ threadId: vId, approvalId: vId, optionId: vString }),
   "settings:set": vObject({
     theme: vOptional(vTheme),
+    appearanceMode: vOptional(vEnum(APPEARANCE_MODES)),
     language: vOptional(vLanguage),
     // F28: frozen chimeWhenFinished (default on) — a soft chime when a
     // turn finishes, whether or not the thread is in view.

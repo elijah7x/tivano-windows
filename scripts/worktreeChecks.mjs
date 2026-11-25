@@ -93,6 +93,9 @@ export async function runWorktreeChecks({
   );
 
   // --- UI: open the worktree dialog, create with a named branch -----------
+  if (await page.locator('.more-controls-btn[aria-expanded="false"]').count()) {
+    await page.locator(".more-controls-btn").click();
+  }
   await page.locator("button.head-action", { hasText: "Worktree" }).click();
   await page.locator(".wt-dialog").waitFor({ timeout: 10000 });
   await page.locator(".wt-dialog .wt-input").fill("feat-e2e");
