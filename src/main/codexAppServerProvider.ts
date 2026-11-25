@@ -58,6 +58,8 @@ import {
 import {
   CODEX_PROVIDER_ID,
   CODEX_SCHEMA_PIN,
+  codexAppServerArgs,
+  type CodexLaunchOptions,
   type CodexRuntimeConfig,
 } from "./codexRuntimeConfig";
 import {
@@ -205,7 +207,7 @@ export interface CodexProviderOptions {
   /** Test seam — defaults: fixture → direct spawn; real → job helper. */
   spawnImpl?: SpawnImpl;
   /** Test seam — full control over the child spec. */
-  makeSpec?(workspaceDir: string): SpawnSpec;
+  makeSpec?(workspaceDir: string, opts?: CodexLaunchOptions): SpawnSpec;
   transportLimits?: Partial<TransportLimits>;
   limits?: Partial<CodexProviderLimits>;
   /** Binding seam owned by the engine/store. */
@@ -476,6 +478,65 @@ function toolUpdate(
     default:
       return { status: toolStatus(raw, null) };
   }
+}
+
+async function fetchModelList(
+  rpc: CodexRpc,
+  requestTimeoutMs: number,
+  checkAlive?: () => void,
+): Promise<CodexModelOption[]> {
+  const models: CodexModelOption[] = [];
+  let cursor: unknown = null;
+  for (let page = 0; page < 10 && models.length <= 128; page++) {
+    const params: Record<string, unknown> = {};
+    if (cursor !== null && cursor !== undefined) params.cursor = cursor;
+    const res = await rpc.request("model/list", params, {
+      timeoutMs: requestTimeoutMs,
+    });
+    checkAlive?.();
+    const data = isObj(res) && Array.isArray(res.data) ? res.data : [];
+    for (const m of data.slice(0, 128)) {
+      if (!isObj(m) || m.hidden === true) continue;
+      const id = s(m.id);
+      if (!id || id.length > 200) continue;
+      const efforts: string[] = [];
+      if (Array.isArray(m.supportedReasoningEfforts)) {
+        for (const e of m.supportedReasoningEfforts.slice(0, 16)) {
+          const v = isObj(e) ? s(e.reasoningEffort) : null;
+          if (v && v.length <= 64) efforts.push(v);
+        }
+      }
+      let fastTier: string | undefined;
+      if (Array.isArray(m.serviceTiers)) {
+        for (const t of m.serviceTiers.slice(0, 16)) {
+          if (!isObj(t)) continue;
+          const tid = s(t.id);
+          if (!tid) continue;
+          const label = `${tid} ${s(t.name) ?? ""}`.toLowerCase();
+          if (label.includes("fast") || label.includes("priority")) {
+            fastTier = tid;
+            break;
+          }
+        }
+      }
+      const name = s(m.displayName);
+      const detail = s(m.description);
+      const defaultEffort = s(m.defaultReasoningEffort);
+      models.push({
+        id,
+        name: name && name.length <= 200 ? name : id,
+        ...(detail && detail.length <= 1000 ? { detail } : {}),
+        efforts,
+        ...(defaultEffort && defaultEffort.length <= 64 ? { defaultEffort } : {}),
+        isDefault: m.isDefault === true,
+        ...(fastTier ? { fastTier } : {}),
+      });
+    }
+    const next = isObj(res) ? res.nextCursor : null;
+    if (next === null || next === undefined) break;
+    cursor = next;
+  }
+  return models;
 }
 
 class CodexSession {
@@ -1476,60 +1537,11 @@ class CodexSession {
     const rpc = this.rpc;
     if (this.phase !== "ready" || !rpc)
       throw new CodexProtocolError("session is not bound", "CODEX_CONNECTION_CLOSED");
-    const models: CodexModelOption[] = [];
-    let cursor: unknown = null;
     const gen = this.gen;
-    for (let page = 0; page < 10 && models.length <= 128; page++) {
-      const params: Record<string, unknown> = {};
-      if (cursor !== null && cursor !== undefined) params.cursor = cursor;
-      const res = await rpc.request("model/list", params, {
-        timeoutMs: this.limits.requestTimeoutMs,
-      });
+    return fetchModelList(rpc, this.limits.requestTimeoutMs, () => {
       if (gen !== this.gen || this.rpc !== rpc)
         throw new CodexProtocolError("connection recycled", "CODEX_CONNECTION_CLOSED");
-      const data = isObj(res) && Array.isArray(res.data) ? res.data : [];
-      for (const m of data.slice(0, 128)) {
-        if (!isObj(m) || m.hidden === true) continue;
-        const id = s(m.id);
-        if (!id || id.length > 200) continue;
-        const efforts: string[] = [];
-        if (Array.isArray(m.supportedReasoningEfforts)) {
-          for (const e of m.supportedReasoningEfforts.slice(0, 16)) {
-            const v = isObj(e) ? s(e.reasoningEffort) : null;
-            if (v && v.length <= 64) efforts.push(v);
-          }
-        }
-        let fastTier: string | undefined;
-        if (Array.isArray(m.serviceTiers)) {
-          for (const t of m.serviceTiers.slice(0, 16)) {
-            if (!isObj(t)) continue;
-            const tid = s(t.id);
-            if (!tid) continue;
-            const label = `${tid} ${s(t.name) ?? ""}`.toLowerCase();
-            if (label.includes("fast") || label.includes("priority")) {
-              fastTier = tid;
-              break;
-            }
-          }
-        }
-        const name = s(m.displayName);
-        const detail = s(m.description);
-        const defaultEffort = s(m.defaultReasoningEffort);
-        models.push({
-          id,
-          name: name && name.length <= 200 ? name : id,
-          ...(detail && detail.length <= 1000 ? { detail } : {}),
-          efforts,
-          ...(defaultEffort && defaultEffort.length <= 64 ? { defaultEffort } : {}),
-          isDefault: m.isDefault === true,
-          ...(fastTier ? { fastTier } : {}),
-        });
-      }
-      const next = isObj(res) ? res.nextCursor : null;
-      if (next === null || next === undefined) break;
-      cursor = next;
-    }
-    return models;
+    });
   }
 
   /**
@@ -2933,6 +2945,9 @@ export class CodexAppServerProvider implements ProviderAdapter {
   /** Sessions whose shutdown is unconfirmed — they keep their living
    *  child attribution until provider.dispose confirms the close. */
   private retired = new Set<CodexSession>();
+  private oneShotTransports = new Set<StdioTransport<CodexMessage>>();
+  private oneShotRpcs = new Set<CodexRpc>();
+  private oneShotCleanupFailures = new Map<StdioTransport<CodexMessage>, ChildCleanupResult>();
   private disposed = false;
 
   constructor(opts: CodexProviderOptions) {
@@ -2978,22 +2993,56 @@ export class CodexAppServerProvider implements ProviderAdapter {
     return this.opts.mcpServers?.();
   }
 
-  buildSpec(workspaceDir: string): SpawnSpec {
-    if (this.opts.makeSpec) return this.opts.makeSpec(workspaceDir);
+  buildSpec(workspaceDir: string, opts: CodexLaunchOptions = {}): SpawnSpec {
+    if (this.opts.makeSpec) return this.opts.makeSpec(workspaceDir, opts);
     if (this.config.mode === "fixture") {
       return {
         executable: this.config.fixtureNode!,
-        args: [this.config.fixtureScript!],
+        args: codexAppServerArgs([this.config.fixtureScript!], opts),
         cwd: workspaceDir,
         env: this.config.env,
       };
     }
     return {
       executable: this.config.executable!,
-      args: this.config.args,
+      args: codexAppServerArgs(this.config.args, opts),
       cwd: workspaceDir,
       env: this.config.env,
     };
+  }
+
+  private assertCanLaunch(): void {
+    if (this.cleanupUnproven)
+      throw new CodexProviderError("CODEX_BUSY: previous job cleanup is unproven", "CODEX_BUSY");
+    if (this.disposed)
+      throw new CodexProviderError("CODEX_BUSY: provider is disposed", "CODEX_BUSY");
+    if (this.config.mode === "unconfigured")
+      throw new CodexProviderError(
+        "CODEX_NOT_CONFIGURED: set TIVANO_CODEX_EXECUTABLE to a codex.exe absolute path " +
+          "(or TIVANO_CODEX_FIXTURE for the offline protocol fixture)",
+        "CODEX_NOT_CONFIGURED",
+      );
+    if (this.config.mode === "real" && !this.config.treeCapability.supported)
+      throw new CodexProviderError(
+        `CODEX_REAL_UNAVAILABLE: ${this.config.treeCapability.reason ?? "process-tree cleanup unproven"}`,
+        "CODEX_REAL_UNAVAILABLE",
+      );
+  }
+
+  private recordOneShotCleanupFailure(
+    tr: StdioTransport<CodexMessage>,
+    code: number | null,
+    signal: string | null,
+  ): void {
+    if (this.config.mode !== "real" || code !== 4) return;
+    this.oneShotCleanupFailures.set(tr, {
+      pid: tr.pid,
+      confirmed: false,
+      exitCode: code,
+      signal,
+      problem: "CLEANUP_INCOMPLETE: job-helper exited 4; tree cleanup unproven",
+    });
+    this.noteUnprovenCleanup();
   }
 
   spawnImplForMode(): SpawnImpl | undefined {
@@ -3016,21 +3065,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
   }
 
   start(context: TurnContext, callbacks: ProviderCallbacks): ProviderTurnHandle {
-    if (this.cleanupUnproven)
-      throw new CodexProviderError("CODEX_BUSY: previous job cleanup is unproven", "CODEX_BUSY");
-    if (this.disposed)
-      throw new CodexProviderError("CODEX_BUSY: provider is disposed", "CODEX_BUSY");
-    if (this.config.mode === "unconfigured")
-      throw new CodexProviderError(
-        "CODEX_NOT_CONFIGURED: set TIVANO_CODEX_EXECUTABLE to a codex.exe absolute path " +
-          "(or TIVANO_CODEX_FIXTURE for the offline protocol fixture)",
-        "CODEX_NOT_CONFIGURED",
-      );
-    if (this.config.mode === "real" && !this.config.treeCapability.supported)
-      throw new CodexProviderError(
-        `CODEX_REAL_UNAVAILABLE: ${this.config.treeCapability.reason ?? "process-tree cleanup unproven"}`,
-        "CODEX_REAL_UNAVAILABLE",
-      );
+    this.assertCanLaunch();
     if (!context.workspace)
       throw new CodexProviderError(
         "CODEX_WORKSPACE_REQUIRED: codex requires a main-authorized workspace",
@@ -3125,21 +3160,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
       hydraPolicy?: string;
     },
   ): Promise<string | null> {
-    if (this.cleanupUnproven)
-      throw new CodexProviderError("CODEX_BUSY: previous job cleanup is unproven", "CODEX_BUSY");
-    if (this.disposed)
-      throw new CodexProviderError("CODEX_BUSY: provider is disposed", "CODEX_BUSY");
-    if (this.config.mode === "unconfigured")
-      throw new CodexProviderError(
-        "CODEX_NOT_CONFIGURED: set TIVANO_CODEX_EXECUTABLE to a codex.exe absolute path " +
-          "(or TIVANO_CODEX_FIXTURE for the offline protocol fixture)",
-        "CODEX_NOT_CONFIGURED",
-      );
-    if (this.config.mode === "real" && !this.config.treeCapability.supported)
-      throw new CodexProviderError(
-        `CODEX_REAL_UNAVAILABLE: ${this.config.treeCapability.reason ?? "process-tree cleanup unproven"}`,
-        "CODEX_REAL_UNAVAILABLE",
-      );
+    this.assertCanLaunch();
     if (!opts.workspace)
       throw new CodexProviderError(
         "CODEX_WORKSPACE_REQUIRED: codex requires a main-authorized workspace",
@@ -3179,6 +3200,145 @@ export class CodexAppServerProvider implements ProviderAdapter {
     }
   }
 
+  /**
+   * Run a lightweight one-shot `app-server` background session (no plugins,
+   * apps, or telemetry via `CODEX_ONE_SHOT_CONFIG_ARGS`), handshake
+   * `initialize`/`initialized`, execute `fn`, and dispose its transport.
+   * Regular chat sessions keep `lightweight` unset and retain plugins.
+   */
+  async runOneShot<T>(
+    workspaceDir: string,
+    fn: (rpc: CodexRpc, initResult: Record<string, unknown>) => Promise<T>,
+  ): Promise<T> {
+    this.assertCanLaunch();
+    if (
+      !workspaceDir ||
+      workspaceDir.includes("\0") ||
+      workspaceDir.startsWith("\\\\") ||
+      workspaceDir.startsWith("//") ||
+      /^file:/i.test(workspaceDir) ||
+      !isAbsolute(workspaceDir)
+    ) {
+      throw new CodexProviderError(
+        "CODEX_WORKSPACE_REQUIRED: codex requires a local main-authorized workspace",
+        "CODEX_WORKSPACE_REQUIRED",
+      );
+    }
+    let cwd: string;
+    try {
+      cwd = realpathSync(workspaceDir);
+    } catch {
+      throw new CodexProviderError(
+        "CODEX_WORKSPACE_REQUIRED: workspace directory cannot be resolved",
+        "CODEX_WORKSPACE_REQUIRED",
+      );
+    }
+    const spec = this.buildSpec(cwd, { lightweight: true });
+    let rpc: CodexRpc | null = null;
+    let alive = true;
+    const transport = new StdioTransport<CodexMessage>(
+      spec,
+      { ...DEFAULT_TRANSPORT_LIMITS, ...this.transportLimits },
+      {
+        onFrame: (m) => {
+          if (alive && rpc) rpc.onFrame(m);
+        },
+        onProtocolError: (err) => {
+          alive = false;
+          rpc?.failAllPending(err.message);
+          void transport.dispose();
+        },
+        onExit: () => {},
+        onClose: (code, signal) => {
+          alive = false;
+          this.oneShotTransports.delete(transport);
+          this.recordOneShotCleanupFailure(transport, code, signal);
+          const tail = transport.stderrTail().trim();
+          rpc?.failAllPending(
+            `CODEX_CONNECTION_CLOSED: one-shot connection closed (code ${code ?? "?"}, signal ${signal ?? "?"})` +
+              (tail ? ` — stderr tail: ${bounded(tail, 400)}` : ""),
+          );
+        },
+        onSpawnError: (err) => {
+          alive = false;
+          rpc?.failAllPending(`CODEX_PROTOCOL_ERROR: spawn failed: ${err.message}`);
+          void transport.dispose();
+        },
+      },
+      this.spawnImplForMode(),
+      codexWireCodec(256 * 1024),
+    );
+    rpc = new CodexRpc(
+      { send: (m, ack) => transport.send(m, ack) },
+      {
+        onServerRequest: (id, method) => {
+          rpc?.respondError(id, -32601, `unsupported server request in one-shot session: ${method}`);
+        },
+        onNotification: () => {},
+        onClosed: () => {},
+        onFatal: (err) => {
+          alive = false;
+          rpc?.failAllPending(err.message);
+          void transport.dispose();
+        },
+      },
+      {
+        requestTimeoutMs: this.limits.requestTimeoutMs,
+        onMutatingTimeout: (method) => {
+          alive = false;
+          rpc?.failAllPending(
+            `CODEX_REQUEST_TIMEOUT: mutating request ${method} timed out — wire state unknown`,
+          );
+          void transport.dispose();
+        },
+      },
+    );
+    this.oneShotTransports.add(transport);
+    this.oneShotRpcs.add(rpc);
+    try {
+      transport.start();
+      const init = await rpc.request(
+        "initialize",
+        {
+          clientInfo: {
+            name: this.clientName,
+            title: "Tivano",
+            version: this.clientVersion,
+          },
+        },
+        { timeoutMs: this.limits.initializeTimeoutMs, mutating: true },
+      );
+      if (!isObj(init)) {
+        throw new CodexProtocolError("initialize response is not an object", "CODEX_PROTOCOL_ERROR");
+      }
+      if (s(init.codexHome) && s(init.codexHome) !== this.config.codexHome) {
+        throw new CodexProtocolError(
+          `CODEX_HOME mismatch: server reports ${s(init.codexHome)}`,
+          "CODEX_PROTOCOL_ERROR",
+        );
+      }
+      rpc.notify("initialized");
+      return await fn(rpc, init);
+    } finally {
+      alive = false;
+      this.oneShotRpcs.delete(rpc);
+      rpc.failAllPending("CODEX_CONNECTION_CLOSED: one-shot connection closed");
+      const res = await transport.dispose();
+      this.recordOneShotCleanupFailure(transport, res.exitCode, res.signal);
+      if (res.confirmed || !transport.hasChild) this.oneShotTransports.delete(transport);
+    }
+  }
+
+  /**
+   * Fetch the provider-owned model catalog using a fresh lightweight
+   * one-shot `app-server` process (no plugins, apps, or telemetry).
+   */
+  async fetchModelCatalogOneShot(workspaceDir: string): Promise<CodexModelOption[]> {
+    return this.runOneShot(workspaceDir, (rpc) =>
+      fetchModelList(rpc, this.limits.requestTimeoutMs),
+    );
+  }
+
   async modelCatalog(): Promise<CodexModelOption[] | null> {
     for (const s of this.sessions.values()) {
       if (s.phase === "ready") return s.fetchModelCatalog();
@@ -3190,6 +3350,18 @@ export class CodexAppServerProvider implements ProviderAdapter {
     this.disposed = true;
     const children: ChildCleanupResult[] = [];
     let orphaned = 0;
+    for (const r of [...this.oneShotRpcs]) {
+      orphaned += r.pendingCount;
+      r.failAllPending("CODEX_CONNECTION_CLOSED: provider disposed");
+      this.oneShotRpcs.delete(r);
+    }
+    for (const tr of [...this.oneShotTransports]) {
+      const result = await tr.dispose();
+      this.recordOneShotCleanupFailure(tr, result.exitCode, result.signal);
+      children.push(result);
+      if (result.confirmed || !tr.hasChild) this.oneShotTransports.delete(tr);
+    }
+    children.push(...this.oneShotCleanupFailures.values());
     for (const s of [...this.sessions.values(), ...this.retired]) {
       const { children: c, orphaned: o } = await s.shutdown();
       children.push(...c);

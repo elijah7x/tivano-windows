@@ -9,6 +9,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildCodexEnv,
+  CODEX_ONE_SHOT_CONFIG_ARGS,
+  codexAppServerArgs,
   resolveCodexHome,
   resolveCodexRuntime,
   validateCodexExecutable,
@@ -263,5 +265,42 @@ describe("resolveCodexRuntime", () => {
     expect(c.mode).toBe("real");
     expect(c.treeCapability).toBe(verdict);
     expect(c.realUnavailableReason).toContain("hash mismatch");
+  });
+});
+
+describe("codexAppServerArgs (P2-57 lightweight launch)", () => {
+  it("regular chat keeps the pinned base args untouched", () => {
+    const base = ["-c", 'cli_auth_credentials_store="file"', "app-server"];
+    expect(codexAppServerArgs(base)).toEqual(base);
+    expect(codexAppServerArgs(base, { lightweight: false })).toEqual(base);
+    expect(codexAppServerArgs(base)).not.toBe(base);
+  });
+
+  it("lightweight launch appends the frozen oneShotConfigArguments to disable plugins, apps, and telemetry", () => {
+    const base = ["-c", 'cli_auth_credentials_store="file"', "app-server"];
+    const args = codexAppServerArgs(base, { lightweight: true });
+    expect(args).toEqual([
+      "-c",
+      'cli_auth_credentials_store="file"',
+      "app-server",
+      "-c",
+      "features.plugins=false",
+      "-c",
+      "features.apps=false",
+      "-c",
+      "analytics.enabled=false",
+      "-c",
+      'otel.metrics_exporter="none"',
+    ]);
+    expect(CODEX_ONE_SHOT_CONFIG_ARGS).toEqual([
+      "-c",
+      "features.plugins=false",
+      "-c",
+      "features.apps=false",
+      "-c",
+      "analytics.enabled=false",
+      "-c",
+      'otel.metrics_exporter="none"',
+    ]);
   });
 });
