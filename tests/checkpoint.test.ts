@@ -49,7 +49,8 @@ const haveGit = (() => {
 })();
 // win32 GitService deliberately refuses direct Git without an injected
 // contained runner ("git-containment"): the real-git-op suites below are
-// POSIX coverage. The simulated win32/contained sections still run here.
+// POSIX coverage. The win32 containment simulation is ungated and uses a
+// plain folder because the pinned refusal happens before any Git read.
 const haveDirectGit = haveGit && process.platform !== "win32";
 
 const dirs: string[] = [];
@@ -209,6 +210,22 @@ function parkAtCall(parkIndex: number, gitExe = GIT) {
   };
   return { runner, calls: () => calls, waitParked, release: (r: GitRunResult) => resolveParked(r) };
 }
+
+describe("CheckpointService Windows containment", () => {
+  it("reports a pinned unavailable capability honestly", async () => {
+    // No real Git fixture is needed: the pinned bootstrap refusal happens
+    // before the service probes the checkout.
+    const dir = tmp("plain-repo-");
+    writeFileSync(join(dir, "a.txt"), "a\n");
+    // Windows Git only ever runs through the attested Job --run runner;
+    // without it the pinned bootstrap reason refuses honestly (P2L).
+    const r = rig({ repoDir: dir, platform: "win32", unavailableReason: "git-containment" });
+    const c = await r.service.capture(r.projectId, r.threadId, r.turnId, "before");
+    expect(c).toMatchObject({ kind: "unavailable", reason: "git-containment" });
+    const p = await r.service.preview(r.projectId, r.threadId, "b", "e", []);
+    expect(p).toMatchObject({ kind: "unavailable", reason: "git-containment" });
+  }, 20_000);
+});
 
 describe.skipIf(!haveDirectGit)("CheckpointService", () => {
   it("captures before/after checkpoints durably and leaves the repository byte-identical", async () => {
@@ -426,19 +443,6 @@ describe.skipIf(!haveDirectGit)("CheckpointService", () => {
     expect(
       (await r.service.capture(r.projectId, "no-such-thread", r.turnId, "before")).reason,
     ).toBe("turn-not-found");
-  }, 20_000);
-
-  it("reports a pinned unavailable capability honestly (Windows containment)", async () => {
-    const dir = mkRepo();
-    writeFileSync(join(dir, "a.txt"), "a\n");
-    commitAll(dir);
-    // Windows Git only ever runs through the attested Job --run runner;
-    // without it the pinned bootstrap reason refuses honestly (P2L).
-    const r = rig({ repoDir: dir, platform: "win32", unavailableReason: "git-containment" });
-    const c = await r.service.capture(r.projectId, r.threadId, r.turnId, "before");
-    expect(c).toMatchObject({ kind: "unavailable", reason: "git-containment" });
-    const p = await r.service.preview(r.projectId, r.threadId, "b", "e", []);
-    expect(p).toMatchObject({ kind: "unavailable", reason: "git-containment" });
   }, 20_000);
 
   it("a mid-capture worktree mutation is detected and retried — the published snapshot is self-consistent", async () => {
