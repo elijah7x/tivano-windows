@@ -16,13 +16,13 @@ import {
   addPin,
   addSection,
   applyDraftRename,
-  dropPinOnGroupEnd,
-  dropPinOnPin,
   moveModelSection,
   movePinToSection,
-  moveSectionToTarget,
   partitionModelBlocks,
   pinId,
+  planModelDropOnPin,
+  planModelDropOnRail,
+  planModelDropOnWallGroup,
   prefKey,
   protectedModelIds,
   removePin,
@@ -201,9 +201,6 @@ export function createModelListController(ctx: ModelListControllerContext) {
     if (r) ctx.write({ modelList: r.modelList, modelSections: r.modelSections });
   };
 
-  const findDraggedPin = (f: { pins: ModelPin[] }, dragged: string) =>
-    f.pins.find((p) => pinId(p) === dragged);
-
   const commitRename = (id: string) => {
     const name = ctx.getDraft().trim();
     const f = freshLists();
@@ -265,43 +262,30 @@ export function createModelListController(ctx: ModelListControllerContext) {
     const dragged = ctx.dragRef.current;
     ctx.dragRef.current = null;
     ctx.setDropHint(null);
-    if (!dragged || dragged.startsWith("section/") || isSearching) return;
     const f = freshLists();
-    const pin = findDraggedPin(f, dragged);
-    if (pin) writeItems(dropPinOnPin(f.pins, foldRename(f.sections), pin, targetPin));
+    writeItems(
+      planModelDropOnPin(f.pins, foldRename(f.sections), dragged, targetPin, isSearching),
+    );
   };
 
   const dropOnWallGroup = (sectionId: string | null, isSearching: boolean) => {
     const dragged = ctx.dragRef.current;
     ctx.dragRef.current = null;
     ctx.setDropHint(null);
-    if (!dragged || dragged.startsWith("section/") || isSearching) return;
     const f = freshLists();
-    const pin = findDraggedPin(f, dragged);
-    if (pin) writeItems(dropPinOnGroupEnd(f.pins, foldRename(f.sections), pin, sectionId));
+    writeItems(
+      planModelDropOnWallGroup(f.pins, foldRename(f.sections), dragged, sectionId, isSearching),
+    );
   };
 
   const dropOnRail = (targetSectionId: string | null, isSearching: boolean) => {
     const dragged = ctx.dragRef.current;
     ctx.dragRef.current = null;
     ctx.setDropHint(null);
-    if (!dragged) return;
     const f = freshLists();
-    const folded = foldRename(f.sections);
-    if (dragged.startsWith("section/")) {
-      if (isSearching || targetSectionId === null) return;
-      const draggedId = dragged.slice("section/".length);
-      writeItems(moveSectionToTarget(f.pins, folded, draggedId, targetSectionId));
-      return;
-    }
-    const pin = findDraggedPin(f, dragged);
-    if (pin) {
-      writeItems(
-        dropPinOnGroupEnd(f.pins, folded, pin, targetSectionId, {
-          requireDifferentGroup: true,
-        }),
-      );
-    }
+    writeItems(
+      planModelDropOnRail(f.pins, foldRename(f.sections), dragged, targetSectionId, isSearching),
+    );
   };
 
   const addNewGroup = (label: string) => {
