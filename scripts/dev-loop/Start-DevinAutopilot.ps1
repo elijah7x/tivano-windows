@@ -863,7 +863,9 @@ function Wait-DevinSessionNew {
       $files = @(Get-DevinLogFiles $logs)
       foreach ($file in $files) {
         foreach ($line in (Read-LogLinesShared $file.FullName)) {
-          if ($line -notmatch '(?i)session/new') { continue }
+          # session/new when Ctrl+N created a backend session; session/prompt when the mission reached a chat
+          # whose session already existed (an empty IDE-view side chat logs no session/new).
+          if ($line -notmatch '(?i)method="session/(new|prompt)"') { continue }
           if ($line -notmatch '^(\S+Z)(?:\s|$)') { continue }
           $parsed = [DateTime]::MinValue
           if ([DateTime]::TryParse($Matches[1], [Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) {
@@ -932,6 +934,12 @@ function Start-FreshDevinSession {
     return $false
   }
 
+  # Ctrl+N opens a new chat only while the chat has focus. In the IDE view (what `devin desktop <folder>`
+  # opens after a restart) it otherwise opens an Untitled editor tab, so focus the chat input first.
+  if (-not (Focus-DevinChatInput $Window)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; chat input not focused before Ctrl+N)')
+    return $false
+  }
   $pressSince = [DateTime]::Now
   if (-not (Send-DevinKeysSafe $Window '^n')) {
     Write-Log ('session rotation unconfirmed (' + $Reason + '; Ctrl+N not sent)')
@@ -943,9 +951,8 @@ function Start-FreshDevinSession {
     return $false
   }
   # New Devin Desktop sessions already open in Bypass Permissions, and current clients no longer log a
-  # mode change for /bypass, so the mission goes out directly. session/new in the log afterwards shows
-  # Ctrl+N really opened a chat; without it the rotation is still counted as sent (the mission was
-  # pasted, and resending would duplicate it) and the idle watchdog nudges if nothing follows.
+  # mode change for /bypass, so the mission goes out directly. Only session/new in the log afterwards
+  # counts as a rotation; without it the caller falls back to its normal path.
   if (-not (Set-DevinForeground $Window) -or -not (Focus-DevinChatInput $Window)) {
     Write-Log ('session rotation unconfirmed (' + $Reason + '; focus lost before mission)')
     return $false
@@ -960,7 +967,8 @@ function Start-FreshDevinSession {
     return $false
   }
   if (-not (Wait-DevinSessionNew $pressSince 30)) {
-    Write-Log ('session rotation: mission sent but no session/new in log within 30s (' + $Reason + ')')
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; mission sent but no session/new or session/prompt in log within 30s)')
+    return $false
   }
 
   $state = Read-WatchdogState
