@@ -12,7 +12,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { _electron as electron } from "playwright-core";
-import type { ElectronApplication, Page } from "playwright-core";
+import type { ConsoleMessage, ElectronApplication, Page } from "playwright-core";
+import type { ChatThread, Settings } from "../src/shared/types";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const req = createRequire(import.meta.url);
@@ -22,6 +23,18 @@ let page!: Page;
 let app!: ElectronApplication;
 let scratch = "";
 const pageDiagnostics: string[] = [];
+
+interface PanelHarness {
+  lead(over?: Partial<ChatThread>): ChatThread;
+  head(index: number, status?: "running" | "completed"): ChatThread;
+  helper(over?: Partial<ChatThread>): ChatThread;
+  mountChat(scene: { settings: Partial<Settings>; threads: ChatThread[] }): Promise<true>;
+  updateChat(scene: { settings: Partial<Settings>; threads: ChatThread[] }): Promise<true>;
+  mountHelperPanel(thread: ChatThread): Promise<true>;
+  invocations(): Array<{ channel: string; payload: { id?: string } }>;
+  clearInvocations(): void;
+  closeCalls(): number;
+}
 
 async function waitCount(selector: string, count: number): Promise<void> {
   try {
@@ -38,7 +51,7 @@ async function waitCount(selector: string, count: number): Promise<void> {
 
 async function invocations(): Promise<Array<{ channel: string; payload: { id?: string } }>> {
   return page.evaluate(() => {
-    const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+    const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
     return h.invocations();
   });
 }
@@ -81,7 +94,7 @@ window.matchMedia=window.matchMedia||(()=>({matches:false,media:'',addEventListe
       `const {app,BrowserWindow}=require('electron');
 app.setPath('userData',${JSON.stringify(join(scratch, "user-data"))});
 app.whenReady().then(()=>{
-  const win=new BrowserWindow({width:1280,height:820,show:false,webPreferences:{backgroundThrottling:false,contextIsolation:false,sandbox:false}});
+  const win=new BrowserWindow({width:1280,height:820,show:false,webPreferences:{backgroundThrottling:false}});
   win.loadFile(${JSON.stringify(htmlPath)});
 });
 app.on('window-all-closed',()=>app.quit());
@@ -97,7 +110,7 @@ app.on('window-all-closed',()=>app.quit());
     });
     page = await app.firstWindow();
     page.on("pageerror", (e: Error) => pageDiagnostics.push(`pageerror: ${e.message}`));
-    page.on("console", (m: any) => pageDiagnostics.push(`console-${m.type()}: ${m.text()}`.slice(0, 600)));
+    page.on("console", (m: ConsoleMessage) => pageDiagnostics.push(`console-${m.type()}: ${m.text()}`.slice(0, 600)));
     await page.waitForFunction(
       () => Boolean((window as unknown as { __panelHarness?: unknown }).__panelHarness),
       null,
@@ -112,7 +125,7 @@ app.on('window-all-closed',()=>app.quit());
 
   it("flipping the layout Off folds the docked team panel into the working pill", async () => {
     await page.evaluate(() => {
-      const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
       return h.mountChat({
         settings: { hydraAutoOpensPanels: true, hydraAutoPopsHeads: false },
         threads: [h.lead(), h.head(1)],
@@ -121,7 +134,7 @@ app.on('window-all-closed',()=>app.quit());
     await waitCount(".hydra-panel", 1);
 
     await page.evaluate(() => {
-      const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
       return h.updateChat({
         settings: { hydraAutoOpensPanels: false, hydraAutoPopsHeads: false },
         threads: [h.lead(), h.head(1)],
@@ -133,14 +146,14 @@ app.on('window-all-closed',()=>app.quit());
 
   it("a genuinely new head auto-opens the panel while the layout flip alone does not", async () => {
     await page.evaluate(() => {
-      const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
       return h.mountChat({
         settings: { hydraAutoOpensPanels: false, hydraAutoPopsHeads: false },
         threads: [h.lead(), h.head(1)],
       });
     });
     await page.evaluate(() => {
-      const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
       return h.updateChat({
         settings: { hydraAutoOpensPanels: true, hydraAutoPopsHeads: false },
         threads: [h.lead(), h.head(1)],
@@ -149,7 +162,7 @@ app.on('window-all-closed',()=>app.quit());
     await waitCount(".hydra-panel", 0);
 
     await page.evaluate(() => {
-      const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
       return h.updateChat({
         settings: { hydraAutoOpensPanels: true, hydraAutoPopsHeads: false },
         threads: [h.lead(), h.head(1), h.head(2)],
@@ -161,7 +174,7 @@ app.on('window-all-closed',()=>app.quit());
 
   it("dismissing one pop holds it until switching the lead away and back resets the hold", async () => {
     await page.evaluate(() => {
-      const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
       return h.mountChat({
         settings: { hydraAutoOpensPanels: true, hydraAutoPopsHeads: true },
         threads: [h.lead(), h.head(1), h.head(2)],
@@ -173,7 +186,7 @@ app.on('window-all-closed',()=>app.quit());
     await waitCount(".helper-panel.float", 0);
 
     await page.evaluate(() => {
-      const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
       return h.updateChat({
         settings: { hydraAutoOpensPanels: true, hydraAutoPopsHeads: true },
         threads: [h.lead({ id: "other", title: "Other chat" })],
@@ -182,7 +195,7 @@ app.on('window-all-closed',()=>app.quit());
     await waitCount(".helper-panel.float", 0);
 
     await page.evaluate(() => {
-      const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
       return h.updateChat({
         settings: { hydraAutoOpensPanels: true, hydraAutoPopsHeads: true },
         threads: [h.lead(), h.head(1), h.head(2)],
@@ -192,16 +205,33 @@ app.on('window-all-closed',()=>app.quit());
     await waitCount(".helper-panel.float", 1);
   }, 20000);
 
+  it("the working pill for a head re-opens the hidden team panel", async () => {
+    await page.evaluate(() => {
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
+      return h.mountChat({
+        settings: { hydraAutoOpensPanels: false, hydraAutoPopsHeads: false },
+        threads: [h.lead(), h.head(1)],
+      });
+    });
+    await waitCount(".hydra-panel", 0);
+    await waitCount(".hydra-working-pill", 1);
+
+    await page.locator(".hydra-working-pill").click();
+
+    await waitCount(".hydra-panel", 1);
+    await waitCount(".hydra-working-pill", 0);
+  }, 20000);
+
   it("the working pill for a plain helper invokes threads:show-helper", async () => {
     await page.evaluate(() => {
-      const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
       return h.mountChat({
         settings: { hydraAutoOpensPanels: false, hydraAutoPopsHeads: false },
         threads: [h.lead(), h.helper()],
       });
     });
     await page.evaluate(() => {
-      const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
       h.clearInvocations();
     });
     await page.locator(".hydra-working-pill").click();
@@ -218,14 +248,14 @@ app.on('window-all-closed',()=>app.quit());
 
   it("clicking close on a running helper folds it without sending turns:cancel", async () => {
     await page.evaluate(() => {
-      const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
       h.clearInvocations();
       return h.mountHelperPanel(h.helper());
     });
     await page.locator('button[aria-label="Move to sidebar"]').click();
     expect(
       await page.evaluate(() => {
-        const h = (window as unknown as { __panelHarness: any }).__panelHarness;
+        const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
         return h.closeCalls();
       }),
     ).toBe(1);
