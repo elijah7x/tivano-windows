@@ -144,6 +144,26 @@ describe("F25 helper chat (frozen spawnSubagent/closeSubagent)", () => {
     expect(thread(engine, helper.id)!.messages[0]!.content).toBe(GITHUB_BRIEF.prompt);
   });
 
+  it("P2-40 Off layout flip folds an open helper without cancelling its turn", async () => {
+    const { engine } = make();
+    const parent = engine.createThread(null, "parent");
+    const helper = engine.spawnHelper(
+      parent.id,
+      "Merge #95",
+      "merge it [mock:approval]",
+    );
+    await waitFor(() => turn(engine, helper.id)?.status === "waiting-approval");
+    expect(thread(engine, helper.id)!.isInPanel).toBe(true);
+    const approvalId = turn(engine, helper.id)!.approval!.id;
+
+    engine.setSettings({ hydraAutoOpensPanels: false });
+
+    expect(thread(engine, helper.id)!.isInPanel).toBe(false);
+    expect(turn(engine, helper.id)?.status).toBe("waiting-approval");
+    engine.resolveApproval(helper.id, approvalId, "once");
+    await waitFor(() => turn(engine, helper.id)?.status === "done");
+  });
+
   it("spawn rejects an empty brief; helper of an unknown parent fails", () => {
     const { engine } = make();
     const parent = engine.createThread(null, "parent");
