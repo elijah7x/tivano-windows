@@ -175,11 +175,12 @@ function AutoPopPanels(props: {
     if (!chat) return;
     const read = () => {
       const header = chat.querySelector<HTMLElement>(":scope > .chat-head");
+      const team = chat.querySelector<HTMLElement>(":scope > .hydra-panel:not(.floating)");
       const composer = chat.querySelector<HTMLElement>(":scope > .composer");
       const next = {
         width: chat.clientWidth,
         height: chat.clientHeight,
-        chromeTop: header?.offsetHeight ?? 0,
+        chromeTop: (header?.offsetHeight ?? 0) + (team?.offsetHeight ?? 0),
         composerBottom: composer?.offsetHeight ?? 0,
       };
       setMetrics((prev) =>
@@ -196,8 +197,10 @@ function AutoPopPanels(props: {
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(read);
     ro?.observe(chat);
     const header = chat.querySelector<HTMLElement>(":scope > .chat-head");
+    const team = chat.querySelector<HTMLElement>(":scope > .hydra-panel:not(.floating)");
     const composer = chat.querySelector<HTMLElement>(":scope > .composer");
     if (header) ro?.observe(header);
+    if (team) ro?.observe(team);
     if (composer) ro?.observe(composer);
     window.addEventListener("resize", read);
     return () => {

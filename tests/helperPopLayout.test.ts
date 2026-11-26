@@ -79,6 +79,21 @@ describe("helperPopLayout automatic independent panels", () => {
     });
   }
 
+  it("starts below header plus docked team-panel chrome", () => {
+    const teamChromeTop = CHROME_TOP + 35;
+    const out = helperPopLayout({
+      paneWidth: 1100,
+      paneHeight: 720,
+      chromeTop: teamChromeTop,
+      composerBottom: COMPOSER_BOTTOM,
+      runningHeads: 3,
+    });
+    expect(out.placements).toHaveLength(2);
+    for (const p of out.placements) {
+      expect(p.y).toBeGreaterThanOrEqual(teamChromeTop + HELPER_PANEL_INSET);
+    }
+  });
+
   it("uses the frozen corner order in a wide pane", () => {
     const out = layout(1100, 720, 5);
     expect(out.placements.map((p) => p.corner)).toEqual(["tr", "tl", "br", "bl"]);
