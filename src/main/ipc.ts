@@ -124,6 +124,13 @@ export interface IpcOptions {
     install(): { state: "installed"; path: string; target: string; dir: string };
     uninstall(): { state: "absent"; dir: string };
   };
+  /** P1-03 storage diagnostics — main-owned measurement & safe cleanup. */
+  storageDiagnostics?: {
+    measure(): import("../shared/types").StorageDiagnosticsResult;
+    clean(
+      category: import("../shared/types").StorageDiagnosticsCategoryId,
+    ): import("../shared/types").StorageDiagnosticsResult;
+  };
 }
 
 export function registerIpc(opts: IpcOptions): () => void {
@@ -580,6 +587,17 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("limit:handoff", (p) => engine.handoffLimit(p.threadId));
   // F13 detection slice — empty payload; presence + --version only.
   handle("forge:probe", () => engine.probeForgeClis());
+  // P1-03 storage diagnostics — measure & clean recovery backups only.
+  handle("storage:diagnostics", () => {
+    if (!opts.storageDiagnostics) return { categories: [] };
+    return opts.storageDiagnostics.measure();
+  });
+  handle("storage:clean-diagnostics", (p) => {
+    if (!opts.storageDiagnostics) {
+      throw new EngineError("storage diagnostics are not available in this build");
+    }
+    return opts.storageDiagnostics.clean(p.category);
+  });
 
   const detach = engine.onEvent(opts.broadcast);
   return () => {

@@ -2098,4 +2098,22 @@ export const zhHant: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "不會產生對話標題、提交訊息或輸入框預測。",
   "Send a turn in Codex to load its models.": "在 Codex 中傳送一輪訊息以載入其模型。",
+  // P1-03
+  "Diagnostics": "診斷",
+  "Recovery files": "復原檔案",
+  "Keeps the newest recovery file and live store.": "保留最新的復原檔案與目前儲存資料。",
+  "Measuring…": "正在計算…",
+  "Cleaning up…": "正在清理…",
+  "Clean up…": "清理…",
+  "Clean up": "清理",
+  "No files found.": "找不到任何檔案。",
+  "Nothing to clean up.": "沒有可清理的項目。",
+  "Total: %@ · Cleanable: %@": "總計：%@ · 可清理：%@",
+  "Could not measure these files. Not included in the measured total. %@":
+    "無法統計這些檔案，未計入已統計總量。%@",
+  "Cleanup did not finish. Some files may already have been removed. %@":
+    "清理未完成，部分檔案可能已被移除。%@",
+  "Clean up recovery files?": "清理復原檔案？",
+  "Deletes only older store and turn recovery backups. Keeps the newest recovery file. Chats, attachments, worktrees and the live store are not removed.":
+    "僅刪除較舊的儲存與對話復原備份，保留最新的復原檔案。不會移除對話、附件、worktree 或目前儲存資料。",
 };

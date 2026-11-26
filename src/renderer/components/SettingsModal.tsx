@@ -40,6 +40,7 @@ import { WallpaperSection } from "./WallpaperSection";
 import { ModelListSettings } from "./ModelListSettings";
 import { TextGenerationPicker } from "./TextGenerationPicker";
 import { ArchiveSection } from "./ArchiveSection";
+import { StorageDiagnosticsSection } from "./StorageDiagnosticsSection";
 import { VersionSection } from "./WhatsNewViews";
 import {
   RUNTIME_MODES,
@@ -917,6 +918,7 @@ export function SettingsModal(props: {
               projects={props.projects}
               settings={settings}
             />
+            <StorageDiagnosticsSection />
           </>
         );
 

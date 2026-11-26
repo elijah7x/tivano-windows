@@ -5,7 +5,7 @@
 // the confirmBeforeDeleting gate, filtered Delete-all, and the IPC
 // boundary that refuses to delete non-archived threads.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -75,6 +75,15 @@ export async function runArchiveChecks({
   );
   doc.threads.push(t1, t2, t3, live);
   writeFileSync(join(dataRoot, "store.json"), JSON.stringify(doc));
+
+  // P1-03: seed two store recovery backups (240 B older, 120 B newest).
+  const olderRecovery = join(dataRoot, "store.corrupt-2026-11-20T00-00-00-000Z.json");
+  const newestRecovery = join(dataRoot, "store.corrupt-2026-11-21T00-00-00-000Z.json");
+  writeFileSync(olderRecovery, "a".repeat(240));
+  writeFileSync(newestRecovery, "b".repeat(120));
+  const nowSec = Math.floor(Date.now() / 1000);
+  utimesSync(olderRecovery, nowSec - 60, nowSec - 60);
+  utimesSync(newestRecovery, nowSec - 10, nowSec - 10);
 
   const s1 = await launch("archive-main");
   instances.push(s1);
@@ -233,6 +242,76 @@ export async function runArchiveChecks({
     && !existsSync(join(dataRoot, "turns", `${extra[1].id}.json`))
     && store.threads.some((t) => t.id === live.id));
 
+  // DIAG-01: P1-03 Storage › Diagnostics displays total + cleanable sizes.
+  await page.waitForSelector('[data-testid="diagnostics-row-recovery"]', { timeout: 10000 });
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector('[data-testid="diagnostics-status-recovery"]');
+      return el && el.textContent && el.textContent.includes("Total: 360 B");
+    },
+    { timeout: 5000 },
+  );
+  const diagStatus1 = (await page.locator('[data-testid="diagnostics-status-recovery"]').innerText()).trim();
+  const diagBtnEnabled = !(await page.locator('[data-testid="diagnostics-clean-recovery"]').isDisabled());
+  verify("DIAG-01", diagStatus1.includes("Total: 360 B · Cleanable: 240 B") && diagBtnEnabled, {
+    diagStatus1,
+    diagBtnEnabled,
+  });
+
+  // DIAG-02: separate confirmation per category — Cancel keeps both files.
+  await page.locator('[data-testid="diagnostics-clean-recovery"]').click();
+  await page.waitForSelector('[data-testid="diagnostics-confirm-recovery"]', { timeout: 5000 });
+  const confirmText = (await page.locator('[data-testid="diagnostics-confirm-recovery"]').innerText()).trim();
+  await page.locator('[data-testid="diagnostics-cancel-recovery"]').click();
+  await page.waitForSelector('[data-testid="diagnostics-confirm-recovery"]', {
+    state: "detached",
+    timeout: 5000,
+  });
+  verify("DIAG-02", confirmText.includes("Clean up recovery files?")
+    && existsSync(olderRecovery)
+    && existsSync(newestRecovery), { confirmText });
+
+  // DIAG-03: confirming cleanup removes older recovery file, keeps newest + live store.
+  await page.locator('[data-testid="diagnostics-clean-recovery"]').click();
+  await page.waitForSelector('[data-testid="diagnostics-confirm-btn-recovery"]', { timeout: 5000 });
+  await page.locator('[data-testid="diagnostics-confirm-btn-recovery"]').click();
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector('[data-testid="diagnostics-status-recovery"]');
+      return el && el.textContent && el.textContent.includes("Nothing to clean up.");
+    },
+    { timeout: 5000 },
+  );
+  const diagStatus2 = (await page.locator('[data-testid="diagnostics-status-recovery"]').innerText()).trim();
+  const diagBtnDisabled = await page.locator('[data-testid="diagnostics-clean-recovery"]').isDisabled();
+  verify("DIAG-03", diagStatus2.includes("Total: 120 B · Cleanable: 0 B · Nothing to clean up.")
+    && diagBtnDisabled
+    && !existsSync(olderRecovery)
+    && existsSync(newestRecovery)
+    && existsSync(join(dataRoot, "store.json")), { diagStatus2, diagBtnDisabled });
+
+  // DIAG-04: zh-Hans localization for diagnostics section.
+  await page.evaluate(() => window.tivano.invoke("settings:set", { language: "zh-Hans" }));
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector('[data-testid="diagnostics-section"]');
+      return el && el.textContent && el.textContent.includes("恢复文件");
+    },
+    { timeout: 5000 },
+  );
+  const zhDiagText = (await page.locator('[data-testid="diagnostics-section"]').innerText()).trim();
+  verify("DIAG-04", zhDiagText.includes("诊断")
+    && zhDiagText.includes("恢复文件")
+    && zhDiagText.includes("总量：120 B · 可清理：0 B · 没有可清理的文件。"), { zhDiagText });
+  await page.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector('[data-testid="diagnostics-section"]');
+      return el && el.textContent && el.textContent.includes("Recovery files");
+    },
+    { timeout: 5000 },
+  );
+
   // ---- sidebar-level archive/pin (restores the previous module's
   // ARCHIVE-*/PIN-* coverage on top of the new settings page) ----------
   await page.locator(".modal-actions .primary").click();
@@ -321,4 +400,33 @@ export async function runArchiveChecks({
 
   await boundedClose(s2.app, s2.proc);
   check("ARCH-20", true, "restart instance closed cleanly");
+
+  // DIAG-05: failed measurement surfaces error instead of 0 B and disables cleanup.
+  const s3 = await launchApp(
+    { TIVANO_TEST_DIAGNOSTICS_MEASURE_ERROR: "Simulated disk error" },
+    "archive-diag-error",
+  );
+  instances.push(s3);
+  const page3 = await s3.app.firstWindow();
+  await page3.waitForSelector(".sidebar-head", { timeout: 15000 });
+  await page3.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
+  await openSettings(page3);
+  await page3.waitForSelector('[data-testid="diagnostics-status-recovery"]', { timeout: 10000 });
+  await page3.waitForFunction(
+    () => {
+      const el = document.querySelector('[data-testid="diagnostics-status-recovery"]');
+      return el && el.textContent && el.textContent.includes("Simulated disk error");
+    },
+    { timeout: 5000 },
+  );
+  const diagErrText = (await page3.locator('[data-testid="diagnostics-status-recovery"]').innerText()).trim();
+  const diagErrBtnDisabled = await page3.locator('[data-testid="diagnostics-clean-recovery"]').isDisabled();
+  verify(
+    "DIAG-05",
+    diagErrText.includes("Could not measure these files. Not included in the measured total. Simulated disk error")
+      && !diagErrText.includes("0 B")
+      && diagErrBtnDisabled,
+    { diagErrText, diagErrBtnDisabled },
+  );
+  await boundedClose(s3.app, s3.proc);
 }

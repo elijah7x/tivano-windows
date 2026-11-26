@@ -2098,4 +2098,22 @@ export const fr: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "Aucun titre de conversation, message de commit ou suggestion de saisie n’est généré.",
   "Send a turn in Codex to load its models.": "Envoyez un tour dans Codex pour charger ses modèles.",
+  // P1-03
+  "Diagnostics": "Diagnostics",
+  "Recovery files": "Fichiers de récupération",
+  "Keeps the newest recovery file and live store.": "Conserve le fichier de récupération le plus récent et le stockage actif.",
+  "Measuring…": "Mesure en cours…",
+  "Cleaning up…": "Nettoyage…",
+  "Clean up…": "Nettoyer…",
+  "Clean up": "Nettoyer",
+  "No files found.": "Aucun fichier trouvé.",
+  "Nothing to clean up.": "Rien à nettoyer.",
+  "Total: %@ · Cleanable: %@": "Total : %@ · Nettoyable : %@",
+  "Could not measure these files. Not included in the measured total. %@":
+    "Impossible de mesurer ces fichiers. Non inclus dans le total mesuré. %@",
+  "Cleanup did not finish. Some files may already have been removed. %@":
+    "Le nettoyage ne s’est pas terminé. Certains fichiers ont peut-être déjà été supprimés. %@",
+  "Clean up recovery files?": "Nettoyer les fichiers de récupération ?",
+  "Deletes only older store and turn recovery backups. Keeps the newest recovery file. Chats, attachments, worktrees and the live store are not removed.":
+    "Supprime uniquement les anciennes sauvegardes de récupération du stockage et des discussions, en conservant la plus récente. Les discussions, pièces jointes, worktrees et le stockage actif ne sont pas supprimés.",
 };
