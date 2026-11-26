@@ -135,6 +135,124 @@ describe("P2-62 retired settings migration", () => {
     store3.close();
   });
 
+  it("round-trips every Engine.setSettings field through a clean reopen", () => {
+    const root = freshRoot();
+    const { store, engine } = makeEngine(root);
+    const patch: Parameters<Engine["setSettings"]>[0] = {
+      theme: "nord",
+      appearanceMode: "dark",
+      language: "zh-Hans",
+      chimeWhenFinished: false,
+      autoContinueAfterLimit: false,
+      confirmBeforeDeleting: false,
+      recentDownloadsPicker: false,
+      newThreadLocation: "standalone",
+      defaultRuntimeMode: "fullAccess",
+      defaultWorkspaceMode: "worktree",
+      showReasoning: true,
+      showsWorkingCard: false,
+      weatherWindowMode: "full",
+      showsSkylight: true,
+      cliInstallationTarget: "/usr/local/bin/tivano",
+      taskSleepMode: "display",
+      textGeneration: "codex",
+      textGenerationModelID: "gpt-5.4-mini",
+      textGenerationEffort: "low",
+      threadTitles: "updated",
+      autoShelveDays: 7,
+      shelvedGroupName: "Archived Work",
+      quickChatEnabled: true,
+      shortcuts: {
+        quickChat: { key: "Space", mod: true, ctrl: false, alt: false, shift: true },
+      },
+      alphaEnabled: true,
+      externalControlEnabled: true,
+      remoteMCPEnabled: true,
+      remoteMCPFullAccess: true,
+      remoteMCPPublicURL: "http://127.0.0.1:8765",
+      remoteMCPPort: 8765,
+      fontSizes: { ui: 14, content: 15, code: 13 },
+      hydraEnabled: true,
+      hydraDefaultEnabled: true,
+      hydraQueueHeads: false,
+      hydraAlwaysHeads: true,
+      hydraIsolateHeads: false,
+      hydraMaxHeads: 4,
+      hydraAutoMerge: true,
+      hydraArchivesCodexHeads: true,
+      hydraShowsHeadDetails: true,
+      hydraAutoOpensPanels: false,
+      hydraAutoPopsHeads: true,
+      hydraTempersHeadEffort: false,
+      hasSeenHydraIntro: true,
+      hydraPairs: [
+        {
+          id: "pair-roundtrip",
+          provider: "codex",
+          orchestratorModel: "gpt-5.4",
+          orchestratorEffort: "high",
+          workerProvider: "codex",
+          workerModel: "gpt-5.4-mini",
+          workerEffort: "low",
+          maxHeads: 2,
+          name: "Roundtrip",
+          headProfiles: [],
+        },
+      ],
+      lastHydraPairId: "pair-roundtrip",
+      lastNewChatPairId: "pair-roundtrip",
+      lastNewChatModel: { provider: "codex", modelID: "gpt-5.4" },
+      subagentModeDefault: "adaptive",
+      chimeraPresets: [
+        {
+          id: "custom-roundtrip",
+          name: "Custom reviewer",
+          specialty: "Review the exact diff carefully.",
+          pick: { provider: "codex", model: "gpt-5.4", effort: "high" },
+          builtin: "reviewer",
+          enabled: true,
+        },
+      ],
+      chimeraAutoDispatch: true,
+      hydraTilt: "aggressive",
+      hydraReviewEnabled: true,
+      hydraReviewFirst: { provider: "codex", model: "gpt-5.4", effort: "high" },
+      hydraReviewSecond: { provider: "codex", model: "gpt-5.4-mini", effort: "low" },
+      modelList: [{ provider: "codex", modelID: "gpt-5.4" }],
+      modelSections: [{ id: "section-roundtrip", name: "Roundtrip", position: 0 }],
+      collapsedModelSections: ["section-roundtrip"],
+      modelPreferences: { "codex/gpt-5.4": { effort: "high", fastMode: true } },
+      hideOutdatedModels: false,
+      mcpServers: [
+        {
+          id: "mcp-roundtrip",
+          name: "Roundtrip",
+          transport: "stdio",
+          command: "node",
+          args: ["--version"],
+          env: { ROUNDTRIP: "1" },
+        },
+      ],
+      backdropOpacity: 0.7,
+      helperPanelSize: { width: 500, height: 300 },
+      sidebarWidth: 300,
+      terminalHeight: 320,
+      whatsNewSeenVersion: "0.1.0",
+    };
+    engine.setSettings(patch);
+    const before = JSON.parse(JSON.stringify(engine.snapshot().settings)) as Record<string, unknown>;
+    store.close();
+
+    const { store: store2, engine: engine2 } = makeEngine(root);
+    expect(store2.recoveredFrom).toBeUndefined();
+    const after = JSON.parse(JSON.stringify(engine2.snapshot().settings)) as Record<string, unknown>;
+    for (const key of Object.keys(patch)) {
+      expect(before, key).toHaveProperty(key);
+      expect(after[key], key).toEqual(before[key]);
+    }
+    store2.close();
+  });
+
   it("rejects retired keys in settings:set IPC validation and ignores them in Engine.setSettings", () => {
     const { store, engine } = makeEngine(freshRoot());
     for (const key of [
