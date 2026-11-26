@@ -3462,8 +3462,9 @@ export class Engine {
   /** P1-39 (frozen isLocalCheckoutBusy, bounded): another chat already
    *  works in this project's checkout — a live turn, a latched
    *  send-now, a parked limit-wait, a queued follow-up, or a lead's
-   *  pending head reports/review on a non-archived, non-worktree thread
-   *  bound to the same project (frozen isUsingWorkspace also counts
+   *  working/landing heads, pending reports or review on a non-archived,
+   *  non-worktree thread bound to the same project (frozen
+   *  isUsingWorkspace also counts
    *  isWaitingForLimit and followUps). A deferred auto-bind's turn
    *  reads "running" the whole probe, so no separate reservation is
    *  needed; worktree-bound and head-with-copy threads isolate
@@ -3482,7 +3483,7 @@ export class Engine {
         this.pendingSends.has(t.id) ||
         this.limitWaits.has(t.id) ||
         (t.followUps?.length ?? 0) > 0 ||
-        (this.hydraPendingReports.get(t.id)?.length ?? 0) > 0 ||
+        this.hydraLeadBusy(t.id) ||
         this.hydraReviewPending.has(t.id)
       )
         return true;
