@@ -814,6 +814,32 @@ button.primary:hover {
   color: var(--text);
 }
 
+.helper-working-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.helper-working-btn:hover { background: var(--surface-3); }
+.helper-working-glyph {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+.helper-working-glyph span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.helper-working-btn .spin-grid { flex: none; }
+
 .more-controls-btn {
   border-radius: 999px;
   min-width: 28px;
