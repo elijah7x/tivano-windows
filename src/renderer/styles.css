@@ -756,6 +756,7 @@ button.primary:hover {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  position: relative;
 }
 
 .chat-head {
@@ -5382,6 +5383,13 @@ html[data-paused="1"] .md-veil { animation: none !important; }
   min-height: 0;
 }
 .chat-row > .chat { flex: 1; min-width: 0; }
+.helper-pop-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+.helper-pop-layer .helper-panel { pointer-events: auto; }
 .helper-panel {
   position: absolute;
   top: 0;

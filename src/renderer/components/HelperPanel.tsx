@@ -22,16 +22,24 @@ import { translateNotice } from "../i18n";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
+import {
+  HELPER_PANEL_GAP,
+  HELPER_PANEL_INSET,
+  HELPER_PANEL_MIN_HEIGHT,
+  HELPER_PANEL_MIN_WIDTH,
+  HELPER_PANEL_SIDE_MARGIN,
+  helperPanelSizeForPane,
+  type HelperPopPlacement,
+} from "../../shared/helperPopLayout";
 
 // Frozen SubagentPanelLayout constants.
-const WIDTH = 400;
-const MIN_W = 300;
-const MIN_H = 220;
-const GAP = 12;
-const SIDE_MARGIN = 20;
+const MIN_W = HELPER_PANEL_MIN_WIDTH;
+const MIN_H = HELPER_PANEL_MIN_HEIGHT;
+const GAP = HELPER_PANEL_GAP;
+const SIDE_MARGIN = HELPER_PANEL_SIDE_MARGIN;
 const SLACK = 56;
 const MIN_COMPOSER_W = 360;
-const INSET = 8;
+const INSET = HELPER_PANEL_INSET;
 
 export type Corner = "tl" | "tr" | "bl" | "br";
 const sideOf = (c: Corner): "left" | "right" => (c === "tl" || c === "bl" ? "left" : "right");
@@ -57,6 +65,9 @@ export function HelperPanel(props: {
    *  stays reachable. */
   initialCorner?: Corner | undefined;
   cascadeIndex?: number | undefined;
+  /** Pure auto-pop placement for this panel while it has not been
+   *  dragged manually. Coordinates share this panel's offsetParent. */
+  placement?: HelperPopPlacement | undefined;
   /** Auto-popped panels overlay the pane like the frozen floats: they
    *  never reserve chat-column width. */
   overlay?: boolean;
@@ -70,6 +81,7 @@ export function HelperPanel(props: {
   const [corner, setCorner] = useState<Corner>(props.initialCorner ?? "tr");
   const [held, setHeld] = useState<{ x: number; y: number } | null>(null);
   const [sizeDrag, setSizeDrag] = useState<{ w: number; h: number } | null>(null);
+  const [userDocked, setUserDocked] = useState(false);
 
   const busy =
     thread.turn?.status === "running" ||
@@ -98,12 +110,13 @@ export function HelperPanel(props: {
     return watchSelectionResidue(el);
   }, []);
 
-  const w = Math.min(
-    Math.max(sizeDrag?.w ?? props.size?.width ?? WIDTH, MIN_W),
-    Math.max(MIN_W, pane.w - 2 * SIDE_MARGIN),
-  );
-  const idealH = props.size?.height ?? Math.min(520, Math.max(300, pane.h * 0.5));
-  const h = Math.min(Math.max(sizeDrag?.h ?? idealH, MIN_H), Math.max(MIN_H, pane.h - 2 * INSET));
+  const fitted = helperPanelSizeForPane(pane.w, pane.h, props.size);
+  const w = sizeDrag
+    ? Math.min(Math.max(sizeDrag.w, MIN_W), Math.max(MIN_W, pane.w - 2 * SIDE_MARGIN))
+    : (props.placement?.width ?? fitted.width);
+  const h = sizeDrag
+    ? Math.min(Math.max(sizeDrag.h, MIN_H), Math.max(MIN_H, pane.h - 2 * INSET))
+    : (props.placement?.height ?? fitted.height);
   const beside = pane.w - 2 * SIDE_MARGIN - w - GAP >= MIN_COMPOSER_W;
 
   // Docked origins: beside the chat column at pane corners when wide;
@@ -144,15 +157,19 @@ export function HelperPanel(props: {
     return () => props.onDock(null);
   }, [dock === null ? null : `${dock.side}:${dock.px}`]);
 
-  // Auto-popped repeats of one corner cascade toward the pane's middle
-  // so a fourth+ head does not stack exactly on its predecessor.
+  // Auto-popped panels follow the pure placement helper until the user
+  // drags one; after that the normal nearest-corner dock owns it.
   const cascade = (props.cascadeIndex ?? 0) * 26;
+  const auto =
+    props.overlay === true && !userDocked ? props.placement : undefined;
   const pos = held
     ? clamped(held)
-    : clamped({
-        x: docked(corner).x + (sideOf(corner) === "right" ? -cascade : cascade),
-        y: docked(corner).y + (isTop(corner) ? cascade : -cascade),
-      });
+    : auto
+      ? clamped({ x: auto.x, y: auto.y })
+      : clamped({
+          x: docked(corner).x + (sideOf(corner) === "right" ? -cascade : cascade),
+          y: docked(corner).y + (isTop(corner) ? cascade : -cascade),
+        });
 
   const dragStart = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -169,6 +186,7 @@ export function HelperPanel(props: {
       const o = { x: ev.clientX - rect.left - dx, y: ev.clientY - rect.top - dy };
       setHeld(null);
       setCorner(dockCorner(clamped(o)));
+      setUserDocked(true);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
     };
