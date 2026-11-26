@@ -224,6 +224,39 @@ export function StorageDiagnosticsView(props: StorageDiagnosticsViewProps): Reac
   );
 }
 
+export async function runCleanDiagnosticsAction(params: {
+  category: StorageDiagnosticsCategoryId;
+  invokeClean: (category: StorageDiagnosticsCategoryId) => Promise<StorageDiagnosticsResult>;
+  remeasure: () => Promise<void>;
+  isCurrent: () => boolean;
+  setConfirmingId: (id: StorageDiagnosticsCategoryId | null) => void;
+  setCleaningId: (id: StorageDiagnosticsCategoryId | null) => void;
+  setCategories: (categories: StorageDiagnosticsCategoryUsage[]) => void;
+  setCleanupError: (category: StorageDiagnosticsCategoryId, error: string | null) => void;
+}): Promise<void> {
+  params.setConfirmingId(null);
+  params.setCleaningId(params.category);
+  params.setCleanupError(params.category, null);
+  try {
+    const res = await params.invokeClean(params.category);
+    if (!params.isCurrent()) return;
+    params.setCategories(res.categories);
+    if (res.cleanupError) {
+      params.setCleanupError(params.category, res.cleanupError);
+    }
+  } catch (err) {
+    if (!params.isCurrent()) return;
+    const msg = err instanceof Error ? err.message : String(err);
+    params.setCleanupError(params.category, msg);
+    // Clear cleaning state before awaiting remeasurement so a rejected IPC
+    // never leaves the row stuck on "Cleaning up…" with Refresh disabled.
+    params.setCleaningId(null);
+    await params.remeasure();
+  } finally {
+    if (params.isCurrent()) params.setCleaningId(null);
+  }
+}
+
 export function StorageDiagnosticsSection(): React.JSX.Element {
   const [categories, setCategories] = useState<StorageDiagnosticsCategoryUsage[] | null>(null);
   const [measuring, setMeasuring] = useState(true);
@@ -234,22 +267,23 @@ export function StorageDiagnosticsSection(): React.JSX.Element {
     Partial<Record<StorageDiagnosticsCategoryId, string>>
   >({});
   const mounted = useRef(true);
-  const gen = useRef(0);
+  const measureGen = useRef(0);
+  const cleanGen = useRef(0);
 
   const measure = useCallback(async () => {
-    const id = ++gen.current;
+    const id = ++measureGen.current;
     setMeasuring(true);
     setLoadError(null);
     try {
       const res = (await api().invoke("storage:diagnostics", {})) as StorageDiagnosticsResult;
-      if (!mounted.current || gen.current !== id) return;
+      if (!mounted.current || measureGen.current !== id) return;
       setCategories(res.categories);
     } catch (err) {
-      if (!mounted.current || gen.current !== id) return;
+      if (!mounted.current || measureGen.current !== id) return;
       setCategories(null);
       setLoadError(err instanceof Error ? err.message : String(err));
     } finally {
-      if (mounted.current && gen.current === id) setMeasuring(false);
+      if (mounted.current && measureGen.current === id) setMeasuring(false);
     }
   }, []);
 
@@ -262,31 +296,24 @@ export function StorageDiagnosticsSection(): React.JSX.Element {
   }, [measure]);
 
   const cleanCategory = async (category: StorageDiagnosticsCategoryId) => {
-    const id = ++gen.current;
-    setConfirmingId(null);
-    setCleaningId(category);
-    setCleanupErrors((prev) => {
-      const next = { ...prev };
-      delete next[category];
-      return next;
+    const id = ++cleanGen.current;
+    await runCleanDiagnosticsAction({
+      category,
+      invokeClean: (cat) =>
+        api().invoke("storage:clean-diagnostics", { category: cat }) as Promise<StorageDiagnosticsResult>,
+      remeasure: measure,
+      isCurrent: () => mounted.current && cleanGen.current === id,
+      setConfirmingId,
+      setCleaningId,
+      setCategories: (cats) => setCategories(cats),
+      setCleanupError: (cat, err) =>
+        setCleanupErrors((prev) => {
+          const next = { ...prev };
+          if (err === null) delete next[cat];
+          else next[cat] = err;
+          return next;
+        }),
     });
-    try {
-      const res = (await api().invoke("storage:clean-diagnostics", {
-        category,
-      })) as StorageDiagnosticsResult;
-      if (!mounted.current || gen.current !== id) return;
-      setCategories(res.categories);
-      if (res.cleanupError) {
-        setCleanupErrors((prev) => ({ ...prev, [category]: res.cleanupError! }));
-      }
-    } catch (err) {
-      if (!mounted.current || gen.current !== id) return;
-      const msg = err instanceof Error ? err.message : String(err);
-      setCleanupErrors((prev) => ({ ...prev, [category]: msg }));
-      await measure();
-    } finally {
-      if (mounted.current && gen.current === id) setCleaningId(null);
-    }
   };
 
   return (

@@ -32,6 +32,7 @@ import { ValidationError } from "../src/shared/validate";
 import {
   StorageDiagnosticsView,
   formatDiagnosticsBytes,
+  runCleanDiagnosticsAction,
 } from "../src/renderer/components/StorageDiagnosticsSection";
 import { LanguageContext } from "../src/renderer/locale";
 import { TRANSLATED_LANGUAGES, translate } from "../src/renderer/i18n";
@@ -199,7 +200,7 @@ describe("storageDiagnostics (P1-03)", () => {
     expect(existsSync(onlyFile)).toBe(true);
   });
 
-  it("measures total and cleanable bytes across recovery variants and preserves newest and protected files", () => {
+  it("measures total and cleanable bytes across recovery variants and preserves newest per kind, same-stamp turn backups, and protected files", () => {
     const root = freshRoot();
     const turnsDir = join(root, TURNS_DIRNAME);
     mkdirSync(turnsDir, { recursive: true });
@@ -210,30 +211,41 @@ describe("storageDiagnostics (P1-03)", () => {
     const protectedStore = join(root, "store.corrupt-2026-11-19T00-00-00-000Z.json");
     const olderSeg = join(turnsDir, "t1.corrupt-2026-11-19T01-00-00-000Z.json");
     const olderToken = join(root, "token-activity.corrupt-2026-11-19T02-00-00-000Z.json");
-    const olderRemoteMcp = join(root, "remote-mcp.json.abc.corrupt");
-    const olderTurnsBackupDir = join(root, "turns.corrupt-2026-11-19T03-00-00-000Z");
-    const newestStore = join(root, "store.corrupt-2026-11-20T00-00-00-000Z.json");
+    const olderRemoteMcp = join(root, "remote-mcp.json.old.corrupt");
+    const newestRemoteMcp = join(root, "remote-mcp.json.new.corrupt");
+    const newestStoreStamp = "2026-11-20T00-00-00-000Z";
+    const newestStore = join(root, `store.corrupt-${newestStoreStamp}.json`);
+    // Same-stamp turns backups created alongside newestStore (plus a newer token-activity backup
+    // that must NOT render the newest store/turns backups deletable).
+    const sameStampTurnsDir = join(root, `turns.corrupt-${newestStoreStamp}`);
+    const sameStampSeg = join(turnsDir, `t2.corrupt-${newestStoreStamp}.json`);
+    const newestToken = join(root, "token-activity.corrupt-2026-11-21T00-00-00-000Z.json");
 
-    mkdirSync(olderTurnsBackupDir, { recursive: true });
+    mkdirSync(sameStampTurnsDir, { recursive: true });
     writeSized(olderStore, 100, 1_700_000_100);
     writeSized(protectedStore, 150, 1_700_000_200);
     writeSized(olderSeg, 75, 1_700_000_300);
     writeSized(olderToken, 60, 1_700_000_400);
     writeSized(olderRemoteMcp, 40, 1_700_000_500);
-    writeSized(join(olderTurnsBackupDir, "seg-a.json"), 90, 1_700_000_600);
-    utimesSync(olderTurnsBackupDir, 1_700_000_600, 1_700_000_600);
-    writeSized(newestStore, 200, 1_700_000_900);
+    writeSized(newestRemoteMcp, 45, 1_700_000_550);
+    writeSized(newestStore, 200, 1_700_000_600);
+    writeSized(join(sameStampTurnsDir, "seg-a.json"), 90, 1_700_000_700);
+    utimesSync(sameStampTurnsDir, 1_700_000_700, 1_700_000_700);
+    writeSized(sameStampSeg, 80, 1_700_000_650);
+    writeSized(newestToken, 70, 1_700_000_900);
 
     const measured = measureStorageDiagnostics({
       dataRoot: root,
       getProtectedPaths: () => [protectedStore],
     });
+    const totalAll = 100 + 150 + 75 + 60 + 40 + 45 + 200 + 90 + 80 + 70;
+    const cleanableExpected = 100 + 75 + 60 + 40;
     expect(measured.categories[0]).toEqual({
       id: "recovery",
-      totalBytes: 100 + 150 + 75 + 60 + 40 + 90 + 200,
-      cleanableBytes: 100 + 75 + 60 + 40 + 90,
-      fileCount: 7,
-      cleanableCount: 5,
+      totalBytes: totalAll,
+      cleanableBytes: cleanableExpected,
+      fileCount: 10,
+      cleanableCount: 4,
     });
 
     const cleaned = cleanStorageDiagnostics(
@@ -246,18 +258,21 @@ describe("storageDiagnostics (P1-03)", () => {
     expect(cleaned.cleanupError).toBeUndefined();
     expect(cleaned.categories[0]).toEqual({
       id: "recovery",
-      totalBytes: 150 + 200,
+      totalBytes: totalAll - cleanableExpected,
       cleanableBytes: 0,
-      fileCount: 2,
+      fileCount: 6,
       cleanableCount: 0,
     });
     expect(existsSync(olderStore)).toBe(false);
     expect(existsSync(olderSeg)).toBe(false);
     expect(existsSync(olderToken)).toBe(false);
     expect(existsSync(olderRemoteMcp)).toBe(false);
-    expect(existsSync(olderTurnsBackupDir)).toBe(false);
     expect(existsSync(protectedStore)).toBe(true);
     expect(existsSync(newestStore)).toBe(true);
+    expect(existsSync(sameStampTurnsDir)).toBe(true);
+    expect(existsSync(sameStampSeg)).toBe(true);
+    expect(existsSync(newestToken)).toBe(true);
+    expect(existsSync(newestRemoteMcp)).toBe(true);
     expect(existsSync(join(root, "store.json"))).toBe(true);
     expect(existsSync(join(turnsDir, "t1.json"))).toBe(true);
   });
@@ -464,5 +479,34 @@ describe("StorageDiagnosticsView (P1-03)", () => {
       expect(translate(lang, "Recovery files")).not.toBe("Recovery files");
       expect(translate(lang, "Clean up recovery files?")).not.toBe("Clean up recovery files?");
     }
+  });
+
+  it("clears cleaningId before remeasuring when clean-diagnostics rejects", async () => {
+    let cleaningId: string | null = null;
+    let remeasured = false;
+    let cleanupErr: string | null = null;
+    await runCleanDiagnosticsAction({
+      category: "recovery",
+      invokeClean: async () => {
+        throw new Error("IPC rejected");
+      },
+      remeasure: async () => {
+        // Must already be cleared before remeasure runs so Refresh is never stuck disabled.
+        expect(cleaningId).toBeNull();
+        remeasured = true;
+      },
+      isCurrent: () => true,
+      setConfirmingId: () => {},
+      setCleaningId: (id) => {
+        cleaningId = id;
+      },
+      setCategories: () => {},
+      setCleanupError: (_cat, err) => {
+        cleanupErr = err;
+      },
+    });
+    expect(remeasured).toBe(true);
+    expect(cleaningId).toBeNull();
+    expect(cleanupErr).toBe("IPC rejected");
   });
 });

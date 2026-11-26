@@ -47,28 +47,35 @@ export interface StorageDiagnosticsOptions {
   platform?: NodeJS.Platform;
 }
 
+type RecoveryBackupKind = "store" | "turns" | "token-activity" | "remote-mcp";
+
 interface RecoveryEntry {
   /** Path relative to dataRoot (for stable tie-break ordering). */
   name: string;
   path: string;
   realPath: string;
   kind: "file" | "dir";
+  backupKind: RecoveryBackupKind;
+  stamp: string | null;
   bytes: number;
   mtimeMs: number;
 }
 
-const STORE_CORRUPT_RE = /^store\.corrupt-.+\.json$/;
-const TOKEN_CORRUPT_RE = /^token-activity\.corrupt-.+\.json$/;
+const STORE_CORRUPT_RE = /^store\.corrupt-(.+)\.json$/;
+const TOKEN_CORRUPT_RE = /^token-activity\.corrupt-(.+)\.json$/;
 const REMOTE_MCP_CORRUPT_RE = /^remote-mcp\.json\..+\.corrupt$/;
-const TURNS_CORRUPT_DIR_RE = /^turns\.corrupt-.+$/;
-const SEGMENT_CORRUPT_RE = /^.+\.corrupt-.+\.json$/;
+const TURNS_CORRUPT_DIR_RE = /^turns\.corrupt-(.+?)(?:-[0-9a-f]{8})?$/;
+const SEGMENT_CORRUPT_RE = /^.+\.corrupt-(.+?)(?:-[0-9a-f]{8})?\.json$/;
 
-function isTopLevelRecoveryFile(name: string): boolean {
-  return (
-    STORE_CORRUPT_RE.test(name) ||
-    TOKEN_CORRUPT_RE.test(name) ||
-    REMOTE_MCP_CORRUPT_RE.test(name)
-  );
+function classifyTopLevelRecoveryFile(
+  name: string,
+): { backupKind: RecoveryBackupKind; stamp: string | null } | null {
+  const storeMatch = STORE_CORRUPT_RE.exec(name);
+  if (storeMatch) return { backupKind: "store", stamp: storeMatch[1] ?? null };
+  const tokenMatch = TOKEN_CORRUPT_RE.exec(name);
+  if (tokenMatch) return { backupKind: "token-activity", stamp: tokenMatch[1] ?? null };
+  if (REMOTE_MCP_CORRUPT_RE.test(name)) return { backupKind: "remote-mcp", stamp: null };
+  return null;
 }
 
 function measureDirectoryTree(
@@ -159,7 +166,8 @@ function scanRecoveryEntries(opts: StorageDiagnosticsOptions): {
       hasTurnsDir = true;
       continue;
     }
-    if (isTopLevelRecoveryFile(entry.name)) {
+    const topMatch = classifyTopLevelRecoveryFile(entry.name);
+    if (topMatch) {
       const p = pathApi.join(absRoot, entry.name);
       const st = fs.lstatSync(p);
       if (st.isSymbolicLink()) {
@@ -177,31 +185,38 @@ function scanRecoveryEntries(opts: StorageDiagnosticsOptions): {
         path: p,
         realPath: rp,
         kind: "file",
+        backupKind: topMatch.backupKind,
+        stamp: topMatch.stamp,
         bytes: st.size,
         mtimeMs: st.mtimeMs,
       });
-    } else if (TURNS_CORRUPT_DIR_RE.test(entry.name)) {
-      const p = pathApi.join(absRoot, entry.name);
-      const st = fs.lstatSync(p);
-      if (st.isSymbolicLink()) {
-        throw new Error(`refusing symlink recovery directory: ${entry.name}`);
+    } else {
+      const turnsDirMatch = TURNS_CORRUPT_DIR_RE.exec(entry.name);
+      if (turnsDirMatch) {
+        const p = pathApi.join(absRoot, entry.name);
+        const st = fs.lstatSync(p);
+        if (st.isSymbolicLink()) {
+          throw new Error(`refusing symlink recovery directory: ${entry.name}`);
+        }
+        if (!st.isDirectory()) {
+          throw new Error(`recovery directory entry is not a directory: ${entry.name}`);
+        }
+        const rp = fs.realpathSync(p);
+        if (!isInsideRoot(realRoot, rp, pathApi)) {
+          throw new Error(`refusing recovery directory outside data root: ${entry.name}`);
+        }
+        const tree = measureDirectoryTree(p, st, fs, pathApi, realRoot);
+        discovered.push({
+          name: entry.name,
+          path: p,
+          realPath: rp,
+          kind: "dir",
+          backupKind: "turns",
+          stamp: turnsDirMatch[1] ?? null,
+          bytes: tree.bytes,
+          mtimeMs: tree.mtimeMs,
+        });
       }
-      if (!st.isDirectory()) {
-        throw new Error(`recovery directory entry is not a directory: ${entry.name}`);
-      }
-      const rp = fs.realpathSync(p);
-      if (!isInsideRoot(realRoot, rp, pathApi)) {
-        throw new Error(`refusing recovery directory outside data root: ${entry.name}`);
-      }
-      const tree = measureDirectoryTree(p, st, fs, pathApi, realRoot);
-      discovered.push({
-        name: entry.name,
-        path: p,
-        realPath: rp,
-        kind: "dir",
-        bytes: tree.bytes,
-        mtimeMs: tree.mtimeMs,
-      });
     }
   }
 
@@ -220,7 +235,9 @@ function scanRecoveryEntries(opts: StorageDiagnosticsOptions): {
     }
     const turnEntries = fs.readdirSync(turnsPath, { withFileTypes: true });
     for (const entry of turnEntries) {
-      if (!SEGMENT_CORRUPT_RE.test(entry.name) || entry.name.endsWith(".tmp")) continue;
+      if (entry.name.endsWith(".tmp")) continue;
+      const segMatch = SEGMENT_CORRUPT_RE.exec(entry.name);
+      if (!segMatch) continue;
       const p = pathApi.join(turnsPath, entry.name);
       const st = fs.lstatSync(p);
       if (st.isSymbolicLink()) {
@@ -238,6 +255,8 @@ function scanRecoveryEntries(opts: StorageDiagnosticsOptions): {
         path: p,
         realPath: rp,
         kind: "file",
+        backupKind: "turns",
+        stamp: segMatch[1] ?? null,
         bytes: st.size,
         mtimeMs: st.mtimeMs,
       });
@@ -257,15 +276,25 @@ function scanRecoveryEntries(opts: StorageDiagnosticsOptions): {
     pathApi,
   );
 
+  // Protect the newest recovery entry per backup kind, plus any turns backup
+  // sharing the newest store recovery stamp, plus any active in-use path.
+  const newestStoreStamp = discovered.find((d) => d.backupKind === "store")?.stamp ?? null;
+  const seenNewestByKind = new Set<RecoveryBackupKind>();
+
   let totalBytes = 0;
   let cleanableBytes = 0;
   const cleanable: RecoveryEntry[] = [];
-  for (let i = 0; i < discovered.length; i++) {
-    const item = discovered[i]!;
+  for (const item of discovered) {
     totalBytes += item.bytes;
-    // Never delete the newest recovery entry (index 0) or any active in-use path.
+    const isNewestForKind = !seenNewestByKind.has(item.backupKind);
+    if (isNewestForKind) seenNewestByKind.add(item.backupKind);
+    const sharesNewestStoreStamp =
+      item.backupKind === "turns" && newestStoreStamp !== null && item.stamp === newestStoreStamp;
     const isProtected =
-      i === 0 || protectedPaths.has(item.path) || protectedPaths.has(item.realPath);
+      isNewestForKind ||
+      sharesNewestStoreStamp ||
+      protectedPaths.has(item.path) ||
+      protectedPaths.has(item.realPath);
     if (!isProtected) {
       cleanableBytes += item.bytes;
       cleanable.push(item);
