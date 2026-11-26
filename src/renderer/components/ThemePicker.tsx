@@ -17,18 +17,21 @@ import {
 } from "../theme";
 import { useT } from "../locale";
 
-/** v3.0.0 `swatch`: plain circle filled with the dynamic accent (or
- *  system blue for System Accent), with a hairline rim. */
+/** v3.0.0 `swatch`: plain circle filled with the dynamic accent (or the
+ *  OS system accent for System Accent, falling back to system blue when
+ *  unavailable), with a hairline rim. */
 function Swatch({
   id,
   appearanceMode,
   osDark,
+  systemAccentHex,
 }: {
   id: ThemeId;
   appearanceMode: AppearanceMode;
   osDark: boolean;
+  systemAccentHex: string | null;
 }) {
-  const resolved = resolveTheme(id, osDark, appearanceMode);
+  const resolved = resolveTheme(id, osDark, appearanceMode, systemAccentHex);
   return (
     <span
       className="theme-swatch"
@@ -67,6 +70,7 @@ export function ThemePicker(props: {
   value: ThemeId;
   appearanceMode?: AppearanceMode;
   osDark?: boolean;
+  systemAccentHex?: string | null;
   onChange: (id: ThemeId) => void;
 }): React.JSX.Element {
   const t = useT();
@@ -74,6 +78,7 @@ export function ThemePicker(props: {
   const rootRef = useRef<HTMLDivElement>(null);
   const mode = props.appearanceMode ?? "system";
   const osDark = props.osDark ?? false;
+  const systemAccentHex = props.systemAccentHex ?? null;
 
   useEffect(() => {
     if (!open) return;
@@ -104,7 +109,7 @@ export function ThemePicker(props: {
         setOpen(false);
       }}
     >
-      <Swatch id={id} appearanceMode={mode} osDark={osDark} />
+      <Swatch id={id} appearanceMode={mode} osDark={osDark} systemAccentHex={systemAccentHex} />
       <span className="theme-name">{t(themeById(id).name)}</span>
       {id === props.value && <span className="theme-check">✓</span>}
     </button>
@@ -119,7 +124,7 @@ export function ThemePicker(props: {
         aria-label={t("Theme")}
         onClick={() => setOpen((o) => !o)}
       >
-        <Swatch id={current.id} appearanceMode={mode} osDark={osDark} />
+        <Swatch id={current.id} appearanceMode={mode} osDark={osDark} systemAccentHex={systemAccentHex} />
         <span className="theme-name">{t(current.name)}</span>
         <span className="theme-chev">▾</span>
       </button>

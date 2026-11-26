@@ -18,6 +18,7 @@ import {
   THEME_IDS,
   legacyAppearanceOfTheme,
   migrateLegacyTheme,
+  normalizeOsAccentHex,
 } from "../src/shared/types";
 
 describe("P2-51 12-accent catalog", () => {
@@ -97,9 +98,29 @@ describe("resolveTheme", () => {
     expect(resolveTheme("nightOwl", false, "system").accent).toBe("#4876D6");
   });
 
-  it("system accent falls back to the system-blue default per scheme", () => {
-    expect(resolveTheme("system", true, "dark").accent).toBe("#0A84FF");
-    expect(resolveTheme("system", true, "light").accent).toBe("#0A6DFF");
+  it("system accent resolves to the OS accent color when provided, and falls back only when unavailable", () => {
+    // Electron systemPreferences.getAccentColor() returns 8-char RGBA hex (rrggbbaa).
+    expect(normalizeOsAccentHex("d13438ff")).toBe("D13438");
+    expect(normalizeOsAccentHex("#0078d4ff")).toBe("0078D4");
+    expect(normalizeOsAccentHex("4caf50")).toBe("4CAF50");
+    expect(normalizeOsAccentHex("00000000")).toBeNull();
+    expect(normalizeOsAccentHex("")).toBeNull();
+    expect(normalizeOsAccentHex(null)).toBeNull();
+
+    const customDark = resolveTheme("system", true, "dark", "d13438ff");
+    expect(customDark.accent).toBe("#D13438");
+    expect(customDark.accentContrast).toBe("#ffffff");
+
+    const customLight = resolveTheme("system", false, "light", "F7C600ff");
+    expect(customLight.accent).toBe("#F7C600");
+    expect(customLight.accentContrast).toBe("#10201a");
+
+    // Non-system accent themes ignore the OS accent override.
+    expect(resolveTheme("breeze", true, "dark", "D13438").accent).toBe("#7BA58F");
+
+    // Fallback when OS accent is unavailable (null / invalid).
+    expect(resolveTheme("system", true, "dark", null).accent).toBe("#0A84FF");
+    expect(resolveTheme("system", true, "light", null).accent).toBe("#0A6DFF");
   });
 
   it("picks accent-contrast ink by luminance", () => {

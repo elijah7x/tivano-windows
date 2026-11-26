@@ -26,6 +26,7 @@ import {
   globalShortcut,
   powerSaveBlocker,
   shell,
+  systemPreferences,
 } from "electron";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
@@ -52,7 +53,7 @@ import {
 } from "./codexRuntimeConfig";
 import type { ProviderAdapter, WorkspaceGrant } from "./provider";
 import type { SpawnSpec } from "./stdioTransport";
-import type { CodexInfo, CodexSetupState } from "../shared/types";
+import { normalizeOsAccentHex, type CodexInfo, type CodexSetupState } from "../shared/types";
 import { ProjectRuntimePaths } from "./projectRuntimePaths";
 import { DirectoryOpener } from "./openProjectDirectory";
 import { AttachmentService } from "./attachmentService";
@@ -468,7 +469,17 @@ bootstrap = app.whenReady().then(async () => {
   // real auto-resume inside seconds — the frozen 5s floor never moves.
   if (process.env.TIVANO_LIMIT_MARGIN_MS)
     engine.limitMarginMs = Math.max(0, Number(process.env.TIVANO_LIMIT_MARGIN_MS) || 0);
+  const readSystemAccentColor = (): string | null => {
+    try {
+      return typeof systemPreferences.getAccentColor === "function"
+        ? normalizeOsAccentHex(systemPreferences.getAccentColor())
+        : null;
+    } catch {
+      return null;
+    }
+  };
   if (codexRuntime) engine.codexInfo = codexInfoFor(codexRuntime);
+  engine.systemAccentColor = readSystemAccentColor();
   engine.noteStoreRecovery(store.recoveredFrom);
   // Rebuild authorized workspace grants from the persisted file — each
   // entry is revalidated against the live filesystem and the live project
@@ -572,6 +583,16 @@ bootstrap = app.whenReady().then(async () => {
   });
 
   const broadcast = forwardEvents(win.webContents);
+  const onAccentColorChanged = (_event: Electron.Event, newColor: string) => {
+    const next = normalizeOsAccentHex(newColor) ?? readSystemAccentColor();
+    if (eng.systemAccentColor === next) return;
+    eng.systemAccentColor = next;
+    broadcast({ type: "system-accent-changed", accentColor: next });
+  };
+  systemPreferences.on("accent-color-changed", onAccentColorChanged);
+  win.once("closed", () => {
+    systemPreferences.removeListener("accent-color-changed", onAccentColorChanged);
+  });
 
   // P2-63: track window focus/visible/minimized state so renderer animations,
   // timers and background streaming pace down while inactive/minimized/hidden.

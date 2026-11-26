@@ -143,6 +143,8 @@ export class ClientStore {
   /** P2-47: transient weather flashes for on-screen turn completions. */
   private flashTimers = new Map<string, { status: WeatherFlashStatus; timer: ReturnType<typeof setTimeout> }>();
   private cachedWeatherFlashes: Readonly<Record<string, WeatherFlashStatus>> = {};
+  /** P2-51: latest OS system-accent update observed before/after hydrate. */
+  private pendingSystemAccentColor: string | null | undefined = undefined;
   private readonly invoke: InvokeFn;
 
   constructor(invoke?: InvokeFn) {
@@ -171,6 +173,7 @@ export class ClientStore {
   beginHydration(): number {
     this.buffered = [];
     this.snapshotRev = -1;
+    this.pendingSystemAccentColor = undefined;
     return ++this.hydrateGen;
   }
 
@@ -187,6 +190,17 @@ export class ClientStore {
       emitMemoryPressure(e.critical);
       return;
     }
+    if (e.type === "system-accent-changed") {
+      this.pendingSystemAccentColor = e.accentColor;
+      if (this.snapshot) {
+        this.snapshot = {
+          ...this.snapshot,
+          info: { ...this.snapshot.info, systemAccentColor: e.accentColor },
+        };
+        this.notify();
+      }
+      return;
+    }
     if (this.snapshotRev < 0) {
       this.buffered.push(e);
       return;
@@ -200,7 +214,10 @@ export class ClientStore {
     for (const id of this.pacedNotifyTimers.values()) clearTimeout(id);
     this.pacedNotifyTimers.clear();
     this.clearAllWeatherFlashes();
-    this.snapshot = s;
+    this.snapshot =
+      this.pendingSystemAccentColor !== undefined
+        ? { ...s, info: { ...s.info, systemAccentColor: this.pendingSystemAccentColor } }
+        : s;
     this.snapshotRev = s.rev;
     this.limitResumes = { ...(s.limitResumesAt ?? {}) };
     for (const e of this.buffered) {

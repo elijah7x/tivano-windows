@@ -434,17 +434,19 @@ export function App(): React.JSX.Element {
   }, [snapshot?.settings.language]);
 
   // P2-51 / F26: resolve the 12 accent families + appearanceMode onto :root;
-  // "system" follows the OS prefers-color-scheme and re-resolves live.
+  // "system" follows the OS prefers-color-scheme and OS accent color live.
   useEffect(() => {
     if (!snapshot) return;
     const theme = snapshot.settings.theme;
     const appearanceMode = snapshot.settings.appearanceMode ?? "system";
+    const systemAccentHex = snapshot.info.systemAccentColor ?? null;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => applyTheme(document.documentElement, theme, mq.matches, appearanceMode);
+    const apply = () =>
+      applyTheme(document.documentElement, theme, mq.matches, appearanceMode, systemAccentHex);
     apply();
     mq.addEventListener("change", apply);
     return () => mq.removeEventListener("change", apply);
-  }, [snapshot?.settings.theme, snapshot?.settings.appearanceMode]);
+  }, [snapshot?.settings.theme, snapshot?.settings.appearanceMode, snapshot?.info.systemAccentColor]);
 
   // F26: push the frozen TypeScale offsets into the three CSS vars; the
   // code offset also reaches live xterm instances (terminals scale with
