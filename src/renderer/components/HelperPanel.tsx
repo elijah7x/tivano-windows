@@ -83,6 +83,11 @@ export function HelperPanel(props: {
   const [sizeDrag, setSizeDrag] = useState<{ w: number; h: number } | null>(null);
   const [userDocked, setUserDocked] = useState(false);
 
+  const placementCorner = props.placement?.corner;
+  useEffect(() => {
+    if (!userDocked && placementCorner) setCorner(placementCorner);
+  }, [placementCorner, userDocked]);
+
   const busy =
     thread.turn?.status === "running" ||
     thread.turn?.status === "waiting-approval";

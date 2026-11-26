@@ -226,7 +226,11 @@ function AutoPopPanels(props: {
     [metrics, runningHeads.length, props.settings?.helperPanelSize],
   );
   return (
-    <div ref={layerRef} className="helper-pop-layer">
+    <div
+      ref={layerRef}
+      className="helper-pop-layer"
+      style={metrics.width > 0 ? undefined : { visibility: "hidden" }}
+    >
       {runningHeads.slice(1).map((h, i) => {
         if (props.popHeld.has(h.id)) return null;
         const placement = layout.placements[i];
