@@ -284,16 +284,14 @@ describe("F20 engine auto-continue", () => {
     const th = engine.createThread(null, "chat");
     engine.sendTurn(th.id, "[mock:limit:1] work");
     await waitFor(() => (engine.snapshot().limitResumesAt ?? {})[th.id] !== undefined);
-    // User picks the chat up before the resume fires.
+    // User picks the chat up before the resume fires. Frozen
+    // AutoContinue.turnOpened clears the wait as soon as that turn opens —
+    // the old reset timer no longer owns the checkout.
     engine.sendTurn(th.id, "never mind, do it now");
+    expect(engine.snapshot().limitResumesAt ?? {}).toEqual({});
     await waitFor(() => turnStatus(engine, th.id) === "done");
-    // The send leaves the wait entry armed until the resume timer itself
-    // fires and clears it — poll past the frozen floor instead of a fixed
-    // sleep (a late-firing timer on a loaded host outlives 5.3s).
-    await waitFor(
-      () => (engine.snapshot().limitResumesAt ?? {})[th.id] === undefined,
-      12_000,
-    );
+    // Nothing resumes when the old reset time passes either.
+    await sleep(5_300);
     expect(userTexts(engine, th.id)).not.toContain(CONTINUE);
     expect(engine.snapshot().limitResumesAt ?? {}).toEqual({});
     store.close();
@@ -306,6 +304,9 @@ describe("F20 engine auto-continue", () => {
     engine.sendTurn(th.id, "[mock:limit:1] work");
     await waitFor(() => (engine.snapshot().limitResumesAt ?? {})[th.id] !== undefined);
     engine.setSettings({ autoContinueAfterLimit: false });
+    // Manual mode ends the wait immediately (frozen switch-to-Manual);
+    // it does not linger as a busy owner until the reset timer fires.
+    expect(engine.snapshot().limitResumesAt ?? {}).toEqual({});
     await sleep(5_300);
     expect(userTexts(engine, th.id)).not.toContain(CONTINUE);
     expect(engine.snapshot().limitResumesAt ?? {}).toEqual({});
