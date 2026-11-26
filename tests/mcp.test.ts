@@ -432,40 +432,61 @@ describe("codexMcpServers (F18 — Settings registry → codex config.mcp_server
 });
 
 describe("P1-33 — resolveMcpCommand, PATHEXT, Path casing, and .cmd shim", () => {
-  it("resolves a bare command honoring Path/PATH casing and PATHEXT order (simulated win32)", () => {
-    const dir = root();
-    const shim = join(dir, "mytool.cmd");
-    const exe = join(dir, "mytool.exe");
-    writeFileSync(shim, "@echo off\r\n");
-    writeFileSync(exe, "");
-    // Extensionless POSIX-style file should NOT win over PATHEXT on Windows.
-    writeFileSync(join(dir, "onlysh"), "#!/bin/sh\n");
+  it.runIf(process.platform === "win32")(
+    "resolves a bare command honoring Path/PATH casing and PATHEXT order on Windows",
+    () => {
+      const dir = root();
+      const shim = join(dir, "mytool.cmd");
+      const exe = join(dir, "mytool.exe");
+      writeFileSync(shim, "@echo off\r\n");
+      writeFileSync(exe, "");
+      // Extensionless POSIX-style file should NOT win over PATHEXT on Windows.
+      writeFileSync(join(dir, "onlysh"), "#!/bin/sh\n");
 
-    const fromPathMixed = resolveMcpCommand(
-      "mytool",
-      { Path: dir, Pathext: ".CMD;.EXE" },
-      {},
-      "win32",
-    );
-    expect(fromPathMixed).toBe(win32.join(dir, "mytool.cmd"));
+      const fromPathMixed = resolveMcpCommand(
+        "mytool",
+        { Path: dir, Pathext: ".CMD;.EXE" },
+        {},
+        "win32",
+      );
+      expect(fromPathMixed).toBe(win32.join(dir, "mytool.cmd"));
 
-    const fromPathExeFirst = resolveMcpCommand(
-      "mytool",
-      undefined,
-      { Path: dir, PATHEXT: ".EXE;.CMD" },
-      "win32",
-    );
-    expect(fromPathExeFirst).toBe(win32.join(dir, "mytool.exe"));
+      const fromPathExeFirst = resolveMcpCommand(
+        "mytool",
+        undefined,
+        { Path: dir, PATHEXT: ".EXE;.CMD" },
+        "win32",
+      );
+      expect(fromPathExeFirst).toBe(win32.join(dir, "mytool.exe"));
 
-    // Extensionless file is skipped on Windows when no PATHEXT match exists.
-    expect(
-      resolveMcpCommand("onlysh", undefined, { Path: dir, PATHEXT: ".CMD;.EXE" }, "win32"),
-    ).toBeNull();
+      // Extensionless file is skipped on Windows when no PATHEXT match exists.
+      expect(
+        resolveMcpCommand("onlysh", undefined, { Path: dir, PATHEXT: ".CMD;.EXE" }, "win32"),
+      ).toBeNull();
 
-    // Explicit .cmd extension resolves directly.
-    expect(
-      resolveMcpCommand("mytool.cmd", undefined, { PATH: dir }, "win32"),
-    ).toBe(win32.join(dir, "mytool.cmd"));
+      // Explicit .cmd extension resolves directly.
+      expect(
+        resolveMcpCommand("mytool.cmd", undefined, { PATH: dir }, "win32"),
+      ).toBe(win32.join(dir, "mytool.cmd"));
+    },
+  );
+
+  it("honors Path/PATH casing and server.env override on the host platform", () => {
+    const dirA = root();
+    const dirB = root();
+    const isWin = process.platform === "win32";
+    const name = "tivano-host-tool";
+    const binA = join(dirA, isWin ? `${name}.cmd` : name);
+    const binB = join(dirB, isWin ? `${name}.cmd` : name);
+    writeFileSync(binA, isWin ? "@echo off\r\n" : "#!/bin/sh\n");
+    writeFileSync(binB, isWin ? "@echo off\r\n" : "#!/bin/sh\n");
+    if (!isWin) {
+      chmodSync(binA, 0o755);
+      chmodSync(binB, 0o755);
+    }
+    expect(resolveMcpCommand(name, undefined, { Path: dirA })).toBe(binA);
+    expect(resolveMcpCommand(name, { PATH: dirB }, { Path: dirA })).toBe(binB);
+    expect(resolveMcpCommand(binA)).toBe(binA);
   });
 
   it("rejects UNC and missing paths without hitting the network", () => {
@@ -546,16 +567,49 @@ describe("P1-33 — resolveMcpCommand, PATHEXT, Path casing, and .cmd shim", () 
     }
 
     // Timeout cleanup on a .cmd/.sh shim also kills the child tree cleanly.
+    const pidFile = join(dir, "grandchild.pid");
+    const silentScript = join(dir, "silent-pid.cjs");
+    writeFileSync(
+      silentScript,
+      `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`,
+    );
+    const silentShimName = "tivano-silent-shim";
+    const silentShimPath = join(dir, isWin ? `${silentShimName}.cmd` : silentShimName);
+    if (isWin) {
+      writeFileSync(silentShimPath, `@echo off\r\n"${process.execPath}" "${silentScript}" %*\r\n`);
+    } else {
+      writeFileSync(silentShimPath, `#!/bin/sh\nexec "${process.execPath}" "${silentScript}" "$@"\n`);
+      chmodSync(silentShimPath, 0o755);
+    }
     const rSilent = await probeMcpServer(
       {
-        command: shimName,
+        command: silentShimName,
         args: [],
-        env: isWin
-          ? { Path: dir, MCP_FAKE_MODE: "silent" }
-          : { PATH: dir, MCP_FAKE_MODE: "silent" },
+        env: isWin ? { Path: dir } : { PATH: dir },
       },
       300,
     );
     expect(rSilent.status).toBe("timedOut");
+    const grandchildPid = Number(readFileSync(pidFile, "utf8").trim());
+    expect(Number.isFinite(grandchildPid) && grandchildPid > 0).toBe(true);
+    expect(() => process.kill(grandchildPid, 0)).toThrow();
+  });
+
+  it("rejects null bytes and newlines in command or arguments", async () => {
+    const rNull = await probeMcpServer({ command: process.execPath, args: ["a\0b"] });
+    expect(rNull).toEqual({
+      status: "error",
+      reason: "Invalid null byte in command or arguments.",
+    });
+    if (process.platform === "win32") {
+      const dir = root();
+      const shim = join(dir, "nl.cmd");
+      writeFileSync(shim, "@echo off\r\n");
+      const rNl = await probeMcpServer({ command: shim, args: ["a\nb"] });
+      expect(rNl).toEqual({
+        status: "error",
+        reason: "Invalid newline in command or arguments.",
+      });
+    }
   });
 });

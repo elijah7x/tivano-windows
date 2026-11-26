@@ -408,15 +408,10 @@ async function probeStdioServer(
     } catch {
       /* already dead */
     }
-    try {
-      child.kill();
-    } catch {
-      /* already dead */
-    }
     if (process.platform === "win32" && isBatch && exited === "alive" && child.pid) {
       await Promise.race([done, new Promise((r) => setTimeout(r, 150))]);
       if (exited === "alive") {
-        // Killing cmd.exe alone can leave grandchild node processes holding pipes.
+        // Kill the whole cmd.exe tree BEFORE child.kill() so grandchild servers never linger.
         await new Promise<void>((resolve) => {
           const tk = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
             stdio: "ignore",
@@ -426,6 +421,11 @@ async function probeStdioServer(
           tk.once("error", () => resolve());
         });
       }
+    }
+    try {
+      child.kill();
+    } catch {
+      /* already dead */
     }
     await Promise.race([done, new Promise((r) => setTimeout(r, 1500))]);
     try {

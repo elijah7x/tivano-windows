@@ -2288,6 +2288,9 @@ const zhHans: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "不生成对话标题、提交信息和输入框预测。",
   "Send a turn in Codex to load its models.": "在 Codex 中发送一轮消息以加载其模型。",
+  // P1-33: MCP command validation probe reasons.
+  "Invalid null byte in command or arguments.": "命令或参数中包含无效的空字节。",
+  "Invalid newline in command or arguments.": "命令或参数中包含无效的换行符。",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
