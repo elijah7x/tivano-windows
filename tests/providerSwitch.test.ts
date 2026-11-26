@@ -321,25 +321,28 @@ describe("P2-02 provider switching", () => {
   });
 
   it("keeps pending switch undoable on pre-provider failure and clears stale session on revert", async () => {
-    const root = tmp("tivano-ps-edge-");
-    const { engine, codex, projectId } = makeMultiProviderEngine(root, {
-      withProject: true,
-    });
-    // Start on mock (no project required), then stage switch to codex on a project-less thread.
-    const noProj = engine.createThread(null, "NoProj");
-    engine.setThreadProvider(noProj.id, "mock");
-    engine.sendTurn(noProj.id, "hi mock");
-    await waitFor(() => engine.snapshot().threads.find((t) => t.id === noProj.id)?.turn?.status === "done");
-    engine.setThreadProvider(noProj.id, "codex");
+    // Engine without task-workspace root: project-less switch to codex fails
+    // pre-provider with WORKSPACE_NOT_CONFIGURED (retainUnsent).
+    const noPaths = makeMultiProviderEngine(tmp("tivano-ps-nopaths-"));
+    const noProj = noPaths.engine.createThread(null, "NoProj");
+    noPaths.engine.setThreadProvider(noProj.id, "mock");
+    noPaths.engine.sendTurn(noProj.id, "hi mock");
+    await waitFor(() => noPaths.engine.snapshot().threads.find((t) => t.id === noProj.id)?.turn?.status === "done");
+    noPaths.engine.setThreadProvider(noProj.id, "codex");
     // Send fails pre-provider with WORKSPACE_NOT_CONFIGURED (retainUnsent).
-    engine.sendTurn(noProj.id, "fails workspace");
-    const afterFail = engine.snapshot().threads.find((t) => t.id === noProj.id)!;
+    noPaths.engine.sendTurn(noProj.id, "fails workspace");
+    const afterFail = noPaths.engine.snapshot().threads.find((t) => t.id === noProj.id)!;
     expect(afterFail.pendingProviderSwitch?.provider).toBe("mock");
     expect(afterFail.continuation).toBeUndefined();
-    engine.undoProviderSwitch(noProj.id);
-    expect(engine.snapshot().threads.find((t) => t.id === noProj.id)?.provider).toBe("mock");
+    noPaths.engine.undoProviderSwitch(noProj.id);
+    expect(noPaths.engine.snapshot().threads.find((t) => t.id === noProj.id)?.provider).toBe("mock");
+    noPaths.store.close();
 
     // Revert while a switch is staged reverts locally and clears origin.providerThread.
+    const root = tmp("tivano-ps-edge-");
+    const { engine, codex, projectId, store } = makeMultiProviderEngine(root, {
+      withProject: true,
+    });
     const projThread = engine.createThread(projectId, "Revert While Staged");
     await engine.bindProviderThread(projThread.id, {
       providerId: "codex",
@@ -358,6 +361,7 @@ describe("P2-02 provider switching", () => {
     const reverted = engine.snapshot().threads.find((t) => t.id === projThread.id)!;
     expect(codex.rolledBack).toEqual([]);
     expect(reverted.pendingProviderSwitch?.providerThread).toBeUndefined();
+    store.close();
   });
 
   it("renders ProviderSwitchTab warning + Undo and localizes strings in en and zh-Hans", () => {
