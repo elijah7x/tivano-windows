@@ -2075,4 +2075,11 @@ export const ko: Record<string, string> = {
     "하위 에이전트 동시 실행 한도(%d)에 도달함\n작업 1개가 대기 중입니다. 한 번에 최대 %d개의 하위 에이전트만 실행됩니다. 실행 중인 하위 에이전트가 끝나면 자동으로 시작됩니다.",
   "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "하위 에이전트 동시 실행 한도(%d)에 도달함\n작업 %d개가 대기 중입니다. 한 번에 최대 %d개의 하위 에이전트만 실행됩니다. 실행 중인 하위 에이전트가 끝나면 차례대로 자동 시작됩니다.",
+  // P2-02
+  "Context may be incomplete after switching providers": "제공자를 전환한 후 컨텍스트가 불완전할 수 있습니다",
+  "Undo": "실행 취소",
+  "Back to %@": "%@(으)로 돌아가기",
+  "Continued with %@": "이어서 진행: %@",
+  "Provider — applies to the next turn": "제공자 — 다음 턴부터 적용",
+  "Hydra pairs": "Hydra 조합",
 };

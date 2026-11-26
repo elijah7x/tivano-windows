@@ -266,6 +266,73 @@ export async function runCodexModelChecks({
     !msg3.content.includes("[m=fixture-model") && !msg3.content.includes("t=fast"),
     msg3.content.slice(0, 140),
   );
+
+  // P2-02: switch a started Codex thread to Mock Provider, verify warning + Undo,
+  // then switch and send to verify text handoff + takeover marker + running lock.
+  await page.waitForSelector(".provider-select", { timeout: 10000 });
+  const beforeSwitch = await threadOf(page, threadId);
+  const origCodexThreadId = beforeSwitch.providerThread?.codexThreadId;
+  await page.locator(".provider-select").selectOption("mock");
+  await page.waitForSelector(".provider-switch-tab", { timeout: 10000 });
+  const switchTabText = await page.locator(".provider-switch-text").textContent();
+  verify(
+    "P2-02: switching to another provider shows the incomplete-context warning",
+    switchTabText === "Context may be incomplete after switching providers",
+    switchTabText,
+  );
+  const staged = await threadOf(page, threadId);
+  verify(
+    "P2-02: staging switch changes nothing until next send and keeps origin session",
+    staged.pendingProviderSwitch?.provider === "codex" &&
+      staged.pendingProviderSwitch?.providerThread?.codexThreadId === origCodexThreadId &&
+      staged.messages.length === beforeSwitch.messages.length,
+    staged.pendingProviderSwitch,
+  );
+  await page.locator(".provider-switch-undo").click();
+  await page.waitForSelector(".provider-switch-tab", { state: "detached", timeout: 10000 });
+  const afterUndo = await threadOf(page, threadId);
+  verify(
+    "P2-02: Undo restores original provider and session intact",
+    afterUndo.provider === "codex" &&
+      afterUndo.providerThread?.codexThreadId === origCodexThreadId &&
+      !afterUndo.pendingProviderSwitch,
+    { provider: afterUndo.provider, codexThreadId: afterUndo.providerThread?.codexThreadId },
+  );
+
+  await page.locator(".provider-select").selectOption("mock");
+  await page.waitForSelector(".provider-switch-tab", { timeout: 10000 });
+  await sendAndWaitDone(page, threadId, "take over from codex");
+  const afterHandoff = await threadOf(page, threadId);
+  const mockReply = afterHandoff.messages.filter((m) => m.role === "assistant").at(-1);
+  verify(
+    "P2-02: send delivers recent conversation as text and adds takeover marker",
+    !afterHandoff.pendingProviderSwitch &&
+      afterHandoff.provider === "mock" &&
+      afterHandoff.messages.some(
+        (m) => m.kind === "notice" && m.content === "Continued with Mock Provider",
+      ) &&
+      Boolean(mockReply?.content.includes("----- BEGIN FORWARDED CONTEXT -----")),
+    {
+      notices: afterHandoff.messages.filter((m) => m.kind === "notice").map((m) => m.content),
+      replyHead: mockReply?.content.slice(0, 160),
+    },
+  );
+
+  // While a turn is running, provider switching is disabled.
+  await page.locator(".composer textarea").fill("[mock:slow] keep busy");
+  await page.keyboard.press("Enter");
+  await waitSnapshot(page, (s) => {
+    const t = s.threads.find((x) => x.id === threadId);
+    return t?.turn?.status === "running";
+  });
+  verify(
+    "P2-02: provider select is disabled while a turn is running",
+    (await page.locator(".provider-select").isDisabled()) === true,
+  );
+  await waitSnapshot(page, (s) => {
+    const t = s.threads.find((x) => x.id === threadId);
+    return t?.turn?.status === "done";
+  });
   {
     const c = await boundedClose(app, proc);
     ledger.exited = c.exited;

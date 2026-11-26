@@ -8,7 +8,14 @@
 // apply to the NEXT turn only; a running turn is never retargeted.
 
 import { useEffect, useRef, useState } from "react";
-import type { ChatThread, CodexModelCatalog, CodexModelOption } from "../../shared/types";
+import type {
+  ChatThread,
+  CodexModelCatalog,
+  CodexModelOption,
+  ProviderMode,
+  ProviderSummary,
+} from "../../shared/types";
+import { pairCustomName } from "../../shared/hydra";
 import {
   defaultPickerCategory,
   partitionPickerModels,
@@ -61,15 +68,30 @@ function effortTitle(effort: string): string {
 
 export interface ModelPickerProps {
   thread: ChatThread;
+  mode?: ProviderMode;
+  providers?: ProviderSummary[];
+  switchLocked?: boolean;
   readOnly?: boolean;
   initialCatalog?: CodexModelCatalog | null;
   initialOpen?: boolean;
   initialQuery?: string;
 }
 
+function providerLabel(t: (k: string, ...vars: string[]) => string, mode: ProviderMode): string {
+  return mode === "synthetic-stdio"
+    ? t("Synthetic stdio")
+    : mode === "codex"
+      ? t("Codex")
+      : t("Mock Provider");
+}
+
 export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   const t = useT();
   const { thread } = props;
+  const activeMode: ProviderMode =
+    props.mode ?? thread.provider ?? clientStore.snapshot?.info?.mode ?? "codex";
+  const availableProviders =
+    props.providers ?? clientStore.snapshot?.info?.providers ?? [];
   const [catalog, setCatalog] = useState<CodexModelCatalog | null>(
     props.initialCatalog ?? null,
   );
@@ -82,8 +104,12 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   const refresh = () => {
     if (props.initialCatalog !== undefined) return;
     const g = ++gen.current;
+    if (activeMode !== "codex") {
+      setCatalog({ state: "unsupported", reason: "the active provider has no model catalog" });
+      return;
+    }
     api()
-      .invoke("models:list", {})
+      .invoke("models:list", { provider: activeMode })
       .then((c) => {
         if (gen.current === g) setCatalog(c as CodexModelCatalog);
       })
@@ -93,9 +119,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       });
   };
 
-  // First fetch on mount/thread switch; the dropdown ALSO refreshes on
-  // open so "no session yet" self-heals once a turn binds one.
-  useEffect(refresh, [thread.id, props.initialCatalog]);
+  // First fetch on mount/thread/provider switch; the dropdown ALSO refreshes
+  // on open so "no session yet" self-heals once a turn binds one.
+  useEffect(refresh, [thread.id, activeMode, props.initialCatalog]);
 
   useEffect(() => {
     if (!groupOpen) return;
@@ -326,17 +352,88 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
     );
   };
 
+  const registeredModes = new Set(availableProviders.map((p) => p.mode));
+  const pairOptions =
+    settings?.hydraEnabled === false || thread.hydraHead
+      ? []
+      : (settings?.hydraPairs ?? []).filter((p) =>
+          registeredModes.has(p.provider as ProviderMode),
+        );
+  const activePair = thread.hydraPairId
+    ? pairOptions.find((p) => p.id === thread.hydraPairId && p.provider === activeMode)
+    : undefined;
+  const providerSelectValue = activePair ? `pair:${activePair.id}` : activeMode;
+
+  const chooseProviderTarget = (value: string) => {
+    if (value.startsWith("pair:")) {
+      const pairId = value.slice(5);
+      const pair = pairOptions.find((p) => p.id === pairId);
+      if (!pair) return;
+      tryCall("threads:set-provider", {
+        threadId: thread.id,
+        provider: pair.provider as ProviderMode,
+        model: pair.orchestratorModel ?? null,
+        effort: pair.orchestratorEffort ?? null,
+        fastTier: null,
+        hydraPairId: pair.id,
+      });
+      return;
+    }
+    const targetMode = value as ProviderMode;
+    tryCall("threads:set-provider", {
+      threadId: thread.id,
+      provider: targetMode,
+      hydraPairId: null,
+    });
+  };
+
   return (
     <div className="model-picker" data-cat={catalog?.state ?? "loading"}>
-      <select
-        className="model-select"
-        aria-label={t("Model")}
-        title={t("Model — applies to the next turn")}
-        value={selected}
-        disabled={!!props.readOnly}
-        onFocus={refresh}
-        onChange={(e) => chooseModel(e.target.value === "" ? null : e.target.value)}
-      >
+      {(availableProviders.length > 1 || pairOptions.length > 0) && (
+        <select
+          className="provider-select"
+          aria-label={t("Provider")}
+          title={t("Provider — applies to the next turn")}
+          value={providerSelectValue}
+          disabled={!!props.readOnly || !!props.switchLocked || !!thread.hydraHead}
+          onChange={(e) => chooseProviderTarget(e.target.value)}
+        >
+          {availableProviders.map((p) => (
+            <option key={p.mode} value={p.mode}>
+              {providerLabel(t, p.mode)}
+            </option>
+          ))}
+          {pairOptions.length > 0 && (
+            <optgroup label={t("Hydra pairs")}>
+              {pairOptions.map((pair) => {
+                const name = pairCustomName(pair);
+                const pName = providerLabel(t, pair.provider as ProviderMode);
+                const label = name
+                  ? `${name} (${pName})`
+                  : pair.orchestratorModel
+                    ? `${pName} · ${pair.orchestratorModel}`
+                    : pName;
+                return (
+                  <option key={pair.id} value={`pair:${pair.id}`}>
+                    {label}
+                  </option>
+                );
+              })}
+            </optgroup>
+          )}
+        </select>
+      )}
+      {activeMode === "codex" && (
+        <>
+          <select
+            className="model-select"
+            aria-label={t("Model")}
+            title={t("Model — applies to the next turn")}
+            value={selected}
+            disabled={!!props.readOnly}
+            onFocus={refresh}
+            onChange={(e) => chooseModel(e.target.value === "" ? null : e.target.value)}
+          >
         <option value="">{t("Default (provider decides)")}</option>
         {selected !== "" && !selectedModel && (
           <option value={selected}>{`${selected} (${t("saved")})`}</option>
@@ -474,13 +571,15 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         {selectedEffort !== "" && !efforts.includes(selectedEffort) && (
           <option value={selectedEffort}>{`${t(effortTitle(selectedEffort))} (${t("saved")})`}</option>
         )}
-        {efforts.map((e) => (
-          <option key={e} value={e}>
-            {t(effortTitle(e))}
-            {selectedModel?.defaultEffort === e ? ` (${t("model default")})` : ""}
-          </option>
-        ))}
-      </select>
+          {efforts.map((e) => (
+            <option key={e} value={e}>
+              {t(effortTitle(e))}
+              {selectedModel?.defaultEffort === e ? ` (${t("model default")})` : ""}
+            </option>
+          ))}
+        </select>
+        </>
+      )}
       {subagentVisible && (
         <select
           className="subagent-mode-select"
@@ -538,7 +637,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
           {t("Auto-dispatch")}
         </label>
       )}
-      {tierId !== null && (
+      {activeMode === "codex" && tierId !== null && (
         <label
           className="fast-tier"
           title={t("Fast service tier — applies to the next turn")}
@@ -560,15 +659,17 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         </label>
       )}
       <span className="model-note">
-        {catalog === null
-          ? t("Loading model list…")
-          : catalog.state === "pending" || catalog.state === "unavailable"
-            ? translateError(t, catalog.reason)
-            : catalog.state === "unsupported"
+        {activeMode !== "codex"
+          ? t("Applies to the next turn")
+          : catalog === null
+            ? t("Loading model list…")
+            : catalog.state === "pending" || catalog.state === "unavailable"
               ? translateError(t, catalog.reason)
-              : reported
-                ? `${t("Provider reports")}: ${reported}`
-                : t("Applies to the next turn")}
+              : catalog.state === "unsupported"
+                ? translateError(t, catalog.reason)
+                : reported
+                  ? `${t("Provider reports")}: ${reported}`
+                  : t("Applies to the next turn")}
       </span>
     </div>
   );

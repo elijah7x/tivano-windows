@@ -281,6 +281,8 @@ export const REQUEST_CHANNELS = [
   "hydra:stop",
   "hydra:continue",
   "threads:set-model",
+  "threads:set-provider",
+  "threads:undo-provider-switch",
   "questions:answer",
   "followUps:enqueue",
   "followUps:remove",
@@ -699,7 +701,9 @@ export const requestValidators = {
   // catalog read — the list is provider-owned state, never callable with
   // renderer-supplied filters. set-model carries bounded string-or-null
   // ids only; usability is the provider's call, never guessed locally.
-  "models:list": vObject({}),
+  "models:list": vObject({
+    provider: vOptional(vEnum(["mock", "synthetic-stdio", "codex"] as const)),
+  }),
   // F18: probe an MCP server config (saved or draft) — real stdio spawn.
   "mcp:probe": vObject({
     transport: vOptional(vEnum(["stdio", "http"] as const)),
@@ -740,6 +744,15 @@ export const requestValidators = {
     effort: vNullable(vNonEmptyString(100)),
     fastTier: vNullable(vNonEmptyString(100)),
   }),
+  "threads:set-provider": vObject({
+    threadId: vId,
+    provider: vEnum(["mock", "synthetic-stdio", "codex"] as const),
+    model: vOptional(vNullable(vNonEmptyString(200))),
+    effort: vOptional(vNullable(vNonEmptyString(100))),
+    fastTier: vOptional(vNullable(vNonEmptyString(100))),
+    hydraPairId: vOptional(vNullable(vNonEmptyString(120))),
+  }),
+  "threads:undo-provider-switch": vObject({ threadId: vId }),
   // Codex question card. The renderer names only the opaque providerKey
   // it was SHOWN plus bounded answer strings — never raw RPC content,
   // paths, commands or provider ids. `answers` is a bounded dynamic map

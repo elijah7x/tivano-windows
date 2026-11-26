@@ -7,7 +7,7 @@
 // threads, remounts and failed sends never lose text.
 
 import { useEffect, useRef, useState } from "react";
-import type { ChatThread, DownloadItem } from "../../shared/types";
+import type { AppInfo, ChatThread, DownloadItem, ProviderMode } from "../../shared/types";
 import {
   builtinSlashCommands,
   slashQueryAt,
@@ -100,9 +100,19 @@ function ContextMeter({ thread }: { thread: ChatThread }): React.JSX.Element | n
   );
 }
 
+function providerDisplayName(t: (k: string, ...vars: string[]) => string, mode: ProviderMode): string {
+  return mode === "synthetic-stdio"
+    ? t("Synthetic stdio")
+    : mode === "codex"
+      ? t("Codex")
+      : t("Mock Provider");
+}
+
 export function Composer(props: {
   thread: ChatThread;
-  mode?: "mock" | "synthetic-stdio" | "codex";
+  mode?: ProviderMode;
+  info?: Pick<AppInfo, "mode" | "providerId" | "providerLabel" | "codex" | "providers"> | undefined;
+  hydraHeadsRunning?: boolean;
   readOnly?: boolean;
 }): React.JSX.Element {
   const t = useT();
@@ -194,8 +204,16 @@ export function Composer(props: {
   const [dismissedText, setDismissedText] = useState<string | null>(null);
   const slash = readOnly ? null : slashQueryAt(text, caret);
   const mention = readOnly || slash ? null : mentionQueryAt(text, caret);
-  const mode = props.mode ?? clientStore.snapshot?.info.mode ?? "mock";
-  const recent = clientStore.snapshot?.recentCommands?.[mode] ?? [];
+  const mode = props.mode ?? clientStore.snapshot?.info?.mode ?? "mock";
+  const effectiveMode: ProviderMode = thread.provider ?? mode;
+  const availableProviders = props.info?.providers ?? clientStore.snapshot?.info?.providers ?? [];
+  const hasPendingRequest =
+    thread.turn?.approval?.status === "pending" ||
+    thread.turn?.question?.status === "pending" ||
+    pending;
+  const switchLocked =
+    running || hasPendingRequest || !!props.hydraHeadsRunning || !!thread.hydraHead;
+  const recent = clientStore.snapshot?.recentCommands?.[effectiveMode] ?? [];
   const slashItems =
     slash && dismissedText !== text
       ? slashSuggestions(
@@ -261,12 +279,13 @@ export function Composer(props: {
       }
     });
   };
-  const providerName =
-    props.mode === "synthetic-stdio"
-      ? t("Synthetic stdio")
-      : props.mode === "codex"
-        ? t("Codex")
-        : t("Mock Provider");
+  const providerName = providerDisplayName(t, effectiveMode);
+  const origin = thread.pendingProviderSwitch;
+  const originLabel = origin
+    ? origin.codexModel
+      ? `${providerDisplayName(t, origin.provider)} · ${origin.codexModel}`
+      : providerDisplayName(t, origin.provider)
+    : "";
 
   const send = () => {
     if (readOnly) return;
@@ -283,7 +302,8 @@ export function Composer(props: {
 
   // The queue hint reflects the effective queueChat binding — it tracks
   // remaps and disappears when the command is cleared.
-  const isDarwin = api().platform === "darwin";
+  const isDarwin =
+    typeof window !== "undefined" && window.tivano?.platform === "darwin";
   const queueChord = effectiveChord(
     "queueChat",
     clientStore.snapshot?.settings.shortcuts,
@@ -325,11 +345,38 @@ export function Composer(props: {
             </button>
           ))}
         </div>
-        {props.mode === "codex" && <ModelPicker thread={thread} readOnly={readOnly} />}
+        {(effectiveMode === "codex" || availableProviders.length > 1) && (
+          <ModelPicker
+            thread={thread}
+            mode={effectiveMode}
+            providers={availableProviders}
+            switchLocked={switchLocked}
+            readOnly={readOnly}
+          />
+        )}
         <span className="composer-modes-end">
           <ContextMeter thread={thread} />
         </span>
       </div>
+      {origin && (
+        <div className="provider-switch-tab" role="status">
+          <span className="provider-switch-text">
+            {t("Context may be incomplete after switching providers")}
+          </span>
+          <button
+            type="button"
+            className="provider-switch-undo"
+            disabled={readOnly || switchLocked}
+            title={t("Back to %@", originLabel)}
+            aria-label={t("Back to %@", originLabel)}
+            onClick={() =>
+              tryCall("threads:undo-provider-switch", { threadId: thread.id })
+            }
+          >
+            {t("Undo")}
+          </button>
+        </div>
+      )}
       {editTarget && (
         <div className="edit-banner" role="status">
           <span className="edit-banner-text">

@@ -2075,4 +2075,11 @@ export const fr: Record<string, string> = {
     "Limite de sous-agents atteinte (%d)\n1 tâche est en file d’attente : %d sous-agents au maximum s’exécutent à la fois. Elle démarrera automatiquement dès qu’un sous-agent en cours aura terminé.",
   "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "Limite de sous-agents atteinte (%d)\n%d tâches sont en file d’attente : %d sous-agents au maximum s’exécutent à la fois. Elles démarreront automatiquement à mesure que les sous-agents en cours termineront.",
+  // P2-02
+  "Context may be incomplete after switching providers": "Le contexte peut être incomplet après un changement de fournisseur",
+  "Undo": "Annuler",
+  "Back to %@": "Retour à %@",
+  "Continued with %@": "Poursuivi avec %@",
+  "Provider — applies to the next turn": "Fournisseur — s'applique au prochain tour",
+  "Hydra pairs": "Paires Hydra",
 };

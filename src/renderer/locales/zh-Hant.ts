@@ -2075,4 +2075,11 @@ export const zhHant: Record<string, string> = {
     "已達子代理並行上限（%d）\n1 個任務正在排隊：同時最多執行 %d 個子代理。執行中的子代理完成後會自動派出。",
   "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "已達子代理並行上限（%d）\n%d 個任務正在排隊：同時最多執行 %d 個子代理。執行中的子代理完成後會自動派出。",
+  // P2-02
+  "Context may be incomplete after switching providers": "切換供應商後，上下文可能不完整",
+  "Undo": "復原",
+  "Back to %@": "返回 %@",
+  "Continued with %@": "以下由 %@ 接續",
+  "Provider — applies to the next turn": "供應商 — 下次傳送生效",
+  "Hydra pairs": "Hydra 組合",
 };

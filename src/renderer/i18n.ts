@@ -2265,6 +2265,13 @@ const zhHans: Record<string, string> = {
   "ChatGPT plan or API key": "ChatGPT 套餐或 API 密钥",
   "Synthetic provider": "合成提供方",
   "Provider checklist": "服务商列表",
+  // P2-02
+  "Context may be incomplete after switching providers": "切换服务商后，上下文可能不完整",
+  "Undo": "撤销",
+  "Back to %@": "回到 %@",
+  "Continued with %@": "以下由 %@ 接力",
+  "Provider — applies to the next turn": "服务商 — 下次发送生效",
+  "Hydra pairs": "Hydra 组合",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
@@ -2386,6 +2393,7 @@ const EXTRA_NOTICE_KEYS = [
   "%@ sent nothing for 30 minutes while a tool ran, so Tivano stopped the turn.",
   "Usage limit reached. Continuing automatically at %@.",
   "⚠ Automatic continue failed: %@",
+  "Continued with %@",
   'Work handed off to "%@".',
   "Queued message could not be sent: %@",
   "Codex error (retrying): %@",

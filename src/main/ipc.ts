@@ -515,7 +515,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   // Per-thread model/effort overrides (F17). The catalog read takes no
   // payload — provider-owned state only; set-model resolves ids from the
   // caller but never guesses usability.
-  handle("models:list", () => engine.codexModels());
+  handle("models:list", (p) => engine.codexModels(p.provider));
   // F18: real stdio probe — spawns the configured command, MCP
   // initialize + tools/list, child always killed before returning.
   handle("mcp:probe", (p) => probeMcpServer(p));
@@ -562,6 +562,17 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("hydra:catalog", () => engine.hydraCatalog());
   handle("threads:set-model", (p) =>
     engine.setThreadModel(p.threadId, p.model, p.effort, p.fastTier),
+  );
+  handle("threads:set-provider", (p) =>
+    engine.setThreadProvider(p.threadId, p.provider, {
+      ...(p.model !== undefined ? { model: p.model } : {}),
+      ...(p.effort !== undefined ? { effort: p.effort } : {}),
+      ...(p.fastTier !== undefined ? { fastTier: p.fastTier } : {}),
+      ...(p.hydraPairId !== undefined ? { hydraPairId: p.hydraPairId } : {}),
+    }),
+  );
+  handle("threads:undo-provider-switch", (p) =>
+    engine.undoProviderSwitch(p.threadId),
   );
   handle("followUps:enqueue", (p) =>
     engine.enqueueFollowUp(p.threadId, p.text, {

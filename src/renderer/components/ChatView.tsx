@@ -1216,6 +1216,16 @@ export function ChatView(props: {
         key={thread.id}
         thread={thread}
         mode={props.mode}
+        info={props.info}
+        hydraHeadsRunning={(props.threads ?? []).some(
+          (h) =>
+            !h.isArchived &&
+            h.hydraHead?.leadId === thread.id &&
+            (h.hydraHead.status === "running" ||
+              h.hydraHead.landingPending === true ||
+              h.turn?.status === "running" ||
+              h.turn?.status === "waiting-approval"),
+        )}
         readOnly={!!props.readOnly}
       />
       {msgMenu && (
