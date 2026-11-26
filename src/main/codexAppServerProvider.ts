@@ -68,9 +68,9 @@ import {
   ProcessTreeError,
 } from "./providerProcessLifecycle";
 import {
-  codexMcpServers,
   type McpServerConfig,
 } from "../shared/mcp";
+import { resolveCodexMcpServers } from "./mcpService";
 import type {
   AdapterDisposeResult,
   ChildCleanupResult,
@@ -245,6 +245,10 @@ export interface CodexProviderOptions {
    * no `config` key at all.
    */
   mcpServers?(): readonly McpServerConfig[] | undefined;
+  /** Test seam for MCP command resolution. */
+  resolveMcpServers?(
+    servers: readonly McpServerConfig[],
+  ): { mcpServers: Record<string, Record<string, unknown>> | undefined; skipped: string[] };
 }
 
 // ---------------------------------------------------------------------------
@@ -653,7 +657,17 @@ class CodexSession {
     params: Record<string, unknown>,
   ): Promise<unknown> {
     const servers = this.provider.mcpServersForThread();
-    const mcp = servers?.length ? codexMcpServers(servers) : undefined;
+    const { mcpServers: mcp, skipped } = servers?.length
+      ? this.provider.resolveMcpServersForThread(servers)
+      : { mcpServers: undefined, skipped: [] };
+    if (skipped.length > 0) {
+      const note = `MCP servers skipped for this session because their command was not found on PATH: ${skipped.join(", ")}`;
+      if (this.turn && !this.turn.terminal && this.turn.cb.onNotice) {
+        this.notice(note, "warning");
+      } else {
+        this.provider.threadNotice(this.localThreadId, note, "warning");
+      }
+    }
     const sent = mcp
       ? {
           ...params,
@@ -3007,6 +3021,14 @@ export class CodexAppServerProvider implements ProviderAdapter {
    *  thread, never retro-mutating a bound one. */
   mcpServersForThread(): readonly McpServerConfig[] | undefined {
     return this.opts.mcpServers?.();
+  }
+
+  resolveMcpServersForThread(
+    servers: readonly McpServerConfig[],
+  ): { mcpServers: Record<string, Record<string, unknown>> | undefined; skipped: string[] } {
+    return this.opts.resolveMcpServers
+      ? this.opts.resolveMcpServers(servers)
+      : resolveCodexMcpServers(servers);
   }
 
   buildSpec(workspaceDir: string, opts: CodexLaunchOptions = {}): SpawnSpec {

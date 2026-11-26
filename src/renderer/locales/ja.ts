@@ -2100,4 +2100,7 @@ export const ja: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "スレッドタイトル、コミットメッセージ、入力欄の予測は生成されません。",
   "Send a turn in Codex to load its models.": "Codex で 1 ターン送信してモデルを読み込んでください。",
+  // P1-33
+  "Invalid null byte in command or arguments.": "コマンドまたは引数に無効な null バイトが含まれています。",
+  "Invalid newline in command or arguments.": "コマンドまたは引数に無効な改行が含まれています。",
 };

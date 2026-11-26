@@ -2100,4 +2100,7 @@ export const fr: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "Aucun titre de conversation, message de commit ou suggestion de saisie n’est généré.",
   "Send a turn in Codex to load its models.": "Envoyez un tour dans Codex pour charger ses modèles.",
+  // P1-33
+  "Invalid null byte in command or arguments.": "Caractère nul invalide dans la commande ou les arguments.",
+  "Invalid newline in command or arguments.": "Saut de ligne invalide dans la commande ou les arguments.",
 };

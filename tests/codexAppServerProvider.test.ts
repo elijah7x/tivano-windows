@@ -6,7 +6,7 @@
 // unsupported server requests, process death, and teardown accounting.
 
 import { EventEmitter } from "node:events";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -1605,7 +1605,7 @@ describe("F18 — config.mcp_servers thread injection (frozen CodexSession)", ()
     {
       id: "1",
       name: "localfs",
-      command: "/usr/bin/fs-server",
+      command: process.execPath,
       args: ["--root", "/tmp"],
       env: { TOKEN: "x" },
     },
@@ -1637,7 +1637,7 @@ describe("F18 — config.mcp_servers thread injection (frozen CodexSession)", ()
     expect(ts.method).toBe("thread/start");
     const config = (ts.params as { config?: { mcp_servers?: unknown } }).config;
     expect(config?.mcp_servers).toEqual({
-      localfs: { command: "/usr/bin/fs-server", args: ["--root", "/tmp"], env: { TOKEN: "x" } },
+      localfs: { command: process.execPath, args: ["--root", "/tmp"], env: { TOKEN: "x" } },
       httpx: { url: "http://127.0.0.1:9999/mcp" },
     });
     child.write({ id: ts.id as number, result: { thread: { id: BIND_ID } } });
@@ -1756,6 +1756,111 @@ describe("F18 — config.mcp_servers thread injection (frozen CodexSession)", ()
     const turnStart = await child.next();
     child.write({ id: turnStart.id as number, result: { turn: { id: "cx-turn-1" } } });
     child.write({ method: "turn/completed", params: { threadId: "cx-old", turn: { id: "cx-turn-1", status: "completed", error: null } } });
+    await p.dispose();
+  });
+
+  it("P1-33: resolves bare commands to full paths and skips missing commands with one notice", async () => {
+    const child = new ScriptedChild();
+    const ws = tmpWorkspace();
+    const cmdDir = mkdtempSync(join(tmpdir(), "tivano-codex-mcp-"));
+    try {
+      const isWin = process.platform === "win32";
+      const shimBase = "tivano-codex-bare-mcp";
+      const shimFull = join(cmdDir, isWin ? `${shimBase}.cmd` : shimBase);
+      writeFileSync(shimFull, isWin ? "@echo off\r\n" : "#!/bin/sh\n");
+      if (!isWin) chmodSync(shimFull, 0o755);
+
+      const { p } = provider({
+        spawnImpl: scripted([child]).spawnImpl,
+        mcpServers: () => [
+          {
+            id: "1",
+            name: "bareok",
+            command: shimBase,
+            args: ["--flag"],
+            env: isWin ? { Path: cmdDir } : { PATH: cmdDir },
+          },
+          {
+            id: "2",
+            name: "missingA",
+            command: "tivano-missing-mcp-cmd-a",
+            args: [],
+          },
+          {
+            id: "3",
+            name: "missingB",
+            command: "tivano-missing-mcp-cmd-b",
+            args: [],
+          },
+        ],
+      });
+      const { cb, c } = cbCollect();
+      p.start(ctx("hi", { workspace: { projectId: "p1", directory: ws } }), cb);
+      const init = await child.next();
+      child.write({
+        id: init.id as number,
+        result: { userAgent: "fixture", codexHome: "/test-codex-home", platformFamily: "unix", platformOs: "macos" },
+      });
+      await child.next(); // initialized
+      const ts = await child.next();
+      expect(ts.method).toBe("thread/start");
+      const config = (ts.params as { config?: { mcp_servers?: Record<string, unknown> } }).config;
+      expect(config?.mcp_servers).toEqual({
+        bareok: {
+          command: shimFull,
+          args: ["--flag"],
+          env: isWin ? { Path: cmdDir } : { PATH: cmdDir },
+        },
+      });
+      expect(c.notices).toEqual([
+        "MCP servers skipped for this session because their command was not found on PATH: missingA, missingB",
+      ]);
+      child.write({ id: ts.id as number, result: { thread: { id: BIND_ID } } });
+      const turnStart = await child.next();
+      child.write({ id: turnStart.id as number, result: { turn: { id: "cx-turn-1" } } });
+      child.write({
+        method: "turn/completed",
+        params: { threadId: BIND_ID, turn: { id: "cx-turn-1", status: "completed", error: null } },
+      });
+      await waitFor(() => c.done);
+      expect(c.errors).toEqual([]);
+      await p.dispose();
+    } finally {
+      rmSync(cmdDir, { recursive: true, force: true });
+    }
+  });
+
+  it("P1-33: when every configured server command is missing, omits mcp_servers and starts with one notice", async () => {
+    const child = new ScriptedChild();
+    const { p } = provider({
+      spawnImpl: scripted([child]).spawnImpl,
+      mcpServers: () => [
+        { id: "1", name: "gone", command: "tivano-missing-mcp-cmd-only", args: [] },
+      ],
+    });
+    const { cb, c } = cbCollect();
+    p.start(ctx("hi"), cb);
+    const init = await child.next();
+    child.write({
+      id: init.id as number,
+      result: { userAgent: "fixture", codexHome: "/test-codex-home", platformFamily: "unix", platformOs: "macos" },
+    });
+    await child.next(); // initialized
+    const ts = await child.next();
+    expect(ts.method).toBe("thread/start");
+    expect((ts.params as { config?: unknown }).config).toBeUndefined();
+    expect(c.notices).toEqual([
+      "MCP servers skipped for this session because their command was not found on PATH: gone",
+    ]);
+    child.write({ id: ts.id as number, result: { thread: { id: BIND_ID } } });
+    const turnStart = await child.next();
+    child.write({ id: turnStart.id as number, result: { turn: { id: "cx-turn-1" } } });
+    child.write({
+      method: "turn/completed",
+      params: { threadId: BIND_ID, turn: { id: "cx-turn-1", status: "completed", error: null } },
+    });
+    await waitFor(() => c.done);
+    expect(c.errors).toEqual([]);
     await p.dispose();
   });
 });

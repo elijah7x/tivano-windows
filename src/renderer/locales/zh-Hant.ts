@@ -2100,4 +2100,7 @@ export const zhHant: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "不會產生對話標題、提交訊息或輸入框預測。",
   "Send a turn in Codex to load its models.": "在 Codex 中傳送一輪訊息以載入其模型。",
+  // P1-33
+  "Invalid null byte in command or arguments.": "指令或參數中包含無效的空位元組。",
+  "Invalid newline in command or arguments.": "指令或參數中包含無效的換行符號。",
 };
