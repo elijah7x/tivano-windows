@@ -2100,4 +2100,22 @@ export const ja: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "スレッドタイトル、コミットメッセージ、入力欄の予測は生成されません。",
   "Send a turn in Codex to load its models.": "Codex で 1 ターン送信してモデルを読み込んでください。",
+  // P1-03
+  "Diagnostics": "診断",
+  "Recovery files": "復旧ファイル",
+  "Keeps the newest recovery file and live store.": "最新の復旧ファイルと現在のストアを保持します。",
+  "Measuring…": "計測中…",
+  "Cleaning up…": "クリーンアップ中…",
+  "Clean up…": "クリーンアップ…",
+  "Clean up": "クリーンアップ",
+  "No files found.": "ファイルが見つかりません。",
+  "Nothing to clean up.": "クリーンアップ対象はありません。",
+  "Total: %@ · Cleanable: %@": "合計：%@ · 削除可能：%@",
+  "Could not measure these files. Not included in the measured total. %@":
+    "これらのファイルを計測できなかったため、合計には含まれていません。%@",
+  "Cleanup did not finish. Some files may already have been removed. %@":
+    "クリーンアップが完了しませんでした。一部のファイルはすでに削除されている可能性があります。%@",
+  "Clean up recovery files?": "復旧ファイルをクリーンアップしますか？",
+  "Deletes only older store and turn recovery backups. Keeps the newest recovery file. Chats, attachments, worktrees and the live store are not removed.":
+    "古いストアおよび会話の復旧バックアップのみを削除し、最新の復旧ファイルを保持します。チャット、添付ファイル、worktree、現在のストアは削除されません。",
 };

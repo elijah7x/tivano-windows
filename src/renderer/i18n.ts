@@ -2288,6 +2288,24 @@ const zhHans: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "不生成对话标题、提交信息和输入框预测。",
   "Send a turn in Codex to load its models.": "在 Codex 中发送一轮消息以加载其模型。",
+  // P1-03: Settings › Storage diagnostics.
+  "Diagnostics": "诊断",
+  "Recovery files": "恢复文件",
+  "Keeps the newest recovery file and live store.": "保留最新的恢复文件和当前存储。",
+  "Measuring…": "正在计算…",
+  "Cleaning up…": "正在清理…",
+  "Clean up…": "清理…",
+  "Clean up": "清理",
+  "No files found.": "没有文件。",
+  "Nothing to clean up.": "没有可清理的文件。",
+  "Total: %@ · Cleanable: %@": "总量：%@ · 可清理：%@",
+  "Could not measure these files. Not included in the measured total. %@":
+    "无法统计这些文件，未计入已统计总量。%@",
+  "Cleanup did not finish. Some files may already have been removed. %@":
+    "清理未完成，部分文件可能已被删除。%@",
+  "Clean up recovery files?": "清理恢复文件？",
+  "Deletes only older store and turn recovery backups. Keeps the newest recovery file. Chats, attachments, worktrees and the live store are not removed.":
+    "仅删除较旧的存储和对话恢复备份，保留最新的恢复文件。不会删除对话、附件、worktree 或当前存储。",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {

@@ -2100,4 +2100,22 @@ export const ko: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "스레드 제목, 커밋 메시지, 입력창 예측을 생성하지 않습니다.",
   "Send a turn in Codex to load its models.": "Codex에서 턴을 한 번 보내 모델을 불러오세요.",
+  // P1-03
+  "Diagnostics": "진단",
+  "Recovery files": "복구 파일",
+  "Keeps the newest recovery file and live store.": "최신 복구 파일과 현재 저장소를 유지합니다.",
+  "Measuring…": "측정 중…",
+  "Cleaning up…": "정리 중…",
+  "Clean up…": "정리…",
+  "Clean up": "정리",
+  "No files found.": "파일을 찾을 수 없습니다.",
+  "Nothing to clean up.": "정리할 항목이 없습니다.",
+  "Total: %@ · Cleanable: %@": "전체: %@ · 정리 가능: %@",
+  "Could not measure these files. Not included in the measured total. %@":
+    "이 파일들의 크기를 측정할 수 없어 측정 합계에서 제외되었습니다. %@",
+  "Cleanup did not finish. Some files may already have been removed. %@":
+    "정리가 완료되지 않았습니다. 일부 파일이 이미 삭제되었을 수 있습니다. %@",
+  "Clean up recovery files?": "복구 파일을 정리할까요?",
+  "Deletes only older store and turn recovery backups. Keeps the newest recovery file. Chats, attachments, worktrees and the live store are not removed.":
+    "오래된 저장소 및 대화 복구 백업만 삭제하고 최신 복구 파일을 유지합니다. 채팅, 첨부 파일, worktree 및 현재 저장소는 삭제되지 않습니다.",
 };

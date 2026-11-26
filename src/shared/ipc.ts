@@ -294,6 +294,8 @@ export const REQUEST_CHANNELS = [
   "limit:cancel",
   "limit:handoff",
   "forge:probe",
+  "storage:diagnostics",
+  "storage:clean-diagnostics",
 ] as const;
 
 export type RequestChannel = (typeof REQUEST_CHANNELS)[number];
@@ -774,6 +776,10 @@ export const requestValidators = {
   "followUps:unbundle": vObject({ threadId: vId, id: vId }),
   "followUps:send-now": vObject({ threadId: vId, id: vId }),
   "followUps:interrupt-send": vObject({ threadId: vId, text: vNonEmptyString(16000) }),
+  "storage:diagnostics": vObject({}),
+  "storage:clean-diagnostics": vObject({
+    category: vEnum(["recovery"] as const),
+  }),
 } as const;
 
 export type RequestPayload<C extends RequestChannel> = ReturnType<

@@ -1485,3 +1485,19 @@ export interface RemoteMcpStatus {
   pendingApprovals: RemoteMcpApprovalRequest[];
   grants: RemoteMcpGrantView[];
 }
+
+export type StorageDiagnosticsCategoryId = "recovery";
+
+export interface StorageDiagnosticsCategoryUsage {
+  id: StorageDiagnosticsCategoryId;
+  totalBytes: number;
+  cleanableBytes: number;
+  fileCount: number;
+  cleanableCount: number;
+  error?: string;
+}
+
+export interface StorageDiagnosticsResult {
+  categories: StorageDiagnosticsCategoryUsage[];
+  cleanupError?: string;
+}

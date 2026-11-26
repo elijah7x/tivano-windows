@@ -81,6 +81,7 @@ import { externalOpenLogPath, recordExternalOpen } from "./externalOpen";
 import { cliBinDir, cliStatus, installCli, uninstallCli } from "./cliInstall";
 import { CheckpointLedger } from "./checkpointLedger";
 import { CheckpointCoordinator } from "./checkpointTurns";
+import { createStorageDiagnosticsService } from "./storageDiagnostics";
 
 import { resolveDataRoot } from "./appDataPaths";
 import { probeAndAttestPackagedJobHelper, disposeJobHelperProbes } from "./packagedJobHelper";
@@ -957,6 +958,13 @@ bootstrap = app.whenReady().then(async () => {
     localControl,
     remoteMcp,
     cli: cliSurface,
+    storageDiagnostics: createStorageDiagnosticsService({
+      dataRoot,
+      getProtectedPaths: () => (store.recoveredFrom ? [store.recoveredFrom] : []),
+      ...(!app.isPackaged && process.env.TIVANO_TEST_DIAGNOSTICS_MEASURE_ERROR
+        ? { injectMeasureError: () => process.env.TIVANO_TEST_DIAGNOSTICS_MEASURE_ERROR ?? null }
+        : {}),
+    }),
     externalLog: externalLog ?? undefined,
     openDirectory: () => dirOpener.open(),
     // A74 frozen MCPKeyPanel pickPath: native file/folder chooser for a
