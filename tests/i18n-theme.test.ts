@@ -141,6 +141,17 @@ describe("i18n", () => {
     expect(translateNotice(t, raw)).toBe(translateError(t, raw));
   });
 
+  it("translateNotice translates the P1-33 skipped MCP servers notice across all locales", () => {
+    const en =
+      "MCP servers skipped for this session because their command was not found on PATH: alpha, beta";
+    for (const lang of TRANSLATED_LANGUAGES) {
+      const t = (k: string, ...v: string[]) => translate(lang, k, v);
+      const out = translateNotice(t, en);
+      expect(out, lang).not.toBe(en);
+      expect(out, lang).toContain("alpha, beta");
+    }
+  });
+
   it("covers P2-26 and P2-28 catalog surfaces across all translated languages", () => {
     const surfaceKeys = [
       // Provider errors & Codex runtime/setup diagnostics

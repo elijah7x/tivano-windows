@@ -8,9 +8,10 @@
 // silence reports timedOut. HTTP/OAuth transports are out of slice.
 
 import { spawn } from "node:child_process";
-import { accessSync, constants as fsConstants } from "node:fs";
-import { delimiter, join } from "node:path";
+import { accessSync, constants as fsConstants, statSync } from "node:fs";
+import { posix, win32 } from "node:path";
 import {
+  codexMcpServers,
   MCP_CLIENT_INFO,
   MCP_LIST_TOOLS_MAX_PAGES,
   MCP_PROBE_TIMEOUT_MS,
@@ -49,44 +50,200 @@ export async function probeMcpServer(
   return probeStdioServer(server, timeoutMs);
 }
 
-/**
- * v2.0.22 (frozen parity): MCP servers are spawned with the command's
- * FULL resolved path — ACP-style agents validate the command path and a
- * bare `npx` gets the whole session refused. A command already carrying
- * a separator passes through; anything else resolves against the
- * effective PATH (server env may override it). Unresolved commands keep
- * the bare name so the spawn ENOENT still reports "isn't installed".
- */
-function resolveOnPath(command: string, env: NodeJS.ProcessEnv): string {
-  if (/[/\\]/.test(command)) return command;
-  const pathEnv = env.PATH ?? process.env.PATH ?? "";
-  const exts = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
-  for (const dir of pathEnv.split(delimiter)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      const candidate = join(dir, command + ext);
-      try {
-        accessSync(candidate, fsConstants.X_OK);
-        return candidate;
-      } catch {
-        /* keep looking */
+const DEFAULT_WIN_PATHEXT = [".COM", ".EXE", ".BAT", ".CMD"];
+
+function isUncOrRemotePath(p: string): boolean {
+  return p.startsWith("\\\\") || p.startsWith("//") || /^file:\/\//i.test(p);
+}
+
+/** Case-insensitive env lookup (`Path` vs `PATH`, `Pathext` vs `PATHEXT`). */
+export function getEnvCaseInsensitive(
+  env: Record<string, string | undefined>,
+  name: string,
+): string | undefined {
+  if (Object.prototype.hasOwnProperty.call(env, name) && typeof env[name] === "string") {
+    return env[name];
+  }
+  const want = name.toLowerCase();
+  for (const [k, v] of Object.entries(env)) {
+    if (k.toLowerCase() === want && typeof v === "string") return v;
+  }
+  return undefined;
+}
+
+/** Merge `overrides` over `base` replacing differently-cased keys on Windows. */
+function mergeEnvCaseInsensitive(
+  base: NodeJS.ProcessEnv,
+  overrides?: Record<string, string>,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  if (!overrides || Object.keys(overrides).length === 0) return { ...base };
+  if (platform !== "win32") return { ...base, ...overrides };
+  const out: NodeJS.ProcessEnv = { ...base };
+  for (const [k, v] of Object.entries(overrides)) {
+    const want = k.toLowerCase();
+    for (const existing of Object.keys(out)) {
+      if (existing.toLowerCase() === want && existing !== k) {
+        delete out[existing];
+      }
+    }
+    out[k] = v;
+  }
+  return out;
+}
+
+function isExecutableFile(candidate: string, platform: NodeJS.Platform): boolean {
+  if (!candidate || isUncOrRemotePath(candidate)) return false;
+  try {
+    const st = statSync(candidate);
+    if (!st.isFile()) return false;
+    if (platform !== "win32") accessSync(candidate, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function winPathExts(
+  serverEnv?: Record<string, string>,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const raw =
+    (serverEnv ? getEnvCaseInsensitive(serverEnv, "PATHEXT") : undefined) ??
+    getEnvCaseInsensitive(baseEnv, "PATHEXT");
+  const parsed = raw
+    ? raw
+        .split(";")
+        .map((e) => e.trim())
+        .filter((e) => e.length > 0)
+        .map((e) => (e.startsWith(".") ? e : `.${e}`))
+    : [];
+  const exts = parsed.length ? parsed : DEFAULT_WIN_PATHEXT;
+  // Try lowercase first so Windows returns `.cmd`/`.exe` consistently while
+  // simulated `win32` on case-sensitive POSIX still finds uppercase files.
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const ext of exts) {
+    for (const v of [ext.toLowerCase(), ext]) {
+      if (!seen.has(v)) {
+        seen.add(v);
+        out.push(v);
       }
     }
   }
-  return command;
+  return out;
+}
+
+/**
+ * v2.0.22 / P1-33: Resolve an MCP command to an executable full path,
+ * honoring `PATHEXT` and either `Path` or `PATH` casing on Windows.
+ * Returns `null` when the command cannot be found (or is UNC/unsafe).
+ */
+export function resolveMcpCommand(
+  command: string,
+  serverEnv?: Record<string, string>,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const cmd = command.trim();
+  if (!cmd || cmd.includes("\0") || /[\r\n]/.test(cmd) || isUncOrRemotePath(cmd)) {
+    return null;
+  }
+  const pathMod = platform === "win32" ? win32 : posix;
+  const hasSep =
+    platform === "win32" ? /[/\\]/.test(cmd) || /^[a-zA-Z]:/.test(cmd) : cmd.includes("/");
+  if (hasSep) {
+    if (isExecutableFile(cmd, platform)) return cmd;
+    if (platform === "win32" && pathMod.extname(cmd) === "") {
+      for (const ext of winPathExts(serverEnv, baseEnv)) {
+        const candidate = cmd + ext;
+        if (isExecutableFile(candidate, platform)) return candidate;
+      }
+    }
+    return null;
+  }
+
+  const pathEnv =
+    (serverEnv ? getEnvCaseInsensitive(serverEnv, "PATH") : undefined) ??
+    getEnvCaseInsensitive(baseEnv, "PATH") ??
+    "";
+  const pathDelim = platform === "win32" ? ";" : ":";
+  const exts =
+    platform === "win32"
+      ? (() => {
+          const winExts = winPathExts(serverEnv, baseEnv);
+          return pathMod.extname(cmd) !== "" ? ["", ...winExts] : winExts;
+        })()
+      : [""];
+
+  for (const rawDir of pathEnv.split(pathDelim)) {
+    const dir = rawDir.trim();
+    if (!dir || isUncOrRemotePath(dir)) continue;
+    for (const ext of exts) {
+      const candidate = pathMod.join(dir, cmd + ext);
+      if (isExecutableFile(candidate, platform)) return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve Settings-configured MCP servers for Codex `config.mcp_servers`,
+ * carrying each stdio command's full path and omitting missing commands
+ * while collecting their names for a single session notice.
+ */
+export function resolveCodexMcpServers(
+  servers: readonly McpServerConfig[],
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): { mcpServers: Record<string, Record<string, unknown>> | undefined; skipped: string[] } {
+  const skipped: string[] = [];
+  const mcpServers = codexMcpServers(servers, {
+    resolveCommand: (command, serverEnv) =>
+      resolveMcpCommand(command, serverEnv, baseEnv, platform),
+    skipped,
+  });
+  return { mcpServers, skipped };
+}
+
+function quoteCmdArg(arg: string): string {
+  return `"${arg.replace(/"/g, '"^""')}"`;
 }
 
 async function probeStdioServer(
   server: Pick<McpServerConfig, "command" | "args" | "env">,
   timeoutMs: number,
 ): Promise<McpProbeResult> {
-  const env = { ...process.env, ...(server.env ?? {}) };
+  const env = mergeEnvCaseInsensitive(process.env, server.env);
+  const resolved = resolveMcpCommand(server.command, server.env, process.env);
+  if (!resolved) {
+    return { status: "missing", reason: `${server.command} isn't installed.` };
+  }
+  if (resolved.includes("\0") || server.args.some((a) => a.includes("\0"))) {
+    return { status: "error", reason: "Invalid null byte in command or arguments." };
+  }
+  const isBatch = process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved);
+  if (isBatch && (/[\r\n]/.test(resolved) || server.args.some((a) => /[\r\n]/.test(a)))) {
+    return { status: "error", reason: "Invalid newline in command or arguments." };
+  }
   let child;
   try {
-    child = spawn(resolveOnPath(server.command, env), server.args, {
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    if (isBatch) {
+      // Node 20.12+ refuses spawning .cmd/.bat directly with EINVAL; route via cmd.exe /d /s /c.
+      const comspec = getEnvCaseInsensitive(env, "ComSpec") || "cmd.exe";
+      const cmdLine = [quoteCmdArg(resolved), ...server.args.map(quoteCmdArg)].join(" ");
+      child = spawn(comspec, ["/d", "/s", "/c", `"${cmdLine}"`], {
+        env,
+        windowsVerbatimArguments: true,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } else {
+      child = spawn(resolved, server.args, {
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    }
   } catch (err) {
     return { status: "error", reason: (err as Error)?.message ?? String(err) };
   }
@@ -247,9 +404,28 @@ async function probeStdioServer(
       p.resolve({ error: { message: "probe finished" } });
     }
     try {
+      child.stdin?.end();
+    } catch {
+      /* already dead */
+    }
+    try {
       child.kill();
     } catch {
       /* already dead */
+    }
+    if (process.platform === "win32" && isBatch && exited === "alive" && child.pid) {
+      await Promise.race([done, new Promise((r) => setTimeout(r, 150))]);
+      if (exited === "alive") {
+        // Killing cmd.exe alone can leave grandchild node processes holding pipes.
+        await new Promise<void>((resolve) => {
+          const tk = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+            stdio: "ignore",
+            windowsHide: true,
+          });
+          tk.once("exit", () => resolve());
+          tk.once("error", () => resolve());
+        });
+      }
     }
     await Promise.race([done, new Promise((r) => setTimeout(r, 1500))]);
     try {

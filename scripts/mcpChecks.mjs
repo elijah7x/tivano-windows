@@ -9,7 +9,8 @@
 // slice — nothing here claims a real MCP package or a provider session.
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -488,6 +489,51 @@ export async function runMcpChecks({
 
     await page3.screenshot({ path: join(outDir, "73-mcp-catalog.png") });
     await page3.locator(".mcp-browse").click();
+
+    // MC-27 (P1-33): bare command resolves via Path/PATH + PATHEXT (.cmd shim
+    // on Windows) and spawns fakeMcpServer.cjs cleanly through the Settings UI.
+    const shimDir = mkdtempSync(join(tmpdir(), "tivano-e2e-mcp-shim-"));
+    try {
+      const isWin = process.platform === "win32";
+      const shimBase = "tivano-e2e-shim-mcp";
+      const shimFile = join(shimDir, isWin ? `${shimBase}.cmd` : shimBase);
+      if (isWin) {
+        writeFileSync(
+          shimFile,
+          `@echo off\r\n"${process.execPath}" "${FIXTURE}" %*\r\n`,
+        );
+      } else {
+        writeFileSync(
+          shimFile,
+          `#!/bin/sh\nexec "${process.execPath}" "${FIXTURE}" "$@"\n`,
+        );
+        chmodSync(shimFile, 0o755);
+      }
+      await page3.locator(".mcp-add").click();
+      await waitFor(page3.locator(".mcp-form"));
+      await page3.locator(".mcp-transport .choice", { hasText: "Stdio command" }).click();
+      await page3.locator(".mcp-f-name").fill("shim-e2e");
+      await page3.locator(".mcp-f-command").fill(shimBase);
+      await page3.locator(".mcp-f-env").fill(
+        `${isWin ? "Path" : "PATH"}=${shimDir}\nMCP_FAKE_MODE=ok\nMCP_FAKE_NAME=shim-srv`,
+      );
+      await page3.locator(".mcp-f-save").click();
+      const rShim = page3.locator(".mcp-row", { hasText: "shim-e2e" }).first();
+      await rShim.waitFor();
+      await rShim.locator(".mcp-check").click();
+      await waitFor(rShim.locator(".mcp-st-ok"));
+      verify(
+        "MC-27 bare command .cmd/.sh shim probes fakeMcpServer.cjs cleanly",
+        (await rShim.locator(".mcp-st").textContent()) === "Connected · 2 tools" &&
+          (await rShim.locator(".mcp-st").getAttribute("title")) === "shim-srv 0.1",
+        {
+          text: await rShim.locator(".mcp-st").textContent(),
+          title: await rShim.locator(".mcp-st").getAttribute("title"),
+        },
+      );
+    } finally {
+      rmSync(shimDir, { recursive: true, force: true });
+    }
   } finally {
     fx.kill();
   }

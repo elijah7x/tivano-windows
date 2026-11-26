@@ -2420,6 +2420,7 @@ const EXTRA_NOTICE_KEYS = [
   "approval answer %@ — the request was expired unanswered",
   "The endpoint answered HTTP %@.",
   "HTTP %@ — no JSON-RPC reply",
+  "MCP servers skipped for this session because their command was not found on PATH: %@",
   "tomorrow at %@",
   "%@ at %@",
   "cwd: %@",
