@@ -132,10 +132,35 @@ describe("P2-40 floating panel layouts", () => {
       t,
     );
     expect(html).toContain('class="hydra-panel"');
-    // heads.slice(1) → [running, completed]; only the running one pops.
+    // Two running heads mean the second pops; the finished head is ignored.
     const pops = html.match(/helper-panel float/g) ?? [];
     expect(pops).toHaveLength(1);
     expect(html).toContain('data-corner="');
+  });
+
+  it("a lone running head never pops just because finished heads exist", () => {
+    for (const order of [
+      ["running", "completed"],
+      ["completed", "running"],
+    ] as const) {
+      const t = lead();
+      const html = view(
+        { hydraAutoOpensPanels: true, hydraAutoPopsHeads: true },
+        [t, ...order.map((status) => head(status))],
+        t,
+      );
+      expect(html).not.toContain("helper-panel float");
+    }
+  });
+
+  it("three running heads produce two independent pops", () => {
+    const t = lead();
+    const html = view(
+      { hydraAutoOpensPanels: true, hydraAutoPopsHeads: true },
+      [t, head("running"), head("running"), head("running")],
+      t,
+    );
+    expect(html.match(/helper-panel float/g) ?? []).toHaveLength(2);
   });
 
   it("Off covers a plain helper running outside any panel", () => {
