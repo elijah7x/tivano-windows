@@ -568,6 +568,8 @@ export const zhHant: Record<string, string> = {
   "The picker is full (30 models)": "選擇器已滿（30 個模型）",
   "No models reported": "未回報模型",
   "No models match": "沒有符合的模型",
+  "Clear search": "清除搜尋",
+  "Other models": "其他模型",
   "Done": "完成",
   "Provider reports": "服務商回報",
   "Applies to the next turn": "下輪生效",

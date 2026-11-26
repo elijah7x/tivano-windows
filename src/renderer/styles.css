@@ -1932,8 +1932,14 @@ select.runtime-mode:disabled {
 }
 .model-picker-pop.two-col { width: 520px; }
 .model-picker-pop.single-col { width: 320px; }
+.model-pop-search-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 .model-pop-search {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   box-sizing: border-box;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -1944,6 +1950,22 @@ select.runtime-mode:disabled {
   padding: 5px 8px;
 }
 .model-pop-search:focus { outline: none; border-color: var(--accent); }
+.model-pop-clear {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.model-pop-clear:hover { background: var(--hover); color: var(--text); }
 .model-pop-cols {
   display: grid;
   grid-template-columns: 124px 1fr;

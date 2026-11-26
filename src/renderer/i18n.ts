@@ -667,6 +667,8 @@ const zhHans: Record<string, string> = {
   "The picker is full (30 models)": "选择器已满（30 个模型）",
   "No models reported": "未报告模型",
   "No models match": "没有匹配的模型",
+  "Clear search": "清除搜索",
+  "Other models": "其他模型",
   "Done": "完成",
   "Provider reports": "服务商报告",
   "Applies to the next turn": "下一轮生效",

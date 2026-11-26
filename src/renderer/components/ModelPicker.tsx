@@ -7,7 +7,7 @@
 // popover when user groups exist. Selections persist on the thread and
 // apply to the NEXT turn only; a running turn is never retargeted.
 
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { ChatThread, CodexModelCatalog, CodexModelOption } from "../../shared/types";
 import {
   pairCustomName,
@@ -16,6 +16,8 @@ import {
   type HydraPair,
 } from "../../shared/hydra";
 import {
+  PickerModelsCache,
+  cachedPickerModels,
   defaultPickerCategory,
   partitionPickerModels,
   pickerCategoryKey,
@@ -27,7 +29,7 @@ import {
   resolvePickerCategory,
   resolveRecentPickerModel,
   resolveRecentPickerPair,
-  simplifiedModels,
+  sharedPickerModelsCache,
   type ModelPin,
   type PickerCategory,
   type PickerEntry,
@@ -70,12 +72,20 @@ function effortTitle(effort: string): string {
   return effort.charAt(0).toUpperCase() + effort.slice(1);
 }
 
+const EMPTY_MODELS: CodexModelOption[] = [];
+const EMPTY_PINS: ModelPin[] = [];
+const EMPTY_SECTIONS: NonNullable<
+  NonNullable<typeof clientStore.snapshot>["settings"]["modelSections"]
+> = [];
+
 export interface ModelPickerProps {
   thread: ChatThread;
   readOnly?: boolean;
   initialCatalog?: CodexModelCatalog | null;
   initialOpen?: boolean;
   initialQuery?: string;
+  trimCache?: PickerModelsCache<CodexModelOption>;
+  onTrimCompute?: () => void;
 }
 
 export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
@@ -136,33 +146,55 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
     };
   }, [popOpen]);
 
-  const models: CodexModelOption[] = catalog?.state === "ready" ? catalog.models : [];
+  const models: CodexModelOption[] =
+    catalog?.state === "ready" ? catalog.models : EMPTY_MODELS;
   const settings = clientStore.snapshot?.settings;
-  const pinnedList: ModelPin[] = settings?.modelList ?? [];
-  const pinnedSections = settings?.modelSections ?? [];
+  const pinnedList: ModelPin[] = settings?.modelList ?? EMPTY_PINS;
+  const pinnedSections = settings?.modelSections ?? EMPTY_SECTIONS;
   const usePins = pinnedList.length > 0;
   const hasUserGroups = pinnedSections.length > 0;
-  const selected0 = thread.codexModel ?? "";
-  const recentModelId =
-    settings?.lastNewChatModel?.provider === "codex"
-      ? [settings.lastNewChatModel.modelID]
-      : [];
-  // P1-25: frozen hidesOutdatedModels — the unpinned catalog trims to
-  // each vendor's three newest versions; the thread's own model, pins,
-  // recent model and Hydra pair models always stay (frozen protectedModelIDs).
-  const protectedIds = protectedModelIds(
-    { modelList: pinnedList, hydraPairs: settings?.hydraPairs },
-    "codex",
-    selected0 === "" ? recentModelId : [selected0, ...recentModelId],
-  );
-  const visibleModels =
-    (settings?.hideOutdatedModels ?? true) && !usePins
-      ? simplifiedModels(models, { isProtected: (m) => protectedIds.has(m.id) })
-      : models;
-  const optionById = new Map(models.map((m) => [m.id, m]));
-  const partition = partitionPickerModels(pinnedList, pinnedSections, visibleModels, optionById);
-
   const selected = thread.codexModel ?? "";
+  const hideOutdated = settings?.hideOutdatedModels ?? true;
+  const recentModelId = settings?.lastNewChatModel?.provider === "codex"
+    ? settings.lastNewChatModel.modelID
+    : "";
+  // P1-25 / P1-24: frozen hidesOutdatedModels + PickerModelsCache —
+  // the unpinned catalog trims once per change of models or settings
+  // (never on keystrokes or unrelated renders); the thread's own model,
+  // recent model, pins and Hydra pair models always stay (frozen protectedModelIDs).
+  const protectedIds = useMemo(
+    () => {
+      const extra: string[] = [];
+      if (selected !== "") extra.push(selected);
+      if (recentModelId !== "" && recentModelId !== selected) extra.push(recentModelId);
+      return protectedModelIds(
+        { modelList: pinnedList, hydraPairs: settings?.hydraPairs },
+        "codex",
+        extra,
+      );
+    },
+    [pinnedList, settings?.hydraPairs, selected, recentModelId],
+  );
+  const visibleModels = useMemo(() => {
+    if (usePins) return models;
+    return cachedPickerModels(models, {
+      provider: "codex",
+      hideOutdatedModels: hideOutdated,
+      protectedIds,
+      cache:
+        props.trimCache ??
+        (sharedPickerModelsCache as unknown as PickerModelsCache<CodexModelOption>),
+      onCompute: props.onTrimCompute,
+    });
+  }, [usePins, models, hideOutdated, protectedIds, props.trimCache, props.onTrimCompute]);
+  const optionById = useMemo(
+    () => new Map(models.map((m) => [m.id, m])),
+    [models],
+  );
+  const partition = useMemo(
+    () => partitionPickerModels(pinnedList, pinnedSections, visibleModels, optionById, selected),
+    [pinnedList, pinnedSections, visibleModels, optionById, selected],
+  );
 
   // P1-36: the sub-agent mode row from the frozen picker's
   // SubagentModeRow set, bounded to a select in the model menu — shown
@@ -368,9 +400,44 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   const filteredPairs = isSearching
     ? pairs.filter((p) => pickerPairMatches(p, pickerQuery, pairTitle(p), pairDetail(p)))
     : pairs;
-  const searchModelsList = isSearching
-    ? (usePins ? visibleEntries : allEntries).filter(matchesEntry)
-    : visibleEntries;
+
+  const ungroupedSearchHits: PickerEntry<CodexModelOption>[] = isSearching
+    ? (() => {
+        const hits: PickerEntry<CodexModelOption>[] = models
+          .map((m): PickerEntry<CodexModelOption> => ({ modelId: m.id, option: m }))
+          .filter(matchesEntry);
+        if (selected !== "" && !selectedModel && matchesEntry({ modelId: selected })) {
+          hits.unshift({ modelId: selected });
+        }
+        return hits;
+      })()
+    : [];
+
+  const groupedShownIds = new Set<string>();
+  if (hasUserGroups && isSearching) {
+    for (const g of partition.groups) {
+      for (const item of g.items) groupedShownIds.add(item.modelId);
+    }
+    for (const item of partition.ungrouped) groupedShownIds.add(item.modelId);
+  }
+  const groupedExtraHits: PickerEntry<CodexModelOption>[] =
+    hasUserGroups && isSearching
+      ? (() => {
+          const extra: PickerEntry<CodexModelOption>[] = models
+            .filter((m) => !groupedShownIds.has(m.id))
+            .map((m): PickerEntry<CodexModelOption> => ({ modelId: m.id, option: m }))
+            .filter(matchesEntry);
+          if (
+            selected !== "" &&
+            !selectedModel &&
+            !groupedShownIds.has(selected) &&
+            matchesEntry({ modelId: selected })
+          ) {
+            extra.unshift({ modelId: selected });
+          }
+          return extra;
+        })()
+      : [];
 
   // Roving tabIndex keys so Tab jumps column-to-column and Arrows move inside a column.
   const leftKeys: string[] = [];
@@ -402,6 +469,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         for (const e of g.items.filter(matchesEntry)) rightKeys.push(`model:${e.modelId}`);
       }
       for (const e of partition.ungrouped.filter(matchesEntry)) rightKeys.push(`model:${e.modelId}`);
+      for (const e of groupedExtraHits) rightKeys.push(`model:${e.modelId}`);
       if (showsPairs) {
         for (const p of filteredPairs) rightKeys.push(`pair:${p.id}`);
       }
@@ -417,15 +485,21 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       if (recentPair) rightKeys.push(`recent-pair:${recentPair.id}`);
       if (recentModel) rightKeys.push(`recent-model:${recentModel.modelId}`);
       rightKeys.push("model:__default__");
+      if (selected !== "" && !selectedModel) rightKeys.push(`model:${selected}`);
       for (const g of partition.groups) {
         for (const e of g.items) rightKeys.push(`model:${e.modelId}`);
       }
       for (const e of partition.ungrouped) rightKeys.push(`model:${e.modelId}`);
     }
   } else {
-    if (!isSearching && recentModel) rightKeys.push(`recent-model:${recentModel.modelId}`);
-    if (!isSearching) rightKeys.push("model:__default__");
-    for (const e of searchModelsList) rightKeys.push(`model:${e.modelId}`);
+    if (isSearching) {
+      for (const e of ungroupedSearchHits) rightKeys.push(`model:${e.modelId}`);
+    } else {
+      if (recentModel) rightKeys.push(`recent-model:${recentModel.modelId}`);
+      rightKeys.push("model:__default__");
+      if (selected !== "" && !selectedModel) rightKeys.push(`model:${selected}`);
+      for (const e of visibleEntries) rightKeys.push(`model:${e.modelId}`);
+    }
   }
   const preferredRightKey = leadsWithPair
     ? activePair && rightKeys.includes(`pair:${activePair.id}`)
@@ -581,7 +655,11 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
     );
   };
 
-  const renderPopRow = (entry: PickerEntry<CodexModelOption>, isRecent = false) => {
+  const renderPopRow = (
+    entry: PickerEntry<CodexModelOption>,
+    isRecent = false,
+    labelOverride?: string,
+  ) => {
     const key = `${isRecent ? "recent-model" : "model"}:${entry.modelId}`;
     const isSel = !leadsWithPair && selected === entry.modelId;
     const pref = settings?.modelPreferences?.[prefKey("codex", entry.modelId)];
@@ -607,8 +685,8 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
           {isSel ? "✓" : ""}
         </span>
         <span className="model-pop-name">
-          {entry.option?.name ?? entry.modelId}
-          {entry.option?.isDefault ? " ★" : ""}
+          {labelOverride ?? entry.option?.name ?? entry.modelId}
+          {!labelOverride && entry.option?.isDefault ? " ★" : ""}
         </span>
         {showsFast && (
           <span className="model-pop-fast" aria-hidden="true">
@@ -618,6 +696,11 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       </button>
     );
   };
+
+  const renderSavedSelectedRow = () =>
+    selected !== "" && !selectedModel
+      ? renderPopRow({ modelId: selected }, false, `${selected} (${t("saved")})`)
+      : null;
 
   const renderDefaultModelRow = () => {
     const key = "model:__default__";
@@ -671,10 +754,16 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
 
   const renderFlatModelsBody = () => {
     if (isSearching) {
-      if (searchModelsList.length === 0) {
+      if (ungroupedSearchHits.length === 0) {
         return <div className="model-pop-empty">{t("No models match")}</div>;
       }
-      return searchModelsList.map((entry) => renderPopRow(entry));
+      return ungroupedSearchHits.map((entry) =>
+        renderPopRow(
+          entry,
+          false,
+          entry.option ? undefined : `${entry.modelId} (${t("saved")})`,
+        ),
+      );
     }
     return (
       <>
@@ -689,7 +778,15 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
             <div className="model-pop-head">{t("Models")}</div>
           )}
           {renderDefaultModelRow()}
+          {renderSavedSelectedRow()}
           {visibleEntries.map((entry) => renderPopRow(entry))}
+          {models.length === 0 && (
+            <div className="model-pop-empty">
+              {catalog === null || catalog.state === "ready"
+                ? t("Loading model list…")
+                : translateError(t, catalog.reason)}
+            </div>
+          )}
         </div>
       </>
     );
@@ -710,6 +807,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       if (ungroupedHits.length > 0) {
         blocks.push({ id: "ungrouped", title: t("Ungrouped"), items: ungroupedHits });
       }
+      if (groupedExtraHits.length > 0) {
+        blocks.push({ id: "other-models", title: t("Other models"), items: groupedExtraHits });
+      }
       if (blocks.length === 0 && (!showsPairs || filteredPairs.length === 0)) {
         return <div className="model-pop-empty">{t("No models match")}</div>;
       }
@@ -718,7 +818,13 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
           {blocks.map((b) => (
             <div key={b.id} className="model-pop-sec">
               <div className="model-pop-head">{b.title}</div>
-              {b.items.map((e) => renderPopRow(e))}
+              {b.items.map((item) =>
+                renderPopRow(
+                  item,
+                  false,
+                  item.option ? undefined : `${item.modelId} (${t("saved")})`,
+                ),
+              )}
             </div>
           ))}
           {showsPairs && filteredPairs.length > 0 && (
@@ -757,17 +863,17 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       if (items.length === 0) {
         return <div className="model-pop-empty">{t("No models in this group")}</div>;
       }
-      return items.map((e) => renderPopRow(e));
+      return items.map((item) => renderPopRow(item));
     }
 
     if (activeCategory.kind === "ungrouped") {
       if (partition.ungrouped.length === 0) {
         return <div className="model-pop-empty">{t("No models in this group")}</div>;
       }
-      return partition.ungrouped.map((e) => renderPopRow(e));
+      return partition.ungrouped.map((item) => renderPopRow(item));
     }
 
-    // "all" category: optional Recent section + Default row + each non-empty group + ungrouped.
+    // "all" category: optional Recent section + Default row + saved-only chosen model + each non-empty group + ungrouped.
     return (
       <>
         {(recentPair || recentModel) && (
@@ -780,13 +886,14 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         <div className="model-pop-sec">
           {(recentPair || recentModel) && <div className="model-pop-head">{t("Models")}</div>}
           {renderDefaultModelRow()}
+          {renderSavedSelectedRow()}
         </div>
         {partition.groups
           .filter((g) => g.items.length > 0)
           .map((g) => (
             <div key={g.section.id} className="model-pop-sec">
               <div className="model-pop-head">{g.section.name}</div>
-              {g.items.map((e) => renderPopRow(e))}
+              {g.items.map((item) => renderPopRow(item))}
             </div>
           ))}
         {partition.ungrouped.length > 0 && (
@@ -794,7 +901,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
             {partition.groups.some((g) => g.items.length > 0) && (
               <div className="model-pop-head">{t("Ungrouped")}</div>
             )}
-            {partition.ungrouped.map((e) => renderPopRow(e))}
+            {partition.ungrouped.map((item) => renderPopRow(item))}
           </div>
         )}
       </>
@@ -895,16 +1002,32 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
             aria-label={popTriggerAria}
             onKeyDown={onPopKeyDown}
           >
-            <input
-              ref={searchRef}
-              type="search"
-              className="model-pop-search"
-              placeholder={t("Search models")}
-              aria-label={t("Search models")}
-              value={pickerQuery}
-              autoFocus
-              onChange={(e) => setPickerQuery(e.target.value)}
-            />
+            <div className="model-pop-search-row">
+              <input
+                ref={searchRef}
+                type="search"
+                className="model-pop-search"
+                placeholder={t("Search models")}
+                aria-label={t("Search models")}
+                value={pickerQuery}
+                autoFocus
+                onChange={(e) => setPickerQuery(e.target.value)}
+              />
+              {pickerQuery !== "" && (
+                <button
+                  type="button"
+                  className="model-pop-clear"
+                  aria-label={t("Clear search")}
+                  title={t("Clear search")}
+                  onClick={() => {
+                    setPickerQuery("");
+                    searchRef.current?.focus();
+                  }}
+                >
+                  ×
+                </button>
+              )}
+            </div>
             {hasUserGroups ? (
               <div className="model-pop-cols">
                 <div

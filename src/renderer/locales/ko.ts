@@ -568,6 +568,8 @@ export const ko: Record<string, string> = {
   "The picker is full (30 models)": "선택기가 가득 찼습니다(30개 모델)",
   "No models reported": "보고된 모델 없음",
   "No models match": "일치하는 모델이 없습니다",
+  "Clear search": "검색 지우기",
+  "Other models": "기타 모델",
   "Done": "완료",
   "Provider reports": "제공자 보고",
   "Applies to the next turn": "다음 턴부터 적용",

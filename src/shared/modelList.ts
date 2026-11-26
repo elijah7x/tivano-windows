@@ -406,6 +406,103 @@ export function simplifiedModels<T extends ModelRowLike>(
     .map((e) => e.option);
 }
 
+export const PICKER_MODELS_CACHE_LIMIT = 48;
+
+/** Bounded cache for `simplifiedModels` results (frozen `PickerModelsCache`
+ *  in `ModelVisibility.swift`), keyed by provider, hideOutdated flag,
+ *  protected ids, catalog signature, and knownVersions signature. */
+export class PickerModelsCache<T extends ModelRowLike = ModelRowLike> {
+  private values = new Map<string, T[]>();
+  private order: string[] = [];
+  private readonly limit: number;
+
+  constructor(limit = PICKER_MODELS_CACHE_LIMIT) {
+    this.limit = Math.max(1, limit);
+  }
+
+  get size(): number {
+    return this.values.size;
+  }
+
+  get(key: string): T[] | undefined {
+    return this.values.get(key);
+  }
+
+  set(key: string, value: T[]): void {
+    if (!this.values.has(key)) {
+      this.order.push(key);
+    }
+    this.values.set(key, value);
+    while (this.order.length > this.limit) {
+      const oldest = this.order.shift();
+      if (oldest !== undefined) this.values.delete(oldest);
+    }
+  }
+
+  clear(): void {
+    this.values.clear();
+    this.order = [];
+  }
+}
+
+export const sharedPickerModelsCache = new PickerModelsCache<ModelRowLike>();
+
+function catalogSignature(models: readonly ModelRowLike[]): string {
+  return `${models.length}\0${models
+    .map((m) => `${m.id}\u0001${m.name}\u0001${m.isDefault ? "1" : "0"}`)
+    .join("\0")}`;
+}
+
+function knownVersionsSignature(
+  knownVersions?: ReadonlyMap<string, ReadonlySet<string>>,
+): string {
+  if (!knownVersions || knownVersions.size === 0) return "";
+  return [...knownVersions.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([vendor, versions]) => `${vendor}:${[...versions].sort().join(",")}`)
+    .join("\0");
+}
+
+/** Returns the trimmed model list for a picker, reusing cached results
+ *  when the catalog, protection set, and `hideOutdatedModels` are unchanged. */
+export function cachedPickerModels<T extends ModelRowLike>(
+  models: T[],
+  options: {
+    provider: string;
+    hideOutdatedModels?: boolean | undefined;
+    protectedIds?: ReadonlySet<string> | undefined;
+    keepingVersions?: number | undefined;
+    knownVersions?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+    cache?: PickerModelsCache<T> | undefined;
+    onCompute?: (() => void) | undefined;
+  },
+): T[] {
+  const hideOutdated = options.hideOutdatedModels ?? true;
+  if (!hideOutdated || models.length === 0) return models;
+  const protectedSet = options.protectedIds ?? new Set<string>();
+  const keeping = options.keepingVersions ?? 3;
+  const protectedKey = [...protectedSet].sort().join("\0");
+  const key = [
+    options.provider,
+    "1",
+    String(keeping),
+    protectedKey,
+    catalogSignature(models),
+    knownVersionsSignature(options.knownVersions),
+  ].join("\u0002");
+  const cache = options.cache ?? (sharedPickerModelsCache as unknown as PickerModelsCache<T>);
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+  options.onCompute?.();
+  const result = simplifiedModels(models, {
+    keepingVersions: keeping,
+    knownVersions: options.knownVersions,
+    isProtected: (m) => protectedSet.has(m.id),
+  });
+  cache.set(key, result);
+  return result;
+}
+
 /** Frozen protectedModelIDs(): the ids a trimmed picker keeps anyway —
  *  the caller's extras (the picker's own choice, the open chat's model),
  *  the settings' pins, and every pair's lead and heads models on
@@ -818,13 +915,16 @@ export interface PickerPartition<T extends ModelRowLike> {
 }
 
 /** Partitions models for the group-aware picker (frozen partitionedGroups).
- *  When pins exist, only pinned models appear in their group / ungrouped order;
- *  otherwise `visibleModels` sit under ungrouped while sections stay visible. */
+ *  When pins exist, only pinned models appear in their group / ungrouped order
+ *  (plus `selectedModelId` if it is in the catalog and not already pinned, so
+ *  the chosen model always stays visible); otherwise `visibleModels` sit under
+ *  ungrouped while sections stay visible. */
 export function partitionPickerModels<T extends ModelRowLike>(
   pins: ModelPin[],
   sections: ModelSection[],
   visibleModels: T[],
   optionById: ReadonlyMap<string, T>,
+  selectedModelId?: string,
 ): PickerPartition<T> {
   if (pins.length === 0) {
     const orderedSections = [...sections]
@@ -837,21 +937,30 @@ export function partitionPickerModels<T extends ModelRowLike>(
     };
   }
   const blocks = partitionModelBlocks(pins, sections);
-  return {
-    groups: blocks.groups.map((g) => ({
-      section: g.section,
-      items: g.pins.map((pin) => ({
-        modelId: pin.modelID,
-        pin,
-        option: optionById.get(pin.modelID),
-      })),
-    })),
-    ungrouped: blocks.ungrouped.map((pin) => ({
+  const ungrouped: PickerEntry<T>[] = blocks.ungrouped.map((pin) => ({
+    modelId: pin.modelID,
+    pin,
+    option: optionById.get(pin.modelID),
+  }));
+  const groups = blocks.groups.map((g) => ({
+    section: g.section,
+    items: g.pins.map((pin) => ({
       modelId: pin.modelID,
       pin,
       option: optionById.get(pin.modelID),
     })),
-  };
+  }));
+  if (
+    selectedModelId &&
+    !blocks.ungrouped.some((p) => p.modelID === selectedModelId) &&
+    !blocks.groups.some((g) => g.pins.some((p) => p.modelID === selectedModelId))
+  ) {
+    const selectedOpt = optionById.get(selectedModelId);
+    if (selectedOpt) {
+      ungrouped.unshift({ modelId: selectedModelId, option: selectedOpt });
+    }
+  }
+  return { groups, ungrouped };
 }
 
 /** Frozen defaultCategory: opens on Combos when leading with a pair,

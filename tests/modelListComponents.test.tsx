@@ -24,7 +24,12 @@ import type {
   Settings,
   Snapshot,
 } from "../src/shared/types";
-import type { ModelPin, ModelPreference, ModelSection } from "../src/shared/modelList";
+import type {
+  ModelPin,
+  ModelPreference,
+  ModelSection,
+} from "../src/shared/modelList";
+import { PickerModelsCache } from "../src/shared/modelList";
 
 const prevSnapshot = clientStore.snapshot;
 
@@ -396,6 +401,211 @@ describe("ModelPicker (P2-03 two-column pairs & models with recents)", () => {
     expect(html).toContain("最近");
     expect(html).toContain("组合");
     expect(html).toContain("Alpha Team");
+  });
+});
+
+describe("ModelPicker (P1-24 trimmed-list cache & full-catalog search)", () => {
+  const OUTDATED_CATALOG: CodexModelCatalog = {
+    state: "ready",
+    models: [
+      { id: "fixture-v1", name: "Fixture 1.0", efforts: [], isDefault: false },
+      { id: "fixture-v2", name: "Fixture 2.0", efforts: [], isDefault: false },
+      { id: "fixture-v3", name: "Fixture 3.0", efforts: [], isDefault: false },
+      { id: "fixture-v4", name: "Fixture 4.0", efforts: [], isDefault: false },
+      { id: "fixture-v5", name: "Fixture 5.0", efforts: [], isDefault: false },
+      { id: "fixture-model", name: "Fixture Model", efforts: ["medium"], isDefault: true },
+    ],
+  };
+
+  const makeEmptyThread = (): ChatThread => {
+    const t = makeThread();
+    delete t.codexModel;
+    return t;
+  };
+
+  it("computes the trimmed list once across query changes and re-renders, recomputing only on model/setting changes", () => {
+    setMockSettings({ modelList: [], modelSections: [], hideOutdatedModels: true });
+    const trimCache = new PickerModelsCache<
+      Extract<CodexModelCatalog, { state: "ready" }>["models"][number]
+    >();
+    let computes = 0;
+    const onTrimCompute = () => {
+      computes++;
+    };
+
+    for (const q of ["", "1", "1.", "1.0", ""]) {
+      renderLang(
+        "en",
+        createElement(ModelPicker, {
+          thread: makeEmptyThread(),
+          initialCatalog: { ...OUTDATED_CATALOG, models: [...OUTDATED_CATALOG.models] },
+          initialOpen: true,
+          initialQuery: q,
+          trimCache,
+          onTrimCompute,
+        }),
+      );
+    }
+    expect(computes).toBe(1);
+
+    // Changing an unrelated setting (language) still hits the cache.
+    setMockSettings({ modelList: [], modelSections: [], hideOutdatedModels: true }, "zh-Hans");
+    renderLang(
+      "zh-Hans",
+      createElement(ModelPicker, {
+        thread: makeEmptyThread(),
+        initialCatalog: OUTDATED_CATALOG,
+        initialOpen: true,
+        initialQuery: "1.0",
+        trimCache,
+        onTrimCompute,
+      }),
+    );
+    expect(computes).toBe(1);
+
+    // Changing the chosen model recomputes once.
+    renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "fixture-v1" }),
+        initialCatalog: OUTDATED_CATALOG,
+        initialOpen: true,
+        trimCache,
+        onTrimCompute,
+      }),
+    );
+    expect(computes).toBe(2);
+
+    // Adding a model to the catalog recomputes once.
+    renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "fixture-v1" }),
+        initialCatalog: {
+          state: "ready",
+          models: [
+            ...OUTDATED_CATALOG.models,
+            { id: "fixture-v6", name: "Fixture 6.0", efforts: [], isDefault: false },
+          ],
+        },
+        initialOpen: true,
+        trimCache,
+        onTrimCompute,
+      }),
+    );
+    expect(computes).toBe(3);
+  });
+
+  it("searches all models in ungrouped mode, clears back to trimmed list, and keeps chosen outdated model visible", () => {
+    setMockSettings({ modelList: [], modelSections: [], hideOutdatedModels: true });
+
+    // Open with empty search -> trimmed list omits Fixture 1.0 / 2.0, keeps 3.0..5.0 + Fixture Model.
+    const trimmedHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeEmptyThread(),
+        initialCatalog: OUTDATED_CATALOG,
+        initialOpen: true,
+        initialQuery: "",
+      }),
+    );
+    expect(trimmedHtml).toContain("model-picker-btn");
+    expect(trimmedHtml).not.toContain("model-groups-btn");
+    expect(trimmedHtml).not.toContain("model-pop-clear");
+    const trimmedList = trimmedHtml.split('class="model-pop-list"')[1]!;
+    expect(trimmedList).toContain("Fixture 3.0");
+    expect(trimmedList).toContain("Fixture Model");
+    expect(trimmedList).not.toContain("Fixture 1.0");
+    expect(trimmedList).not.toContain("Fixture 2.0");
+
+    // Typing a query finds hidden outdated models and renders Clear search.
+    const searchHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeEmptyThread(),
+        initialCatalog: OUTDATED_CATALOG,
+        initialOpen: true,
+        initialQuery: "1.0",
+      }),
+    );
+    expect(searchHtml).toContain("model-pop-clear");
+    expect(searchHtml).toContain('aria-label="Clear search"');
+    const searchList = searchHtml.split('class="model-pop-list"')[1]!;
+    expect(searchList).toContain("Fixture 1.0");
+    expect(searchList).not.toContain("Fixture 3.0");
+
+    // Non-matching search shows the localized empty state.
+    const emptySearchHtml = renderLang(
+      "zh-Hans",
+      createElement(ModelPicker, {
+        thread: makeEmptyThread(),
+        initialCatalog: OUTDATED_CATALOG,
+        initialOpen: true,
+        initialQuery: "no-such-model",
+      }),
+    );
+    expect(emptySearchHtml).toContain("没有匹配的模型");
+    expect(emptySearchHtml).toContain('aria-label="清除搜索"');
+
+    // Choosing an outdated model keeps it visible in both select and popover when search is cleared.
+    const chosenHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "fixture-v1" }),
+        initialCatalog: OUTDATED_CATALOG,
+        initialOpen: true,
+        initialQuery: "",
+      }),
+    );
+    const chosenSelect = chosenHtml.split("</select>")[0]!;
+    const chosenList = chosenHtml.split('class="model-pop-list"')[1]!;
+    expect(chosenSelect).toContain("Fixture 1.0");
+    expect(chosenList).toContain("Fixture 1.0");
+    expect(chosenList).not.toContain("Fixture 2.0");
+  });
+
+  it("searches unpinned and outdated models under Other models when user groups exist, and keeps unpinned chosen model visible", () => {
+    setMockSettings({
+      modelList: [{ provider: "codex", modelID: "fixture-model" }],
+      modelSections: [{ id: "sec-1", name: "Primary", position: 0 }],
+      hideOutdatedModels: true,
+    });
+    const groupedSearch = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "fixture-v1" }),
+        initialCatalog: OUTDATED_CATALOG,
+        initialOpen: true,
+        initialQuery: "2.0",
+      }),
+    );
+    const groupedSearchList = groupedSearch.split('class="model-pop-list"')[1]!;
+    expect(groupedSearchList).toContain("Other models");
+    expect(groupedSearchList).toContain("Fixture 2.0");
+
+    const groupedSearchZh = renderLang(
+      "zh-Hans",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "fixture-v1" }),
+        initialCatalog: OUTDATED_CATALOG,
+        initialOpen: true,
+        initialQuery: "2.0",
+      }),
+    );
+    expect(groupedSearchZh.split('class="model-pop-list"')[1]!).toContain("其他模型");
+
+    // Unpinned chosen model remains visible in both select and popover All/Ungrouped views.
+    const groupedClosedOrAll = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "fixture-v1" }),
+        initialCatalog: OUTDATED_CATALOG,
+        initialOpen: true,
+        initialQuery: "",
+      }),
+    );
+    expect(groupedClosedOrAll.split("</select>")[0]!).toContain("Fixture 1.0");
+    expect(groupedClosedOrAll.split('class="model-pop-list"')[1]!).toContain("Fixture 1.0");
   });
 });
 

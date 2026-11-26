@@ -516,6 +516,63 @@ export async function runModelListChecks({
   );
   await closeSettings(page);
 
+  // ML-17f..i (P1-24): Composer model picker search finds hidden outdated
+  // models, clearing search restores the trimmed list, and picking an
+  // outdated model keeps it visible in the trimmed list.
+  await page.locator(".model-picker-btn").click();
+  await page.waitForSelector(".model-picker-pop.single-col", { timeout: 5000 });
+  const popTrimmedNames = await page.locator(".model-pop-row .model-pop-name").allInnerTexts();
+  verify(
+    "ML-17f composer picker opens with trimmed list (omitting Fixture 1.0)",
+    popTrimmedNames.some((n) => n.includes("Fixture 3.0")) &&
+      !popTrimmedNames.some((n) => n.includes("Fixture 1.0")),
+    popTrimmedNames,
+  );
+  await page.locator(".model-pop-search").fill("1.0");
+  await page.waitForTimeout(150);
+  const popSearchedNames = await page.locator(".model-pop-row .model-pop-name").allInnerTexts();
+  verify(
+    "ML-17g composer picker search finds hidden outdated model",
+    popSearchedNames.length === 1 && popSearchedNames[0].includes("Fixture 1.0"),
+    popSearchedNames,
+  );
+  await page.locator(".model-pop-clear").click();
+  await page.waitForTimeout(150);
+  const popClearedNames = await page.locator(".model-pop-row .model-pop-name").allInnerTexts();
+  verify(
+    "ML-17h clearing composer picker search returns to trimmed list",
+    popClearedNames.some((n) => n.includes("Fixture 3.0")) &&
+      !popClearedNames.some((n) => n.includes("Fixture 1.0")),
+    popClearedNames,
+  );
+  await page.locator(".model-pop-search").fill("1.0");
+  await page.waitForTimeout(150);
+  await page.locator(".model-pop-row", { hasText: "Fixture 1.0" }).click();
+  await waitSnapshot(page, (st) => {
+    const t = st.threads.find((x) => x.id === threadId);
+    return t?.codexModel === "fixture-v1";
+  });
+  await page.locator(".model-picker-btn").click();
+  await page.waitForSelector(".model-picker-pop.single-col", { timeout: 5000 });
+  const popWithChosenNames = await page.locator(".model-pop-row .model-pop-name").allInnerTexts();
+  const selectWithChosenVals = await optionValues(page);
+  verify(
+    "ML-17i chosen outdated model remains visible in picker after clearing search",
+    popWithChosenNames.some((n) => n.includes("Fixture 1.0")) &&
+      !popWithChosenNames.some((n) => n.includes("Fixture 2.0")) &&
+      selectWithChosenVals.includes("fixture-v1"),
+    { popWithChosenNames, selectWithChosenVals },
+  );
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".model-picker-pop", { state: "detached", timeout: 5000 });
+  await page.evaluate(
+    (tid) => window.tivano.invoke("threads:set-model", { threadId: tid, model: null, effort: null, fastTier: null }),
+    threadId,
+  );
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { lastNewChatModel: null }),
+  );
+
   // ML-18 (P2-03): two-column composer picker (Pairs + Models) with recents,
   // search across pair names, single-column fallback without pairs, and keyboard nav.
   // First verify single-column when no pairs exist.
