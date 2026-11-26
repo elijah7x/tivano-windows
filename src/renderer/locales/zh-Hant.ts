@@ -903,6 +903,7 @@ export const zhHant: Record<string, string> = {
   "Heads run on this chat's model and effort.": "子代理使用此對話的模型與推論強度。",
   "No heads out yet": "尚未派出子代理",
   "Show the panel": "顯示面板",
+  "Show the sub-agent panel": "顯示子代理面板",
   "Hide the panel": "隱藏面板",
   "1 head working": "1 個子代理正在工作",
   "%d heads working": "%d 個子代理正在工作",

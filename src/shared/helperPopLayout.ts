@@ -63,7 +63,9 @@ export function helperPanelSizeForPane(
  *  chat pane, with the header and composer heights excluded up front.
  *  Wide panes use both side columns and divide vertical room instead of
  *  letting top and bottom panels collide; narrow panes use one cascade
- *  whose title-strip step keeps every panel's close button reachable. */
+ *  whose title-strip step keeps every panel's close button reachable.
+ *  This bounded safe-area/cascade rule intentionally replaces the frozen
+ *  kept-corner/natural-capacity fill order rather than reproducing it. */
 export function helperPopLayout(input: HelperPopLayoutInput): {
   placements: HelperPopPlacement[];
   mode: "wide" | "narrow";
