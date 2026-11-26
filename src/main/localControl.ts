@@ -742,12 +742,22 @@ export class LocalControlService {
   }
 
   private settingsSnapshot() {
-    const s = this.engine.snapshot().settings;
+    const snap = this.engine.snapshot();
+    const s = snap.settings;
+    const pref = s.textGeneration ?? "automatic";
+    const eff =
+      pref === "off"
+        ? "off"
+        : pref === "codex"
+          ? snap.info.mode === "codex"
+            ? "codex"
+            : "off"
+          : "automatic";
     return [
       {
         key: "textGeneration",
-        preference: { textGeneration: s.textGeneration ?? "automatic" },
-        effective: { textGeneration: s.textGeneration ?? "automatic" },
+        preference: { textGeneration: pref },
+        effective: { textGeneration: eff },
       },
       {
         key: "showsSkylight",
@@ -767,10 +777,16 @@ export class LocalControlService {
     try {
       if (key === "textGeneration") {
         const v = str(params, "textGeneration") ?? str(params, "value");
-        if (v === "claude" || v === "codex")
+        if (v === "claude" || v === "grok" || v === "pi")
           fail("unsupported", "provider-specific text engine needs a signed-in CLI");
-        if (v !== "automatic" && v !== "off") fail("invalidRequest");
-        this.engine.setSettings({ textGeneration: v });
+        if (v === "codex") {
+          if (this.engine.snapshot().info.mode !== "codex")
+            fail("unsupported", "provider-specific text engine needs a signed-in CLI");
+          this.engine.setSettings({ textGeneration: "codex" });
+        } else {
+          if (v !== "automatic" && v !== "off") fail("invalidRequest");
+          this.engine.setSettings({ textGeneration: v });
+        }
       } else {
         const b = typeof params["bool"] === "boolean" ? params["bool"] : params["value"];
         if (typeof b !== "boolean") fail("invalidRequest");

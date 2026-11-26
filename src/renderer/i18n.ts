@@ -2272,6 +2272,19 @@ const zhHans: Record<string, string> = {
   "No pairs match": "没有匹配的组合",
   "Pairs & models": "组合与模型",
   "Browse models": "浏览模型",
+  // P2-18: Text generation Model picker.
+  "Specific model": "指定模型",
+  "Choose a model": "选择模型",
+  "Reasoning effort": "推理强度",
+  "%@ (unavailable)": "%@（不可用）",
+  "No models loaded for %@ yet.": "尚未加载 %@ 的模型。",
+  "Uses %@ at low effort. For thread titles, commit messages and composer predictions.":
+    "使用 %@（低推理强度）。用于对话标题、提交信息和输入框预测。",
+  "Writes thread titles, commit messages and composer predictions. Fast, inexpensive models are usually enough.":
+    "用于生成对话标题、提交信息和输入框预测。快速、便宜的模型通常就够用。",
+  "No thread titles, commit messages or composer predictions are generated.":
+    "不生成对话标题、提交信息和输入框预测。",
+  "Send a turn in Codex to load its models.": "在 Codex 中发送一轮消息以加载其模型。",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {

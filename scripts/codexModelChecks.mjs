@@ -250,6 +250,34 @@ export async function runCodexModelChecks({
   );
   await page.screenshot({ path: join(outDir, "62-modelpicker-restart.png") });
 
+  // P2-18: Settings › Text generation single Model picker against the live Codex catalog.
+  await page.locator(".sidebar-foot button.row").last().click();
+  await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="conversation"]').click();
+  await page.locator('[data-testid="text-generation-model-button"]').click();
+  await page.waitForSelector('[data-testid="text-generation-model-popover"]', { timeout: 10000 });
+  await page.locator('[data-testid="tg-model-select"]').selectOption("fixture-max");
+  await waitSnapshot(
+    page,
+    (s) => s.settings.textGeneration === "codex" && s.settings.textGenerationModelID === "fixture-max",
+  );
+  // Popover stays open after model pick so effort can be selected.
+  await page.locator('[data-testid="tg-effort-select"]').selectOption("high");
+  await waitSnapshot(page, (s) => s.settings.textGenerationEffort === "high");
+  const tgLabel = await page.locator('[data-testid="text-generation-model-button"]').innerText();
+  verify(
+    "P2-18 text-generation Model picker shows selected Codex model and effort",
+    tgLabel.includes("Codex") && tgLabel.includes("Fixture Max") && tgLabel.includes("High"),
+    tgLabel,
+  );
+  await page.locator('[data-testid="tg-choice-automatic"]').click();
+  await waitSnapshot(page, (s) => s.settings.textGeneration === "automatic");
+  verify(
+    "P2-18 Automatic choice closes the Model picker popover",
+    (await page.locator('[data-testid="text-generation-model-popover"]').count()) === 0,
+  );
+  await page.locator(".modal-actions .primary").click();
+
   // Clear the model back to default — the picker returns to "" and the
   // next turn carries no override tag.
   await page.locator(".model-select").selectOption("");
