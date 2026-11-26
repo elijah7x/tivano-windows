@@ -2288,6 +2288,9 @@ const zhHans: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "不生成对话标题、提交信息和输入框预测。",
   "Send a turn in Codex to load its models.": "在 Codex 中发送一轮消息以加载其模型。",
+  // P1-33: MCP command validation probe reasons.
+  "Invalid null byte in command or arguments.": "命令或参数中包含无效的空字节。",
+  "Invalid newline in command or arguments.": "命令或参数中包含无效的换行符。",
   // P1-11: Credits card (v3.0.0 CreditsSettingsPage.swift).
   "Credits": "致谢",
   "Where Tivano began": "Tivano 的起点",
@@ -2434,6 +2437,7 @@ const EXTRA_NOTICE_KEYS = [
   "approval answer %@ — the request was expired unanswered",
   "The endpoint answered HTTP %@.",
   "HTTP %@ — no JSON-RPC reply",
+  "MCP servers skipped for this session because their command was not found on PATH: %@",
   "tomorrow at %@",
   "%@ at %@",
   "cwd: %@",

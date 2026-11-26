@@ -8,7 +8,7 @@
 // the frozen strip-and-retry path is exercised end to end. Nothing here
 // proves a real provider or a real MCP server.
 
-import { mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -94,6 +94,8 @@ export async function runCodexMcpChecks({
   const projB = seedProject("mcp-proj-b", dirB);
   const dirC = realpathSync(mkdtempSync(join(tmpdir(), "tivano-e2e-mcp-c-")));
   const projC = seedProject("mcp-proj-c", dirC);
+  const dirD = realpathSync(mkdtempSync(join(tmpdir(), "tivano-e2e-mcp-d-")));
+  const projD = seedProject("mcp-proj-d", dirD);
   const mkThread = (page, projectId) =>
     page.evaluate(
       (pid) => window.tivano.invoke("threads:create", { projectId: pid }),
@@ -116,7 +118,7 @@ export async function runCodexMcpChecks({
     window.tivano.invoke("settings:set", { language: "en" }),
   );
 
-  // MC-19: the saved registry rides into thread/start verbatim.
+  // MC-19: the saved registry rides into thread/start with resolved command path.
   await page.evaluate(
     (a) => window.tivano.invoke("settings:set", a),
     {
@@ -124,7 +126,7 @@ export async function runCodexMcpChecks({
         {
           id: "mcp-a",
           name: "localfs",
-          command: "/usr/bin/fs-server",
+          command: process.execPath,
           args: ["--root", "/tmp"],
           env: { TOKEN: "sekret" },
         },
@@ -149,7 +151,7 @@ export async function runCodexMcpChecks({
   verify(
     "MC-19 registry rides into thread/start config.mcp_servers",
     row1 &&
-      row1.config?.mcp_servers?.localfs?.command === "/usr/bin/fs-server" &&
+      row1.config?.mcp_servers?.localfs?.command === process.execPath &&
       row1.config.mcp_servers.localfs.args.join(" ") === "--root /tmp" &&
       row1.config.mcp_servers.localfs.env?.TOKEN === "sekret" &&
       row1.config.mcp_servers.httpx?.url === "http://127.0.0.1:9999/mcp",
@@ -163,7 +165,7 @@ export async function runCodexMcpChecks({
     (a) => window.tivano.invoke("settings:set", a),
     {
       mcpServers: [
-        { id: "mcp-c", name: "badmcp", command: "/bin/false", args: [] },
+        { id: "mcp-c", name: "badmcp", command: process.execPath, args: [] },
       ],
     },
   );
@@ -207,5 +209,64 @@ export async function runCodexMcpChecks({
     rowFor(dirC)?.config,
   );
 
+  // MC-22 (P1-33): bare command resolves to full path while a missing command
+  // is omitted with a single warning notice and the session still completes.
+  const shimDir = realpathSync(mkdtempSync(join(tmpdir(), "tivano-e2e-mcp-shim-")));
+  const isWin = process.platform === "win32";
+  const shimBase = "tivano-e2e-codex-mcp";
+  const shimFull = join(shimDir, isWin ? `${shimBase}.cmd` : shimBase);
+  writeFileSync(shimFull, isWin ? "@echo off\r\n" : "#!/bin/sh\n");
+  if (!isWin) chmodSync(shimFull, 0o755);
+  try {
+    await page.evaluate(
+      (a) => window.tivano.invoke("settings:set", a),
+      {
+        mcpServers: [
+          {
+            id: "mcp-d1",
+            name: "bareok",
+            command: shimBase,
+            args: ["--ok"],
+            env: isWin ? { Path: shimDir } : { PATH: shimDir },
+          },
+          {
+            id: "mcp-d2",
+            name: "missingSrv",
+            command: "tivano-missing-e2e-mcp-xyz",
+            args: [],
+          },
+        ],
+      },
+    );
+    const t4 = (await mkThread(page, projD)).id;
+    await page.evaluate(
+      (a) => window.tivano.invoke("turns:send", a),
+      { threadId: t4, text: "hello p1-33" },
+    );
+    const s4 = await waitSnapshot(
+      page,
+      (st) =>
+        rowFor(dirD) !== undefined &&
+        st.threads.find((x) => x.id === t4)?.turn?.status === "done",
+    );
+    const row4 = rowFor(dirD);
+    const thread4 = s4.threads.find((x) => x.id === t4);
+    const notice4 = (thread4?.messages ?? []).find(
+      (m) =>
+        m.kind === "notice" &&
+        m.content.includes("MCP servers skipped for this session because their command was not found on PATH: missingSrv"),
+    );
+    verify(
+      "MC-22 bare MCP command resolved and missing server skipped with notice",
+      row4?.config?.mcp_servers?.bareok?.command === shimFull &&
+        row4?.config?.mcp_servers?.missingSrv === undefined &&
+        notice4 !== undefined,
+      { config: row4?.config, notice: notice4?.content },
+    );
+  } finally {
+    rmSync(shimDir, { recursive: true, force: true });
+  }
+
   await boundedClose(s.app, s.proc);
+  rmSync(dirD, { recursive: true, force: true });
 }

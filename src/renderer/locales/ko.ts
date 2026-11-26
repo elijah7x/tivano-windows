@@ -2100,6 +2100,9 @@ export const ko: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "스레드 제목, 커밋 메시지, 입력창 예측을 생성하지 않습니다.",
   "Send a turn in Codex to load its models.": "Codex에서 턴을 한 번 보내 모델을 불러오세요.",
+  // P1-33
+  "Invalid null byte in command or arguments.": "명령 또는 인수에 잘못된 널 바이트가 포함되어 있습니다.",
+  "Invalid newline in command or arguments.": "명령 또는 인수에 잘못된 줄 바꿈이 포함되어 있습니다.",
   // P1-11
   "Credits": "크레딧",
   "Where Tivano began": "Tivano의 시작",
