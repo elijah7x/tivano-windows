@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { basename, delimiter, isAbsolute, join } from "node:path";
 
 function resolveWinGit() {
   const isRealFile = (p) => {
@@ -22,7 +22,12 @@ function resolveWinGit() {
     }
   };
   const explicit = process.env.TIVANO_GIT_EXECUTABLE?.trim();
-  if (explicit && isAbsolute(explicit) && isRealFile(explicit)) return realpathSync(explicit);
+  if (explicit) {
+    if (!isAbsolute(explicit) || basename(explicit).toLowerCase() !== "git.exe" || !isRealFile(explicit)) {
+      throw new Error(`Invalid TIVANO_GIT_EXECUTABLE: ${explicit}`);
+    }
+    return realpathSync(explicit);
+  }
   for (const [k, suffix] of [
     ["ProgramFiles", "\\Git\\cmd\\git.exe"],
     ["ProgramFiles(x86)", "\\Git\\cmd\\git.exe"],
@@ -40,7 +45,7 @@ function resolveWinGit() {
     const cand = join(dir, "git.exe");
     if (isRealFile(cand)) return realpathSync(cand);
   }
-  return "git.exe";
+  throw new Error("Could not resolve git.exe on Windows");
 }
 
 const GIT = process.platform === "win32" ? resolveWinGit() : "/usr/bin/git";

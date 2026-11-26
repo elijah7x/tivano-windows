@@ -56,6 +56,14 @@ const asar = req("@electron/asar");
 const manifest = JSON.parse(
   Buffer.from(asar.extractFile(asarAbs, "dist/job-helper-manifest.json")).toString("utf8"),
 );
+if (
+  manifest?.schema !== "tivano-windows-job-helper-manifest/1" ||
+  manifest.file !== "tivano-job-helper.exe" ||
+  !/^[0-9a-f]{64}$/.test(manifest.sha256 ?? "")
+) {
+  console.error("packaged-p253-test: job-helper manifest failed contract validation");
+  process.exit(2);
+}
 if (!existsSync(helperAbs) || sha256File(helperAbs) !== manifest.sha256) {
   console.error("packaged-p253-test: packaged job-helper missing or hash-mismatched");
   process.exit(2);
@@ -71,6 +79,17 @@ if (versionDoc?.runExitBase !== 1024 || versionDoc?.runExitMax !== 255) {
 const dataRoot = mkdtempSync(join(tmpdir(), "tivano-pkg-p253-data-"));
 const workspaceRoot = mkdtempSync(join(tmpdir(), "tivano-pkg-p253-ws-"));
 const codexFixture = join(ROOT, "tests", "fixtures", "codex-app-server.mjs");
+const KEEP_ENV = [
+  "SystemRoot", "SystemDrive", "windir", "WINDIR", "COMSPEC", "PATHEXT",
+  "PATH", "Path", "TEMP", "TMP", "USERPROFILE", "USERNAME", "USERDOMAIN",
+  "USERDOMAIN_ROAMINGPROFILE", "COMPUTERNAME", "OS", "NUMBER_OF_PROCESSORS",
+  "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH", "PUBLIC",
+  "ProgramData", "ALLUSERSPROFILE", "ProgramFiles", "ProgramFiles(x86)",
+  "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)",
+  "CommonProgramW6432", "PSModulePath", "PROCESSOR_ARCHITECTURE",
+  "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION",
+  "LOGONSERVER", "SESSIONNAME",
+];
 const results = [];
 const instances = [];
 const check = (name, ok, detail = "") => {
@@ -79,8 +98,9 @@ const check = (name, ok, detail = "") => {
 };
 const snap = (page) => page.evaluate(() => window.tivano.invoke("state:get", {}));
 const launch = async (envOverrides = {}, label = "pkg-p253") => {
-  const childEnv = { ...process.env, TIVANO_MOCK_TICK_MS: "3", ...envOverrides };
-  delete childEnv.ELECTRON_RUN_AS_NODE;
+  const childEnv = {};
+  for (const k of KEEP_ENV) if (process.env[k] !== undefined) childEnv[k] = process.env[k];
+  Object.assign(childEnv, { TIVANO_MOCK_TICK_MS: "3", ...envOverrides });
   const app = await electron.launch({
     executablePath: exeAbs,
     args: [`--data-root=${dataRoot}`],

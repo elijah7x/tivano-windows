@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -20,7 +21,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
 import {
@@ -101,18 +102,34 @@ function git(dir: string, args: string[]): string {
   });
 }
 
+let templateRepoADir: string | null = null;
+afterAll(() => {
+  if (templateRepoADir) rmSync(templateRepoADir, { recursive: true, force: true });
+});
+
 function mkRepo(dir?: string): string {
   const d = dir ?? tmp("repo-");
   mkdirSync(d, { recursive: true });
-  git(d, ["init", "-b", "main"]);
-  git(d, ["config", "user.email", "test@example.com"]);
-  git(d, ["config", "user.name", "Test"]);
+  git(d, ["init", "-b", "main", "--template="]);
+  return d;
+}
+
+function mkRepoA(): string {
+  if (!templateRepoADir) {
+    const t = mkdtempSync(join(tmpdir(), "tivano-p2g-tpl-a-"));
+    git(t, ["init", "-b", "main", "--template="]);
+    writeFileSync(join(t, "a.txt"), "a\n");
+    commitAll(t);
+    templateRepoADir = t;
+  }
+  const d = tmp("repo-");
+  cpSync(templateRepoADir, d, { recursive: true });
   return d;
 }
 
 function commitAll(dir: string, msg = "c"): void {
   git(dir, ["add", "-A"]);
-  git(dir, ["commit", "-m", msg]);
+  git(dir, ["-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", msg]);
 }
 
 const headBytes = (dir: string): Buffer =>
@@ -171,7 +188,7 @@ function rig(opts: {
     mutable: opts.mutable ?? (() => true),
     dataRoot,
     gitExe: GIT,
-    runner: opts.runner ?? makeGitRunner(GIT),
+    ...(opts.runner ? { runner: opts.runner } : {}),
     ...(opts.disposeTimeoutMs !== undefined ? { disposeTimeoutMs: opts.disposeTimeoutMs } : {}),
     ...(opts.platform ? { platform: opts.platform } : {}),
     ...(opts.unavailableReason ? { unavailableReason: opts.unavailableReason } : {}),
@@ -360,9 +377,7 @@ describe.skipIf(!haveDirectGit)("CheckpointService", () => {
   }, 20_000);
 
   it("a crashed publish (tmp file only) is never a valid checkpoint", async () => {
-    const dir = mkRepo();
-    writeFileSync(join(dir, "a.txt"), "a\n");
-    commitAll(dir);
+    const dir = mkRepoA();
     const r = rig({ repoDir: dir });
     const c = await r.service.capture(r.projectId, r.threadId, r.turnId, "before");
     expect(c.kind).toBe("captured");
@@ -453,9 +468,7 @@ describe.skipIf(!haveDirectGit)("CheckpointService", () => {
   }, 20_000);
 
   it("rejects unknown turn/thread and foreign project", async () => {
-    const dir = mkRepo();
-    writeFileSync(join(dir, "a.txt"), "a\n");
-    commitAll(dir);
+    const dir = mkRepoA();
     const r = rig({ repoDir: dir });
     expect(
       (await r.service.capture(r.projectId, r.threadId, "no-such-turn", "before")).reason,
@@ -498,9 +511,7 @@ describe.skipIf(!haveDirectGit)("CheckpointService", () => {
   }, 20_000);
 
   it("revoking the grant mid-capture cancels the operation — nothing published", async () => {
-    const dir = mkRepo();
-    writeFileSync(join(dir, "a.txt"), "a\n");
-    commitAll(dir);
+    const dir = mkRepoA();
     const p = parkAtCall(5);
     const r = rig({ repoDir: dir, runner: p.runner });
     const capture = r.service.capture(r.projectId, r.threadId, r.turnId, "before");
@@ -513,9 +524,7 @@ describe.skipIf(!haveDirectGit)("CheckpointService", () => {
   }, 20_000);
 
   it("project deletion cancels a running capture before publication", async () => {
-    const dir = mkRepo();
-    writeFileSync(join(dir, "a.txt"), "a\n");
-    commitAll(dir);
+    const dir = mkRepoA();
     const p = parkAtCall(5);
     const r = rig({ repoDir: dir, runner: p.runner });
     const capture = r.service.capture(r.projectId, r.threadId, r.turnId, "before");
@@ -528,9 +537,7 @@ describe.skipIf(!haveDirectGit)("CheckpointService", () => {
   }, 20_000);
 
   it("dispose during the probe prevents every later git command", async () => {
-    const dir = mkRepo();
-    writeFileSync(join(dir, "a.txt"), "a\n");
-    commitAll(dir);
+    const dir = mkRepoA();
     const p = parkAtCall(2); // symbolic-ref is the second probe call
     const r = rig({ repoDir: dir, runner: p.runner });
     const capture = r.service.capture(r.projectId, r.threadId, r.turnId, "before");
@@ -545,11 +552,7 @@ describe.skipIf(!haveDirectGit)("CheckpointService", () => {
   }, 20_000);
 
   it("enforces one active capture per project and two globally, queue capped", async () => {
-    const repos = [mkRepo(), mkRepo(), mkRepo()];
-    for (const d of repos) {
-      writeFileSync(join(d, "a.txt"), "a\n");
-      commitAll(d);
-    }
+    const repos = [mkRepoA(), mkRepoA(), mkRepoA()];
     // ONE service, three projects — the semaphore is shared.
     const inner = makeGitRunner(GIT);
     const parkedHandles: { res: (r: GitRunResult) => void; args: readonly string[] }[] = [];
@@ -666,9 +669,7 @@ describe.skipIf(!haveDirectGit)("CheckpointService preview", () => {
   }, 20_000);
 
   it("rejects cross-project/thread checkpoints and reversed ordering", async () => {
-    const dir = mkRepo();
-    writeFileSync(join(dir, "a.txt"), "a\n");
-    commitAll(dir);
+    const dir = mkRepoA();
     const r = rig({ repoDir: dir });
     const before = await r.service.capture(r.projectId, r.threadId, r.turnId, "before");
     const after = await r.service.capture(r.projectId, r.threadId, r.turnId, "after");
@@ -923,9 +924,7 @@ describe.skipIf(!haveDirectGit)("CheckpointService R1 regressions", () => {
   }, 20_000);
 
   it("preview uses the thread's own turn order, not wall-clock capture time", async () => {
-    const dir = mkRepo();
-    writeFileSync(join(dir, "a.txt"), "a\n");
-    commitAll(dir);
+    const dir = mkRepoA();
     const r = rig({ repoDir: dir });
     // Thread with two turns: tu-early BEFORE tu-late in message order.
     r.threads[0]!.messages.push(
@@ -1044,9 +1043,7 @@ describe.skipIf(!haveDirectGit)("CheckpointService R1 regressions", () => {
   }, 20_000);
 
   it("a republished manifest id is refused — no silent overwrite", async () => {
-    const dir = mkRepo();
-    writeFileSync(join(dir, "a.txt"), "a\n");
-    commitAll(dir);
+    const dir = mkRepoA();
     const r = rig({ repoDir: dir });
     const c = await r.service.capture(r.projectId, r.threadId, r.turnId, "before");
     const m = r.store.loadManifest(c.checkpointId!);
@@ -1076,9 +1073,7 @@ describe.skipIf(!haveDirectGit)("CheckpointService R1 regressions", () => {
   }, 20_000);
 
   it("the queue actually overflows at cap+active — the 18th op for one project is rejected busy", async () => {
-    const dir = mkRepo();
-    writeFileSync(join(dir, "a.txt"), "a\n");
-    commitAll(dir);
+    const dir = mkRepoA();
     const inner = makeGitRunner(GIT);
     const parked: { res: (r: GitRunResult) => void }[] = [];
     const runner: GitRunner = {
