@@ -29,9 +29,11 @@
 
 import {
   lstatSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -645,5 +647,192 @@ export class ProjectRuntimePaths {
         "WORKSPACE_REVOKED: thread workspace is outside the app-owned worktree root",
       );
     return grant;
+  }
+
+  /** Whether this runtime has an isolated data root for app-owned task workspaces. */
+  hasTaskWorkspaceRoot(): boolean {
+    return this.dataRoot !== undefined;
+  }
+
+  private validateTaskWorkspaceId(ownerThreadId: string): string {
+    if (
+      typeof ownerThreadId !== "string" ||
+      ownerThreadId.length === 0 ||
+      ownerThreadId.length > 128 ||
+      ownerThreadId === "." ||
+      ownerThreadId === ".." ||
+      !/^[a-zA-Z0-9._-]+$/.test(ownerThreadId)
+    ) {
+      throw new WorkspaceError(
+        "WORKSPACE_INVALID",
+        "WORKSPACE_INVALID: invalid task workspace id",
+      );
+    }
+    return ownerThreadId;
+  }
+
+  private resolveTaskWorkspacesBase(create: boolean): string {
+    if (this.dataRoot === undefined) {
+      throw new WorkspaceError(
+        "WORKSPACE_NOT_CONFIGURED",
+        "WORKSPACE_NOT_CONFIGURED: thread has no project",
+      );
+    }
+    let dataPhys: string;
+    try {
+      dataPhys = stripNsPrefix(realpathSync(this.dataRoot));
+    } catch {
+      throw new WorkspaceError(
+        "WORKSPACE_INVALID",
+        "WORKSPACE_INVALID: task-workspaces data root cannot be resolved",
+      );
+    }
+    const base = join(dataPhys, "task-workspaces");
+    let st;
+    try {
+      st = lstatSync(base);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT" || !create) {
+        throw new WorkspaceError(
+          "WORKSPACE_INVALID",
+          "WORKSPACE_INVALID: task-workspaces root is missing",
+        );
+      }
+    }
+    if (!st && create) {
+      try {
+        mkdirSync(base);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw new WorkspaceError(
+            "WORKSPACE_INVALID",
+            `WORKSPACE_INVALID: cannot create task-workspaces root: ${(err as Error).message}`,
+          );
+        }
+      }
+      st = lstatSync(base);
+    }
+    if (!st || st.isSymbolicLink() || !st.isDirectory()) {
+      throw new WorkspaceError(
+        "WORKSPACE_INVALID",
+        "WORKSPACE_INVALID: task-workspaces root must be a real directory",
+      );
+    }
+    const basePhys = stripNsPrefix(realpathSync(base));
+    if (!sameDirectoryPath(basePhys, base) || !isInsideRoot(dataPhys, basePhys)) {
+      throw new WorkspaceError(
+        "WORKSPACE_INVALID",
+        "WORKSPACE_INVALID: task-workspaces root escapes the data root",
+      );
+    }
+    return basePhys;
+  }
+
+  /**
+   * Ensure and authorize an app-owned scratch workspace for a standalone
+   * ("Just chat") thread under `<dataRoot>/task-workspaces/<ownerThreadId>`,
+   * matching frozen `StoragePaths.taskWorkspace`.
+   */
+  ensureTaskWorkspace(ownerThreadId: string): WorkspaceGrant {
+    const id = this.validateTaskWorkspaceId(ownerThreadId);
+    const basePhys = this.resolveTaskWorkspacesBase(true);
+    const dir = join(basePhys, id);
+    let st;
+    try {
+      st = lstatSync(dir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new WorkspaceError(
+          "WORKSPACE_INVALID",
+          `WORKSPACE_INVALID: cannot inspect task workspace: ${(err as Error).message}`,
+        );
+      }
+    }
+    if (!st) {
+      try {
+        mkdirSync(dir);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw new WorkspaceError(
+            "WORKSPACE_INVALID",
+            `WORKSPACE_INVALID: cannot create task workspace: ${(err as Error).message}`,
+          );
+        }
+      }
+      st = lstatSync(dir);
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      throw new WorkspaceError(
+        "WORKSPACE_INVALID",
+        "WORKSPACE_INVALID: task workspace must be a real directory",
+      );
+    }
+    const dirPhys = stripNsPrefix(realpathSync(dir));
+    if (!sameDirectoryPath(dirPhys, dir) || !isInsideRoot(basePhys, dirPhys)) {
+      throw new WorkspaceError(
+        "WORKSPACE_INVALID",
+        "WORKSPACE_INVALID: task workspace escapes task-workspaces root",
+      );
+    }
+    return { projectId: "", directory: dirPhys };
+  }
+
+  /**
+   * Re-verify a standalone thread's app-owned task workspace at spawn time.
+   */
+  verifyTaskWorkspace(grant: WorkspaceGrant, ownerThreadId: string): WorkspaceGrant {
+    if (grant.projectId !== "") {
+      throw new WorkspaceError(
+        "WORKSPACE_INVALID",
+        "WORKSPACE_INVALID: task workspace must not bind to a project",
+      );
+    }
+    const id = this.validateTaskWorkspaceId(ownerThreadId);
+    const basePhys = this.resolveTaskWorkspacesBase(false);
+    const expected = join(basePhys, id);
+    let st;
+    try {
+      st = lstatSync(grant.directory);
+    } catch {
+      throw new WorkspaceError(
+        "WORKSPACE_INVALID",
+        "WORKSPACE_INVALID: task workspace is missing",
+      );
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      throw new WorkspaceError(
+        "WORKSPACE_INVALID",
+        "WORKSPACE_INVALID: task workspace must be a real directory",
+      );
+    }
+    const dirPhys = stripNsPrefix(realpathSync(grant.directory));
+    if (
+      !sameDirectoryPath(dirPhys, stripNsPrefix(grant.directory)) ||
+      !sameDirectoryPath(dirPhys, expected) ||
+      !isInsideRoot(basePhys, dirPhys)
+    ) {
+      throw new WorkspaceError(
+        "WORKSPACE_INVALID",
+        "WORKSPACE_INVALID: task workspace moved or escaped task-workspaces root",
+      );
+    }
+    return { projectId: "", directory: dirPhys };
+  }
+
+  /** Best-effort cleanup of an app-owned task workspace on thread deletion. */
+  removeTaskWorkspace(ownerThreadId: string): void {
+    if (this.dataRoot === undefined) return;
+    try {
+      const id = this.validateTaskWorkspaceId(ownerThreadId);
+      const basePhys = this.resolveTaskWorkspacesBase(false);
+      const dir = join(basePhys, id);
+      const st = lstatSync(dir);
+      if (st.isSymbolicLink() || !st.isDirectory()) return;
+      const dirPhys = stripNsPrefix(realpathSync(dir));
+      if (!sameDirectoryPath(dirPhys, dir) || !isInsideRoot(basePhys, dirPhys)) return;
+      rmSync(dirPhys, { recursive: true, force: true });
+    } catch {
+      /* best effort: missing dir or Windows lock on async child shutdown */
+    }
   }
 }

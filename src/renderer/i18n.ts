@@ -2265,6 +2265,7 @@ const zhHans: Record<string, string> = {
   "ChatGPT plan or API key": "ChatGPT 套餐或 API 密钥",
   "Synthetic provider": "合成提供方",
   "Provider checklist": "服务商列表",
+  "This task's parent is unavailable.": "此任务的父会话不可用。",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
