@@ -2288,6 +2288,20 @@ const zhHans: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "不生成对话标题、提交信息和输入框预测。",
   "Send a turn in Codex to load its models.": "在 Codex 中发送一轮消息以加载其模型。",
+  // P1-11: Credits card (v3.0.0 CreditsSettingsPage.swift).
+  "Credits": "致谢",
+  "Where Tivano began": "Tivano 的起点",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano 是 Droppy Code 的分支，沿用 AGPL-3.0 及署名条款。",
+  "Working indicators": "工作状态指示器",
+  "Built-in terminal": "内置终端",
+  "Terminal PTY layer": "终端 PTY 层",
+  "Windows job-helper JSON parser": "Windows 作业辅助进程 JSON 解析器",
+  "Where Droppy Code began": "Droppy Code 的起源",
+  "Responsive chat architecture": "对话流畅度架构参考",
+  "Streaming text fade": "流式文字渐显",
+  "Writing guidance": "写作规范",
+  "Usage reset flow": "额度重置交互参考",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {

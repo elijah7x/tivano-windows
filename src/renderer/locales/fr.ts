@@ -2100,4 +2100,18 @@ export const fr: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "Aucun titre de conversation, message de commit ou suggestion de saisie n’est généré.",
   "Send a turn in Codex to load its models.": "Envoyez un tour dans Codex pour charger ses modèles.",
+  // P1-11
+  "Credits": "Crédits",
+  "Where Tivano began": "Aux origines de Tivano",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano est un fork de Droppy Code, sous licence AGPL-3.0 avec clauses d’attribution.",
+  "Working indicators": "Indicateurs d’activité",
+  "Built-in terminal": "Terminal intégré",
+  "Terminal PTY layer": "Couche PTY du terminal",
+  "Windows job-helper JSON parser": "Analyseur JSON de l’assistant de tâche Windows",
+  "Where Droppy Code began": "Aux origines de Droppy Code",
+  "Responsive chat architecture": "Architecture de discussion réactive",
+  "Streaming text fade": "Fondu du texte en streaming",
+  "Writing guidance": "Guide de rédaction",
+  "Usage reset flow": "Parcours de réinitialisation d’utilisation",
 };

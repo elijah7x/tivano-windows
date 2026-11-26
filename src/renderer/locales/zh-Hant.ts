@@ -2100,4 +2100,18 @@ export const zhHant: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "不會產生對話標題、提交訊息或輸入框預測。",
   "Send a turn in Codex to load its models.": "在 Codex 中傳送一輪訊息以載入其模型。",
+  // P1-11
+  "Credits": "致謝",
+  "Where Tivano began": "Tivano 的起點",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano 是 Droppy Code 的衍生分支，依 AGPL-3.0 並附帶姓名標示條款授權。",
+  "Working indicators": "工作狀態指示器",
+  "Built-in terminal": "內建終端機",
+  "Terminal PTY layer": "終端機 PTY 層",
+  "Windows job-helper JSON parser": "Windows 作業輔助程式 JSON 解析器",
+  "Where Droppy Code began": "Droppy Code 的起源",
+  "Responsive chat architecture": "流暢對話架構參考",
+  "Streaming text fade": "串流文字漸顯",
+  "Writing guidance": "寫作規範",
+  "Usage reset flow": "額度重設流程參考",
 };

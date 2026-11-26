@@ -2100,4 +2100,18 @@ export const ja: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "スレッドタイトル、コミットメッセージ、入力欄の予測は生成されません。",
   "Send a turn in Codex to load its models.": "Codex で 1 ターン送信してモデルを読み込んでください。",
+  // P1-11
+  "Credits": "クレジット",
+  "Where Tivano began": "Tivano の原点",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano は Droppy Code のフォークであり、帰属表示条項付きの AGPL-3.0 に基づいて公開されています。",
+  "Working indicators": "作業状況インジケーター",
+  "Built-in terminal": "組み込みターミナル",
+  "Terminal PTY layer": "ターミナル PTY レイヤー",
+  "Windows job-helper JSON parser": "Windows ジョブヘルパー JSON パーサー",
+  "Where Droppy Code began": "Droppy Code の原点",
+  "Responsive chat architecture": "レスポンシブなチャット設計",
+  "Streaming text fade": "ストリーミングテキストのフェード表示",
+  "Writing guidance": "ライティング指針",
+  "Usage reset flow": "使用量リセットのフロー",
 };

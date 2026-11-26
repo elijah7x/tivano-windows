@@ -41,6 +41,7 @@ import { ModelListSettings } from "./ModelListSettings";
 import { TextGenerationPicker } from "./TextGenerationPicker";
 import { ArchiveSection } from "./ArchiveSection";
 import { VersionSection } from "./WhatsNewViews";
+import { CreditsSection } from "./CreditsSection";
 import {
   RUNTIME_MODES,
   RUNTIME_MODE_TITLE,
@@ -1000,6 +1001,8 @@ export function SettingsModal(props: {
                 <p>{t("A previous store file was unreadable and was preserved aside.")}</p>
               )}
             </div>
+
+            <CreditsSection />
           </>
         );
     }

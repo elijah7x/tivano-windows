@@ -2100,4 +2100,18 @@ export const ko: Record<string, string> = {
   "No thread titles, commit messages or composer predictions are generated.":
     "스레드 제목, 커밋 메시지, 입력창 예측을 생성하지 않습니다.",
   "Send a turn in Codex to load its models.": "Codex에서 턴을 한 번 보내 모델을 불러오세요.",
+  // P1-11
+  "Credits": "크레딧",
+  "Where Tivano began": "Tivano의 시작",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano는 Droppy Code의 포크이며, 저작자 표시 조항이 포함된 AGPL-3.0 라이선스를 따릅니다.",
+  "Working indicators": "작업 상태 표시기",
+  "Built-in terminal": "내장 터미널",
+  "Terminal PTY layer": "터미널 PTY 계층",
+  "Windows job-helper JSON parser": "Windows 작업 도우미 JSON 파서",
+  "Where Droppy Code began": "Droppy Code의 시작",
+  "Responsive chat architecture": "반응형 대화 아키텍처",
+  "Streaming text fade": "스트리밍 텍스트 페이드 효과",
+  "Writing guidance": "글쓰기 지침",
+  "Usage reset flow": "사용량 초기화 흐름",
 };

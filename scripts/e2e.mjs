@@ -306,6 +306,24 @@ try {
     "About is honest about the mock provider",
     /Mock Provider|模拟提供方/.test(about) && /synthetic|合成/.test(about),
   );
+  const creditsSection = page.locator(".modal .credits-section");
+  const creditsText = await creditsSection.innerText();
+  check(
+    "About Credits shows attribution and compact project list including Synara",
+    creditsText.includes("Droppy Code by Jordy Spruit") &&
+      creditsText.includes("getdroppycode.app") &&
+      creditsText.includes("AGPL-3.0") &&
+      creditsText.includes("T3 Code") &&
+      creditsText.includes("Synara") &&
+      creditsText.includes("Zeron") &&
+      creditsText.includes("xterm.js") &&
+      creditsText.includes("node-pty") &&
+      creditsText.includes("nlohmann/json"),
+  );
+  check(
+    "About Credits contains no link buttons or anchors",
+    (await creditsSection.locator("a, button").count()) === 0,
+  );
   await page.screenshot({ path: join(outDir, "04-settings-about.png") });
 
   // switch to zh-Hans and confirm localization lands
