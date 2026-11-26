@@ -2083,4 +2083,11 @@ export const fr: Record<string, string> = {
   "Continued with %@": "Poursuivi avec %@",
   "Provider — applies to the next turn": "Fournisseur — s'applique au prochain tour",
   "Hydra pairs": "Paires Hydra",
+  "sub-agents cannot switch providers": "Les sous-agents ne peuvent pas changer de fournisseur",
+  "switch providers after the running turn finishes": "Changez de fournisseur une fois le tour en cours terminé",
+  "resolve the pending request before switching providers": "Traitez la demande en attente avant de changer de fournisseur",
+  "switch providers when the chat is idle": "Changez de fournisseur lorsque la discussion est inactive",
+  "switch providers when no sub-agents are at work": "Changez de fournisseur lorsqu'aucun sous-agent n'est actif",
+  'provider "%@" is not available in this launch': 'Le fournisseur « %@ » n’est pas disponible dans cette session',
+  'provider "%@" is not available': 'Le fournisseur « %@ » n’est pas disponible',
 };

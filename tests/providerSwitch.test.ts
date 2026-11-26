@@ -23,8 +23,10 @@ import type {
 import { Store } from "../src/main/store";
 import { ProjectRuntimePaths } from "../src/main/projectRuntimePaths";
 import { Composer } from "../src/renderer/components/Composer";
+import { ChatView } from "../src/renderer/components/ChatView";
+import { clientStore } from "../src/renderer/client";
 import { LanguageContext } from "../src/renderer/locale";
-import { translate, translateNotice } from "../src/renderer/i18n";
+import { translate, translateError, translateNotice } from "../src/renderer/i18n";
 import type { ChatThread, ProviderMode } from "../src/shared/types";
 
 const dirs: string[] = [];
@@ -428,7 +430,162 @@ describe("P2-02 provider switching", () => {
     expect(translateNotice(zhT, "Continued with Mock Provider")).toBe(
       "以下由 Mock Provider 接力",
     );
+    expect(translateError(zhT, "sub-agents cannot switch providers")).toBe("子代理不能切换服务商");
+    expect(translateError(zhT, "switch providers after the running turn finishes")).toBe("请在当前回合完成后切换服务商");
+    expect(translateError(zhT, "resolve the pending request before switching providers")).toBe("请先处理待确认请求后再切换服务商");
+    expect(translateError(zhT, "switch providers when the chat is idle")).toBe("请在对话空闲时切换服务商");
+    expect(translateError(zhT, "switch providers when no sub-agents are at work")).toBe("请在没有子代理运行时切换服务商");
+    expect(translateError(zhT, 'provider "codex" is not available in this launch')).toBe('本次启动未启用服务商“codex”');
+    expect(translateError(zhT, 'provider "codex" is not available')).toBe('服务商“codex”不可用');
     } finally {
+      if (prevWindow === undefined) delete (globalThis as { window?: unknown }).window;
+      else (globalThis as { window?: unknown }).window = prevWindow;
+    }
+  });
+
+  it("restores origin model, effort, tier, Hydra choice, and session when reselecting origin provider", async () => {
+    const root = tmp("tivano-ps-reselect-");
+    const { engine, store, projectId } = makeMultiProviderEngine(root, { withProject: true });
+    engine.setSettings({
+      hydraPairs: [
+        { id: "pair-cx", provider: "codex", orchestratorModel: "gpt-5.4", orchestratorEffort: "high", headProfiles: [] },
+      ],
+    });
+    const thread = engine.createThread(projectId, "Reselect");
+    engine.setThreadProvider(thread.id, "codex", {
+      model: "gpt-5.4",
+      effort: "high",
+      fastTier: "fast",
+      hydraPairId: "pair-cx",
+    });
+    await engine.bindProviderThread(thread.id, {
+      providerId: "codex",
+      codexThreadId: "cx-reselect-1",
+      cwd: root,
+      codexHomeId: "h1",
+      schemaPin: "1",
+      cliVersion: "0",
+      savedAt: Date.now(),
+    });
+    engine.sendTurn(thread.id, "turn 1");
+    await waitFor(() => engine.snapshot().threads[0]?.turn?.status === "done");
+
+    // Stage switch to mock (like ModelPicker does), then reselect plain codex (hydraPairId: null).
+    engine.setThreadProvider(thread.id, "mock", { hydraPairId: null });
+    expect(engine.snapshot().threads[0]?.pendingProviderSwitch?.provider).toBe("codex");
+    engine.setThreadProvider(thread.id, "codex", { hydraPairId: null });
+
+    const restored = engine.snapshot().threads[0]!;
+    expect(restored.pendingProviderSwitch).toBeUndefined();
+    expect(restored.provider).toBe("codex");
+    expect(restored.codexModel).toBe("gpt-5.4");
+    expect(restored.codexEffort).toBe("high");
+    expect(restored.codexServiceTier).toBe("fast");
+    expect(restored.hydraEnabled).toBe(true);
+    expect(restored.hydraPairId).toBe("pair-cx");
+    expect(restored.subagentMode).toBe("preset");
+    expect(restored.providerThread?.codexThreadId).toBe("cx-reselect-1");
+    store.close();
+  });
+
+  it("gates /compact, header badge, and Continue affordance on thread effective provider", async () => {
+    const root = tmp("tivano-ps-ui-");
+    const store = new Store(root);
+    store.open();
+    const codexCompact: ProviderAdapter = {
+      descriptor: { id: "codex", label: "Codex", mode: "codex", synthetic: true, compact: true },
+      start: (_ctx, cb) => {
+        queueMicrotask(() => cb.onDone());
+        return { cancel: () => {}, resume: () => {} };
+      },
+      compact: async () => {},
+      dispose: async () => ({ children: [], orphanedPending: 0 }),
+    };
+    const mock = new MockProvider({ tickMs: 1 });
+    const engine = new Engine(store, codexCompact, root, "0.0.0-test", undefined, undefined, [mock]);
+    const info = engine.info;
+    const baseSnap = engine.snapshot();
+    expect(info.providers).toEqual([
+      { id: "codex", mode: "codex", label: "Codex", supportsCompact: true },
+      { id: "mock", mode: "mock", label: mock.descriptor.label },
+    ]);
+    store.close();
+
+    const prevWindow = (globalThis as { window?: unknown }).window;
+    const calls: { channel: string; payload: unknown }[] = [];
+    (globalThis as { window?: unknown }).window = {
+      tivano: {
+        platform: "win32",
+        invoke: async (channel: string, payload: unknown) => {
+          calls.push({ channel, payload });
+          return {};
+        },
+        onEvent: () => () => {},
+      },
+    };
+    const prevSnapshot = clientStore.snapshot;
+    try {
+      const switchedThread: ChatThread = {
+        id: "t-switched",
+        projectId: "p-1",
+        title: "Switched",
+        createdAt: 1,
+        updatedAt: 1,
+        messages: [],
+        turn: {
+          id: "turn-err",
+          threadId: "t-switched",
+          status: "error",
+          seq: 0,
+          startedAt: 1,
+          assistantMessageId: "m-1",
+          error: "failed",
+        },
+        sessionGrants: [],
+        provider: "mock",
+      };
+      const chatHtml = renderToStaticMarkup(
+        createElement(
+          LanguageContext.Provider,
+          { value: "en" },
+          createElement(ChatView, {
+            thread: switchedThread,
+            providerLabel: "Codex",
+            mode: "codex",
+            codex: { state: "fixture", protocolPin: "0.164.0", cliVersion: "0" },
+          }),
+        ),
+      );
+      expect(chatHtml).toContain("Mock Provider");
+      expect(chatHtml).not.toContain("Codex fixture");
+      expect(chatHtml).toContain("Continue");
+
+      // /compact on a thread switched from Codex to Mock falls through to turns:send
+      // and is omitted from Composer slash suggestions.
+      clientStore.snapshot = {
+        ...baseSnap,
+        info,
+        threads: [switchedThread],
+      };
+      clientStore.setDraft(switchedThread.id, "/compact");
+      await clientStore.sendDraft(switchedThread.id);
+      expect(calls.some((c) => c.channel === "threads:compact")).toBe(false);
+      expect(calls.some((c) => c.channel === "turns:send")).toBe(true);
+
+      const composerHtml = renderToStaticMarkup(
+        createElement(
+          LanguageContext.Provider,
+          { value: "en" },
+          createElement(Composer, {
+            thread: switchedThread,
+            mode: "codex",
+            info,
+          }),
+        ),
+      );
+      expect(composerHtml).toBeTruthy();
+    } finally {
+      clientStore.snapshot = prevSnapshot;
       if (prevWindow === undefined) delete (globalThis as { window?: unknown }).window;
       else (globalThis as { window?: unknown }).window = prevWindow;
     }

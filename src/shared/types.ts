@@ -726,6 +726,7 @@ export interface ProviderSummary {
   id: string;
   mode: ProviderMode;
   label: string;
+  supportsCompact?: true;
 }
 
 /** P2-02: origin snapshot saved while a started chat has a pending provider

@@ -2083,4 +2083,11 @@ export const ja: Record<string, string> = {
   "Continued with %@": "%@ で続行",
   "Provider — applies to the next turn": "プロバイダー — 次のターンから適用",
   "Hydra pairs": "Hydra ペア",
+  "sub-agents cannot switch providers": "サブエージェントはプロバイダーを切り替えられません",
+  "switch providers after the running turn finishes": "実行中のターンが完了してからプロバイダーを切り替えてください",
+  "resolve the pending request before switching providers": "保留中のリクエストを処理してからプロバイダーを切り替えてください",
+  "switch providers when the chat is idle": "チャットが待機状態のときにプロバイダーを切り替えてください",
+  "switch providers when no sub-agents are at work": "動作中のサブエージェントがないときにプロバイダーを切り替えてください",
+  'provider "%@" is not available in this launch': 'この起動ではプロバイダー「%@」を利用できません',
+  'provider "%@" is not available': 'プロバイダー「%@」は利用できません',
 };

@@ -460,11 +460,21 @@ export class ClientStore {
     this.notify();
     // F09/F06 local commands — frozen handleLocalCommand: "/plan" toggles
     // the interaction mode on every provider; "/compact" runs only where
-    // the provider supports it, elsewhere it falls through to a send.
+    // the thread's effective provider supports it, elsewhere it falls
+    // through to a send.
+    const info = this.snapshot?.info;
+    const thread = this.snapshot?.threads.find((t) => t.id === threadId);
+    const effectiveMode = thread?.provider ?? info?.mode;
+    const providerEntry = effectiveMode
+      ? info?.providers?.find((p) => p.mode === effectiveMode)
+      : undefined;
+    const supportsCompact = providerEntry
+      ? providerEntry.supportsCompact === true
+      : info?.supportsCompact === true;
     const command =
       text === "/plan"
         ? "plan"
-        : text === "/compact" && this.snapshot?.info.supportsCompact === true
+        : text === "/compact" && supportsCompact
           ? "compact"
           : null;
     try {

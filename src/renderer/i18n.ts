@@ -2273,6 +2273,13 @@ const zhHans: Record<string, string> = {
   "Continued with %@": "以下由 %@ 接力",
   "Provider — applies to the next turn": "服务商 — 下次发送生效",
   "Hydra pairs": "Hydra 组合",
+  "sub-agents cannot switch providers": "子代理不能切换服务商",
+  "switch providers after the running turn finishes": "请在当前回合完成后切换服务商",
+  "resolve the pending request before switching providers": "请先处理待确认请求后再切换服务商",
+  "switch providers when the chat is idle": "请在对话空闲时切换服务商",
+  "switch providers when no sub-agents are at work": "请在没有子代理运行时切换服务商",
+  'provider "%@" is not available in this launch': '本次启动未启用服务商“%@”',
+  'provider "%@" is not available': '服务商“%@”不可用',
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
@@ -2326,6 +2333,8 @@ const ERROR_TEMPLATE_KEYS = [
   "tmp cannot be resolved: %@",
   "editor is not available: %@",
   "could not open %@: %@",
+  'provider "%@" is not available in this launch',
+  'provider "%@" is not available',
 ] as const;
 
 let errorTemplates: { key: string; re: RegExp }[] | undefined;

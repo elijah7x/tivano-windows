@@ -709,6 +709,7 @@ export class Engine {
           id: p.descriptor.id,
           mode: p.descriptor.mode,
           label: p.descriptor.label,
+          ...(p.descriptor.compact ? { supportsCompact: true as const } : {}),
         }),
       ),
       ...(desc.compact ? { supportsCompact: true as const } : {}),
@@ -3622,26 +3623,50 @@ export class Engine {
         };
         thread.pendingProviderSwitch = origin;
       }
-      applyTarget(thread);
-      delete thread.providerThread;
       const origin = thread.pendingProviderSwitch!;
-      if (thread.provider === origin.provider) {
-        if (origin.providerThread) thread.providerThread = origin.providerThread;
-        else delete thread.providerThread;
-        if (origin.runtimeMode !== undefined) thread.runtimeMode = origin.runtimeMode;
-        if (origin.interactionMode !== undefined)
-          thread.interactionMode = origin.interactionMode;
-        if (opts?.hydraPairId === undefined) {
-          if (origin.hydraEnabled !== undefined) thread.hydraEnabled = origin.hydraEnabled;
-          if (origin.subagentMode !== undefined) thread.subagentMode = origin.subagentMode;
-          if (origin.hydraPairId !== undefined) thread.hydraPairId = origin.hydraPairId;
-          else delete thread.hydraPairId;
+      if (targetProvider === origin.provider) {
+        this.restorePendingProviderOrigin(thread, origin);
+        const pickingDifferentPair =
+          typeof opts?.hydraPairId === "string" &&
+          opts.hydraPairId !== origin.hydraPairId;
+        const explicitModelChange =
+          opts?.hydraPairId === undefined &&
+          (opts?.model !== undefined ||
+            opts?.effort !== undefined ||
+            opts?.fastTier !== undefined);
+        if (pickingDifferentPair) {
+          thread.hydraPairId = opts!.hydraPairId!;
+          thread.hydraEnabled = true;
+          thread.subagentMode = "preset";
+          if (opts?.model !== undefined) {
+            if (opts.model === null) delete thread.codexModel;
+            else thread.codexModel = opts.model;
+          }
+          if (opts?.effort !== undefined) {
+            if (opts.effort === null) delete thread.codexEffort;
+            else thread.codexEffort = opts.effort;
+          }
+          if (opts?.fastTier !== undefined) {
+            if (opts.fastTier === null) delete thread.codexServiceTier;
+            else thread.codexServiceTier = opts.fastTier;
+          }
+        } else if (explicitModelChange) {
+          if (opts?.model !== undefined) {
+            if (opts.model === null) delete thread.codexModel;
+            else thread.codexModel = opts.model;
+          }
+          if (opts?.effort !== undefined) {
+            if (opts.effort === null) delete thread.codexEffort;
+            else thread.codexEffort = opts.effort;
+          }
+          if (opts?.fastTier !== undefined) {
+            if (opts.fastTier === null) delete thread.codexServiceTier;
+            else thread.codexServiceTier = opts.fastTier;
+          }
         }
-        if (thread.continuation?.isProviderHandoff && !thread.continuation.sent) {
-          if (origin.forwardedContinuation) thread.continuation = origin.forwardedContinuation;
-          else delete thread.continuation;
-        }
-        delete thread.pendingProviderSwitch;
+      } else {
+        applyTarget(thread);
+        delete thread.providerThread;
       }
       thread.updatedAt = Date.now();
     });
@@ -3651,6 +3676,38 @@ export class Engine {
       this.limitWaits.has(thread.id)
     )
       this.clearLimitWait(thread.id);
+  }
+
+  private restorePendingProviderOrigin(
+    thread: ChatThread,
+    origin: PendingProviderSwitch,
+  ): void {
+    thread.provider = origin.provider;
+    if (origin.codexModel !== undefined) thread.codexModel = origin.codexModel;
+    else delete thread.codexModel;
+    if (origin.codexEffort !== undefined) thread.codexEffort = origin.codexEffort;
+    else delete thread.codexEffort;
+    if (origin.codexServiceTier !== undefined)
+      thread.codexServiceTier = origin.codexServiceTier;
+    else delete thread.codexServiceTier;
+    if (origin.runtimeMode !== undefined) thread.runtimeMode = origin.runtimeMode;
+    if (origin.interactionMode !== undefined)
+      thread.interactionMode = origin.interactionMode;
+    if (origin.hydraEnabled !== undefined) thread.hydraEnabled = origin.hydraEnabled;
+    else delete thread.hydraEnabled;
+    if (origin.hydraPairId !== undefined) thread.hydraPairId = origin.hydraPairId;
+    else delete thread.hydraPairId;
+    if (origin.subagentMode !== undefined) thread.subagentMode = origin.subagentMode;
+    else delete thread.subagentMode;
+    if (origin.providerThread !== undefined) thread.providerThread = origin.providerThread;
+    else delete thread.providerThread;
+    delete thread.codexModelReported;
+    delete thread.codexEffortReported;
+    if (thread.continuation?.isProviderHandoff && !thread.continuation.sent) {
+      if (origin.forwardedContinuation) thread.continuation = origin.forwardedContinuation;
+      else delete thread.continuation;
+    }
+    delete thread.pendingProviderSwitch;
   }
 
   /**
@@ -3665,32 +3722,7 @@ export class Engine {
     const origin = thread.pendingProviderSwitch;
     if (!origin) return;
     this.store.update(() => {
-      thread.provider = origin.provider;
-      if (origin.codexModel !== undefined) thread.codexModel = origin.codexModel;
-      else delete thread.codexModel;
-      if (origin.codexEffort !== undefined) thread.codexEffort = origin.codexEffort;
-      else delete thread.codexEffort;
-      if (origin.codexServiceTier !== undefined)
-        thread.codexServiceTier = origin.codexServiceTier;
-      else delete thread.codexServiceTier;
-      if (origin.runtimeMode !== undefined) thread.runtimeMode = origin.runtimeMode;
-      if (origin.interactionMode !== undefined)
-        thread.interactionMode = origin.interactionMode;
-      if (origin.hydraEnabled !== undefined) thread.hydraEnabled = origin.hydraEnabled;
-      else delete thread.hydraEnabled;
-      if (origin.hydraPairId !== undefined) thread.hydraPairId = origin.hydraPairId;
-      else delete thread.hydraPairId;
-      if (origin.subagentMode !== undefined) thread.subagentMode = origin.subagentMode;
-      else delete thread.subagentMode;
-      if (origin.providerThread !== undefined) thread.providerThread = origin.providerThread;
-      else delete thread.providerThread;
-      delete thread.codexModelReported;
-      delete thread.codexEffortReported;
-      if (thread.continuation?.isProviderHandoff && !thread.continuation.sent) {
-        if (origin.forwardedContinuation) thread.continuation = origin.forwardedContinuation;
-        else delete thread.continuation;
-      }
-      delete thread.pendingProviderSwitch;
+      this.restorePendingProviderOrigin(thread, origin);
       thread.updatedAt = Date.now();
     });
     this.emit({ type: "thread-updated", thread });

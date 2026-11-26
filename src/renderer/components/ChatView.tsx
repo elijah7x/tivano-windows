@@ -539,6 +539,7 @@ export function ChatView(props: {
 
   const turn = thread.turn;
   const waiting = turn?.status === "waiting-approval";
+  const effectiveMode = thread.provider ?? props.mode;
   // P1-35: frozen continuableTurnID — the Continue affordance shows on a
   // failed or stopped last turn of an ordinary thread. Heads continue
   // from the Hydra panel; codex without a provider binding has no
@@ -551,23 +552,23 @@ export function ChatView(props: {
       turn.status === "cancelled" ||
       turn.status === "denied" ||
       turn.status === "interrupted") &&
-    (props.mode !== "codex" || thread.providerThread !== undefined);
+    (effectiveMode !== "codex" || thread.providerThread !== undefined);
   const hadInterrupted = thread.messages.some((m) => m.status === "interrupted");
-  const syntheticStdio = props.mode === "synthetic-stdio";
-  const codex = props.mode === "codex" ? props.codex : undefined;
+  const syntheticStdio = effectiveMode === "synthetic-stdio";
+  const codex = effectiveMode === "codex" ? props.codex : undefined;
   const badgeText = syntheticStdio
     ? t("Synthetic stdio")
-    : codex
-      ? codex.state === "fixture"
+    : effectiveMode === "codex"
+      ? codex?.state === "fixture"
         ? t("Codex fixture")
         : t("Codex")
       : t("Mock Provider");
   const badgeTitle = syntheticStdio
     ? t("Controlled local child process — no real model, tools or network")
-    : codex
-      ? codex.state === "fixture"
+    : effectiveMode === "codex"
+      ? codex?.state === "fixture"
         ? t("Offline Codex protocol fixture — deterministic, no real CLI or model")
-        : codex.state === "unconfigured"
+        : codex?.state === "unconfigured"
           ? t("Codex app-server is not configured")
           : t("Codex app-server — real launch not yet verified")
       : t("Synthetic provider — no real model, tools or commands");

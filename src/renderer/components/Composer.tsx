@@ -213,11 +213,15 @@ export function Composer(props: {
     pending;
   const switchLocked =
     running || hasPendingRequest || !!props.hydraHeadsRunning || !!thread.hydraHead;
+  const providerSummary = availableProviders.find((p) => p.mode === effectiveMode);
+  const supportsCompact = providerSummary
+    ? providerSummary.supportsCompact === true
+    : clientStore.snapshot?.info.supportsCompact === true;
   const recent = clientStore.snapshot?.recentCommands?.[effectiveMode] ?? [];
   const slashItems =
     slash && dismissedText !== text
       ? slashSuggestions(
-          builtinSlashCommands(clientStore.snapshot?.info.supportsCompact === true),
+          builtinSlashCommands(supportsCompact),
           slash.query,
           recent,
         )

@@ -2083,4 +2083,11 @@ export const zhHant: Record<string, string> = {
   "Continued with %@": "以下由 %@ 接續",
   "Provider — applies to the next turn": "供應商 — 下次傳送生效",
   "Hydra pairs": "Hydra 組合",
+  "sub-agents cannot switch providers": "子代理無法切換供應商",
+  "switch providers after the running turn finishes": "請在目前回合完成後再切換供應商",
+  "resolve the pending request before switching providers": "請先處理待確認請求後再切換供應商",
+  "switch providers when the chat is idle": "請在對話閒置時切換供應商",
+  "switch providers when no sub-agents are at work": "請在沒有子代理執行時切換供應商",
+  'provider "%@" is not available in this launch': '本次啟動未啟用供應商「%@」',
+  'provider "%@" is not available': '供應商「%@」無法使用',
 };
