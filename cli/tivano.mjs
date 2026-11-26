@@ -7,7 +7,7 @@
 // "dev"): 4-byte big-endian length-prefixed JSON frames over a
 // same-account IPC socket. This is a client only — it never spawns
 // commands, never touches provider credentials and only works while
-// the app's alpha+external-control gates are enabled.
+// the app's external-control gate is enabled.
 //
 //   tivano info|providers|projects|threads
 //   tivano thread <uuid> | history <uuid>

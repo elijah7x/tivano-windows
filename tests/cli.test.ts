@@ -139,7 +139,7 @@ describe("tivano.mjs client (real socket round trip)", () => {
 
   it("info returns the real welcome payload after handshake", async () => {
     const { engine, svc, sock } = rig();
-    engine.setSettings({ alphaEnabled: true, externalControlEnabled: true });
+    engine.setSettings({ externalControlEnabled: true });
     svc.refreshListening();
     const { stdout } = await run(sock, "info");
     const info = JSON.parse(stdout) as { info: { edition: string; version: number } };
@@ -149,7 +149,7 @@ describe("tivano.mjs client (real socket round trip)", () => {
 
   it("settings get returns the bounded settings snapshot", async () => {
     const { engine, svc, sock } = rig();
-    engine.setSettings({ alphaEnabled: true, externalControlEnabled: true });
+    engine.setSettings({ externalControlEnabled: true });
     svc.refreshListening();
     const { stdout } = await run(sock, "settings", "get");
     const r = JSON.parse(stdout) as { settings: { key: string }[] };
@@ -158,7 +158,7 @@ describe("tivano.mjs client (real socket round trip)", () => {
 
   it("settings set writes a real persisted setting via a client ticket", async () => {
     const { engine, svc, sock } = rig();
-    engine.setSettings({ alphaEnabled: true, externalControlEnabled: true });
+    engine.setSettings({ externalControlEnabled: true });
     svc.refreshListening();
     const { stdout } = await run(sock, "settings", "set", "showsSkylight=false");
     const r = JSON.parse(stdout) as { operation: { state: string } };

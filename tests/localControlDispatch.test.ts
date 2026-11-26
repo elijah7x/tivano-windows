@@ -4,12 +4,12 @@
 // sandboxes that deny filesystem/named-pipe listeners (the socket layer
 // itself is covered by tests/localControl.test.ts where binding works).
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { Store } from "../src/main/store";
+import { Store, emptyStore } from "../src/main/store";
 import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
 import { LocalControlService } from "../src/main/localControl";
@@ -202,5 +202,68 @@ describe("local control dispatch (F34)", () => {
     await expect(call(svc, "thread", { id: randomUUID() }))
       .rejects.toMatchObject({ code: "notFound" });
     engine.setSettings({ language: "en" });
+  });
+
+  it("P2-23: gates local control on externalControlEnabled alone and migrates older stores", async () => {
+    // Socket-free dispatch/gate checks: alphaEnabled alone stays disabled,
+    // while externalControlEnabled alone enables info/dispatch without Alpha.
+    const { engine, store, svc } = rig();
+    await expect(svc.handleExternal("info", {}, "local")).rejects.toMatchObject({ code: "disabled" });
+    engine.setSettings({ alphaEnabled: true });
+    await expect(svc.handleExternal("info", {}, "local")).rejects.toMatchObject({ code: "disabled" });
+
+    engine.setSettings({ alphaEnabled: false, externalControlEnabled: true });
+    const infoRes = (await call(svc, "info", {})) as { info: Record<string, unknown> };
+    expect(infoRes.info.version).toBe(1);
+    expect("alphaEnabled" in infoRes.info).toBe(false);
+    svc.dispose();
+    store.close();
+
+    // Migration combinations on older stores (without controlLeftAlpha).
+    const cases: Array<{
+      name: string;
+      alphaEnabled?: boolean;
+      externalControlEnabled?: boolean;
+      expected: boolean;
+    }> = [
+      { name: "alpha off + control on -> off", alphaEnabled: false, externalControlEnabled: true, expected: false },
+      { name: "alpha absent + control on -> off", externalControlEnabled: true, expected: false },
+      { name: "alpha on + control on -> on", alphaEnabled: true, externalControlEnabled: true, expected: true },
+      { name: "alpha on + control off -> off", alphaEnabled: true, externalControlEnabled: false, expected: false },
+      { name: "alpha off + control off -> off", alphaEnabled: false, externalControlEnabled: false, expected: false },
+      { name: "both absent -> off", expected: false },
+    ];
+    for (const c of cases) {
+      const root = mkdtempSync(join(tmpdir(), "tivano-lcd-mig-"));
+      dirs.push(root);
+      const doc = emptyStore() as unknown as {
+        schemaVersion: number;
+        projects: unknown[];
+        threads: unknown[];
+        settings: Record<string, unknown>;
+        ui: { selectedThreadId: null };
+      };
+      delete doc.settings.controlLeftAlpha;
+      if (c.alphaEnabled !== undefined) doc.settings.alphaEnabled = c.alphaEnabled;
+      if (c.externalControlEnabled !== undefined)
+        doc.settings.externalControlEnabled = c.externalControlEnabled;
+      writeFileSync(join(root, "store.json"), JSON.stringify(doc));
+
+      const s = new Store(root);
+      s.open();
+      const e = new Engine(s, new MockProvider({ tickMs: 1 }), root, "t");
+      const lc = new LocalControlService(e, root, "dev");
+      services.push(lc);
+      expect(s.state.settings.externalControlEnabled, c.name).toBe(c.expected);
+      expect(s.state.settings.controlLeftAlpha, c.name).toBe(true);
+      if (!c.expected) {
+        await expect(lc.handleExternal("info", {}, "local")).rejects.toMatchObject({ code: "disabled" });
+      } else {
+        const res = (await call(lc, "info", {})) as { info: { version: number } };
+        expect(res.info.version, c.name).toBe(1);
+      }
+      lc.dispose();
+      s.close();
+    }
   });
 });

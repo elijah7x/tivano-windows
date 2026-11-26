@@ -810,9 +810,9 @@ bootstrap = app.whenReady().then(async () => {
     }
   });
 
-  // F33 local control: same-account Unix socket, off by default behind
-  // BOTH settings gates. refreshListening on every settings change —
-  // closing either gate stops listening and drops live connections.
+  // F33 / P2-23 local control: same-account Unix socket, off by default behind
+  // externalControlEnabled. refreshListening on every settings change —
+  // closing the gate stops listening and drops live connections.
   localControl = new LocalControlService(eng, dataRoot);
   localControl.refreshListening();
   // P2-25 Remote MCP: loopback HTTP + OAuth 2.1 outside Alpha.
