@@ -961,6 +961,7 @@ export const ko: Record<string, string> = {
   "Auto-dispatch": "자동 파견",
   "Adaptive heads go out at once; off, each role's model is confirmed first.": "켜면 적응형 하위 에이전트가 즉시 파견되고, 끄면 각 역할의 모델을 먼저 확인합니다.",
   "Follow the lead": "리드 에이전트 따르기",
+  "%@ cannot run here; the identity follows the lead": "%@는 여기에서 실행할 수 없습니다. 이 정체성은 리드를 따릅니다",
   "Edit this identity": "이 정체성 편집",
   "New identity": "새 정체성",
   "Identity name": "정체성 이름",

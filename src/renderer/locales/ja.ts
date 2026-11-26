@@ -961,6 +961,7 @@ export const ja: Record<string, string> = {
   "Auto-dispatch": "自動ディスパッチ",
   "Adaptive heads go out at once; off, each role's model is confirmed first.": "オンにすると適応型サブエージェントが即座に派遣されます。オフにすると各ロールのモデルを先に確認します。",
   "Follow the lead": "リードエージェントに従う",
+  "%@ cannot run here; the identity follows the lead": "%@ はここでは実行できません。この ID はリードに従います",
   "Edit this identity": "この ID を編集",
   "New identity": "新しい ID",
   "Identity name": "ID 名",

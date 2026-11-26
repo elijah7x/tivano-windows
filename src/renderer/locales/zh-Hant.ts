@@ -961,6 +961,7 @@ export const zhHant: Record<string, string> = {
   "Auto-dispatch": "自動派發",
   "Adaptive heads go out at once; off, each role's model is confirmed first.": "開啟後自適應子代理會立即派發；關閉則先確認每個角色的模型。",
   "Follow the lead": "跟隨主代理",
+  "%@ cannot run here; the identity follows the lead": "%@ 無法在此執行；該身分將跟隨主代理",
   "Edit this identity": "編輯此身分",
   "New identity": "新增身分",
   "Identity name": "身分名稱",

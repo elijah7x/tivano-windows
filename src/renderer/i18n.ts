@@ -1138,6 +1138,7 @@ const zhHans: Record<string, string> = {
   "Adaptive heads go out at once; off, each role's model is confirmed first.":
     "开启后自适应子智能体立即派发；关闭则先确认每个角色的模型。",
   "Follow the lead": "跟随主代理",
+  "%@ cannot run here; the identity follows the lead": "%@ 无法在此运行；该身份将跟随主代理",
   "Edit this identity": "编辑此身份",
   "New identity": "新建身份",
   "Identity name": "身份名称",

@@ -961,6 +961,7 @@ export const fr: Record<string, string> = {
   "Auto-dispatch": "Envoi automatique",
   "Adaptive heads go out at once; off, each role's model is confirmed first.": "Activé, les sous-agents adaptatifs partent aussitôt ; désactivé, le modèle de chaque rôle est d’abord confirmé.",
   "Follow the lead": "Suivre l’agent principal",
+  "%@ cannot run here; the identity follows the lead": "%@ ne peut pas s’exécuter ici ; l’identité suit l’agent principal",
   "Edit this identity": "Modifier cette identité",
   "New identity": "Nouvelle identité",
   "Identity name": "Nom de l’identité",
