@@ -2103,4 +2103,16 @@ export const fr: Record<string, string> = {
   // P1-33
   "Invalid null byte in command or arguments.": "Caractère nul invalide dans la commande ou les arguments.",
   "Invalid newline in command or arguments.": "Saut de ligne invalide dans la commande ou les arguments.",
+  // P1-11
+  "Credits": "Crédits",
+  "Where Tivano began": "Aux origines de Tivano",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano est un fork de Droppy Code, sous licence AGPL-3.0 avec clauses d’attribution.",
+  "Working indicators": "Indicateurs d’activité",
+  "Built-in terminal": "Terminal intégré",
+  "Terminal PTY layer": "Couche PTY du terminal",
+  "Windows job-helper JSON parser": "Analyseur JSON de l’assistant de tâche Windows",
+  "Where Droppy Code began": "Aux origines de Droppy Code",
+  "Responsive chat architecture": "Architecture de discussion réactive",
+  "Streaming text fade": "Fondu du texte en streaming",
 };
