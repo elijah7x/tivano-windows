@@ -568,6 +568,8 @@ export const fr: Record<string, string> = {
   "The picker is full (30 models)": "Le sélecteur est plein (30 modèles)",
   "No models reported": "Aucun modèle signalé",
   "No models match": "Aucun modèle correspondant",
+  "Clear search": "Effacer la recherche",
+  "Other models": "Autres modèles",
   "Done": "Terminé",
   "Provider reports": "Rapports du fournisseur",
   "Applies to the next turn": "S’applique au tour suivant",

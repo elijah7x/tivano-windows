@@ -13,9 +13,12 @@ import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
 import {
   MODEL_LIST_LIMIT,
+  PICKER_MODELS_CACHE_LIMIT,
+  PickerModelsCache,
   addPin,
   addSection,
   applyDraftRename,
+  cachedPickerModels,
   defaultPickerCategory,
   dropPinOnGroupEnd,
   dropPinOnPin,
@@ -556,5 +559,152 @@ describe("P2-56 chip drag-reorder and rail drops", () => {
       ["Alpha", 0],
     ]);
     expect(unpinnedPart.ungrouped.map((e) => e.modelId)).toEqual(["u1"]);
+  });
+
+  it("P1-24 partitionPickerModels keeps an unpinned chosen model visible in ungrouped", () => {
+    const opts = new Map([
+      ["p1", M("p1", "Pinned 1")],
+      ["old", M("old", "Old Model")],
+    ]);
+    const part = partitionPickerModels(
+      [P("p1")],
+      [S("s1", "Alpha", 0)],
+      [],
+      opts,
+      "old",
+    );
+    expect(part.groups[0]!.items.map((i) => i.modelId)).toEqual(["p1"]);
+    expect(part.ungrouped.map((e) => e.modelId)).toEqual(["old"]);
+    // When the chosen model is already pinned, it is not duplicated in ungrouped.
+    const dup = partitionPickerModels([P("p1")], [S("s1", "Alpha", 0)], [], opts, "p1");
+    expect(dup.ungrouped).toEqual([]);
+  });
+});
+
+describe("P1-24 PickerModelsCache and cachedPickerModels", () => {
+  const sampleCatalog = () => [
+    M("v1", "Fixture 1.0"),
+    M("v2", "Fixture 2.0"),
+    M("v3", "Fixture 3.0"),
+    M("v4", "Fixture 4.0"),
+    M("v5", "Fixture 5.0"),
+    M("plain", "Fixture Model", true),
+  ];
+
+  it("computes the trimmed list once per catalog/settings change and reuses across renders", () => {
+    const cache = new PickerModelsCache();
+    let computes = 0;
+    const onCompute = () => {
+      computes++;
+    };
+
+    const first = cachedPickerModels(sampleCatalog(), {
+      provider: "codex",
+      hideOutdatedModels: true,
+      protectedIds: new Set(),
+      cache,
+      onCompute,
+    });
+    expect(first.map((m) => m.id)).toEqual(["v3", "v4", "v5", "plain"]);
+    expect(computes).toBe(1);
+
+    // New array + Set references with identical values must hit the cache.
+    for (let i = 0; i < 5; i++) {
+      const again = cachedPickerModels(sampleCatalog(), {
+        provider: "codex",
+        hideOutdatedModels: true,
+        protectedIds: new Set(),
+        cache,
+        onCompute,
+      });
+      expect(again).toBe(first);
+    }
+    expect(computes).toBe(1);
+
+    // Toggling hideOutdatedModels off returns full catalog without recomputing;
+    // toggling back on hits the cached entry.
+    const off = cachedPickerModels(sampleCatalog(), {
+      provider: "codex",
+      hideOutdatedModels: false,
+      protectedIds: new Set(),
+      cache,
+      onCompute,
+    });
+    expect(off.map((m) => m.id)).toEqual(["v1", "v2", "v3", "v4", "v5", "plain"]);
+    expect(computes).toBe(1);
+
+    const backOn = cachedPickerModels(sampleCatalog(), {
+      provider: "codex",
+      hideOutdatedModels: true,
+      protectedIds: new Set(),
+      cache,
+      onCompute,
+    });
+    expect(backOn).toBe(first);
+    expect(computes).toBe(1);
+
+    // Changing the chosen protected model recomputes once and protects it.
+    const withChosen = cachedPickerModels(sampleCatalog(), {
+      provider: "codex",
+      hideOutdatedModels: true,
+      protectedIds: new Set(["v1"]),
+      cache,
+      onCompute,
+    });
+    expect(withChosen.map((m) => m.id)).toEqual(["v1", "v3", "v4", "v5", "plain"]);
+    expect(computes).toBe(2);
+
+    // Changing the catalog models recomputes once.
+    const extended = [...sampleCatalog(), M("v6", "Fixture 6.0")];
+    const nextCat = cachedPickerModels(extended, {
+      provider: "codex",
+      hideOutdatedModels: true,
+      protectedIds: new Set(["v1"]),
+      cache,
+      onCompute,
+    });
+    expect(nextCat.map((m) => m.id)).toEqual(["v1", "v4", "v5", "plain", "v6"]);
+    expect(computes).toBe(3);
+  });
+
+  it("evicts oldest entries past the bounded limit", () => {
+    const cache = new PickerModelsCache();
+    let computes = 0;
+    for (let i = 0; i < PICKER_MODELS_CACHE_LIMIT + 1; i++) {
+      cachedPickerModels([M(`m-${i}`, `Vendor ${i}.0`)], {
+        provider: "codex",
+        hideOutdatedModels: true,
+        protectedIds: new Set(),
+        cache,
+        onCompute: () => {
+          computes++;
+        },
+      });
+    }
+    expect(cache.size).toBe(PICKER_MODELS_CACHE_LIMIT);
+    expect(computes).toBe(PICKER_MODELS_CACHE_LIMIT + 1);
+
+    // Oldest key (m-0) was evicted, so asking for it recomputes; newest (m-48) hits.
+    cachedPickerModels([M(`m-${PICKER_MODELS_CACHE_LIMIT}`, `Vendor ${PICKER_MODELS_CACHE_LIMIT}.0`)], {
+      provider: "codex",
+      hideOutdatedModels: true,
+      protectedIds: new Set(),
+      cache,
+      onCompute: () => {
+        computes++;
+      },
+    });
+    expect(computes).toBe(PICKER_MODELS_CACHE_LIMIT + 1);
+
+    cachedPickerModels([M("m-0", "Vendor 0.0")], {
+      provider: "codex",
+      hideOutdatedModels: true,
+      protectedIds: new Set(),
+      cache,
+      onCompute: () => {
+        computes++;
+      },
+    });
+    expect(computes).toBe(PICKER_MODELS_CACHE_LIMIT + 2);
   });
 });
