@@ -13,6 +13,7 @@ import type {
   ProviderCallbacks,
   ProviderDescriptor,
   ProviderTurnHandle,
+  TextGenerationOptions,
   TurnContext,
 } from "./provider";
 
@@ -588,7 +589,7 @@ export class MockProvider implements ProviderAdapter {
    * - `[mock:predict:TEXT]` returns `{"suggestion":"TEXT"}`
    * Everything else returns a fixed single-line JSON suggestion.
    */
-  async generateNextPrompt(context: string): Promise<string | null> {
+  async generateNextPrompt(context: string, _options?: TextGenerationOptions): Promise<string | null> {
     const userLines = context
       .split(/\r?\n/)
       .filter((line) => line.startsWith("User: "));

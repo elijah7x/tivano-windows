@@ -955,9 +955,9 @@ rl.on("line", (line) => {
           ...(process.env.TIVANO_CODEX_FIXTURE_FAST_MODEL === "1"
             ? [
                 {
-                  id: "fixture-terra",
-                  displayName: "Fixture Terra",
-                  description: "the synthetic fast model",
+                  id: "gpt-5.1-codex-mini",
+                  displayName: "GPT-5.1 Codex Mini",
+                  description: "the synthetic fast mini model",
                   hidden: false,
                   supportedReasoningEfforts: [
                     { reasoningEffort: "low" },

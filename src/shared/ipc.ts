@@ -497,7 +497,9 @@ export const requestValidators = {
     // target path; the settings:set patch clears it with null.
     cliInstallationTarget: vOptional(vNullable(vNonEmptyString(4000))),
     taskSleepMode: vOptional(vEnum(["off", "system", "display"] as const)),
-    textGeneration: vOptional(vEnum(["automatic", "off"] as const)),
+    textGeneration: vOptional(vEnum(["automatic", "codex", "off"] as const)),
+    textGenerationModelID: vOptional(vNullable(vNonEmptyString(200))),
+    textGenerationEffort: vOptional(vNullable(vNonEmptyString(64))),
     threadTitles: vOptional(vEnum(["once", "updated"] as const)),
     autoShelveDays: vOptional(vInt(0, 14)),
     quickChatEnabled: vOptional(vBoolean),

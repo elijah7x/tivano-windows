@@ -2086,4 +2086,17 @@ export const ja: Record<string, string> = {
   "Browse models": "モデルを参照",
   // P2-01
   "Press Tab to accept": "Tab キーで確定",
+  // P2-18
+  "Specific model": "指定モデル",
+  "Choose a model": "モデルを選択",
+  "Reasoning effort": "推論レベル",
+  "%@ (unavailable)": "%@（利用不可）",
+  "No models loaded for %@ yet.": "%@ のモデルはまだ読み込まれていません。",
+  "Uses %@ at low effort. For thread titles, commit messages and composer predictions.":
+    "%@（低推論レベル）を使用します。スレッドのタイトル、コミットメッセージ、入力欄の予測に使われます。",
+  "Writes thread titles, commit messages and composer predictions. Fast, inexpensive models are usually enough.":
+    "スレッドのタイトル、コミットメッセージ、入力欄の予測を生成します。高速で低コストなモデルで通常は十分です。",
+  "No thread titles, commit messages or composer predictions are generated.":
+    "スレッドタイトル、コミットメッセージ、入力欄の予測は生成されません。",
+  "Send a turn in Codex to load its models.": "Codex で 1 ターン送信してモデルを読み込んでください。",
 };

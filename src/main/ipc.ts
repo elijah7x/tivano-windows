@@ -483,7 +483,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("git:commit-message", async (p) => {
     const changes = await git().workingChanges(p.projectId);
     if (changes.kind !== "ok") return { kind: "unavailable", reason: changes.reason };
-    return engine.commitMessageFor(changes.summary, changes.patch);
+    return engine.commitMessageFor(changes.summary, changes.patch, p.projectId);
   });
 
   // Checkpoint ledger + non-mutating preview. Thread/turn identity only —

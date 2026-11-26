@@ -2086,4 +2086,17 @@ export const fr: Record<string, string> = {
   "Browse models": "Parcourir les modèles",
   // P2-01
   "Press Tab to accept": "Appuyez sur Tab pour accepter",
+  // P2-18
+  "Specific model": "Modèle spécifique",
+  "Choose a model": "Choisir un modèle",
+  "Reasoning effort": "Niveau de raisonnement",
+  "%@ (unavailable)": "%@ (indisponible)",
+  "No models loaded for %@ yet.": "Aucun modèle chargé pour %@.",
+  "Uses %@ at low effort. For thread titles, commit messages and composer predictions.":
+    "Utilise %@ (intensité faible). Pour les titres de conversation, messages de commit et suggestions de saisie.",
+  "Writes thread titles, commit messages and composer predictions. Fast, inexpensive models are usually enough.":
+    "Rédige les titres de conversation, les messages de commit et les suggestions de saisie. Des modèles rapides et économiques suffisent généralement.",
+  "No thread titles, commit messages or composer predictions are generated.":
+    "Aucun titre de conversation, message de commit ou suggestion de saisie n’est généré.",
+  "Send a turn in Codex to load its models.": "Envoyez un tour dans Codex pour charger ses modèles.",
 };

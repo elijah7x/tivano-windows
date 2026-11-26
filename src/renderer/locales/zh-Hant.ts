@@ -2086,4 +2086,17 @@ export const zhHant: Record<string, string> = {
   "Browse models": "瀏覽模型",
   // P2-01
   "Press Tab to accept": "按 Tab 鍵接受",
+  // P2-18
+  "Specific model": "指定模型",
+  "Choose a model": "選擇模型",
+  "Reasoning effort": "推理強度",
+  "%@ (unavailable)": "%@（無法使用）",
+  "No models loaded for %@ yet.": "尚未載入 %@ 的模型。",
+  "Uses %@ at low effort. For thread titles, commit messages and composer predictions.":
+    "使用 %@（低推理強度）。用於對話標題、提交訊息與輸入框預測。",
+  "Writes thread titles, commit messages and composer predictions. Fast, inexpensive models are usually enough.":
+    "用於產生對話標題、提交訊息與輸入框預測。快速、經濟的模型通常就已足夠。",
+  "No thread titles, commit messages or composer predictions are generated.":
+    "不會產生對話標題、提交訊息或輸入框預測。",
+  "Send a turn in Codex to load its models.": "在 Codex 中傳送一輪訊息以載入其模型。",
 };

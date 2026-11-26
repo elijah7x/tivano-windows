@@ -559,10 +559,23 @@ describe("P2-01 ClientStore composer predictions", () => {
 
     const roInvoke = vi.fn(async () => ({ prediction: "Should not run" }));
     const store2 = new ClientStore(roInvoke);
-    const roSnap = snap(1, [streamingThread("t1", "u1", "m1")]);
+    const roSnap = snap(1, [
+      streamingThread("t1", "u1", "m1"),
+      { ...streamingThread("t2", "u2", "m2"), isInPanel: true },
+    ]);
     roSnap.readOnly = true;
     store2.hydrate(roSnap, store2.beginHydration());
     store2.apply({ type: "turn-status", threadId: "t1", turnId: "u1", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(roInvoke).not.toHaveBeenCalled();
+
+    const panelStore = new ClientStore(roInvoke);
+    panelStore.hydrate(
+      snap(1, [{ ...streamingThread("t2", "u2", "m2"), isInPanel: true }]),
+      panelStore.beginHydration(),
+    );
+    panelStore.apply({ type: "turn-status", threadId: "t2", turnId: "u2", status: "done" });
     await Promise.resolve();
     await Promise.resolve();
     expect(roInvoke).not.toHaveBeenCalled();

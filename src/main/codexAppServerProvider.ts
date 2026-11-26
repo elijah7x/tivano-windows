@@ -29,10 +29,8 @@
 //     DELIVERED — fatal errors, failed binds and session ends retain the
 //     still-living child so provider.dispose can retry it honestly.
 
-import { realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
-import { buildNextPromptRequest } from "../shared/textGen";
+import { mkdirSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type {
   ApprovalRequest,
   CodexModelOption,
@@ -80,10 +78,20 @@ import type {
   ProviderCallbacks,
   ProviderDescriptor,
   ProviderTurnHandle,
+  TextGenerationOptions,
   ToolActivity,
   TurnContext,
   WorkspaceGrant,
 } from "./provider";
+import {
+  buildCommitMessagePrompt,
+  buildNextPromptRequest,
+  buildRefreshedTitlePrompt,
+  buildThreadTitlePrompt,
+  extractRefreshedTitle,
+  extractTitle,
+  resolveTextGenerationPlan,
+} from "../shared/textGen";
 
 export const ORDINARY_CODEX_THREAD_INSTRUCTIONS =
   "Tivano's helper agents (heads) are off for this conversation. Disregard any earlier instructions about delegating work with a hydra block; do the work and answer directly.";
@@ -542,24 +550,6 @@ async function fetchModelList(
     cursor = next;
   }
   return models;
-}
-
-/**
- * Frozen AppModel.fastTextModel(for: .codex) + lowEffort: match "terra" in
- * model id or name (case-insensitive) and prefer "low" effort (falling back
- * to defaultEffort). Returns null when absent so background every-reply
- * callers (P2-01) never fall back to the costly default Codex model.
- */
-export function selectFastCodexTextModel(
-  catalog: readonly CodexModelOption[],
-): { model: string; effort?: string } | null {
-  const match = catalog.find(
-    (m) =>
-      m.id.toLowerCase().includes("terra") || m.name.toLowerCase().includes("terra"),
-  );
-  if (!match) return null;
-  const effort = match.efforts.includes("low") ? "low" : match.defaultEffort;
-  return effort ? { model: match.id, effort } : { model: match.id };
 }
 
 class CodexSession {
@@ -1565,7 +1555,7 @@ class CodexSession {
       if (gen !== this.gen || this.rpc !== rpc)
         throw new CodexProtocolError("connection recycled", "CODEX_CONNECTION_CLOSED");
     });
-    this.provider.noteModelCatalog(models);
+    this.provider.cacheCatalog(models);
     return models;
   }
 
@@ -2976,10 +2966,6 @@ export class CodexAppServerProvider implements ProviderAdapter {
   private cachedCatalog: CodexModelOption[] | null = null;
   private disposed = false;
 
-  noteModelCatalog(models: CodexModelOption[]): void {
-    if (models.length > 0) this.cachedCatalog = models;
-  }
-
   constructor(opts: CodexProviderOptions) {
     this.opts = opts;
     this.config = opts.config;
@@ -3144,6 +3130,11 @@ export class CodexAppServerProvider implements ProviderAdapter {
     });
   }
 
+  /** Cache a non-empty model catalog fetched by a bound session or one-shot probe. */
+  cacheCatalog(models: CodexModelOption[]): void {
+    if (models.length > 0) this.cachedCatalog = models;
+  }
+
   /** Session visibility for tests/diagnostics. */
   sessionCount(): number {
     return this.sessions.size;
@@ -3238,10 +3229,10 @@ export class CodexAppServerProvider implements ProviderAdapter {
    */
   async runOneShot<T>(
     workspaceDir: string,
-    fn: (rpc: CodexRpc, initResult: Record<string, unknown>, cwd: string) => Promise<T>,
+    fn: (rpc: CodexRpc, initResult: Record<string, unknown>) => Promise<T>,
     opts?: {
       onNotification?: (method: string, params: unknown) => void;
-      onClosed?: (reason: string) => void;
+      onClose?: (err: Error) => void;
     },
   ): Promise<T> {
     this.assertCanLaunch();
@@ -3270,9 +3261,6 @@ export class CodexAppServerProvider implements ProviderAdapter {
     const spec = this.buildSpec(cwd, { lightweight: true });
     let rpc: CodexRpc | null = null;
     let alive = true;
-    const notifyClosed = (reason: string) => {
-      opts?.onClosed?.(reason);
-    };
     const transport = new StdioTransport<CodexMessage>(
       spec,
       { ...DEFAULT_TRANSPORT_LIMITS, ...this.transportLimits },
@@ -3283,7 +3271,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
         onProtocolError: (err) => {
           alive = false;
           rpc?.failAllPending(err.message);
-          notifyClosed(err.message);
+          opts?.onClose?.(err);
           void transport.dispose();
         },
         onExit: () => {},
@@ -3296,13 +3284,13 @@ export class CodexAppServerProvider implements ProviderAdapter {
             `CODEX_CONNECTION_CLOSED: one-shot connection closed (code ${code ?? "?"}, signal ${signal ?? "?"})` +
             (tail ? ` — stderr tail: ${bounded(tail, 400)}` : "");
           rpc?.failAllPending(msg);
-          notifyClosed(msg);
+          opts?.onClose?.(new CodexProtocolError(msg, "CODEX_CONNECTION_CLOSED"));
         },
         onSpawnError: (err) => {
           alive = false;
           const msg = `CODEX_PROTOCOL_ERROR: spawn failed: ${err.message}`;
           rpc?.failAllPending(msg);
-          notifyClosed(msg);
+          opts?.onClose?.(new CodexProtocolError(msg, "CODEX_PROTOCOL_ERROR"));
           void transport.dispose();
         },
       },
@@ -3322,7 +3310,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
         onFatal: (err) => {
           alive = false;
           rpc?.failAllPending(err.message);
-          notifyClosed(err.message);
+          opts?.onClose?.(err);
           void transport.dispose();
         },
       },
@@ -3332,7 +3320,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
           alive = false;
           const msg = `CODEX_REQUEST_TIMEOUT: mutating request ${method} timed out — wire state unknown`;
           rpc?.failAllPending(msg);
-          notifyClosed(msg);
+          opts?.onClose?.(new CodexProtocolError(msg, "CODEX_REQUEST_TIMEOUT"));
           void transport.dispose();
         },
       },
@@ -3362,117 +3350,20 @@ export class CodexAppServerProvider implements ProviderAdapter {
         );
       }
       rpc.notify("initialized");
-      return await fn(rpc, init, cwd);
+      return await fn(rpc, init);
     } finally {
       alive = false;
       this.oneShotRpcs.delete(rpc);
       rpc.failAllPending("CODEX_CONNECTION_CLOSED: one-shot connection closed");
-      notifyClosed("CODEX_CONNECTION_CLOSED: one-shot connection closed");
+      opts?.onClose?.(
+        new CodexProtocolError(
+          "CODEX_CONNECTION_CLOSED: one-shot connection closed",
+          "CODEX_CONNECTION_CLOSED",
+        ),
+      );
       const res = await transport.dispose();
       this.recordOneShotCleanupFailure(transport, res.exitCode, res.signal);
       if (res.confirmed || !transport.hasChild) this.oneShotTransports.delete(transport);
-    }
-  }
-
-  /**
-   * P2-01 / P2-57: one-shot composer next-prompt prediction over a lightweight
-   * ephemeral `app-server` turn (read-only, approvalPolicy `"never"`).
-   * Matches macOS `ThreadRuntime.predictNextPromptIfDue` (`allowsDefaultModel: false`):
-   * resolves the fast Codex model (`terra`) at `low` effort (falling back to
-   * `defaultEffort` when `low` is unavailable) from the Codex catalog and skips
-   * (`null`) without starting a turn when no fast model is present.
-   */
-  async generateNextPrompt(context: string): Promise<string | null> {
-    if (this.cachedCatalog !== null && !selectFastCodexTextModel(this.cachedCatalog)) {
-      return null;
-    }
-    let targetThreadId: string | null = null;
-    let targetTurnId: string | null = null;
-    let deltas = "";
-    let completedText: string | null = null;
-    let settleTurn: ((value: string | null) => void) | null = null;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const turnDone = new Promise<string | null>((resolve) => {
-      settleTurn = resolve;
-    });
-    const finish = (value: string | null) => {
-      if (settleTurn) {
-        const fn = settleTurn;
-        settleTurn = null;
-        fn(value);
-      }
-    };
-    try {
-      return await this.runOneShot(
-        tmpdir(),
-        async (rpc, _init, cwd) => {
-          let fast = this.cachedCatalog ? selectFastCodexTextModel(this.cachedCatalog) : null;
-          if (this.cachedCatalog === null) {
-            const catalog = await fetchModelList(rpc, this.limits.requestTimeoutMs);
-            this.cachedCatalog = catalog;
-            fast = selectFastCodexTextModel(catalog);
-          }
-          if (!fast) return null;
-          const started = await rpc.request(
-            "thread/start",
-            {
-              cwd,
-              model: fast.model,
-              approvalPolicy: "never",
-              sandbox: "read-only",
-              ephemeral: true,
-              experimentalRawEvents: false,
-              persistExtendedHistory: false,
-            },
-            { timeoutMs: this.limits.requestTimeoutMs, mutating: true },
-          );
-          const tid = isObj(started) && isObj(started.thread) ? s(started.thread.id) : null;
-          if (!tid) return null;
-          targetThreadId = tid;
-          timer = setTimeout(() => finish(null), this.limits.predictionTimeoutMs);
-          const turnRes = await rpc.request(
-            "turn/start",
-            {
-              threadId: tid,
-              input: [{ type: "text", text: buildNextPromptRequest(context), text_elements: [] }],
-              model: fast.model,
-              ...(fast.effort ? { effort: fast.effort } : {}),
-              approvalPolicy: "never",
-              sandboxPolicy: { type: "readOnly" },
-            },
-            { timeoutMs: this.limits.turnStartTimeoutMs, mutating: true },
-          );
-          targetTurnId = isObj(turnRes) && isObj(turnRes.turn) ? s(turnRes.turn.id) : null;
-          return await turnDone;
-        },
-        {
-          onClosed: () => finish(null),
-          onNotification: (method, params) => {
-            if (!isObj(params) || !targetThreadId || s(params.threadId) !== targetThreadId) return;
-            const nTurnId = s(params.turnId) ?? (isObj(params.turn) ? s(params.turn.id) : null);
-            if (targetTurnId && nTurnId && nTurnId !== targetTurnId) return;
-            if (method === "item/agentMessage/delta" && typeof params.delta === "string") {
-              deltas += params.delta;
-            } else if (
-              method === "item/completed" &&
-              isObj(params.item) &&
-              params.item.type === "agentMessage" &&
-              typeof params.item.text === "string"
-            ) {
-              completedText = params.item.text;
-            } else if (method === "turn/completed" && isObj(params.turn)) {
-              const status = s(params.turn.status);
-              if (status === "completed") finish(completedText ?? (deltas || null));
-              else finish(null);
-            }
-          },
-        },
-      );
-    } catch {
-      return null;
-    } finally {
-      if (timer !== null) clearTimeout(timer);
-      finish(null);
     }
   }
 
@@ -3484,8 +3375,273 @@ export class CodexAppServerProvider implements ProviderAdapter {
     const models = await this.runOneShot(workspaceDir, (rpc) =>
       fetchModelList(rpc, this.limits.requestTimeoutMs),
     );
-    this.noteModelCatalog(models);
+    this.cacheCatalog(models);
     return models;
+  }
+
+  private textGenWorkspaceDir(preferred?: string): string {
+    if (
+      preferred &&
+      !preferred.includes("\0") &&
+      !preferred.startsWith("\\\\") &&
+      !preferred.startsWith("//") &&
+      !/^file:/i.test(preferred) &&
+      isAbsolute(preferred)
+    ) {
+      try {
+        return realpathSync(preferred);
+      } catch {
+        /* fall back to codexHome tmp */
+      }
+    }
+    const fallback = join(this.config.codexHome, "tmp");
+    mkdirSync(fallback, { recursive: true });
+    return fallback;
+  }
+
+  /**
+   * P2-18: run an ephemeral, read-only, tool-free one-shot turn over
+   * `runOneShot` using the exact resolved model and reasoning effort.
+   */
+  private async runOneShotTextTurn(
+    prompt: string,
+    options?: TextGenerationOptions,
+  ): Promise<string | null> {
+    const workspaceDir = this.textGenWorkspaceDir(options?.workspaceDir);
+    let activeThreadId: string | null = null;
+    let admittedTurnId: string | null = null;
+    let finished = false;
+    const buffered: Array<{ method: string; params: unknown }> = [];
+    const deltas: string[] = [];
+    const finalTexts: string[] = [];
+    let resolveTurn: ((status: string) => void) | null = null;
+    let rejectTurn: ((err: Error) => void) | null = null;
+
+    const handleNotification = (method: string, params: unknown): void => {
+      if (finished || !isObj(params)) return;
+      const tid = s(params.threadId);
+      if (activeThreadId && tid && tid !== activeThreadId) return;
+      if (!admittedTurnId) {
+        if (buffered.length < 256) buffered.push({ method, params });
+        return;
+      }
+      if (method === "item/agentMessage/delta") {
+        const turnId = s(params.turnId);
+        if (turnId && turnId !== admittedTurnId) return;
+        const delta = s(params.delta);
+        if (delta) deltas.push(delta);
+        return;
+      }
+      if (method === "item/completed") {
+        const turnId = s(params.turnId);
+        if (turnId && turnId !== admittedTurnId) return;
+        const item = isObj(params.item) ? params.item : null;
+        if (item && s(item.type) === "agentMessage") {
+          const text = s(item.text);
+          if (text) finalTexts.push(text);
+        }
+        return;
+      }
+      if (method === "turn/completed") {
+        const turn = isObj(params.turn) ? params.turn : null;
+        const turnId = turn ? s(turn.id) : s(params.turnId);
+        if (turnId && turnId !== admittedTurnId) return;
+        const status = (turn ? s(turn.status) : null) ?? "failed";
+        finished = true;
+        resolveTurn?.(status);
+      }
+    };
+
+    return this.runOneShot(
+      workspaceDir,
+      async (rpc) => {
+        let chosenModel: string | undefined;
+        let chosenEffort: string | undefined;
+        const explicitModel = options?.mode === "codex" ? options.model?.trim() : undefined;
+        if (explicitModel) {
+          chosenModel = explicitModel;
+          chosenEffort = options?.effort?.trim() || undefined;
+        } else {
+          const models =
+            this.cachedCatalog && this.cachedCatalog.length > 0
+              ? this.cachedCatalog
+              : await fetchModelList(rpc, this.limits.requestTimeoutMs);
+          this.cacheCatalog(models);
+          const plan = resolveTextGenerationPlan(
+            {
+              textGeneration: options?.mode ?? "automatic",
+              textGenerationModelID: options?.model,
+              textGenerationEffort: options?.effort,
+            },
+            models,
+            { allowsDefaultModel: options?.allowsDefaultModel },
+          );
+          if (!plan.enabled || !plan.model) return null;
+          chosenModel = plan.model;
+          chosenEffort = plan.effort;
+        }
+
+        const threadRes = await rpc.request(
+          "thread/start",
+          {
+            cwd: workspaceDir,
+            ephemeral: true,
+            approvalPolicy: "never",
+            approvalsReviewer: "user",
+            sandbox: "read-only",
+            model: chosenModel,
+          },
+          { timeoutMs: this.limits.threadTimeoutMs, mutating: true },
+        );
+        const codexThreadId =
+          isObj(threadRes) && isObj(threadRes.thread) ? s(threadRes.thread.id) : null;
+        if (!codexThreadId) {
+          throw new CodexProtocolError(
+            "thread/start response lacks thread.id",
+            "CODEX_PROTOCOL_ERROR",
+          );
+        }
+        activeThreadId = codexThreadId;
+
+        const completion = new Promise<string>((resolveP, rejectP) => {
+          resolveTurn = resolveP;
+          rejectTurn = rejectP;
+        });
+        void completion.catch(() => {});
+        const turnTimeoutMs = options?.timeoutMs ?? this.limits.turnStartTimeoutMs;
+        const timer = setTimeout(() => {
+          if (!finished) {
+            finished = true;
+            rejectTurn?.(
+              new CodexProtocolError(
+                "CODEX_REQUEST_TIMEOUT: one-shot text turn timed out",
+                "CODEX_REQUEST_TIMEOUT",
+              ),
+            );
+          }
+        }, turnTimeoutMs);
+        timer.unref?.();
+
+        try {
+          const turnRes = await rpc.request(
+            "turn/start",
+            {
+              threadId: codexThreadId,
+              input: [{ type: "text", text: prompt, text_elements: [] }],
+              summary: "auto",
+              approvalPolicy: "never",
+              approvalsReviewer: "user",
+              sandboxPolicy: { type: "readOnly" },
+              model: chosenModel,
+              ...(chosenEffort ? { effort: chosenEffort } : {}),
+              collaborationMode: {
+                mode: "default",
+                settings: {
+                  model: chosenModel,
+                  reasoning_effort: chosenEffort ?? null,
+                  developer_instructions: null,
+                },
+              },
+            },
+            { timeoutMs: this.limits.turnStartTimeoutMs, mutating: true },
+          );
+          const providerTurnId =
+            isObj(turnRes) && isObj(turnRes.turn) ? s(turnRes.turn.id) : null;
+          if (!providerTurnId) {
+            throw new CodexProtocolError(
+              "turn/start response lacks turn.id",
+              "CODEX_PROTOCOL_ERROR",
+            );
+          }
+          admittedTurnId = providerTurnId;
+          const pending = buffered.splice(0, buffered.length);
+          for (const frame of pending) handleNotification(frame.method, frame.params);
+
+          const status = await completion;
+          if (status !== "completed") return null;
+          const out = (finalTexts.length > 0 ? finalTexts.join("") : deltas.join("")).trim();
+          return out || null;
+        } finally {
+          finished = true;
+          resolveTurn = null;
+          rejectTurn = null;
+          clearTimeout(timer);
+        }
+      },
+      {
+        onNotification: handleNotification,
+        onClose: (err) => {
+          if (!finished) {
+            finished = true;
+            rejectTurn?.(err);
+          }
+        },
+      },
+    );
+  }
+
+  async generateTitle(
+    message: string,
+    options?: TextGenerationOptions,
+  ): Promise<string | null> {
+    const prompt = options?.refresh
+      ? buildRefreshedTitlePrompt(options.refresh.currentTitle, options.refresh.context)
+      : buildThreadTitlePrompt(message);
+    try {
+      const raw = await this.runOneShotTextTurn(prompt, options);
+      if (!raw) return null;
+      if (options?.refresh) {
+        return extractRefreshedTitle(options.refresh.currentTitle, raw);
+      }
+      return extractTitle(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  async generateCommitMessage(
+    summary: string,
+    patch: string,
+    instructions: string,
+    options?: TextGenerationOptions,
+  ): Promise<string | null> {
+    const prompt = buildCommitMessagePrompt(summary, patch, instructions);
+    const raw = await this.runOneShotTextTurn(prompt, options);
+    if (!raw) return null;
+    const cleaned = raw.replace(/```/g, "").trim();
+    return cleaned || null;
+  }
+
+  /**
+   * P2-01 / P2-18: one-shot composer next-prompt prediction over a lightweight
+   * ephemeral `app-server` turn (`allowsDefaultModel: false`, `predictionTimeoutMs`).
+   */
+  async generateNextPrompt(
+    context: string,
+    options?: TextGenerationOptions,
+  ): Promise<string | null> {
+    const effectiveOpts: TextGenerationOptions = {
+      ...options,
+      allowsDefaultModel: false,
+      timeoutMs: options?.timeoutMs ?? this.limits.predictionTimeoutMs,
+    };
+    if (this.cachedCatalog && this.cachedCatalog.length > 0 && effectiveOpts.mode !== "codex") {
+      const plan = resolveTextGenerationPlan(
+        {
+          textGeneration: effectiveOpts.mode ?? "automatic",
+          textGenerationModelID: effectiveOpts.model,
+          textGenerationEffort: effectiveOpts.effort,
+        },
+        this.cachedCatalog,
+        { allowsDefaultModel: false },
+      );
+      if (!plan.enabled || !plan.model) return null;
+    }
+    try {
+      return await this.runOneShotTextTurn(buildNextPromptRequest(context), effectiveOpts);
+    } catch {
+      return null;
+    }
   }
 
   async modelCatalog(): Promise<CodexModelOption[] | null> {

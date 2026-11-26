@@ -524,9 +524,13 @@ function stripRetiredSettings(raw: Record<string, unknown>): Record<string, unkn
     !(THEME_IDS as readonly string[]).includes(rawTheme) &&
     migrateLegacyTheme(rawTheme) !== null;
   const needsControlLeftAlpha = rec.controlLeftAlpha !== true;
-  if (!hasRetired && !isLegacyTheme && !needsControlLeftAlpha) return raw;
+  const hasNullTextGen =
+    rec.textGenerationModelID === null || rec.textGenerationEffort === null;
+  if (!hasRetired && !isLegacyTheme && !needsControlLeftAlpha && !hasNullTextGen) return raw;
   const nextSettings = { ...rec };
   for (const k of RETIRED_SETTING_KEYS) delete nextSettings[k];
+  if (nextSettings.textGenerationModelID === null) delete nextSettings.textGenerationModelID;
+  if (nextSettings.textGenerationEffort === null) delete nextSettings.textGenerationEffort;
   if (isLegacyTheme && rawTheme !== null) {
     const migrated = migrateLegacyTheme(rawTheme);
     if (migrated !== null) nextSettings.theme = migrated;
@@ -578,7 +582,9 @@ const vSettings = vObject({
   codexExecutable: vOptional(vNonEmptyString(4000)),
   // Optional so every pre-A21 store loads verbatim — absent means off.
   taskSleepMode: vOptional(vEnum(["off", "system", "display"] as const)),
-  textGeneration: vOptional(vEnum(["automatic", "off"] as const)),
+  textGeneration: vOptional(vEnum(["automatic", "codex", "off"] as const)),
+  textGenerationModelID: vOptional(vNullable(vNonEmptyString(200))),
+  textGenerationEffort: vOptional(vNullable(vNonEmptyString(64))),
   threadTitles: vOptional(vEnum(["once", "updated"] as const)),
   autoShelveDays: vOptional(vInt(0, 14)),
   shelvedGroupName: vOptional(vNullable(vNonEmptyString(60))),

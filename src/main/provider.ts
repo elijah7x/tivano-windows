@@ -266,6 +266,20 @@ export interface AdapterDisposeResult {
   orphanedPending: number;
 }
 
+/**
+ * P2-18: optional per-call text-generation overrides resolved from Settings.
+ * Existing 1-arg / 3-arg mock implementations may ignore this parameter.
+ */
+export interface TextGenerationOptions {
+  mode?: "automatic" | "codex";
+  model?: string | undefined;
+  effort?: string | undefined;
+  allowsDefaultModel?: boolean | undefined;
+  workspaceDir?: string | undefined;
+  refresh?: { currentTitle: string; context: string } | undefined;
+  timeoutMs?: number | undefined;
+}
+
 export interface ProviderAdapter {
   readonly descriptor: ProviderDescriptor;
   /**
@@ -295,7 +309,7 @@ export interface ProviderAdapter {
    * without a text engine omit it and the engine keeps the prompt-derived
    * fallback title. Null means "no usable title".
    */
-  generateTitle?(message: string): Promise<string | null>;
+  generateTitle?(message: string, options?: TextGenerationOptions): Promise<string | null>;
   /**
    * F31/F13: one-shot commit-message draft from the change summary + a
    * bounded patch, run with no tools (frozen TextGeneration.commitMessage).
@@ -307,6 +321,7 @@ export interface ProviderAdapter {
     summary: string,
     patch: string,
     instructions: string,
+    options?: TextGenerationOptions,
   ): Promise<string | null>;
   /**
    * P2-01: one-shot composer next-prompt prediction after a completed turn,
@@ -314,7 +329,7 @@ export interface ProviderAdapter {
    * adapters without a text engine omit it. Returns raw model output (JSON
    * `{"suggestion": string | null}`) or null when unavailable/empty.
    */
-  generateNextPrompt?(context: string): Promise<string | null>;
+  generateNextPrompt?(context: string, options?: TextGenerationOptions): Promise<string | null>;
   /**
    * P1-38: one-shot independent review of a job's unified diff (frozen
    *  TextGeneration.review). Optional — adapters without a detached

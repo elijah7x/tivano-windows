@@ -13,10 +13,8 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  CodexAppServerProvider,
-  selectFastCodexTextModel,
-} from "../src/main/codexAppServerProvider";
+import { CodexAppServerProvider } from "../src/main/codexAppServerProvider";
+import { resolveTextGenerationPlan } from "../src/shared/textGen";
 import {
   CODEX_ONE_SHOT_CONFIG_ARGS,
   type CodexRuntimeConfig,
@@ -116,38 +114,48 @@ class ScriptedChild extends EventEmitter {
   }
 }
 
-describe("selectFastCodexTextModel", () => {
-  it("selects terra model with low effort or defaultEffort fallback and returns null when absent", () => {
+describe("P2-01 fast Codex prediction model resolution", () => {
+  it("selects mini-tier model with low effort or defaultEffort fallback and returns disabled when absent", () => {
     expect(
-      selectFastCodexTextModel([
-        { id: "gpt-5.6", name: "GPT-5.6", efforts: ["low", "high"], isDefault: true },
-        {
-          id: "gpt-5.6-terra",
-          name: "GPT-5.6 Terra",
-          efforts: ["low", "medium"],
-          defaultEffort: "medium",
-          isDefault: false,
-        },
-      ]),
-    ).toEqual({ model: "gpt-5.6-terra", effort: "low" });
+      resolveTextGenerationPlan(
+        { textGeneration: "automatic" },
+        [
+          { id: "gpt-5.6", name: "GPT-5.6", efforts: ["low", "high"], isDefault: true },
+          {
+            id: "gpt-5.1-codex-mini",
+            name: "GPT-5.1 Codex Mini",
+            efforts: ["low", "medium"],
+            defaultEffort: "medium",
+            isDefault: false,
+          },
+        ],
+        { allowsDefaultModel: false },
+      ),
+    ).toEqual({ enabled: true, model: "gpt-5.1-codex-mini", effort: "low" });
 
     expect(
-      selectFastCodexTextModel([
-        {
-          id: "fast-1",
-          name: "Codex Terra",
-          efforts: ["medium", "high"],
-          defaultEffort: "medium",
-          isDefault: false,
-        },
-      ]),
-    ).toEqual({ model: "fast-1", effort: "medium" });
+      resolveTextGenerationPlan(
+        { textGeneration: "automatic" },
+        [
+          {
+            id: "fast-mini",
+            name: "Codex Mini",
+            efforts: ["medium", "high"],
+            defaultEffort: "medium",
+            isDefault: false,
+          },
+        ],
+        { allowsDefaultModel: false },
+      ),
+    ).toEqual({ enabled: true, model: "fast-mini", effort: "medium" });
 
     expect(
-      selectFastCodexTextModel([
-        { id: "gpt-5.6", name: "GPT-5.6", efforts: ["low", "high"], isDefault: true },
-      ]),
-    ).toBeNull();
+      resolveTextGenerationPlan(
+        { textGeneration: "automatic" },
+        [{ id: "gpt-5.6", name: "GPT-5.6", efforts: ["low", "high"], isDefault: true }],
+        { allowsDefaultModel: false },
+      ),
+    ).toEqual({ enabled: false });
   });
 });
 
@@ -222,6 +230,20 @@ describe("P2-01 CodexAppServerProvider.generateNextPrompt", () => {
       );
       expect(await engine.predictNextPrompt(t.id, turnId)).toEqual({
         prediction: "Inspect the diff",
+      });
+
+      // Honoring P2-18 Specific model + effort and Off settings through Engine.predictNextPrompt.
+      engine.setSettings({
+        textGeneration: "codex",
+        textGenerationModelID: "gpt-5.1-codex-mini",
+        textGenerationEffort: "medium",
+      });
+      expect(await engine.predictNextPrompt(t.id, turnId)).toEqual({
+        prediction: "Inspect the diff",
+      });
+      engine.setSettings({ textGeneration: "off" });
+      expect(await engine.predictNextPrompt(t.id, turnId)).toEqual({
+        prediction: null,
       });
     } finally {
       await provider.dispose();
@@ -302,8 +324,8 @@ describe("P2-01 CodexAppServerProvider.generateNextPrompt", () => {
             isDefault: true,
           },
           {
-            id: "gpt-5.6-terra",
-            displayName: "GPT-5.6 Terra",
+            id: "gpt-5.1-codex-mini",
+            displayName: "GPT-5.1 Codex Mini",
             hidden: false,
             supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "medium" }],
             defaultReasoningEffort: "medium",
@@ -316,14 +338,19 @@ describe("P2-01 CodexAppServerProvider.generateNextPrompt", () => {
 
     const threadReq = await c1.next();
     expect(threadReq.method).toBe("thread/start");
-    expect((threadReq.params as Record<string, unknown>).model).toBe("gpt-5.6-terra");
+    expect((threadReq.params as Record<string, unknown>).model).toBe("gpt-5.1-codex-mini");
+    expect((threadReq.params as Record<string, unknown>).ephemeral).toBe(true);
+    expect((threadReq.params as Record<string, unknown>).approvalPolicy).toBe("never");
+    expect((threadReq.params as Record<string, unknown>).sandbox).toBe("read-only");
     c1.write({ id: threadReq.id as number, result: { thread: { id: "thr-1" } } });
 
     const turnReq = await c1.next();
     expect(turnReq.method).toBe("turn/start");
     const tp = turnReq.params as Record<string, unknown>;
-    expect(tp.model).toBe("gpt-5.6-terra");
+    expect(tp.model).toBe("gpt-5.1-codex-mini");
     expect(tp.effort).toBe("low");
+    expect(tp.approvalPolicy).toBe("never");
+    expect(tp.sandboxPolicy).toEqual({ type: "readOnly" });
     expect(tp.input).toEqual([
       expect.objectContaining({ type: "text", text_elements: [] }),
     ]);

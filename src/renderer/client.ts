@@ -280,7 +280,7 @@ export class ClientStore {
     const s = this.snapshot;
     if (!s || s.readOnly || s.settings.textGeneration === "off") return false;
     const t = this.thread(threadId);
-    if (!t || t.isArchived || t.hydraHead) return false;
+    if (!t || t.isArchived || t.hydraHead || t.isInPanel) return false;
     if (t.turn?.id !== turnId || t.turn.status !== "done") return false;
     if ((t.followUps?.length ?? 0) > 0) return false;
     if (this.limitResumes[threadId] !== undefined) return false;

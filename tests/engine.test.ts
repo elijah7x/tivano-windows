@@ -756,6 +756,28 @@ describe("P2-01 composer next-prompt predictions", () => {
       assistantMessageId: "m1",
     };
     expect(await engine.predictNextPrompt(head.id)).toEqual({ prediction: null });
+
+    const helper = engine.createThread(null, "Helper");
+    const helperRow = store.state.threads.find((x) => x.id === helper.id)!;
+    helperRow.parentThreadId = active.id;
+    helperRow.isInPanel = true;
+    helperRow.turn = {
+      id: "u2",
+      threadId: helper.id,
+      status: "done",
+      seq: 1,
+      startedAt: 1,
+      assistantMessageId: "m2",
+    };
+    helperRow.messages.push({
+      id: "m2-user",
+      role: "user",
+      content: "helper task [mock:predict:Should skip]",
+      status: "done",
+      turnId: "u2",
+      ts: 1,
+    });
+    expect(await engine.predictNextPrompt(helper.id)).toEqual({ prediction: null });
   });
 
   it("returns null for adapters without generateNextPrompt, archived threads, mismatched turnIds, and closed workGate", async () => {

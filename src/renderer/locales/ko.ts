@@ -2086,4 +2086,17 @@ export const ko: Record<string, string> = {
   "Browse models": "모델 찾아보기",
   // P2-01
   "Press Tab to accept": "Tab 키를 눌러 수락",
+  // P2-18
+  "Specific model": "지정 모델",
+  "Choose a model": "모델 선택",
+  "Reasoning effort": "추론 강도",
+  "%@ (unavailable)": "%@ (사용 불가)",
+  "No models loaded for %@ yet.": "%@의 모델이 아직 로드되지 않았습니다.",
+  "Uses %@ at low effort. For thread titles, commit messages and composer predictions.":
+    "%@ (낮은 추론 강도)를 사용합니다. 스레드 제목, 커밋 메시지 및 입력창 예측에 사용됩니다.",
+  "Writes thread titles, commit messages and composer predictions. Fast, inexpensive models are usually enough.":
+    "스레드 제목, 커밋 메시지, 입력창 예측을 작성합니다. 빠르고 저렴한 모델이면 보통 충분합니다.",
+  "No thread titles, commit messages or composer predictions are generated.":
+    "스레드 제목, 커밋 메시지, 입력창 예측을 생성하지 않습니다.",
+  "Send a turn in Codex to load its models.": "Codex에서 턴을 한 번 보내 모델을 불러오세요.",
 };
