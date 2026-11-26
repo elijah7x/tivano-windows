@@ -269,6 +269,141 @@ describe("ModelPicker (P2-56 group-aware picker)", () => {
   });
 });
 
+describe("ModelPicker (P2-03 two-column pairs & models with recents)", () => {
+  const PAIR_1 = {
+    id: "pair-1",
+    provider: "codex",
+    orchestratorModel: "gpt-a1",
+    workerModel: "gpt-u",
+    name: "Alpha Team",
+    headProfiles: [],
+  };
+  const PAIR_2 = {
+    id: "pair-2",
+    provider: "codex",
+    orchestratorModel: "gpt-b1",
+    workerModel: "gpt-u",
+    name: "Beta Squad",
+    headProfiles: [],
+  };
+
+  it("renders single column without pairs or when Hydra is off, and two columns when Hydra is on with pairs", () => {
+    setMockSettings({ modelList: [], modelSections: [], hydraPairs: [] });
+    const singleHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-a1" }),
+        initialCatalog: SAMPLE_CATALOG,
+        initialOpen: true,
+      }),
+    );
+    expect(singleHtml).toContain("model-picker-btn");
+    expect(singleHtml).not.toContain("model-groups-btn");
+    expect(singleHtml).toContain("model-picker-pop single-col");
+    expect(singleHtml).not.toContain("model-pop-pairs-col");
+
+    setMockSettings({
+      modelList: [],
+      modelSections: [],
+      hydraEnabled: true,
+      hydraPairs: [PAIR_1, PAIR_2],
+    });
+    const hydraOffHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-a1", hydraEnabled: false }),
+        initialCatalog: SAMPLE_CATALOG,
+        initialOpen: true,
+      }),
+    );
+    expect(hydraOffHtml).toContain("model-picker-pop single-col");
+    expect(hydraOffHtml).not.toContain("model-pop-pairs-col");
+
+    const twoColHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-a1", hydraPairId: "pair-1" }),
+        initialCatalog: SAMPLE_CATALOG,
+        initialOpen: true,
+      }),
+    );
+    expect(twoColHtml).toContain("model-picker-pop two-col");
+    expect(twoColHtml).toContain("model-pop-pairs-col");
+    expect(twoColHtml).toContain('role="listbox" aria-label="Pairs"');
+    expect(twoColHtml).toContain('role="listbox" aria-label="Models"');
+    expect(twoColHtml).toContain("Alpha Team");
+    expect(twoColHtml).toContain("Beta Squad");
+    expect(twoColHtml).toContain("GPT-5.4 Sol");
+  });
+
+  it("places recent pair and recent model at the top of their columns and filters both by search", () => {
+    setMockSettings({
+      modelList: [],
+      modelSections: [],
+      hydraEnabled: true,
+      hydraPairs: [PAIR_1, PAIR_2],
+      lastNewChatPairId: "pair-2",
+      lastNewChatModel: { provider: "codex", modelID: "gpt-b1" },
+    });
+    const html = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-a1" }),
+        initialCatalog: SAMPLE_CATALOG,
+        initialOpen: true,
+      }),
+    );
+    const [pairsColHtml, modelsColHtml] = html.split('class="model-pop-list"');
+    expect(pairsColHtml).toContain("Recent");
+    expect(pairsColHtml).toContain('data-pop-item="recent-pair:pair-2"');
+    expect(pairsColHtml!.indexOf('data-pop-item="recent-pair:pair-2"')).toBeLessThan(
+      pairsColHtml!.indexOf('data-pop-item="pair:pair-1"'),
+    );
+    expect(modelsColHtml).toContain("Recent");
+    expect(modelsColHtml).toContain('data-pop-item="recent-model:gpt-b1"');
+    expect(modelsColHtml!.indexOf('data-pop-item="recent-model:gpt-b1"')).toBeLessThan(
+      modelsColHtml!.indexOf('data-pop-item="model:__default__"'),
+    );
+
+    const searchHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-a1" }),
+        initialCatalog: SAMPLE_CATALOG,
+        initialOpen: true,
+        initialQuery: "beta",
+      }),
+    );
+    const [searchPairsHtml, searchModelsHtml] = searchHtml.split('class="model-pop-list"');
+    expect(searchPairsHtml).toContain("Beta Squad");
+    expect(searchPairsHtml).not.toContain("Alpha Team");
+    expect(searchModelsHtml).toContain("No models match");
+  });
+
+  it("adds Pairs category in grouped mode and translates P2-03 labels in zh-Hans", () => {
+    setMockSettings(
+      {
+        hydraEnabled: true,
+        hydraPairs: [PAIR_1],
+        lastHydraPairId: "pair-1",
+      },
+      "zh-Hans",
+    );
+    const html = renderLang(
+      "zh-Hans",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-a1", hydraPairId: "pair-1" }),
+        initialCatalog: SAMPLE_CATALOG,
+        initialOpen: true,
+      }),
+    );
+    expect(html).toContain('data-picker-cat="combos"');
+    expect(html).toContain("最近");
+    expect(html).toContain("组合");
+    expect(html).toContain("Alpha Team");
+  });
+});
+
 describe("ModelPicker (P1-24 trimmed-list cache & full-catalog search)", () => {
   const OUTDATED_CATALOG: CodexModelCatalog = {
     state: "ready",
@@ -374,7 +509,7 @@ describe("ModelPicker (P1-24 trimmed-list cache & full-catalog search)", () => {
         initialQuery: "",
       }),
     );
-    expect(trimmedHtml).toContain("model-search-btn");
+    expect(trimmedHtml).toContain("model-picker-btn");
     expect(trimmedHtml).not.toContain("model-groups-btn");
     expect(trimmedHtml).not.toContain("model-pop-clear");
     const trimmedList = trimmedHtml.split('class="model-pop-list"')[1]!;

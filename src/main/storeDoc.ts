@@ -611,6 +611,8 @@ const vSettings = vObject({
   hasSeenHydraIntro: vOptional(vBoolean),
   hydraPairs: vOptional(vArray(vHydraPair, PERSIST_MAX_HYDRA_PAIRS)),
   lastHydraPairId: vOptional(vNonEmptyString(120)),
+  lastNewChatPairId: vOptional(vNonEmptyString(120)),
+  lastNewChatModel: vOptional(vModelPin),
   // P1-36: the sub-agent mode new chats seed from — optional so every
   // pre-P1-36 store loads verbatim; absent = derived per chat.
   subagentModeDefault: vOptional(

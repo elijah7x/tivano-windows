@@ -2078,4 +2078,9 @@ export const fr: Record<string, string> = {
     "Limite de sous-agents atteinte (%d)\n1 tâche est en file d’attente : %d sous-agents au maximum s’exécutent à la fois. Elle démarrera automatiquement dès qu’un sous-agent en cours aura terminé.",
   "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "Limite de sous-agents atteinte (%d)\n%d tâches sont en file d’attente : %d sous-agents au maximum s’exécutent à la fois. Elles démarreront automatiquement à mesure que les sous-agents en cours termineront.",
+  // P2-03
+  "Recent": "Récent",
+  "No pairs match": "Aucune paire correspondante",
+  "Pairs & models": "Paires et modèles",
+  "Browse models": "Parcourir les modèles",
 };

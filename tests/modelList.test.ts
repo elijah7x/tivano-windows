@@ -33,6 +33,8 @@ import {
   partitionModelBlocks,
   partitionPickerModels,
   pickerCategoryKey,
+  pickerPairMatches,
+  pickerPairTitle,
   pinId,
   planModelDropOnPin,
   planModelDropOnRail,
@@ -43,6 +45,8 @@ import {
   removeSection,
   renameSection,
   resolvePickerCategory,
+  resolveRecentPickerModel,
+  resolveRecentPickerPair,
   sectionEditTargetAlive,
   sectionIdOfPin,
   setModelListItems,
@@ -562,6 +566,154 @@ describe("P2-56 chip drag-reorder and rail drops", () => {
       ["Alpha", 0],
     ]);
     expect(unpinnedPart.ungrouped.map((e) => e.modelId)).toEqual(["u1"]);
+  });
+
+  it("P2-03 resolves combos category, pair titles/search, and recent pair/model", () => {
+    const opts = new Map([
+      ["m1", M("m1", "GPT-5.4")],
+      ["m2", M("m2", "GPT-5.4 Mini")],
+    ]);
+    const part = partitionPickerModels([P("m1")], [S("s1", "Reasoning", 0)], [], opts);
+    expect(
+      pickerCategoryKey(
+        defaultPickerCategory(part, "m1", { leadsWithPair: true, hasPairs: true }),
+      ),
+    ).toBe("combos");
+    expect(
+      pickerCategoryKey(
+        resolvePickerCategory({ kind: "combos" }, part, { hasPairs: true })!,
+      ),
+    ).toBe("combos");
+    expect(
+      pickerCategoryKey(
+        resolvePickerCategory({ kind: "combos" }, part, { hasPairs: false })!,
+      ),
+    ).toBe("all");
+
+    const pairNamed = {
+      id: "pair-1",
+      provider: "codex",
+      orchestratorModel: "m1",
+      workerModel: "m2",
+      name: "Fast Duo",
+      headProfiles: [],
+    };
+    const pairAuto = {
+      id: "pair-2",
+      provider: "codex",
+      orchestratorModel: "m1",
+      headProfiles: [],
+    };
+    const modelName = (_p: string, id: string | undefined) => (id ? opts.get(id)?.name : undefined);
+    expect(
+      pickerPairTitle(
+        pairNamed,
+        modelName,
+        () => "Codex",
+        (p) => `Any ${p} model`,
+        (l) => `${l} + itself`,
+      ),
+    ).toBe("Fast Duo");
+    expect(
+      pickerPairTitle(
+        pairAuto,
+        modelName,
+        () => "Codex",
+        (p) => `Any ${p} model`,
+        (l) => `${l} + itself`,
+      ),
+    ).toBe("GPT-5.4 + itself");
+
+    expect(pickerPairMatches(pairNamed, "duo", "Fast Duo", "Codex")).toBe(true);
+    expect(pickerPairMatches(pairNamed, "mini", "Fast Duo", "GPT-5.4 + GPT-5.4 Mini")).toBe(true);
+    expect(pickerPairMatches(pairNamed, "opus", "Fast Duo", "Codex")).toBe(false);
+
+    expect(resolveRecentPickerPair([pairNamed, pairAuto], "pair-2")?.id).toBe("pair-2");
+    expect(resolveRecentPickerPair([pairNamed, pairAuto], "missing")).toBeUndefined();
+    expect(
+      resolveRecentPickerModel(part.groups[0]!.items, { provider: "codex", modelID: "m1" })
+        ?.modelId,
+    ).toBe("m1");
+    expect(
+      resolveRecentPickerModel(part.groups[0]!.items, {
+        provider: "codex",
+        modelID: "missing",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("P2-03 persists recents, applies/clears hydraPairId via setThreadModel, and enforces adaptive lock", () => {
+    const root = freshRoot();
+    const { store, engine } = makeEngine(root);
+    const t = engine.createThread(null, "picker-thread");
+    engine.setSettings({
+      lastNewChatModel: { provider: "codex", modelID: "gpt-5.4" },
+    });
+    engine.setThreadModel(t.id, "gpt-5.4", "high", null, "pair-1");
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.hydraPairId).toBe("pair-1");
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.subagentMode).toBe("preset");
+    expect(engine.snapshot().settings.lastHydraPairId).toBe("pair-1");
+    expect(engine.snapshot().settings.lastNewChatPairId).toBe("pair-1");
+    expect(engine.snapshot().settings.lastNewChatModel).toEqual({
+      provider: "codex",
+      modelID: "gpt-5.4",
+    });
+
+    // Leaving pair via setThreadModel(..., null) clears hydraPairId, preset mode,
+    // and lastHydraPairId (so new chats start on no pair), while keeping lastNewChatPairId
+    // for the picker's Recent row.
+    engine.setThreadModel(t.id, "gpt-5.4-mini", null, null, null);
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.hydraPairId).toBeUndefined();
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.subagentMode).toBeUndefined();
+    expect(engine.snapshot().settings.lastHydraPairId).toBeUndefined();
+    expect(engine.snapshot().settings.lastNewChatPairId).toBe("pair-1");
+    const nextChat = engine.createThread(null, "after-leaving-pair");
+    expect(nextChat.hydraPairId).toBeUndefined();
+
+    // Re-enables hydraEnabled on the thread when applying a pair.
+    engine.setThreadHydra(t.id, false);
+    engine.setThreadModel(t.id, "gpt-5.4", "high", null, "pair-1");
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.hydraEnabled).toBe(true);
+
+    // Adaptive lock: throws while a head is running under adaptive mode and leaves recents untouched.
+    engine.setSubagentMode(t.id, "adaptive");
+    store.update((d) => {
+      d.threads.push({
+        id: "head-busy-1",
+        projectId: null,
+        title: "Busy head",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [],
+        turn: null,
+        sessionGrants: [],
+        hydraHead: {
+          leadId: t.id,
+          headIndex: 0,
+          name: "worker",
+          task: "work",
+          batchId: "b1",
+          status: "running",
+          spawnedAt: Date.now(),
+        },
+      });
+    });
+    expect(() => engine.setThreadModel(t.id, "gpt-5.4", "high", null, "pair-2")).toThrow(
+      "switch modes when no sub-agents are at work",
+    );
+    expect(engine.snapshot().settings.lastHydraPairId).toBe("pair-1");
+    expect(engine.snapshot().settings.lastNewChatPairId).toBe("pair-1");
+
+    // Flush and reload from disk to prove storeDoc persistence.
+    store.close();
+    const store2 = new Store(root);
+    store2.open();
+    expect(store2.state.settings.lastNewChatModel).toEqual({
+      provider: "codex",
+      modelID: "gpt-5.4",
+    });
+    expect(store2.state.settings.lastNewChatPairId).toBe("pair-1");
+    store2.close();
   });
 
   it("P1-24 partitionPickerModels keeps an unpinned chosen model visible in ungrouped", () => {
