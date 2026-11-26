@@ -74,3 +74,35 @@ describe("script draft keys (P2-33 row identity)", () => {
     ]);
   });
 });
+
+describe("script draft keyed reducer editing-row regressions", () => {
+  it("removing the row being edited drops only that key and keeps sibling identity", () => {
+    const keyGen = makeScriptDraftKeyGen();
+    let drafts = [
+      toScriptDraft(S("saved")),
+      createScriptDraft(keyGen, "New script"),
+      createScriptDraft(keyGen, "New script"),
+    ];
+    drafts = patchScriptDraft(drafts, "new-2", { name: "Editing row" });
+    drafts = removeScriptDraft(drafts, "new-2");
+    expect(drafts.map((d) => [d.key, d.name])).toEqual([
+      ["saved", "saved"],
+      ["new-1", "New script"],
+    ]);
+  });
+
+  it("removing a sibling preserves the in-flight edit on the remaining row", () => {
+    const keyGen = makeScriptDraftKeyGen();
+    let drafts = [
+      createScriptDraft(keyGen, "New script"),
+      createScriptDraft(keyGen, "New script"),
+      toScriptDraft(S("saved")),
+    ];
+    drafts = patchScriptDraft(drafts, "new-2", { name: "Edited sibling", command: "echo edited" });
+    drafts = removeScriptDraft(drafts, "new-1");
+    expect(drafts.map((d) => [d.key, d.name, d.command])).toEqual([
+      ["new-2", "Edited sibling", "echo edited"],
+      ["saved", "saved", "echo saved"],
+    ]);
+  });
+});
