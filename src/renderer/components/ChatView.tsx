@@ -192,18 +192,28 @@ function AutoPopPanels(props: {
           : next,
       );
     };
-    read();
     const ro =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(read);
-    ro?.observe(chat);
-    const header = chat.querySelector<HTMLElement>(":scope > .chat-head");
-    const team = chat.querySelector<HTMLElement>(":scope > .hydra-panel:not(.floating)");
-    const composer = chat.querySelector<HTMLElement>(":scope > .composer");
-    if (header) ro?.observe(header);
-    if (team) ro?.observe(team);
-    if (composer) ro?.observe(composer);
+    const observe = () => {
+      ro?.disconnect();
+      ro?.observe(chat);
+      const header = chat.querySelector<HTMLElement>(":scope > .chat-head");
+      const team = chat.querySelector<HTMLElement>(":scope > .hydra-panel:not(.floating)");
+      const composer = chat.querySelector<HTMLElement>(":scope > .composer");
+      if (header) ro?.observe(header);
+      if (team) ro?.observe(team);
+      if (composer) ro?.observe(composer);
+      read();
+    };
+    const mo =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver(() => observe());
+    observe();
+    mo?.observe(chat, { childList: true });
     window.addEventListener("resize", read);
     return () => {
+      mo?.disconnect();
       ro?.disconnect();
       window.removeEventListener("resize", read);
     };
