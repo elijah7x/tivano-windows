@@ -45,6 +45,7 @@ import type { SettingsPageId } from "./SettingsModal";
 import type { MessagePopoverState } from "./MessagePopover";
 import { peelQuotes, quoteExcerpt } from "../../shared/replyQuote";
 import { hydraPanelLayout } from "../../shared/hydra";
+import { helperPopLayout } from "../../shared/helperPopLayout";
 import {
   groupMessages,
   partitionGroup,
@@ -149,9 +150,125 @@ function statusLabel(t: (k: string) => string, m: Message): string | null {
 const delegationCard = (body: string, sent: boolean): React.ReactNode =>
   createElement(HydraDelegationCard, { body, sent });
 
-/** P2-40 "One per sub-agent": auto-popped panels spread over the
- *  pane's corners (frozen corner fill order). */
-const POP_CORNERS = ["tr", "tl", "br", "bl"] as const;
+/** P2-40 "One per sub-agent": automatic panels for running heads after
+ *  the first. The layer measures the chat pane and keeps the pure layout
+ *  outside the header and composer; panels themselves stay pointer-active
+ *  while the layer lets the timeline behind it receive the other events. */
+function AutoPopPanels(props: {
+  heads: ChatThread[];
+  parentTitle: string;
+  readOnly: boolean;
+  settings?: Settings | undefined;
+  popHeld: ReadonlySet<string>;
+  onHold: (id: string) => void;
+}): React.JSX.Element | null {
+  const layerRef = useRef<HTMLDivElement | null>(null);
+  const [metrics, setMetrics] = useState({
+    width: 0,
+    height: 0,
+    chromeTop: 0,
+    composerBottom: 0,
+  });
+
+  useEffect(() => {
+    const chat = layerRef.current?.parentElement;
+    if (!chat) return;
+    const read = () => {
+      const header = chat.querySelector<HTMLElement>(":scope > .chat-head");
+      const team = chat.querySelector<HTMLElement>(":scope > .hydra-panel:not(.floating)");
+      const composer = chat.querySelector<HTMLElement>(":scope > .composer");
+      const next = {
+        width: chat.clientWidth,
+        height: chat.clientHeight,
+        chromeTop: (header?.offsetHeight ?? 0) + (team?.offsetHeight ?? 0),
+        composerBottom: composer?.offsetHeight ?? 0,
+      };
+      setMetrics((prev) =>
+        prev.width === next.width &&
+        prev.height === next.height &&
+        prev.chromeTop === next.chromeTop &&
+        prev.composerBottom === next.composerBottom
+          ? prev
+          : next,
+      );
+    };
+    const ro =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(read);
+    const observe = () => {
+      ro?.disconnect();
+      ro?.observe(chat);
+      const header = chat.querySelector<HTMLElement>(":scope > .chat-head");
+      const team = chat.querySelector<HTMLElement>(":scope > .hydra-panel:not(.floating)");
+      const composer = chat.querySelector<HTMLElement>(":scope > .composer");
+      if (header) ro?.observe(header);
+      if (team) ro?.observe(team);
+      if (composer) ro?.observe(composer);
+      read();
+    };
+    const mo =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver(() => observe());
+    observe();
+    mo?.observe(chat, { childList: true });
+    window.addEventListener("resize", read);
+    return () => {
+      mo?.disconnect();
+      ro?.disconnect();
+      window.removeEventListener("resize", read);
+    };
+  }, []);
+
+  const runningHeads = useMemo(
+    () =>
+      props.heads.filter(
+        (h) => h.hydraHead?.status === "running" && !h.isArchived,
+      ),
+    [props.heads],
+  );
+  const layout = useMemo(
+    () =>
+      helperPopLayout({
+        paneWidth: metrics.width,
+        paneHeight: metrics.height,
+        chromeTop: metrics.chromeTop,
+        composerBottom: metrics.composerBottom,
+        runningHeads: runningHeads.length,
+        preferredSize: props.settings?.helperPanelSize,
+      }),
+    [metrics, runningHeads.length, props.settings?.helperPanelSize],
+  );
+  return (
+    <div
+      ref={layerRef}
+      className="helper-pop-layer"
+      style={metrics.width > 0 ? undefined : { visibility: "hidden" }}
+    >
+      {runningHeads.slice(1).map((h, i) => {
+        if (props.popHeld.has(h.id)) return null;
+        const placement = layout.placements[i];
+        return (
+          <HelperPanel
+            key={h.id}
+            thread={h}
+            parentTitle={props.parentTitle}
+            readOnly={props.readOnly}
+            settings={props.settings}
+            size={props.settings?.helperPanelSize}
+            initialCorner={placement?.corner ?? "tr"}
+            cascadeIndex={placement?.cascadeIndex ?? i}
+            placement={metrics.width > 0 ? placement : undefined}
+            chromeTop={metrics.chromeTop}
+            composerBottom={metrics.composerBottom}
+            overlay
+            onDock={() => {}}
+            onClose={() => props.onHold(h.id)}
+          />
+        );
+      })}
+    </div>
+  );
+}
 
 export function ChatView(props: {
   thread: ChatThread | null;
@@ -704,37 +821,16 @@ export function ChatView(props: {
           onDismiss={() => setHydraPanelHidden(true)}
         />
       )}
-      {thread &&
-        !thread.hydraHead &&
-        popsOn &&
-        !hydraPanelHidden &&
-        heads.length > 1 &&
-        heads
-          .slice(1)
-          .map((h, i) => ({ h, i }))
-          .filter(
-            ({ h }) =>
-              h.hydraHead?.status === "running" &&
-              !h.isArchived &&
-              !popHeld.has(h.id),
-          )
-          .map(({ h, i }) => (
-            <HelperPanel
-              key={h.id}
-              thread={h}
-              parentTitle={thread.title}
-              readOnly={!!props.readOnly}
-              settings={props.settings}
-              size={props.settings?.helperPanelSize}
-              // Corner + cascade key off the head's roster position —
-              // surviving pops keep their spot when one is dismissed.
-              initialCorner={POP_CORNERS[i % POP_CORNERS.length]}
-              cascadeIndex={Math.floor(i / POP_CORNERS.length)}
-              overlay
-              onDock={() => {}}
-              onClose={() => setPopHeld((s) => new Set(s).add(h.id))}
-            />
-          ))}
+      {thread && !thread.hydraHead && popsOn && !hydraPanelHidden && (
+        <AutoPopPanels
+          heads={heads}
+          parentTitle={thread.title}
+          readOnly={!!props.readOnly}
+          settings={props.settings}
+          popHeld={popHeld}
+          onHold={(id) => setPopHeld((s) => new Set(s).add(id))}
+        />
+      )}
       {props.readOnly && (
         <div className="banner error" role="alert">
           {t(
