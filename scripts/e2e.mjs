@@ -2155,19 +2155,6 @@ try {
     check,
     boundedClose,
   });
-
-  // ---- session 34: P2-53 Window chrome simplification ---------------------
-  await runP253ChromeChecks({
-    launch,
-    instances,
-    snap,
-    dataRoot,
-    workspaceRoot,
-    codexFixture,
-    outDir,
-    check,
-    boundedClose,
-  });
 } catch (err) {
   runError = err;
   console.error("E2E failure:", err);

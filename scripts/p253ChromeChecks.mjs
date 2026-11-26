@@ -8,19 +8,50 @@
 
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 
-const GIT = process.platform === "win32" ? "git" : "/usr/bin/git";
+function resolveWinGit() {
+  const isRealFile = (p) => {
+    try {
+      const st = lstatSync(p);
+      return st.isFile() && !st.isSymbolicLink();
+    } catch {
+      return false;
+    }
+  };
+  const explicit = process.env.TIVANO_GIT_EXECUTABLE?.trim();
+  if (explicit && isAbsolute(explicit) && isRealFile(explicit)) return realpathSync(explicit);
+  for (const [k, suffix] of [
+    ["ProgramFiles", "\\Git\\cmd\\git.exe"],
+    ["ProgramFiles(x86)", "\\Git\\cmd\\git.exe"],
+    ["ProgramW6432", "\\Git\\cmd\\git.exe"],
+    ["LOCALAPPDATA", "\\Programs\\Git\\cmd\\git.exe"],
+  ]) {
+    const base = process.env[k];
+    if (base) {
+      const cand = `${base.replace(/[\\/]+$/, "")}${suffix}`;
+      if (isRealFile(cand)) return realpathSync(cand);
+    }
+  }
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir || !isAbsolute(dir)) continue;
+    const cand = join(dir, "git.exe");
+    if (isRealFile(cand)) return realpathSync(cand);
+  }
+  return "git.exe";
+}
 
-function runGit(cwd, args) {
+const GIT = process.platform === "win32" ? resolveWinGit() : "/usr/bin/git";
+
+function runGit(cwd, args, globalCfg) {
   return execFileSync(GIT, args, {
     cwd,
     env: {
       ...process.env,
       GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+      GIT_CONFIG_GLOBAL: globalCfg,
     },
     encoding: "utf8",
   });
@@ -335,89 +366,48 @@ export async function runP253ChromeChecks({
   await page.locator(".tc-pop-close").click();
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
 
-  // Verify populated +/- changes tab click & top-bar popover geometry.
-  // On POSIX (and packaged Windows), run a real temporary git repo + Codex
-  // fixture turn; on unpackaged Windows dev builds (where git-containment
-  // keeps this.checkpoints null), drive the real ThreadChangesTab IPC event
-  // in s1 so the live React + Chromium layout is still exercised end-to-end.
-  if (process.platform === "win32") {
+  const isPackaged = await s1.app.evaluate(({ app }) => app.isPackaged);
+  if (process.platform === "win32" && !isPackaged) {
+    // Unpackaged Windows dev builds disable Git/checkpoints via git-containment
+    // (src/main/index.ts); never fake IPC handlers here. The real populated
+    // P253-E2E-03c flow runs on packaged Windows via scripts/windows/packaged-p253-test.mjs.
     const activeTid = (await snap(page)).selectedThreadId;
-    await s1.app.evaluate(({ ipcMain, BrowserWindow }, tid) => {
-      ipcMain.removeHandler("checkpoints:changes");
-      ipcMain.handle("checkpoints:changes", (_e, p) => {
-        if (p?.threadId !== tid) return null;
-        return {
-          files: [
-            { path: "tracked.txt", additions: 2, deletions: 1, binary: false },
-            { path: "fixture-checkpoint.txt", additions: 5, deletions: 0, binary: false },
-          ],
-          additions: 7,
-          deletions: 1,
-        };
-      });
-      ipcMain.removeHandler("checkpoints:changes-diff");
-      ipcMain.handle("checkpoints:changes-diff", (_e, p) => {
-        if (p?.threadId !== tid || p?.path !== "tracked.txt") {
-          return { kind: "unavailable", reason: "outside-scope" };
-        }
-        return { kind: "text", patch: "@@ -1,1 +1,2 @@\n-old\n+checkpoint line\n+extra" };
-      });
-      for (const win of BrowserWindow.getAllWindows()) {
-        win.webContents.send("tivano:event", { type: "checkpoints-changed", threadId: tid });
-      }
-    }, activeTid);
-    await page.waitForSelector(".chat-top-controls .thread-changes-tab", { timeout: 10000 });
-    const tabBox = await page.locator(".chat-top-controls .thread-changes-tab").boundingBox();
-    const composerTabCount = await page.locator(".composer .thread-changes-tab").count();
-    await page.locator(".chat-top-controls .thread-changes-tab").click();
-    await page.waitForSelector('.thread-changes-pop[data-anchor="topbar"]', { timeout: 5000 });
-    const popBox = await page.locator('.thread-changes-pop[data-anchor="topbar"]').boundingBox();
-    const compBox2 = await page.locator(".composer").boundingBox();
-    const popText = await page.locator(".thread-changes-pop").innerText();
-    await page.locator(".tc-file-row", { hasText: "tracked.txt" }).click();
-    await page.waitForSelector(".thread-changes-pop .git-patch", { timeout: 5000 });
-    const patchText = await page.locator(".thread-changes-pop .git-patch").innerText();
-    verify(
-      "P253-E2E-03c clicking top-bar +/- numbers opens popover directly below them with file count",
-      composerTabCount === 0 &&
-        popText.includes("2 files") &&
-        popText.includes("tracked.txt") &&
-        patchText.includes("+checkpoint line") &&
-        Boolean(
-          tabBox &&
-            popBox &&
-            compBox2 &&
-            popBox.y >= tabBox.y + tabBox.height - 2 &&
-            popBox.y <= tabBox.y + tabBox.height + 20 &&
-            Math.abs(popBox.x + popBox.width - (tabBox.x + tabBox.width)) <= 40 &&
-            popBox.y < compBox2.y,
-        ),
-      { composerTabCount, tabBox, popBox, compBox2, popText: popText.slice(0, 120) },
+    const unpackagedChanges = await page.evaluate(
+      (tid) => window.tivano.invoke("checkpoints:changes", { threadId: tid }),
+      activeTid,
     );
-    await page.screenshot({ path: join(outDir, "p253-changes-popover.png") });
-    await page.locator(".chat-top-controls .thread-changes-tab").click();
-    await page.waitForSelector(".thread-changes-pop", { state: "detached", timeout: 5000 });
+    verify(
+      "P253-E2E-03c-containment unpackaged win32 returns null checkpoints:changes honestly",
+      unpackagedChanges === null && (await page.locator(".thread-changes-tab").count()) === 0,
+      unpackagedChanges,
+    );
   }
 
   const c1 = await boundedClose(s1.app, s1.proc);
   s1.ledger.exited = c1.exited;
   s1.ledger.outcome = c1.outcome;
 
-  if (process.platform === "win32") return;
+  if (process.platform === "win32" && !isPackaged) return;
 
-  // --- Session 2 (POSIX): populated +/- numbers from real git checkpoints ---
+  // --- Session 2 (POSIX or packaged win32): populated +/- numbers from real git checkpoints ---
   if (!existsSync(join(dataRoot, "store.json"))) {
     throw new Error("Expected store.json in dataRoot before P253 populated-changes check");
   }
-  const repoDir = mkdtempSync(join(tmpdir(), "tivano-e2e-p253-"));
+  const repoParent = mkdtempSync(join(tmpdir(), "tivano-e2e-p253-"));
+  const repoDir = join(repoParent, "repo");
+  const globalCfg = join(repoParent, "empty-gitconfig");
+  writeFileSync(globalCfg, "");
   let s2 = null;
   try {
-    runGit(repoDir, ["init", "-b", "main"]);
-    runGit(repoDir, ["config", "user.email", "e2e@example.com"]);
-    runGit(repoDir, ["config", "user.name", "e2e"]);
+    execFileSync(GIT, ["init", "-b", "main", repoDir], {
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: globalCfg },
+      encoding: "utf8",
+    });
+    runGit(repoDir, ["config", "user.email", "e2e@example.com"], globalCfg);
+    runGit(repoDir, ["config", "user.name", "e2e"], globalCfg);
     writeFileSync(join(repoDir, "tracked.txt"), "base line\n");
-    runGit(repoDir, ["add", "-A"]);
-    runGit(repoDir, ["commit", "-m", "base"]);
+    runGit(repoDir, ["add", "-A"], globalCfg);
+    runGit(repoDir, ["commit", "-m", "base"], globalCfg);
 
     const projId = randomUUID();
     const doc = JSON.parse(readFileSync(join(dataRoot, "store.json"), "utf8"));
@@ -445,6 +435,7 @@ export async function runP253ChromeChecks({
         TIVANO_CODEX_FIXTURE: codexFixture,
         TIVANO_CODEX_NODE: process.execPath,
         TIVANO_WORKSPACE_ROOT: workspaceRoot,
+        ...(process.platform === "win32" ? { TIVANO_GIT_EXECUTABLE: GIT } : {}),
       },
       "p253-changes",
     );
@@ -490,11 +481,15 @@ export async function runP253ChromeChecks({
     const popBox = await page2.locator('.thread-changes-pop[data-anchor="topbar"]').boundingBox();
     const compBox2 = await page2.locator(".composer").boundingBox();
     const popText = await page2.locator(".thread-changes-pop").innerText();
+    await page2.locator(".tc-file-row", { hasText: "tracked.txt" }).click();
+    await page2.waitForSelector(".thread-changes-pop .git-patch", { timeout: 5000 });
+    const patchText = await page2.locator(".thread-changes-pop .git-patch").innerText();
     verify(
       "P253-E2E-03c clicking top-bar +/- numbers opens popover directly below them with file count",
       composerTabCount === 0 &&
-        popText.includes("2") &&
+        popText.includes("2 files") &&
         popText.includes("tracked.txt") &&
+        patchText.includes("+checkpoint line") &&
         Boolean(
           tabBox &&
             popBox &&
@@ -516,7 +511,7 @@ export async function runP253ChromeChecks({
       s2.ledger.outcome = c2.outcome;
     }
     try {
-      rmSync(repoDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      rmSync(repoParent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     } catch {
       /* best-effort temp cleanup on Windows */
     }

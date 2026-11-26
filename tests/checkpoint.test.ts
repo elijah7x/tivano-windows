@@ -34,11 +34,18 @@ import {
   parseManifest,
 } from "../src/main/checkpointStore";
 import { makeGitRunner, type GitRunResult, type GitRunner } from "../src/main/gitExec";
+import { resolveGitExecutable } from "../src/main/gitRuntimeConfig";
 import { ProjectRuntimePaths } from "../src/main/projectRuntimePaths";
 import { Store } from "../src/main/store";
 import type { ChatThread } from "../src/shared/types";
 
-const GIT = process.platform === "win32" ? "git.exe" : "/usr/bin/git";
+const resolvedGit = resolveGitExecutable(process.env, { platform: process.platform });
+const GIT =
+  resolvedGit.kind === "resolved"
+    ? resolvedGit.executable
+    : process.platform === "win32"
+      ? "git.exe"
+      : "/usr/bin/git";
 const haveGit = (() => {
   try {
     execFileSync(GIT, ["--version"], { stdio: "ignore" });
@@ -47,11 +54,23 @@ const haveGit = (() => {
     return false;
   }
 })();
-// win32 GitService deliberately refuses direct Git without an injected
-// contained runner ("git-containment"): the real-git-op suites below are
-// POSIX coverage. The win32 containment simulation is ungated and uses a
-// plain folder because the pinned refusal happens before any Git read.
-const haveDirectGit = haveGit && process.platform !== "win32";
+// Unit tests inject an explicit GitRunner + resolved git.exe so
+// CheckpointService runs against real temporary repositories on both
+// POSIX and Windows; the separate containment suite below still verifies
+// that an uncontained win32 bootstrap refuses via unavailableReason.
+const haveDirectGit = haveGit;
+
+const canSymlink = (() => {
+  const probe = mkdtempSync(join(tmpdir(), "tivano-symlink-probe-"));
+  try {
+    symlinkSync("target", join(probe, "link"));
+    return true;
+  } catch {
+    return false;
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+})();
 
 const dirs: string[] = [];
 const stores: Store[] = [];
@@ -151,7 +170,8 @@ function rig(opts: {
     threads: () => threads,
     mutable: opts.mutable ?? (() => true),
     dataRoot,
-    ...(opts.runner ? { runner: opts.runner } : {}),
+    gitExe: GIT,
+    runner: opts.runner ?? makeGitRunner(GIT),
     ...(opts.disposeTimeoutMs !== undefined ? { disposeTimeoutMs: opts.disposeTimeoutMs } : {}),
     ...(opts.platform ? { platform: opts.platform } : {}),
     ...(opts.unavailableReason ? { unavailableReason: opts.unavailableReason } : {}),
@@ -298,7 +318,7 @@ describe.skipIf(!haveDirectGit)("CheckpointService", () => {
     expect(gw.index.length).toBe(1); // still staged
   }, 20_000);
 
-  it("captures symlinks as link text and preserves exec bit, newline and pathspec-looking names", async () => {
+  it.skipIf(!canSymlink || process.platform === "win32")("captures symlinks as link text and preserves exec bit, newline and pathspec-looking names", async () => {
     const dir = mkRepo();
     writeFileSync(join(dir, "tool.sh"), "#!/bin/sh\nexit 0\n");
     chmodSync(join(dir, "tool.sh"), 0o755);
@@ -691,7 +711,7 @@ describe.skipIf(!haveDirectGit)("CheckpointService preview", () => {
     expect(p4.reason).toContain("unsafe-path");
   }, 20_000);
 
-  it("symlink changes classify correctly and a corrupted base blob is kept", async () => {
+  it.skipIf(!canSymlink)("symlink changes classify correctly and a corrupted base blob is kept", async () => {
     const dir = mkRepo();
     writeFileSync(join(dir, "real.txt"), "R1\n");
     commitAll(dir);
@@ -778,7 +798,30 @@ describe.skipIf(!haveDirectGit)("CheckpointService R1 regressions", () => {
     expect((e.worktree as { sha256: string }).sha256).toBe(sha256(readFileSync(f)));
   }, 20_000);
 
-  it("P3: store confinement is physical — symlinked dirs and leaves refuse", async () => {
+  it("a corrupted base blob refuses the restore proposal without symlinks", async () => {
+    const dir = mkRepo();
+    writeFileSync(join(dir, "real.txt"), "R1\n");
+    commitAll(dir);
+    const r = rig({ repoDir: dir });
+    const base = await r.service.capture(r.projectId, r.threadId, r.turnId, "before");
+    writeFileSync(join(dir, "real.txt"), "R2\n");
+    const end = await r.service.capture(r.projectId, r.threadId, r.turnId, "after");
+    expect(end.kind).toBe("captured");
+
+    const m = r.store.loadManifest(base.checkpointId!);
+    const real = m.entries.find((e) => e.path === "real.txt")!;
+    const sha = (real.worktree as { sha256: string }).sha256;
+    writeFileSync(join(r.dataRoot, "checkpoints", "blobs", sha.slice(0, 2), sha.slice(2)), "XYZ");
+
+    const p = await r.service.preview(
+      r.projectId, r.threadId, base.checkpointId!, end.checkpointId!, ["real.txt"],
+    );
+    const by = new Map(p.entries.map((e) => [e.path, e]));
+    expect(by.get("real.txt")!.action).toBe("keep");
+    expect(by.get("real.txt")!.reason).toBe("blob-corrupt");
+  }, 20_000);
+
+  it.skipIf(!canSymlink)("P3: store confinement is physical — symlinked dirs and leaves refuse", async () => {
     const mkStore = (root: string): CheckpointStore => new CheckpointStore(root);
     // Symlinked blobs directory.
     {
@@ -923,7 +966,11 @@ describe.skipIf(!haveDirectGit)("CheckpointService R1 regressions", () => {
   }, 20_000);
 
   it("mode change, index change and new-path listing changes all invalidate a capture attempt", async () => {
-    for (const mutate of ["chmod", "index", "create"] as const) {
+    const mutations =
+      process.platform === "win32"
+        ? (["index", "create"] as const)
+        : (["chmod", "index", "create"] as const);
+    for (const mutate of mutations) {
       const dir = mkRepo();
       writeFileSync(join(dir, "a.txt"), "a\n");
       writeFileSync(join(dir, "b.txt"), "B1\n"); // index-flip needs a real change
@@ -1331,5 +1378,71 @@ describe.skipIf(!haveDirectGit)("checkpoint diff service", () => {
     );
     expect(unsafe.kind).toBe("unavailable");
     if (unsafe.kind === "unavailable") expect(unsafe.reason).toBe("unsafe-path");
+  }, 20_000);
+
+  it("computes whole-thread change summary and inline diff across turns via CheckpointCoordinator", async () => {
+    const { CheckpointLedger } = await import("../src/main/checkpointLedger");
+    const { CheckpointCoordinator } = await import("../src/main/checkpointTurns");
+    const dir = mkRepo();
+    writeFileSync(join(dir, "tracked.txt"), "base line\n");
+    commitAll(dir);
+    const r = rig({ repoDir: dir });
+    r.threads[0]!.messages = [];
+    const coord = new CheckpointCoordinator({
+      service: r.service,
+      ledger: new CheckpointLedger(join(r.dataRoot, "checkpoints"), r.dataRoot),
+      paths: r.paths,
+      projects: () => r.engine.snapshot().projects,
+      threads: () => r.threads,
+      emit: () => {},
+    });
+
+    r.threads[0]!.turn = {
+      id: r.turnId,
+      threadId: r.threadId,
+      status: "running",
+      seq: 0,
+      startedAt: 1,
+      assistantMessageId: "m1",
+    };
+    expect(await coord.beginTurn(r.threads[0]!, r.turnId)).toBe(true);
+    writeFileSync(join(dir, "tracked.txt"), "base line\ncheckpoint line\n");
+    writeFileSync(join(dir, "created.txt"), "created\n");
+    coord.recordEdits(r.turnId, ["tracked.txt", "created.txt"]);
+    r.threads[0]!.turn = null;
+    r.threads[0]!.messages.push({
+      id: "m1",
+      role: "assistant",
+      content: "done",
+      status: "done",
+      ts: 2,
+      turnId: r.turnId,
+    });
+    coord.turnEnded(r.threadId, r.turnId, "done");
+
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      if (coord.list(r.threadId).some((x) => x.turnId === r.turnId && x.status === "complete")) break;
+      await new Promise((res) => setTimeout(res, 25));
+    }
+    // Mutate worktree after end: summary and diff still come from stored blobs.
+    writeFileSync(join(dir, "tracked.txt"), "post-turn external edit\n");
+
+    const sum = await coord.threadChangeSummary(r.threadId);
+    expect(sum).not.toBeNull();
+    expect(sum!.files).toEqual([
+      { path: "tracked.txt", additions: 1, deletions: 0, binary: false },
+      { path: "created.txt", additions: 0, deletions: 0, binary: false, reason: "base-unknown" },
+    ]);
+    expect(sum!.additions).toBe(1);
+    expect(sum!.deletions).toBe(0);
+
+    const diff = await coord.threadDiff(r.threadId, "tracked.txt");
+    expect(diff.kind).toBe("text");
+    if (diff.kind === "text") {
+      expect(diff.patch).toContain("+checkpoint line");
+      expect(diff.patch).not.toContain("post-turn external edit");
+    }
+    await coord.dispose();
   }, 20_000);
 });

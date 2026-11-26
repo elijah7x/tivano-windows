@@ -189,6 +189,7 @@ export interface CheckpointDeps {
 export class CheckpointService {
   private readonly store: CheckpointStore;
   private readonly gitExe: string;
+  private readonly platform: NodeJS.Platform;
   private readonly runner: GitRunner;
   private readonly gitHome: string;
   private readonly viewRoot: string;
@@ -201,6 +202,7 @@ export class CheckpointService {
 
   constructor(private deps: CheckpointDeps) {
     this.gitExe = deps.gitExe ?? "/usr/bin/git";
+    this.platform = deps.platform ?? process.platform;
     this.runner = deps.runner ?? makeGitRunner(this.gitExe);
     this.gitHome = join(deps.dataRoot, "git-home");
     this.viewRoot = join(deps.dataRoot, "ckpt-views");
@@ -245,7 +247,10 @@ export class CheckpointService {
   }
 
   private envFor(extra?: Record<string, string>): Record<string, string> {
-    return gitChildEnv(this.gitHome, extra);
+    return gitChildEnv(this.gitHome, extra, {
+      platform: this.platform,
+      executable: this.gitExe,
+    });
   }
 
   // ---- operation machinery ----------------------------------------------------
@@ -428,8 +433,12 @@ export class CheckpointService {
     let grant = this.gate(op);
 
     const runOnce: RunGit = (args, o) => this.runOp(op, args, o);
-    const probeOut = await probeRepo(grant.directory, this.gitHome, runOnce, (x) =>
-      this.envFor(x),
+    const probeOut = await probeRepo(
+      grant.directory,
+      this.gitHome,
+      runOnce,
+      (x) => this.envFor(x),
+      { platform: this.platform },
     );
     this.gate(op);
     if (probeOut.kind === "not-repository")
@@ -910,8 +919,12 @@ export class CheckpointService {
   > {
     const unavailable = (r: string) => ({ kind: "unavailable" as const, reason: r });
     const runOnce: RunGit = (args, o) => this.runOp(op, args, o);
-    const probeOut = await probeRepo(grant.directory, this.gitHome, runOnce, (x) =>
-      this.envFor(x),
+    const probeOut = await probeRepo(
+      grant.directory,
+      this.gitHome,
+      runOnce,
+      (x) => this.envFor(x),
+      { platform: this.platform },
     );
     this.gate(op);
     if (probeOut.kind !== "ok" || !probeOut.probe)
