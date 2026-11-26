@@ -1232,7 +1232,16 @@ describe("P2-62 Hydra finish-signal & unread suppression (frozen AppModel.turnFi
     );
 
     // Disable Hydra globally while two delegations sit in hydraWaiting.
+    // They share the held head's batch, so that batch's bookkeeping must
+    // survive the queue drop and settle only when the real head reports.
+    const e = engine as any;
+    const mixedBatch = e.hydraWaiting.get(lead.id)![0]!.batchId as string;
+    expect(e.hydraBatchRequest.has(mixedBatch)).toBe(true);
+    expect(e.hydraBatchGen.has(mixedBatch)).toBe(true);
     engine.setSettings({ hydraEnabled: false });
+    expect(e.hydraWaiting.get(lead.id) ?? []).toHaveLength(0);
+    expect(e.hydraBatchRequest.has(mixedBatch)).toBe(true);
+    expect(e.hydraBatchGen.has(mixedBatch)).toBe(true);
     engine.stopHydraHead(heads(engine, lead.id)[0]!.id);
 
     await waitFor(() =>
@@ -1242,6 +1251,13 @@ describe("P2-62 Hydra finish-signal & unread suppression (frozen AppModel.turnFi
     );
     await waitFor(() => thread(engine, lead.id).turn?.status === "done");
     expect(heads(engine, lead.id)).toHaveLength(1);
+    expect(e.hydraBatchRequest.has(mixedBatch)).toBe(false);
+    expect(e.hydraBatchGen.has(mixedBatch)).toBe(false);
+    expect(thread(engine, lead.id).hydraJobs?.find((j) => j.id === mixedBatch)).toMatchObject({
+      isOpen: false,
+      ending: "stopped",
+      merge: "nothing",
+    });
 
     const afterReport = signals.filter((s) => s.threadId === lead.id).at(-1);
     expect(afterReport).toMatchObject({
