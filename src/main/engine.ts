@@ -627,6 +627,9 @@ export class Engine {
   /** Codex runtime status for AppInfo — supplied by bootstrap (index.ts)
    *  because it owns the resolved CodexRuntimeConfig. */
   codexInfo?: CodexInfo;
+  /** P2-51: OS system accent color (6-char uppercase RGB hex or null)
+   *  supplied and kept current by the Electron main bootstrap. */
+  systemAccentColor: string | null = null;
 
   /** Read-only descriptor for external surfaces (local control). */
   get providerDescriptor() {
@@ -657,6 +660,7 @@ export class Engine {
       ...(this.codexInfo ? { codex: this.codexInfo } : {}),
       ...(this.recoveredFrom ? { recoveredFrom: this.recoveredFrom } : {}),
       ...(whatsNew ? { whatsNew } : {}),
+      systemAccentColor: this.systemAccentColor,
       ...(typeof TIVANO_TERMINAL_CANDIDATE !== "undefined" &&
           TIVANO_TERMINAL_CANDIDATE === true
         ? { terminalCandidate: true as const }

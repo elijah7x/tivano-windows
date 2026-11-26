@@ -126,6 +126,20 @@ describe("P2-51 accent colors & appearance toggle", () => {
     );
     expect(zhSplitDark).toContain('title="深色"');
     expect(zhSplitDark).toContain('data-appearance-mode="dark"');
+
+    const osAccentPicker = renderInLang(
+      "en",
+      createElement(ThemePicker, {
+        value: "system",
+        appearanceMode: "light",
+        osDark: false,
+        systemAccentHex: "D13438",
+        onChange: () => {},
+      }),
+    );
+    expect(osAccentPicker).toContain("System Accent");
+    expect(osAccentPicker).toContain("#D13438");
+    expect(osAccentPicker).not.toContain("#0A6DFF");
   });
 });
 

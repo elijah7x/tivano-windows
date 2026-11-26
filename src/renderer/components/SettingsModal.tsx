@@ -280,6 +280,7 @@ export function SettingsModal(props: {
                 value={settings.theme}
                 appearanceMode={settings.appearanceMode ?? "system"}
                 osDark={osDark}
+                systemAccentHex={info.systemAccentColor ?? null}
                 onChange={setTheme}
               />
             </div>
