@@ -1,15 +1,16 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-30.
-// F33 local control — real Unix-socket round trips: the frozen double
-// gate, hello/welcome handshake, read queries, the write trio with the
-// ticket ledger (dedupe/conflict/stale), and refusal surface.
+// F33 / P2-23 local control — real Unix-socket round trips: the
+// externalControlEnabled gate (migrated out of Alpha), hello/welcome
+// handshake, read queries, the write trio with the ticket ledger
+// (dedupe/conflict/stale), and refusal surface.
 
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, createServer, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { Store } from "../src/main/store";
+import { Store, emptyStore } from "../src/main/store";
 import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
 import { LocalControlService } from "../src/main/localControl";
@@ -110,12 +111,12 @@ const socketBindable = await new Promise<boolean>((resolve) => {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const enabled = (e: Engine) =>
-  e.setSettings({ alphaEnabled: true, externalControlEnabled: true });
+  e.setSettings({ externalControlEnabled: true });
 const ticket = (svc: LocalControlService) =>
   `${svc.instance}/${randomUUID()}/${Date.now()}`;
 
 describe("local control (F33)", () => {
-  it("stays silent until BOTH gates are on, and stops when a gate closes", async () => {
+  it("listens solely on externalControlEnabled; alphaEnabled no longer gates it", async () => {
     const { engine, svc, sock } = rig();
     svc.refreshListening();
     expect(svc.listening).toBe(false);
@@ -123,16 +124,117 @@ describe("local control (F33)", () => {
     engine.setSettings({ alphaEnabled: true });
     svc.refreshListening();
     expect(svc.listening).toBe(false);
-    enabled(engine);
+    expect(existsSync(sock)).toBe(false);
+    engine.setSettings({ alphaEnabled: false, externalControlEnabled: true });
     svc.refreshListening();
     expect(svc.listening).toBe(true);
-    await wait(30);
-    expect(existsSync(sock)).toBe(true);
+    if (socketBindable) {
+      await wait(30);
+      expect(existsSync(sock)).toBe(true);
+    }
+    // Toggling Alpha while externalControlEnabled is on does not stop listening.
+    engine.setSettings({ alphaEnabled: true });
+    svc.refreshListening();
+    expect(svc.listening).toBe(true);
+    engine.setSettings({ alphaEnabled: false });
+    svc.refreshListening();
+    expect(svc.listening).toBe(true);
+    // Turning externalControlEnabled off closes the listener and unlinks the socket.
     engine.setSettings({ externalControlEnabled: false });
     svc.refreshListening();
     await wait(30);
     expect(svc.listening).toBe(false);
     expect(existsSync(sock)).toBe(false);
+  });
+
+  it("migrates older stores once by keeping (alphaEnabled && externalControlEnabled)", async () => {
+    const cases: Array<{
+      name: string;
+      alphaEnabled?: boolean;
+      externalControlEnabled?: boolean;
+      expected: boolean;
+    }> = [
+      { name: "alpha off + control on -> off", alphaEnabled: false, externalControlEnabled: true, expected: false },
+      { name: "alpha absent + control on -> off", externalControlEnabled: true, expected: false },
+      { name: "alpha on + control on -> on", alphaEnabled: true, externalControlEnabled: true, expected: true },
+      { name: "alpha on + control off -> off", alphaEnabled: true, externalControlEnabled: false, expected: false },
+      { name: "alpha off + control off -> off", alphaEnabled: false, externalControlEnabled: false, expected: false },
+      { name: "both absent -> off", expected: false },
+    ];
+
+    for (const c of cases) {
+      const root = freshRoot();
+      const doc = emptyStore() as unknown as {
+        schemaVersion: number;
+        projects: unknown[];
+        threads: unknown[];
+        settings: Record<string, unknown>;
+        ui: { selectedThreadId: null };
+      };
+      delete doc.settings.controlLeftAlpha;
+      if (c.alphaEnabled !== undefined) doc.settings.alphaEnabled = c.alphaEnabled;
+      if (c.externalControlEnabled !== undefined)
+        doc.settings.externalControlEnabled = c.externalControlEnabled;
+      writeFileSync(join(root, "store.json"), JSON.stringify(doc));
+
+      const store = new Store(root);
+      store.open();
+      const engine = new Engine(store, new MockProvider({ tickMs: 1 }), root, "t");
+      const svc = new LocalControlService(engine, root, "dev");
+      services.push(svc);
+      const sock = join(root, "control", "control.sock");
+      svc.refreshListening();
+
+      expect(store.state.settings.externalControlEnabled, c.name).toBe(c.expected);
+      expect(store.state.settings.controlLeftAlpha, c.name).toBe(true);
+      if (c.expected) {
+        expect(svc.listening, c.name).toBe(true);
+        if (socketBindable) {
+          await wait(30);
+          expect(existsSync(sock), c.name).toBe(true);
+        }
+      } else {
+        expect(svc.listening, c.name).toBe(false);
+        expect(existsSync(sock), c.name).toBe(false);
+      }
+
+      // Persisting and reopening never re-runs the migration even if Alpha is off.
+      svc.dispose();
+      store.close();
+      const persisted = JSON.parse(readFileSync(join(root, "store.json"), "utf8")) as {
+        settings: Record<string, unknown>;
+      };
+      expect(persisted.settings.controlLeftAlpha, c.name).toBe(true);
+      expect(persisted.settings.externalControlEnabled, c.name).toBe(c.expected);
+
+      const store2 = new Store(root);
+      store2.open();
+      expect(store2.state.settings.externalControlEnabled, c.name).toBe(c.expected);
+      store2.close();
+    }
+
+    // Already-migrated store (controlLeftAlpha: true) keeps externalControlEnabled on when Alpha is off.
+    const root = freshRoot();
+    const doc = emptyStore();
+    doc.settings.alphaEnabled = false;
+    doc.settings.externalControlEnabled = true;
+    doc.settings.controlLeftAlpha = true;
+    writeFileSync(join(root, "store.json"), JSON.stringify(doc));
+
+    const store = new Store(root);
+    store.open();
+    const engine = new Engine(store, new MockProvider({ tickMs: 1 }), root, "t");
+    const svc = new LocalControlService(engine, root, "dev");
+    services.push(svc);
+    svc.refreshListening();
+    expect(store.state.settings.externalControlEnabled).toBe(true);
+    expect(svc.listening).toBe(true);
+    if (socketBindable) {
+      await wait(30);
+      expect(existsSync(join(root, "control", "control.sock"))).toBe(true);
+    }
+    svc.dispose();
+    store.close();
   });
 
   it("handshake enforces version, edition and instance", async () => {

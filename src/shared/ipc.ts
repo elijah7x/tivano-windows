@@ -505,7 +505,8 @@ export const requestValidators = {
     // F27: whole overrides map (id → chord|null); structural shape only —
     // the refusal/conflict rules live in the recorder + shortcut model.
     shortcuts: vOptional(vShortcuts),
-    // F33: double gate — both must be true before the socket listens.
+    // P2-23: local control follows externalControlEnabled alone;
+    // alphaEnabled is kept for backward compatibility.
     alphaEnabled: vOptional(vBoolean),
     externalControlEnabled: vOptional(vBoolean),
     remoteMCPEnabled: vOptional(vBoolean),

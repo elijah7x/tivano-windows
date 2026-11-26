@@ -5971,6 +5971,7 @@ html[data-paused="1"] .md-veil { animation: none !important; }
 
 /* ---- P2-25: Connections / Remote MCP ------------------------------ */
 .connections-section { margin-top: 8px; }
+.local-control-section { margin-top: 14px; }
 .remote-mcp-section { margin-top: 14px; }
 .remote-mcp-url-field { margin-top: 6px; }
 .remote-mcp-url-row { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }

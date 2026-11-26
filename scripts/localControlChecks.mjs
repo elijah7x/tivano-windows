@@ -84,10 +84,16 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   // ---- gates ----------------------------------------------------------
   verify("LC-01 default gates off, no socket", !(await status()).enabled && !existsSync(sock));
   await page.evaluate(() =>
-    window.tivano.invoke("settings:set", { alphaEnabled: true, externalControlEnabled: true }));
+    window.tivano.invoke("settings:set", { alphaEnabled: true, externalControlEnabled: false }));
+  await wait(100);
+  const stAlphaOnly = await status();
+  verify("LC-01a alpha alone keeps socket closed",
+    !stAlphaOnly.enabled && !stAlphaOnly.listening && !existsSync(sock), stAlphaOnly);
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { alphaEnabled: false, externalControlEnabled: true }));
   await wait(150);
   const st1 = await status();
-  verify("LC-02 both gates on -> listening", st1.enabled && st1.listening === true, st1);
+  verify("LC-02 externalControlEnabled alone -> listening", st1.enabled && st1.listening === true, st1);
   verify("LC-03 socket file exists", existsSync(sock));
 
   // ---- handshake -------------------------------------------------------
@@ -302,8 +308,12 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   await page.waitForSelector(".modal", { timeout: 10000 });
   await page.locator('[data-settings-page="connections"]').click();
   await page.waitForSelector(".control-status", { timeout: 10000 });
-  const alphaSwitch = page.locator('.choice-row button[role="switch"]', { hasText: "Alpha" }).first();
-  verify("LC-23 Alpha switch rendered", (await alphaSwitch.count()) === 1);
+  const alphaSwitch = page.locator('.choice-row button[role="switch"]', { hasText: "Alpha" });
+  const alphaHeading = page.locator('[data-page="connections"] h3, [data-page="connections"] h4', { hasText: "Alpha" });
+  verify("LC-23 Alpha section removed; Local control rendered under Connections",
+    (await alphaSwitch.count()) === 0 &&
+    (await alphaHeading.count()) === 0 &&
+    (await page.locator('[data-testid="local-control-section"]').count()) === 1);
   const statusLine = await page.locator('[data-testid="local-control-status"]').textContent();
   verify("LC-24 status shows listening", statusLine?.includes("Listening for this account only"), statusLine);
   const localSwitch = page.locator('.choice-row button[role="switch"]', { hasText: "Local control" }).first();

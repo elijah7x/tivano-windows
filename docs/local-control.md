@@ -1,10 +1,9 @@
 # Local control (protocol v1, edition `dev`)
 
 Local control drives **an already-running Tivano Windows**. It is off by
-default and listens only while **both** gates are on: Settings → Alpha and
-the separate Local control switch. Closing either gate stops the listener
-and drops every connection; accepted turns keep running — the gate never
-cancels work. Approvals and questions stay in the app: clients can observe
+default and listens only while the Local control switch in Settings ›
+Connections is on. Closing the gate stops the listener and drops every
+connection; accepted turns keep running — the gate never cancels work. Approvals and questions stay in the app: clients can observe
 waiting but cannot approve, answer, log in or grant permissions.
 
 This is a **same-account capability**, not protection against malicious

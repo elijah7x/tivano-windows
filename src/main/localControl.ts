@@ -108,9 +108,9 @@ const hashPayload = (v: unknown) =>
 const isUuid = (s: unknown): s is string =>
   typeof s === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
-/** One app's local-control endpoint. The socket only exists while BOTH
- *  gates are on; closing either gate closes listener and connections
- *  (accepted turns keep running — the gate never cancels work). */
+/** One app's local-control endpoint. The socket only exists while
+ *  `externalControlEnabled` is on; closing it closes listener and
+ *  connections (accepted turns keep running — the gate never cancels work). */
 export class LocalControlService {
   readonly instance = randomUUID();
   private server: Server | undefined;
@@ -137,10 +137,10 @@ export class LocalControlService {
   }
 
   /** Frozen refreshListening — called on settings changes, library load
-   *  and shutdown. Gates closed → full stop. */
+   *  and shutdown. Gate closed → full stop. */
   refreshListening(): void {
     const s = this.engine.snapshot().settings;
-    const enabled = s.alphaEnabled === true && s.externalControlEnabled === true;
+    const enabled = s.externalControlEnabled === true;
     if (!enabled) {
       this.stop();
       return;
@@ -244,7 +244,6 @@ export class LocalControlService {
   }
 
   private welcome() {
-    const s = this.engine.snapshot().settings;
     return {
       version: VERSION,
       edition: this.edition,
@@ -263,7 +262,6 @@ export class LocalControlService {
       operationRetentionSeconds: 3600,
       maxOperations: 256,
       restartSemantics: "unknown_after_restart_no_replay",
-      alphaEnabled: s.alphaEnabled === true,
     };
   }
 
@@ -294,7 +292,7 @@ export class LocalControlService {
   ): Promise<Record<string, unknown>> {
     const s = this.engine.snapshot().settings;
     if (source === "local") {
-      if (!(s.alphaEnabled === true && s.externalControlEnabled === true) || !this.listening)
+      if (s.externalControlEnabled !== true || !this.listening)
         fail("disabled");
     } else {
       if (s.remoteMCPEnabled !== true || this.remoteListeningCheck?.() !== true)
@@ -322,7 +320,7 @@ export class LocalControlService {
       };
       if (typeof req.id === "string") id = req.id;
       const s = this.engine.snapshot().settings;
-      if (!(s.alphaEnabled === true && s.externalControlEnabled === true))
+      if (s.externalControlEnabled !== true)
         fail("disabled");
       if (req.instance !== this.instance) fail("instanceMismatch");
       if (this.active >= MAX_CONNECTIONS) fail("busy");
