@@ -2066,6 +2066,7 @@ export const fr: Record<string, string> = {
   "ChatGPT plan or API key": "Forfait ChatGPT ou clé API",
   "Synthetic provider": "Fournisseur synthétique",
   "Provider checklist": "Liste des fournisseurs",
+  "This task's parent is unavailable.": "La session parente de cette tâche n’est pas disponible.",
   // P1-36
   "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
     "Limite de sous-agents atteinte (%d)\n1 tâche est en file d’attente : %d sous-agents au maximum s’exécutent à la fois (Réglages › Hydra). Elle démarrera automatiquement dès qu’un sous-agent en cours aura terminé.",

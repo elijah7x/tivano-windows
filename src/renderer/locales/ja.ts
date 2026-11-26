@@ -2066,6 +2066,7 @@ export const ja: Record<string, string> = {
   "ChatGPT plan or API key": "ChatGPT プランまたは API キー",
   "Synthetic provider": "合成プロバイダー",
   "Provider checklist": "プロバイダー一覧",
+  "This task's parent is unavailable.": "このタスクの親セッションは利用できません。",
   // P1-36
   "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
     "サブエージェントの同時実行上限（%d）に達しました\n1 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です（設定 › Hydra）。実行中のサブエージェントが完了すると自動的に送信されます。",

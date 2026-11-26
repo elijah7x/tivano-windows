@@ -2265,6 +2265,7 @@ const zhHans: Record<string, string> = {
   "ChatGPT plan or API key": "ChatGPT 套餐或 API 密钥",
   "Synthetic provider": "合成提供方",
   "Provider checklist": "服务商列表",
+  "This task's parent is unavailable.": "此任务的父会话不可用。",
   // P2-02
   "Context may be incomplete after switching providers": "切换服务商后，上下文可能不完整",
   "Undo": "撤销",
