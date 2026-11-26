@@ -2076,4 +2076,18 @@ export const fr: Record<string, string> = {
     "Limite de sous-agents atteinte (%d)\n1 tâche est en file d’attente : %d sous-agents au maximum s’exécutent à la fois. Elle démarrera automatiquement dès qu’un sous-agent en cours aura terminé.",
   "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "Limite de sous-agents atteinte (%d)\n%d tâches sont en file d’attente : %d sous-agents au maximum s’exécutent à la fois. Elles démarreront automatiquement à mesure que les sous-agents en cours termineront.",
+  // P2-02
+  "Context may be incomplete after switching providers": "Le contexte peut être incomplet après un changement de fournisseur",
+  "Undo": "Annuler",
+  "Back to %@": "Retour à %@",
+  "Continued with %@": "Poursuivi avec %@",
+  "Provider — applies to the next turn": "Fournisseur — s'applique au prochain tour",
+  "Hydra pairs": "Paires Hydra",
+  "sub-agents cannot switch providers": "Les sous-agents ne peuvent pas changer de fournisseur",
+  "switch providers after the running turn finishes": "Changez de fournisseur une fois le tour en cours terminé",
+  "resolve the pending request before switching providers": "Traitez la demande en attente avant de changer de fournisseur",
+  "switch providers when the chat is idle": "Changez de fournisseur lorsque la discussion est inactive",
+  "switch providers when no sub-agents are at work": "Changez de fournisseur lorsqu'aucun sous-agent n'est actif",
+  'provider "%@" is not available in this launch': 'Le fournisseur « %@ » n’est pas disponible dans cette session',
+  'provider "%@" is not available': 'Le fournisseur « %@ » n’est pas disponible',
 };

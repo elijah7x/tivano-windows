@@ -1345,6 +1345,39 @@ button.primary:hover {
   font-size: 14px;
   padding: 0 4px;
 }
+/* P2-02: staged provider switch warning tab with Undo above composer input. */
+.provider-switch-tab {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.05));
+  font-size: 12px;
+}
+.provider-switch-text {
+  flex: 1;
+  color: var(--text-2, var(--text));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.provider-switch-undo {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface, transparent);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 8px;
+}
+.provider-switch-undo:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 .cmd-chip {
   display: inline-flex;
   align-items: center;

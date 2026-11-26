@@ -32,6 +32,7 @@ import {
   legacyAppearanceOfTheme,
   migrateLegacyTheme,
   type ChatThread,
+  type PendingProviderSwitch,
   type StoreFile,
   type ThreadContinuation,
 } from "../shared/types";
@@ -229,6 +230,44 @@ const vHydraJobSummary = vObject({
   merge: vOptional(vEnum(["merged", "nothing", "failed", "skipped"] as const)),
 });
 
+const vContinuation: Validator<ThreadContinuation | undefined> = (v) => {
+  if (v === undefined) return undefined;
+  const o = vObject({
+    sourceThreadId: vNonEmptyString(120),
+    sourceTitle: vNonEmptyString(500),
+    createdAt: vTs,
+    context: (x) => {
+      const s = vString(x);
+      if (s.length > 200_000)
+        throw new ValidationError("string length out of range");
+      return s;
+    },
+    isTruncated: vBoolean,
+    sent: vBoolean,
+    isProviderHandoff: vOptional(vBoolean),
+  })(v);
+  return o as ThreadContinuation;
+};
+
+const vPendingProviderSwitch: Validator<PendingProviderSwitch | undefined> = (v) => {
+  if (v === undefined) return undefined;
+  return vObject({
+    provider: vEnum(["mock", "synthetic-stdio", "codex"] as const),
+    codexModel: vOptional(vNonEmptyString(200)),
+    codexEffort: vOptional(vNonEmptyString(100)),
+    codexServiceTier: vOptional(vNonEmptyString(100)),
+    runtimeMode: vOptional(
+      vEnum(["supervised", "autoAcceptEdits", "auto", "fullAccess"] as const),
+    ),
+    interactionMode: vOptional(vEnum(["build", "plan"] as const)),
+    hydraEnabled: vOptional(vBoolean),
+    hydraPairId: vOptional(vNonEmptyString(120)),
+    subagentMode: vOptional(vEnum(["same", "preset", "adaptive"] as const)),
+    providerThread: vOptional(vProviderThread),
+    forwardedContinuation: vContinuation,
+  })(v) as PendingProviderSwitch;
+};
+
 const vThread = vObject({
   id: vNonEmptyString(120),
   projectId: vNullable(vNonEmptyString(120)),
@@ -238,6 +277,8 @@ const vThread = vObject({
   messages: vArray(vMessage, PERSIST_MAX_MESSAGES),
   turn: vNullable(vTurn),
   sessionGrants: vArray(vString, PERSIST_MAX_GRANTS),
+  provider: vOptional(vEnum(["mock", "synthetic-stdio", "codex"] as const)),
+  pendingProviderSwitch: vPendingProviderSwitch,
   providerThread: vOptional(vProviderThread),
   // Optional so every pre-F17 store loads verbatim. Structural check
   // only — the provider decides whether an id is usable.
@@ -277,23 +318,7 @@ const vThread = vObject({
   // F11: thread-bound worktree directory — optional for pre-F11 stores.
   // The value is a path main created; re-verified live before any use.
   worktreeDir: vOptional(vNonEmptyString(2048)),
-  continuation: vOptional((v): ThreadContinuation | undefined => {
-    if (v === undefined) return undefined;
-    const o = vObject({
-      sourceThreadId: vNonEmptyString(120),
-      sourceTitle: vNonEmptyString(500),
-      createdAt: vTs,
-      context: (x) => {
-        const s = vString(x);
-        if (s.length > 200_000)
-          throw new ValidationError("string length out of range");
-        return s;
-      },
-      isTruncated: vBoolean,
-      sent: vBoolean,
-    })(v);
-    return o as ThreadContinuation;
-  }),
+  continuation: vContinuation,
   runtimeMode: vOptional(
     vEnum(["supervised", "autoAcceptEdits", "auto", "fullAccess"] as const),
   ),
@@ -711,6 +736,8 @@ const vThreadHead = vObject({
   messages: vOptional(vArray(vMessage, PERSIST_MAX_MESSAGES)),
   turn: vOptional(vNullable(vTurn)),
   sessionGrants: vArray(vString, PERSIST_MAX_GRANTS),
+  provider: vOptional(vEnum(["mock", "synthetic-stdio", "codex"] as const)),
+  pendingProviderSwitch: vPendingProviderSwitch,
   providerThread: vOptional(vProviderThread),
   codexModel: vOptional(vNonEmptyString(200)),
   codexEffort: vOptional(vNonEmptyString(100)),
@@ -745,23 +772,7 @@ const vThreadHead = vObject({
     }),
   ),
   worktreeDir: vOptional(vNonEmptyString(2048)),
-  continuation: vOptional((v): ThreadContinuation | undefined => {
-    if (v === undefined) return undefined;
-    const o = vObject({
-      sourceThreadId: vNonEmptyString(120),
-      sourceTitle: vNonEmptyString(500),
-      createdAt: vTs,
-      context: (x) => {
-        const s = vString(x);
-        if (s.length > 200_000)
-          throw new ValidationError("string length out of range");
-        return s;
-      },
-      isTruncated: vBoolean,
-      sent: vBoolean,
-    })(v);
-    return o as ThreadContinuation;
-  }),
+  continuation: vContinuation,
   runtimeMode: vOptional(
     vEnum(["supervised", "autoAcceptEdits", "auto", "fullAccess"] as const),
   ),

@@ -106,8 +106,11 @@ import type {
   FollowUpItem,
   GitCommitMessageResult,
   Message,
+  PendingProviderSwitch,
   Project,
   ProjectScript,
+  ProviderMode,
+  ProviderSummary,
   ProviderThreadBinding,
   InteractionMode,
   RuntimeMode,
@@ -360,6 +363,7 @@ export class Engine {
   private accessTick = 0;
 
   private readonly changelogText: string | undefined;
+  private readonly providers = new Map<ProviderMode, ProviderAdapter>();
 
   constructor(
     private readonly store: Store,
@@ -368,7 +372,14 @@ export class Engine {
     private readonly appVersion: string = "0.1.0",
     private readonly paths?: ProjectRuntimePaths,
     changelogMarkdown?: string,
+    extraProviders: readonly ProviderAdapter[] = [],
   ) {
+    this.providers.set(provider.descriptor.mode, provider);
+    for (const p of extraProviders) {
+      if (!this.providers.has(p.descriptor.mode)) {
+        this.providers.set(p.descriptor.mode, p);
+      }
+    }
     this.tokenLedger = new TokenLedger(this.dataRoot);
     this.changelogText =
       changelogMarkdown !== undefined ? changelogMarkdown : readBundledChangelog();
@@ -636,6 +647,45 @@ export class Engine {
     return this.provider.descriptor;
   }
 
+  private adapterFor(thread: Pick<ChatThread, "provider">): ProviderAdapter {
+    return (
+      this.providers.get(thread.provider ?? this.provider.descriptor.mode) ??
+      this.provider
+    );
+  }
+
+  private requireAdapterFor(thread: Pick<ChatThread, "provider">): ProviderAdapter {
+    const mode = thread.provider ?? this.provider.descriptor.mode;
+    const adapter = this.providers.get(mode);
+    if (!adapter)
+      throw new EngineError(`provider "${mode}" is not available in this launch`);
+    return adapter;
+  }
+
+  private endAllThreadSessions(threadId: string): boolean {
+    let ended = false;
+    for (const p of this.providers.values()) {
+      if (p.endSession) {
+        p.endSession(threadId);
+        ended = true;
+      }
+    }
+    return ended;
+  }
+
+  private providerDisplayName(mode: ProviderMode): string {
+    return mode === "codex"
+      ? "Codex"
+      : mode === "synthetic-stdio"
+        ? "Synthetic stdio"
+        : "Mock Provider";
+  }
+
+  private providerModelLabel(adapter: ProviderAdapter, model?: string): string {
+    const base = this.providerDisplayName(adapter.descriptor.mode);
+    return model ? `${base} · ${model}` : base;
+  }
+
   get info(): AppInfo {
     const desc = this.provider.descriptor;
     const whatsNew = buildWhatsNewInfo(
@@ -654,6 +704,14 @@ export class Engine {
       worktreesDir: join(this.dataRoot, "worktrees"),
       mock: true, // every current provider is synthetic
       mode: desc.mode,
+      providers: [...this.providers.values()].map(
+        (p): ProviderSummary => ({
+          id: p.descriptor.id,
+          mode: p.descriptor.mode,
+          label: p.descriptor.label,
+          ...(p.descriptor.compact ? { supportsCompact: true as const } : {}),
+        }),
+      ),
       ...(desc.compact ? { supportsCompact: true as const } : {}),
       realCli: { status: "not-configured" },
       ...(desc.runtimeInfo ? { syntheticRuntime: desc.runtimeInfo } : {}),
@@ -898,8 +956,7 @@ export class Engine {
       if (!released) continue;
       if (!t.isArchived) remainingOverLimit -= 1;
       releasedThreads += 1;
-      if (this.provider.endSession) {
-        this.provider.endSession(t.id);
+      if (this.endAllThreadSessions(t.id)) {
         stoppedSessions += 1;
       }
     }
@@ -1126,7 +1183,7 @@ export class Engine {
       this.dropPendingChunk(tid);
       this.threadAccessOrder.delete(tid);
       this.handles.get(tid)?.cancel();
-      this.provider.endSession?.(tid);
+      this.endAllThreadSessions(tid);
     }
     this.emit({ type: "project-removed", projectId: id });
   }
@@ -1477,7 +1534,7 @@ export class Engine {
     this.threadAccessOrder.delete(id);
     this.handles.get(id)?.cancel();
     this.handles.delete(id);
-    this.provider.endSession?.(id);
+    this.endAllThreadSessions(id);
     this.checkpoints?.threadDeleted(id);
     this.pendingAttachments.delete(id);
     // F22: a deleted lead's runtime Hydra state dies with it — queued
@@ -1687,6 +1744,7 @@ export class Engine {
     // F05: pending draft attachments are consumed by the send — the
     // provider prompt gains the frozen "Attached files:" suffix while
     // the user message keeps the typed text plus display descriptors.
+    const adapter = this.requireAdapterFor(thread);
     const attached = this.pendingAttachments.get(threadId) ?? [];
     if (!text.trim() && attached.length === 0)
       throw new EngineError("an empty turn has nothing to send");
@@ -1697,6 +1755,33 @@ export class Engine {
           "\n\nAttached files:\n" +
           attached.map((a) => `- ${a.path}`).join("\n");
     this.pendingAttachments.delete(threadId);
+
+    // P2-02: capture recent conversation BEFORE pushing the new turn's
+    // messages so the handoff prompt carries prior history only.
+    if (
+      opts?.authored !== false &&
+      opts?.hydraBrief !== true &&
+      thread.pendingProviderSwitch &&
+      (thread.continuation?.isProviderHandoff !== true || thread.continuation.sent)
+    ) {
+      const priorContinuation =
+        thread.continuation && !thread.continuation.isProviderHandoff
+          ? thread.continuation
+          : thread.pendingProviderSwitch.forwardedContinuation;
+      const handoff = captureContinuation(
+        thread.messages,
+        thread.id,
+        thread.title,
+        priorContinuation,
+      );
+      if (handoff.context.length > 0) {
+        if (priorContinuation) {
+          thread.pendingProviderSwitch.forwardedContinuation = priorContinuation;
+        }
+        handoff.isProviderHandoff = true;
+        thread.continuation = handoff;
+      }
+    }
 
     const now = Date.now();
     const turn: Turn = {
@@ -1782,7 +1867,7 @@ export class Engine {
     // standalone ("Just chat") thread, its app-owned task workspace under
     // `<dataRoot>/task-workspaces/<ownerThreadId>`.
     let workspace: WorkspaceGrant | undefined;
-    if (this.provider.descriptor.mode !== "mock") {
+    if (adapter.descriptor.mode !== "mock") {
       if (!thread.projectId) {
         if (this.paths?.hasTaskWorkspaceRoot()) {
           try {
@@ -2027,7 +2112,7 @@ export class Engine {
               // stub the bind have no real dir to verify. Every real
               // provider fails honestly instead of writing into the
               // shared folder.
-              } else if (this.provider.descriptor.mode !== "mock") {
+              } else if (this.adapterFor(cur).descriptor.mode !== "mock") {
                 this.preProviderFail(
                   cur,
                   turn,
@@ -2198,12 +2283,11 @@ export class Engine {
       live.continuation && !live.continuation.sent ? live.continuation : null;
     if (pendingContinuation)
       wireText = continuationPrompt(pendingContinuation) + "\n\n" + wireText;
-    const hydraPolicy =
-      this.provider.descriptor.mode === "codex"
-        ? this.codexHydraPolicy(live)
-        : undefined;
+    const adapter = this.requireAdapterFor(live);
+    const isCodex = adapter.descriptor.mode === "codex";
+    const hydraPolicy = isCodex ? this.codexHydraPolicy(live) : undefined;
     try {
-      const handle = this.provider.start(
+      const handle = adapter.start(
         {
           prompt: wireText,
           threadId,
@@ -2219,7 +2303,7 @@ export class Engine {
           // defaultRuntimeMode, frozen default fullAccess).
           runtimeMode: live.runtimeMode ?? "supervised",
           interactionMode: live.interactionMode ?? "build",
-          ...(this.provider.descriptor.mode === "codex"
+          ...(isCodex
             ? {
                 ...(live.codexModel ? { model: live.codexModel } : {}),
                 ...(live.codexEffort ? { effort: live.codexEffort } : {}),
@@ -2267,7 +2351,38 @@ export class Engine {
           if (t) t.hasStartedTurn = true;
         });
       }
-      if (pendingContinuation) {
+      if (live.pendingProviderSwitch) {
+        const origin = live.pendingProviderSwitch;
+        if (origin.provider !== adapter.descriptor.mode) {
+          this.providers.get(origin.provider)?.endSession?.(threadId);
+        }
+        const takeoverText = `Continued with ${this.providerModelLabel(adapter, live.codexModel)}`;
+        this.store.update(() => {
+          const t = this.store.state.threads.find((x) => x.id === threadId);
+          if (!t) return;
+          const notice: Message = {
+            id: `codexnote-handoff-${randomUUID()}`,
+            role: "system",
+            content: boundedText(takeoverText),
+            status: "done",
+            ts: Date.now(),
+            kind: "notice",
+            noticeLevel: "info",
+          };
+          const turnIdx = t.messages.findIndex((m) => m.turnId === turn.id);
+          if (turnIdx >= 0) t.messages.splice(turnIdx, 0, notice);
+          else t.messages.push(notice);
+          if (t.continuation?.isProviderHandoff) {
+            if (origin.forwardedContinuation) t.continuation = origin.forwardedContinuation;
+            else delete t.continuation;
+          } else if (t.continuation && !t.continuation.sent) {
+            t.continuation.sent = true;
+          }
+          delete t.pendingProviderSwitch;
+          t.updatedAt = Date.now();
+        });
+        this.emit({ type: "thread-updated", thread: live });
+      } else if (pendingContinuation) {
         this.store.update(() => {
           const t = this.store.state.threads.find((x) => x.id === threadId);
           if (t?.continuation && !t.continuation.sent)
@@ -2320,6 +2435,18 @@ export class Engine {
     this.store.update(() => {
       thread.messages = thread.messages.filter((m) => m.turnId !== turn.id);
       if (thread.turn?.id === turn.id) thread.turn = null;
+      if (
+        thread.pendingProviderSwitch &&
+        thread.continuation?.isProviderHandoff === true &&
+        !thread.continuation.sent
+      ) {
+        if (thread.pendingProviderSwitch.forwardedContinuation) {
+          thread.continuation = thread.pendingProviderSwitch.forwardedContinuation;
+        } else {
+          delete thread.continuation;
+        }
+        delete thread.pendingProviderSwitch.forwardedContinuation;
+      }
       thread.messages.push({
         id: `codexnote-${turn.id}-${randomUUID()}`,
         role: "system",
@@ -2514,7 +2641,7 @@ export class Engine {
           : Math.round(this.quietStopMs / 60_000);
         this.appendNotice(
           thread,
-          `${this.provider.descriptor.label} sent nothing for ${minutes} minutes${toolRunning ? " while a tool ran" : ""}, so Tivano stopped the turn.`,
+          `${this.adapterFor(thread).descriptor.label} sent nothing for ${minutes} minutes${toolRunning ? " while a tool ran" : ""}, so Tivano stopped the turn.`,
           "error",
           turn.id,
         );
@@ -2914,7 +3041,8 @@ export class Engine {
     if (!option) throw new EngineError("unknown approval option");
 
     const approved = option.role === "approve";
-    const isCodex = this.provider.descriptor.mode === "codex";
+    const threadMode = this.adapterFor(thread).descriptor.mode;
+    const isCodex = threadMode === "codex";
     if (isCodex && approved) {
       // Write-acknowledged approval: the answer commits ONLY when the
       // provider confirms the response bytes hit the wire. Until then the
@@ -2935,7 +3063,7 @@ export class Engine {
     approval.resolvedOptionId = optionId;
     // Session/always grants exist only in the Mock's identity. Synthetic
     // stdio approvals are once/deny and never mint a persisted grant.
-    const isMock = this.provider.descriptor.mode === "mock";
+    const isMock = threadMode === "mock";
     if (isMock && approved && option.scope === "session" && !thread.sessionGrants.includes(MOCK_ACTION_ID))
       thread.sessionGrants.push(MOCK_ACTION_ID);
     if (isMock && approved && option.scope === "always") {
@@ -3348,6 +3476,259 @@ export class Engine {
       this.clearLimitWait(thread.id);
   }
 
+  private assertCanSwitchProvider(thread: ChatThread): void {
+    if (thread.hydraHead)
+      throw new EngineError("sub-agents cannot switch providers");
+    if (
+      thread.turn &&
+      (thread.turn.status === "running" || thread.turn.status === "waiting-approval")
+    )
+      throw new EngineError("switch providers after the running turn finishes");
+    if (
+      thread.turn?.approval?.status === "pending" ||
+      thread.turn?.question?.status === "pending"
+    )
+      throw new EngineError("resolve the pending request before switching providers");
+    if (this.revertingThreads.has(thread.id) || this.pendingSends.has(thread.id))
+      throw new EngineError("switch providers when the chat is idle");
+    if (
+      this.hydraLeadBusy(thread.id) ||
+      (this.hydraWaiting.get(thread.id)?.length ?? 0) > 0
+    )
+      throw new EngineError("switch providers when no sub-agents are at work");
+  }
+
+  /**
+   * P2-02: Switch a thread to another provider's model or Hydra pair.
+   * Before any turn has started, updates directly. On a started chat,
+   * snapshots the origin (including providerThread) into
+   * `pendingProviderSwitch` without tearing down the old session so Undo
+   * restores everything intact until the next send starts the new session.
+   */
+  setThreadProvider(
+    threadId: string,
+    targetProvider: ProviderMode,
+    opts?: {
+      model?: string | null;
+      effort?: string | null;
+      fastTier?: string | null;
+      hydraPairId?: string | null;
+    },
+  ): void {
+    this.assertMutable();
+    const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
+    this.assertCanSwitchProvider(thread);
+    if (!this.providers.has(targetProvider))
+      throw new EngineError(`provider "${targetProvider}" is not available`);
+    if (opts?.model !== undefined && opts.model !== null && (opts.model.length === 0 || opts.model.length > 200))
+      throw new EngineError("invalid model id");
+    if (opts?.effort !== undefined && opts.effort !== null && (opts.effort.length === 0 || opts.effort.length > 100))
+      throw new EngineError("invalid effort");
+    if (opts?.fastTier !== undefined && opts.fastTier !== null && (opts.fastTier.length === 0 || opts.fastTier.length > 100))
+      throw new EngineError("invalid service tier");
+
+    const currentProvider = thread.provider ?? this.provider.descriptor.mode;
+    const modelBefore = thread.codexModel;
+    const started =
+      thread.hasStartedTurn === true ||
+      thread.providerThread !== undefined ||
+      thread.messages.some((m) => m.role === "user" || m.role === "assistant");
+
+    const applyTarget = (t: ChatThread) => {
+      t.provider = targetProvider;
+      if (opts?.model !== undefined) {
+        if (opts.model === null) delete t.codexModel;
+        else t.codexModel = opts.model;
+      } else if (targetProvider !== currentProvider) {
+        delete t.codexModel;
+      }
+      if (opts?.effort !== undefined) {
+        if (opts.effort === null) delete t.codexEffort;
+        else t.codexEffort = opts.effort;
+      } else if (targetProvider !== currentProvider) {
+        delete t.codexEffort;
+      }
+      if (opts?.fastTier !== undefined) {
+        if (opts.fastTier === null) delete t.codexServiceTier;
+        else t.codexServiceTier = opts.fastTier;
+      } else if (targetProvider !== currentProvider) {
+        delete t.codexServiceTier;
+      }
+      if (opts?.hydraPairId !== undefined) {
+        if (opts.hydraPairId === null) {
+          delete t.hydraPairId;
+        } else {
+          t.hydraPairId = opts.hydraPairId;
+          t.hydraEnabled = true;
+          t.subagentMode = "preset";
+        }
+      } else if (targetProvider !== currentProvider) {
+        delete t.hydraPairId;
+      }
+      if (targetProvider !== currentProvider) {
+        delete t.codexModelReported;
+        delete t.codexEffortReported;
+      }
+    };
+
+    if (!started && !thread.pendingProviderSwitch) {
+      if (targetProvider !== currentProvider) {
+        this.providers.get(currentProvider)?.endSession?.(threadId);
+        delete thread.providerThread;
+      }
+      this.store.update(() => {
+        applyTarget(thread);
+        thread.updatedAt = Date.now();
+      });
+      this.emit({ type: "thread-updated", thread });
+      if (
+        (targetProvider !== currentProvider || thread.codexModel !== modelBefore) &&
+        this.limitWaits.has(thread.id)
+      )
+        this.clearLimitWait(thread.id);
+      return;
+    }
+
+    if (targetProvider === currentProvider && !thread.pendingProviderSwitch) {
+      this.store.update(() => {
+        applyTarget(thread);
+        thread.updatedAt = Date.now();
+      });
+      this.emit({ type: "thread-updated", thread });
+      if (thread.codexModel !== modelBefore && this.limitWaits.has(thread.id))
+        this.clearLimitWait(thread.id);
+      return;
+    }
+
+    this.store.update(() => {
+      if (!thread.pendingProviderSwitch) {
+        const origin: PendingProviderSwitch = {
+          provider: currentProvider,
+          ...(thread.codexModel !== undefined ? { codexModel: thread.codexModel } : {}),
+          ...(thread.codexEffort !== undefined ? { codexEffort: thread.codexEffort } : {}),
+          ...(thread.codexServiceTier !== undefined
+            ? { codexServiceTier: thread.codexServiceTier }
+            : {}),
+          ...(thread.runtimeMode !== undefined ? { runtimeMode: thread.runtimeMode } : {}),
+          ...(thread.interactionMode !== undefined
+            ? { interactionMode: thread.interactionMode }
+            : {}),
+          ...(thread.hydraEnabled !== undefined ? { hydraEnabled: thread.hydraEnabled } : {}),
+          ...(thread.hydraPairId !== undefined ? { hydraPairId: thread.hydraPairId } : {}),
+          ...(thread.subagentMode !== undefined ? { subagentMode: thread.subagentMode } : {}),
+          ...(thread.providerThread !== undefined
+            ? { providerThread: thread.providerThread }
+            : {}),
+        };
+        thread.pendingProviderSwitch = origin;
+      }
+      const origin = thread.pendingProviderSwitch!;
+      if (targetProvider === origin.provider) {
+        this.restorePendingProviderOrigin(thread, origin);
+        const pickingDifferentPair =
+          typeof opts?.hydraPairId === "string" &&
+          opts.hydraPairId !== origin.hydraPairId;
+        const explicitModelChange =
+          opts?.hydraPairId === undefined &&
+          (opts?.model !== undefined ||
+            opts?.effort !== undefined ||
+            opts?.fastTier !== undefined);
+        if (pickingDifferentPair) {
+          thread.hydraPairId = opts!.hydraPairId!;
+          thread.hydraEnabled = true;
+          thread.subagentMode = "preset";
+          if (opts?.model !== undefined) {
+            if (opts.model === null) delete thread.codexModel;
+            else thread.codexModel = opts.model;
+          }
+          if (opts?.effort !== undefined) {
+            if (opts.effort === null) delete thread.codexEffort;
+            else thread.codexEffort = opts.effort;
+          }
+          if (opts?.fastTier !== undefined) {
+            if (opts.fastTier === null) delete thread.codexServiceTier;
+            else thread.codexServiceTier = opts.fastTier;
+          }
+        } else if (explicitModelChange) {
+          if (opts?.model !== undefined) {
+            if (opts.model === null) delete thread.codexModel;
+            else thread.codexModel = opts.model;
+          }
+          if (opts?.effort !== undefined) {
+            if (opts.effort === null) delete thread.codexEffort;
+            else thread.codexEffort = opts.effort;
+          }
+          if (opts?.fastTier !== undefined) {
+            if (opts.fastTier === null) delete thread.codexServiceTier;
+            else thread.codexServiceTier = opts.fastTier;
+          }
+        }
+      } else {
+        applyTarget(thread);
+        delete thread.providerThread;
+      }
+      thread.updatedAt = Date.now();
+    });
+    this.emit({ type: "thread-updated", thread });
+    if (
+      (targetProvider !== currentProvider || thread.codexModel !== modelBefore) &&
+      this.limitWaits.has(thread.id)
+    )
+      this.clearLimitWait(thread.id);
+  }
+
+  private restorePendingProviderOrigin(
+    thread: ChatThread,
+    origin: PendingProviderSwitch,
+  ): void {
+    thread.provider = origin.provider;
+    if (origin.codexModel !== undefined) thread.codexModel = origin.codexModel;
+    else delete thread.codexModel;
+    if (origin.codexEffort !== undefined) thread.codexEffort = origin.codexEffort;
+    else delete thread.codexEffort;
+    if (origin.codexServiceTier !== undefined)
+      thread.codexServiceTier = origin.codexServiceTier;
+    else delete thread.codexServiceTier;
+    if (origin.runtimeMode !== undefined) thread.runtimeMode = origin.runtimeMode;
+    if (origin.interactionMode !== undefined)
+      thread.interactionMode = origin.interactionMode;
+    if (origin.hydraEnabled !== undefined) thread.hydraEnabled = origin.hydraEnabled;
+    else delete thread.hydraEnabled;
+    if (origin.hydraPairId !== undefined) thread.hydraPairId = origin.hydraPairId;
+    else delete thread.hydraPairId;
+    if (origin.subagentMode !== undefined) thread.subagentMode = origin.subagentMode;
+    else delete thread.subagentMode;
+    if (origin.providerThread !== undefined) thread.providerThread = origin.providerThread;
+    else delete thread.providerThread;
+    delete thread.codexModelReported;
+    delete thread.codexEffortReported;
+    if (thread.continuation?.isProviderHandoff && !thread.continuation.sent) {
+      if (origin.forwardedContinuation) thread.continuation = origin.forwardedContinuation;
+      else delete thread.continuation;
+    }
+    delete thread.pendingProviderSwitch;
+  }
+
+  /**
+   * P2-02: Restore the staged origin model, effort, Hydra choice and
+   * original provider session intact.
+   */
+  undoProviderSwitch(threadId: string): void {
+    this.assertMutable();
+    const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
+    this.assertCanSwitchProvider(thread);
+    const origin = thread.pendingProviderSwitch;
+    if (!origin) return;
+    this.store.update(() => {
+      this.restorePendingProviderOrigin(thread, origin);
+      thread.updatedAt = Date.now();
+    });
+    this.emit({ type: "thread-updated", thread });
+    if (this.limitWaits.has(thread.id)) this.clearLimitWait(thread.id);
+  }
+
   /**
    * F15/F11: the thread's working directory — its OWN worktree when the
    * binding is recorded and still live, else its project's bound
@@ -3665,10 +4046,10 @@ export class Engine {
    * persist. Ordering input for the composer suggestion menu; the typed
    * `/plan` path calls this while the Build/Plan toggle button does not.
    */
-  recordCommand(name: string): void {
+  recordCommand(name: string, mode?: ProviderMode): void {
     this.assertMutable();
     if (!/^[a-z0-9-]{1,64}$/.test(name)) throw new EngineError("invalid command name");
-    const key = this.provider.descriptor.mode;
+    const key = mode ?? this.provider.descriptor.mode;
     this.store.update((d) => {
       const recent = (d.recentCommands?.[key] ?? []).filter((n) => n !== name);
       recent.unshift(name);
@@ -3794,7 +4175,7 @@ export class Engine {
     this.pendingSends.delete(id);
     this.handles.get(id)?.cancel();
     this.handles.delete(id);
-    this.provider.endSession?.(id);
+    this.endAllThreadSessions(id);
     this.store.update(() => {
       thread.projectId = target;
       delete thread.providerThread;
@@ -3956,14 +4337,17 @@ export class Engine {
    * fabricated: non-Codex providers → unsupported; no live session →
    * pending; a failed read → unavailable with the real reason.
    */
-  async codexModels(): Promise<CodexModelCatalog> {
-    if (this.provider.descriptor.mode !== "codex")
+  async codexModels(providerMode?: ProviderMode): Promise<CodexModelCatalog> {
+    const target = providerMode
+      ? this.providers.get(providerMode)
+      : this.provider;
+    if (!target || target.descriptor.mode !== "codex")
       return { state: "unsupported", reason: "the active provider has no model catalog" };
-    const fetcher = this.provider.modelCatalog;
+    const fetcher = target.modelCatalog;
     if (!fetcher)
       return { state: "unsupported", reason: "this provider build cannot list models" };
     try {
-      const models = await fetcher.call(this.provider);
+      const models = await fetcher.call(target);
       if (models === null)
         return {
           state: "pending",
@@ -3977,11 +4361,8 @@ export class Engine {
 
   /**
    * F21: the provider-catalog view the Hydra pair editor and cookbook
-   * resolve against (frozen ProviderRegistry slice). Only the bound
-   * adapter exists in this build — other providers are unlistable, the
-   * same outcome as the frozen enabled+installed filter producing an
-   * empty picker. A pending/unavailable catalog reports empty models;
-   * recipes naming models this provider never reported stay unoffered.
+   * resolve against (frozen ProviderRegistry slice). Lists every adapter
+   * registered in this launch; pending/unavailable catalogs report empty models.
    */
   async hydraCatalog(): Promise<{
     providers: {
@@ -3992,26 +4373,36 @@ export class Engine {
       defaultModel?: string | undefined;
     }[];
   }> {
-    const desc = this.provider.descriptor;
-    const entry: {
+    const out: {
       id: string;
       label: string;
       ready: boolean;
       models: { id: string; name: string; efforts: string[] }[];
       defaultModel?: string | undefined;
-    } = { id: desc.mode, label: desc.label, ready: true, models: [] };
-    if (desc.mode === "codex") {
-      const cat = await this.codexModels();
-      if (cat.state === "ready") {
-        entry.models = cat.models.map((m) => ({
-          id: m.id,
-          name: m.name,
-          efforts: m.efforts,
-        }));
-        entry.defaultModel = cat.models.find((m) => m.isDefault)?.id;
+    }[] = [];
+    for (const adapter of this.providers.values()) {
+      const desc = adapter.descriptor;
+      const entry: {
+        id: string;
+        label: string;
+        ready: boolean;
+        models: { id: string; name: string; efforts: string[] }[];
+        defaultModel?: string | undefined;
+      } = { id: desc.mode, label: desc.label, ready: true, models: [] };
+      if (desc.mode === "codex") {
+        const cat = await this.codexModels("codex");
+        if (cat.state === "ready") {
+          entry.models = cat.models.map((m) => ({
+            id: m.id,
+            name: m.name,
+            efforts: m.efforts,
+          }));
+          entry.defaultModel = cat.models.find((m) => m.isDefault)?.id;
+        }
       }
+      out.push(entry);
     }
-    return { providers: [entry] };
+    return { providers: out };
   }
 
   /**
@@ -4106,7 +4497,7 @@ export class Engine {
     this.emit({ type: "turn-status", threadId, turnId, status: "waiting-approval" });
 
     const granted =
-      this.provider.descriptor.mode === "mock" &&
+      this.adapterFor(thread).descriptor.mode === "mock" &&
       (thread.sessionGrants.includes(MOCK_ACTION_ID) ||
         this.store.state.settings.alwaysAllow.includes(MOCK_ACTION_ID));
     if (granted) {
@@ -4612,9 +5003,11 @@ export class Engine {
 
   private maybeGenerateTitle(threadId: string, prompt: string): void {
     if (this.store.state.settings.textGeneration === "off") return;
-    const gen = this.provider.generateTitle?.bind(this.provider);
+    const thread = this.store.state.threads.find((t) => t.id === threadId);
+    const adapter = thread ? this.adapterFor(thread) : this.provider;
+    const gen = adapter.generateTitle?.bind(adapter);
     if (!gen) return;
-    const atSend = this.store.state.threads.find((t) => t.id === threadId)?.title;
+    const atSend = thread?.title;
     void gen(prompt)
       .then((raw) => {
         const title = raw ? extractTitle(raw) : null;
@@ -4641,7 +5034,8 @@ export class Engine {
   private maybeReviewTitle(thread: ChatThread): void {
     if (this.store.state.settings.threadTitles !== "updated") return;
     if (thread.titleUserSet) return;
-    const gen = this.provider.generateTitle?.bind(this.provider);
+    const adapter = this.adapterFor(thread);
+    const gen = adapter.generateTitle?.bind(adapter);
     if (!gen) return;
     const done = countUserTurns(thread);
     if (done - (thread.titleReviewTurns ?? 0) < 6) return;
@@ -4748,9 +5142,10 @@ export class Engine {
    */
   async compactThread(threadId: string): Promise<void> {
     this.assertMutable();
-    if (!this.provider.compact) return;
     const thread = this.mustThread(threadId);
     this.ensureThreadLoaded(threadId);
+    const adapter = this.adapterFor(thread);
+    if (!adapter.compact) return;
     const turn = thread.turn;
     if (
       turn &&
@@ -4758,10 +5153,10 @@ export class Engine {
     )
       return;
     // Frozen handleLocalCommand records the use before dispatching.
-    this.recordCommand("compact");
+    this.recordCommand("compact", adapter.descriptor.mode);
     this.appendNotice(thread, "Compacting context.", "info");
     try {
-      await this.provider.compact(threadId);
+      await adapter.compact(threadId);
     } catch (err) {
       const code = (err as { code?: string }).code;
       this.appendNotice(
@@ -5088,20 +5483,21 @@ export class Engine {
     return hydraPairForLead(
       lead.hydraPairId,
       s.hydraPairs ?? [],
-      this.provider.descriptor.mode,
+      this.adapterFor(lead).descriptor.mode,
     );
   }
 
   private hydraLaunchFor(lead: ChatThread): ResolvedHydraLaunch | undefined {
     const s = this.store.state.settings;
     if (s.hydraEnabled === false || lead.hydraEnabled === false) return undefined;
-    const mode = this.provider.descriptor.mode;
+    const adapter = this.adapterFor(lead);
+    const mode = adapter.descriptor.mode;
     const pair = this.hydraPairForMode(lead);
     return resolveHydraLaunch(
       pair,
       s.hydraMaxHeads ?? undefined,
       mode,
-      (id) => (id === mode ? this.provider.descriptor.label : id),
+      (id) => (id === mode ? adapter.descriptor.label : id),
       s.hydraIsolateHeads !== false,
     );
   }
@@ -5130,6 +5526,7 @@ export class Engine {
     const s = this.store.state.settings;
     const launch = this.hydraLaunchFor(lead);
     if (!launch) return undefined;
+    const adapter = this.adapterFor(lead);
     const project = this.store.state.projects.find((p) => p.id === lead.projectId);
     const policy = hydraLeadPolicy({
       tilt: s.hydraTilt ?? "active",
@@ -5141,9 +5538,7 @@ export class Engine {
       ownProjectName: project?.name,
       isolated: launch.isolatesHeads,
       providerLabel: (id) =>
-        id === this.provider.descriptor.mode
-          ? this.provider.descriptor.label
-          : id,
+        id === adapter.descriptor.mode ? adapter.descriptor.label : id,
     });
     const adaptive =
       this.subagentModeFor(lead) === "adaptive"
@@ -5164,7 +5559,8 @@ export class Engine {
     const s = this.store.state.settings;
     const launch = this.hydraLaunchFor(lead);
     if (!launch) return "";
-    const keepsInSystemPrompt = this.provider.descriptor.mode === "codex";
+    const adapter = this.adapterFor(lead);
+    const keepsInSystemPrompt = adapter.descriptor.mode === "codex";
     const team = this.hydraTeamLine(lead.id);
     // Frozen v2QueuedHeadsNote: while the cap holds delegations back,
     // every lead prompt opens with the queue state so the lead never
@@ -5204,9 +5600,7 @@ export class Engine {
       ownProjectName: project?.name,
       isolated: launch.isolatesHeads,
       providerLabel: (id) =>
-        id === this.provider.descriptor.mode
-          ? this.provider.descriptor.label
-          : id,
+        id === adapter.descriptor.mode ? adapter.descriptor.label : id,
     });
     // P1-36/P1-37: the adaptive mode's Chimera policy — role titles,
     // the numbered identity list and the auto-dispatch note ride the
@@ -5526,7 +5920,7 @@ export class Engine {
     this.recordHydraJobOpen(lead, batchId);
     const s = this.store.state.settings;
     launch = launch ?? this.hydraLaunchFor(lead);
-    const mode = this.provider.descriptor.mode;
+    const mode = this.adapterFor(lead).descriptor.mode;
     const pair = this.hydraPairForMode(lead);
     // A pair that names a heads-provider this build cannot run: the
     // heads stay on the lead's and the lead hears it once per job.
@@ -5748,6 +6142,7 @@ export class Engine {
       // permission lane — inherit its runtime mode rather than the
       // global default (frozen heads share the chat's lane).
       runtimeMode: lead.runtimeMode ?? this.store.state.settings.defaultRuntimeMode ?? "fullAccess",
+      ...(lead.provider !== undefined ? { provider: lead.provider } : {}),
       sessionGrants: [],
       hasStartedTurn: false,
       hydraEnabled: false,
@@ -6697,7 +7092,7 @@ export class Engine {
       expectsNotes: true,
       elapsedMs: info.elapsedMs,
       toolCalls: info.toolCalls,
-      provider: this.provider.descriptor.label,
+      provider: this.adapterFor(head).descriptor.label,
       ...(startupFailure ? { startupFailure: true } : {}),
       ...(info.stopReason !== undefined ? { stopReason: info.stopReason } : {}),
       ...(info.landing !== undefined ? { landing: info.landing } : {}),
@@ -6920,7 +7315,7 @@ export class Engine {
     )
       return false;
     if (
-      this.provider.descriptor.mode === "codex" &&
+      this.adapterFor(thread).descriptor.mode === "codex" &&
       thread.providerThread === undefined
     )
       return false;
@@ -7512,19 +7907,38 @@ export class Engine {
     )
       throw new EngineError("Stop the running agents before reverting this conversation.");
     const removed = this.removedTurnSet(thread, turnId);
-    if (!this.provider.rollback) {
-      this.provider.endSession?.(threadId);
+    const pendingHandoff =
+      thread.continuation?.isProviderHandoff === true && !thread.continuation.sent;
+    if (
+      thread.pendingProviderSwitch !== undefined ||
+      (pendingHandoff && thread.providerThread === undefined)
+    ) {
+      if (thread.pendingProviderSwitch) {
+        this.providers
+          .get(thread.pendingProviderSwitch.provider)
+          ?.endSession?.(threadId);
+        delete thread.pendingProviderSwitch.providerThread;
+      }
+      this.adapterFor(thread).endSession?.(threadId);
       delete thread.providerThread;
       this.applyRewind(thread, removed);
       return;
     }
-    return this.revertProviderThread(thread, turnId, removed);
+    const adapter = this.adapterFor(thread);
+    if (!adapter.rollback) {
+      adapter.endSession?.(threadId);
+      delete thread.providerThread;
+      this.applyRewind(thread, removed);
+      return;
+    }
+    return this.revertProviderThread(thread, turnId, removed, adapter);
   }
 
   private async revertProviderThread(
     thread: ChatThread,
     turnId: string,
     removed: Set<string>,
+    adapter: ProviderAdapter = this.adapterFor(thread),
   ): Promise<void> {
     const threadId = thread.id;
     this.revertingThreads.add(threadId);
@@ -7562,7 +7976,7 @@ export class Engine {
         }
         const workspace = this.resolveAuthorizedWorkspace(thread);
         const hydraPolicy = this.codexHydraPolicy(thread);
-        const nextThreadId = await this.provider.rollback!(
+        const nextThreadId = await adapter.rollback!(
           threadId,
           targetProviderTurnId,
           {
@@ -7594,7 +8008,7 @@ export class Engine {
           "The selected message has no Codex turn ID, so its history cannot be safely reverted.",
         );
       } else {
-        this.provider.endSession?.(threadId);
+        adapter.endSession?.(threadId);
         delete thread.providerThread;
         this.applyRewind(thread, removed);
       }

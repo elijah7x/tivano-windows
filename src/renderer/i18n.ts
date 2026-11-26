@@ -2266,6 +2266,20 @@ const zhHans: Record<string, string> = {
   "Synthetic provider": "合成提供方",
   "Provider checklist": "服务商列表",
   "This task's parent is unavailable.": "此任务的父会话不可用。",
+  // P2-02
+  "Context may be incomplete after switching providers": "切换服务商后，上下文可能不完整",
+  "Undo": "撤销",
+  "Back to %@": "回到 %@",
+  "Continued with %@": "以下由 %@ 接力",
+  "Provider — applies to the next turn": "服务商 — 下次发送生效",
+  "Hydra pairs": "Hydra 组合",
+  "sub-agents cannot switch providers": "子代理不能切换服务商",
+  "switch providers after the running turn finishes": "请在当前回合完成后切换服务商",
+  "resolve the pending request before switching providers": "请先处理待确认请求后再切换服务商",
+  "switch providers when the chat is idle": "请在对话空闲时切换服务商",
+  "switch providers when no sub-agents are at work": "请在没有子代理运行时切换服务商",
+  'provider "%@" is not available in this launch': '本次启动未启用服务商“%@”',
+  'provider "%@" is not available': '服务商“%@”不可用',
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
@@ -2319,6 +2333,8 @@ const ERROR_TEMPLATE_KEYS = [
   "tmp cannot be resolved: %@",
   "editor is not available: %@",
   "could not open %@: %@",
+  'provider "%@" is not available in this launch',
+  'provider "%@" is not available',
 ] as const;
 
 let errorTemplates: { key: string; re: RegExp }[] | undefined;
@@ -2387,6 +2403,7 @@ const EXTRA_NOTICE_KEYS = [
   "%@ sent nothing for 30 minutes while a tool ran, so Tivano stopped the turn.",
   "Usage limit reached. Continuing automatically at %@.",
   "⚠ Automatic continue failed: %@",
+  "Continued with %@",
   'Work handed off to "%@".',
   "Queued message could not be sent: %@",
   "Codex error (retrying): %@",

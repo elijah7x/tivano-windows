@@ -720,6 +720,32 @@ export interface HydraJobSummary {
   merge?: "merged" | "nothing" | "failed" | "skipped";
 }
 
+export type ProviderMode = "mock" | "synthetic-stdio" | "codex";
+
+export interface ProviderSummary {
+  id: string;
+  mode: ProviderMode;
+  label: string;
+  supportsCompact?: true;
+}
+
+/** P2-02: origin snapshot saved while a started chat has a pending provider
+ *  switch so Undo restores the prior model, effort, Hydra choice and
+ *  provider session intact (frozen ProviderSwitchOrigin). */
+export interface PendingProviderSwitch {
+  provider: ProviderMode;
+  codexModel?: string;
+  codexEffort?: string;
+  codexServiceTier?: string;
+  runtimeMode?: RuntimeMode;
+  interactionMode?: InteractionMode;
+  hydraEnabled?: boolean;
+  hydraPairId?: string;
+  subagentMode?: SubagentMode;
+  providerThread?: ProviderThreadBinding;
+  forwardedContinuation?: ThreadContinuation;
+}
+
 export interface ChatThread {
   id: string;
   projectId: string | null;
@@ -730,6 +756,10 @@ export interface ChatThread {
   turn: Turn | null;
   /** Session-scoped synthetic grants ("allow for session"). */
   sessionGrants: string[];
+  /** P2-02: provider mode owning this thread; absent = launch default. */
+  provider?: ProviderMode;
+  /** P2-02: staged provider switch waiting on the next user send. */
+  pendingProviderSwitch?: PendingProviderSwitch;
   /** Provider-side thread identity for resume (Codex only). */
   providerThread?: ProviderThreadBinding;
   /**
@@ -996,6 +1026,7 @@ export interface ThreadContinuation {
   context: string;
   isTruncated: boolean;
   sent: boolean;
+  isProviderHandoff?: boolean;
 }
 
 /** One queued follow-up. `bundleId` groups items that go out as ONE
@@ -1150,7 +1181,9 @@ export interface AppInfo {
   providerLabel: string;
   mock: true;
   /** Provider kind shown in the UI. */
-  mode: "mock" | "synthetic-stdio" | "codex";
+  mode: ProviderMode;
+  /** P2-02: all provider adapters registered in this launch. */
+  providers?: ProviderSummary[];
   /** F09: present (true) only when the provider runs `/compact` itself —
    *  the composer sends the command as plain text otherwise (frozen
    *  fall-through for unsupported providers). */

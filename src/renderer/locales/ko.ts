@@ -2076,4 +2076,18 @@ export const ko: Record<string, string> = {
     "하위 에이전트 동시 실행 한도(%d)에 도달함\n작업 1개가 대기 중입니다. 한 번에 최대 %d개의 하위 에이전트만 실행됩니다. 실행 중인 하위 에이전트가 끝나면 자동으로 시작됩니다.",
   "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "하위 에이전트 동시 실행 한도(%d)에 도달함\n작업 %d개가 대기 중입니다. 한 번에 최대 %d개의 하위 에이전트만 실행됩니다. 실행 중인 하위 에이전트가 끝나면 차례대로 자동 시작됩니다.",
+  // P2-02
+  "Context may be incomplete after switching providers": "제공자를 전환한 후 컨텍스트가 불완전할 수 있습니다",
+  "Undo": "실행 취소",
+  "Back to %@": "%@(으)로 돌아가기",
+  "Continued with %@": "이어서 진행: %@",
+  "Provider — applies to the next turn": "제공자 — 다음 턴부터 적용",
+  "Hydra pairs": "Hydra 조합",
+  "sub-agents cannot switch providers": "하위 에이전트는 제공자를 전환할 수 없습니다",
+  "switch providers after the running turn finishes": "실행 중인 턴이 끝난 뒤 제공자를 전환하세요",
+  "resolve the pending request before switching providers": "대기 중인 요청을 처리한 뒤 제공자를 전환하세요",
+  "switch providers when the chat is idle": "대화가 대기 상태일 때 제공자를 전환하세요",
+  "switch providers when no sub-agents are at work": "실행 중인 하위 에이전트가 없을 때 제공자를 전환하세요",
+  'provider "%@" is not available in this launch': '이번 실행에서는 제공자 "%@"을(를) 사용할 수 없습니다',
+  'provider "%@" is not available': '제공자 "%@"을(를) 사용할 수 없습니다',
 };

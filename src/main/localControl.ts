@@ -370,7 +370,7 @@ export class LocalControlService {
       // and voice chats do not (bounded).
       role: t.hydraHead ? "head" : "normal",
       archived: t.isArchived === true,
-      provider: this.engine.providerDescriptor.id,
+      provider: t.provider ?? this.engine.providerDescriptor.id,
       model: t.codexModel ?? null,
       createdAt: t.createdAt,
       updatedAt: t.updatedAt,

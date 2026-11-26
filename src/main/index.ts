@@ -166,6 +166,7 @@ const paths = new ProjectRuntimePaths(
 // every consumer below is a closure that can only run after bootstrap.
 let engine: Engine | null = null;
 let adapter: ProviderAdapter | null = null;
+let extraAdapters: ProviderAdapter[] = [];
 let codexRuntime: CodexRuntimeConfig | null = null;
 
 // Packaged job-helper attestation is kicked off HERE — at module load, in
@@ -352,6 +353,17 @@ async function makeProvider(): Promise<ProviderAdapter> {
   });
 }
 
+function makeExtraProviders(primary: ProviderAdapter): ProviderAdapter[] {
+  const extras: ProviderAdapter[] = [];
+  if (primary.descriptor.mode !== "mock") {
+    const mockOpts: ConstructorParameters<typeof MockProvider>[0] = {};
+    if (process.env.TIVANO_MOCK_TICK_MS)
+      mockOpts.tickMs = Number(process.env.TIVANO_MOCK_TICK_MS);
+    extras.push(new MockProvider(mockOpts));
+  }
+  return extras;
+}
+
 let win: BrowserWindow | null = null;
 // v2.2.34 quick chat: the only second surface the guard admits. The
 // webContents is created synchronously inside `new BrowserWindow()` —
@@ -388,9 +400,15 @@ const coordinator = new CloseCoordinator({
   blockNewWork: () => { bootstrapClosing = true; engine?.shutdown(); },
   disposeChildren: async () => {
     await bootstrap;
-    const result = adapter
-      ? await adapter.dispose()
-      : { children: [], orphanedPending: 0 };
+    const allAdapters = [
+      ...(adapter ? [adapter] : []),
+      ...extraAdapters,
+    ];
+    const results = await Promise.all(allAdapters.map((a) => a.dispose()));
+    const result = {
+      children: results.flatMap((r) => r.children),
+      orphanedPending: results.reduce((sum, r) => sum + r.orphanedPending, 0),
+    };
     const problems = await disposeJobHelperProbes(probeChildren);
     if (terminals) {
       const t = await terminals.dispose();
@@ -457,6 +475,7 @@ bootstrap = app.whenReady().then(async () => {
   // helper attestation (started at module load) — everything downstream
   // (store recovery, grants restore, IPC) only exists after this.
   adapter = await makeProvider();
+  extraAdapters = makeExtraProviders(adapter);
   const changelogMarkdown = (() => {
     try {
       return readFileSync(join(app.getAppPath(), "CHANGELOG.md"), "utf8");
@@ -464,7 +483,7 @@ bootstrap = app.whenReady().then(async () => {
       return undefined;
     }
   })();
-  engine = new Engine(store, adapter, store.root, app.getVersion(), paths, changelogMarkdown);
+  engine = new Engine(store, adapter, store.root, app.getVersion(), paths, changelogMarkdown, extraAdapters);
   // F20 test hook: shrink the post-reset margin so e2e/vitest can watch a
   // real auto-resume inside seconds — the frozen 5s floor never moves.
   if (process.env.TIVANO_LIMIT_MARGIN_MS)
