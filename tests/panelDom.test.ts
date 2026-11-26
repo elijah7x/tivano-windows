@@ -106,7 +106,7 @@ app.on('window-all-closed',()=>app.quit());
       executablePath: electronBin,
       args: [mainPath],
       env: env as Record<string, string>,
-      timeout: 30000,
+      timeout: 60000,
     });
     page = await app.firstWindow();
     page.on("pageerror", (e: Error) => pageDiagnostics.push(`pageerror: ${e.message}`));
@@ -116,7 +116,7 @@ app.on('window-all-closed',()=>app.quit());
       null,
       { timeout: 10000 },
     );
-  }, 30000);
+  }, 90000);
 
   afterAll(async () => {
     if (app) await app.close().catch(() => {});
@@ -201,6 +201,30 @@ app.on('window-all-closed',()=>app.quit());
         threads: [h.lead(), h.head(1), h.head(2)],
       });
     });
+    await waitCount(".hydra-panel", 1);
+    await waitCount(".helper-panel.float", 1);
+  }, 20000);
+
+  it("dismissing and reopening the team panel resets an automatic-pop hold", async () => {
+    await page.evaluate(() => {
+      const h = (window as unknown as { __panelHarness: PanelHarness }).__panelHarness;
+      return h.mountChat({
+        settings: { hydraAutoOpensPanels: true, hydraAutoPopsHeads: true },
+        threads: [h.lead(), h.head(1), h.head(2)],
+      });
+    });
+    await waitCount(".helper-panel.float", 1);
+
+    await page.locator(".helper-panel.float .helper-close").first().click();
+    await waitCount(".helper-panel.float", 0);
+
+    await page.locator(".hydra-panel .hydra-title").click({ button: "right" });
+    await page.locator(".hydra-menu .suggest-row", { hasText: "Dismiss the panel" }).click();
+    await waitCount(".hydra-panel", 0);
+    await waitCount(".hydra-working-pill", 1);
+
+    await page.locator(".hydra-working-pill").click();
+
     await waitCount(".hydra-panel", 1);
     await waitCount(".helper-panel.float", 1);
   }, 20000);
