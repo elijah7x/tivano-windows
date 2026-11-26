@@ -2266,6 +2266,11 @@ const zhHans: Record<string, string> = {
   "Synthetic provider": "合成提供方",
   "Provider checklist": "服务商列表",
   "This task's parent is unavailable.": "此任务的父会话不可用。",
+  // P2-03: two-column Hydra pairs + models picker with recents.
+  "Recent": "最近",
+  "No pairs match": "没有匹配的组合",
+  "Pairs & models": "组合与模型",
+  "Browse models": "浏览模型",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {

@@ -30,6 +30,8 @@ import {
   partitionModelBlocks,
   partitionPickerModels,
   pickerCategoryKey,
+  pickerPairMatches,
+  pickerPairTitle,
   pinId,
   prefKey,
   protectedModelIds,
@@ -37,6 +39,8 @@ import {
   removeSection,
   renameSection,
   resolvePickerCategory,
+  resolveRecentPickerModel,
+  resolveRecentPickerPair,
   sectionEditTargetAlive,
   sectionIdOfPin,
   setModelListItems,
@@ -556,5 +560,110 @@ describe("P2-56 chip drag-reorder and rail drops", () => {
       ["Alpha", 0],
     ]);
     expect(unpinnedPart.ungrouped.map((e) => e.modelId)).toEqual(["u1"]);
+  });
+
+  it("P2-03 resolves combos category, pair titles/search, and recent pair/model", () => {
+    const opts = new Map([
+      ["m1", M("m1", "GPT-5.4")],
+      ["m2", M("m2", "GPT-5.4 Mini")],
+    ]);
+    const part = partitionPickerModels([P("m1")], [S("s1", "Reasoning", 0)], [], opts);
+    expect(
+      pickerCategoryKey(
+        defaultPickerCategory(part, "m1", { leadsWithPair: true, hasPairs: true }),
+      ),
+    ).toBe("combos");
+    expect(
+      pickerCategoryKey(
+        resolvePickerCategory({ kind: "combos" }, part, { hasPairs: true })!,
+      ),
+    ).toBe("combos");
+    expect(
+      pickerCategoryKey(
+        resolvePickerCategory({ kind: "combos" }, part, { hasPairs: false })!,
+      ),
+    ).toBe("all");
+
+    const pairNamed = {
+      id: "pair-1",
+      provider: "codex",
+      orchestratorModel: "m1",
+      workerModel: "m2",
+      name: "Fast Duo",
+      headProfiles: [],
+    };
+    const pairAuto = {
+      id: "pair-2",
+      provider: "codex",
+      orchestratorModel: "m1",
+      headProfiles: [],
+    };
+    const modelName = (_p: string, id: string | undefined) => (id ? opts.get(id)?.name : undefined);
+    expect(
+      pickerPairTitle(
+        pairNamed,
+        modelName,
+        () => "Codex",
+        (p) => `Any ${p} model`,
+        (l) => `${l} + itself`,
+      ),
+    ).toBe("Fast Duo");
+    expect(
+      pickerPairTitle(
+        pairAuto,
+        modelName,
+        () => "Codex",
+        (p) => `Any ${p} model`,
+        (l) => `${l} + itself`,
+      ),
+    ).toBe("GPT-5.4 + itself");
+
+    expect(pickerPairMatches(pairNamed, "duo", "Fast Duo", "Codex")).toBe(true);
+    expect(pickerPairMatches(pairNamed, "mini", "Fast Duo", "GPT-5.4 + GPT-5.4 Mini")).toBe(true);
+    expect(pickerPairMatches(pairNamed, "opus", "Fast Duo", "Codex")).toBe(false);
+
+    expect(resolveRecentPickerPair([pairNamed, pairAuto], "pair-2")?.id).toBe("pair-2");
+    expect(resolveRecentPickerPair([pairNamed, pairAuto], "missing")).toBeUndefined();
+    expect(
+      resolveRecentPickerModel(part.groups[0]!.items, { provider: "codex", modelID: "m1" })
+        ?.modelId,
+    ).toBe("m1");
+    expect(
+      resolveRecentPickerModel(part.groups[0]!.items, {
+        provider: "codex",
+        modelID: "missing",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("P2-03 persists lastNewChatModel and applies/clears hydraPairId via setThreadModel", () => {
+    const root = freshRoot();
+    const { store, engine } = makeEngine(root);
+    const t = engine.createThread(null, "picker-thread");
+    engine.setSettings({
+      lastNewChatModel: { provider: "codex", modelID: "gpt-5.4" },
+    });
+    engine.setThreadModel(t.id, "gpt-5.4", "high", null, "pair-1");
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.hydraPairId).toBe("pair-1");
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.subagentMode).toBe("preset");
+    expect(engine.snapshot().settings.lastNewChatModel).toEqual({
+      provider: "codex",
+      modelID: "gpt-5.4",
+    });
+
+    // Leaving pair via setThreadModel(..., null) clears hydraPairId and preset mode.
+    engine.setThreadModel(t.id, "gpt-5.4-mini", null, null, null);
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.hydraPairId).toBeUndefined();
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.subagentMode).toBeUndefined();
+
+    // Flush and reload from disk to prove storeDoc persistence.
+    store.close();
+    const store2 = new Store(root);
+    store2.open();
+    expect(store2.state.settings.lastNewChatModel).toEqual({
+      provider: "codex",
+      modelID: "gpt-5.4",
+    });
+    store2.close();
   });
 });

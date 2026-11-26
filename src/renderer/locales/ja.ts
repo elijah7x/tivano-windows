@@ -2076,4 +2076,9 @@ export const ja: Record<string, string> = {
     "サブエージェントの同時実行上限（%d）に達しました\n1 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です。実行中のサブエージェントが完了すると自動的に送信されます。",
   "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "サブエージェントの同時実行上限（%d）に達しました\n%d 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です。実行中のサブエージェントが完了すると順次自動的に送信されます。",
+  // P2-03
+  "Recent": "最近",
+  "No pairs match": "一致するペアはありません",
+  "Pairs & models": "ペアとモデル",
+  "Browse models": "モデルを参照",
 };

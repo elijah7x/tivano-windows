@@ -561,7 +561,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   });
   handle("hydra:catalog", () => engine.hydraCatalog());
   handle("threads:set-model", (p) =>
-    engine.setThreadModel(p.threadId, p.model, p.effort, p.fastTier),
+    engine.setThreadModel(p.threadId, p.model, p.effort, p.fastTier, p.hydraPairId),
   );
   handle("followUps:enqueue", (p) =>
     engine.enqueueFollowUp(p.threadId, p.text, {

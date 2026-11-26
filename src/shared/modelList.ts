@@ -5,7 +5,12 @@
 // The catalog stays provider-owned (models:list) — pins only ORGANIZE the
 // picker; a pin whose model never appeared in a catalog still shows by id.
 
-import { pairHeadsProvider } from "./hydra";
+import {
+  pairCustomName,
+  pairHeadsProvider,
+  pairSendsHeadsElsewhere,
+  type HydraPair,
+} from "./hydra";
 
 /** Frozen ProviderKind — this build ships one provider adapter. The field
  *  rides along so stored pins keep the frozen identity shape. */
@@ -791,11 +796,13 @@ export function moveSectionToTarget(
 export type PickerCategory =
   | { kind: "all" }
   | { kind: "ungrouped" }
-  | { kind: "group"; sectionId: string };
+  | { kind: "group"; sectionId: string }
+  | { kind: "combos" };
 
 export function pickerCategoryKey(cat: PickerCategory): string {
   if (cat.kind === "all") return "all";
   if (cat.kind === "ungrouped") return "ungrouped";
+  if (cat.kind === "combos") return "combos";
   return `group/${cat.sectionId}`;
 }
 
@@ -847,11 +854,14 @@ export function partitionPickerModels<T extends ModelRowLike>(
   };
 }
 
-/** Frozen defaultCategory: opens on the group holding `currentModelId`, else All. */
+/** Frozen defaultCategory: opens on Combos when leading with a pair,
+ *  else the group holding `currentModelId`, else All. */
 export function defaultPickerCategory<T extends ModelRowLike>(
   partition: PickerPartition<T>,
   currentModelId: string,
+  opts?: { leadsWithPair?: boolean | undefined; hasPairs?: boolean | undefined },
 ): PickerCategory {
+  if (opts?.leadsWithPair && opts?.hasPairs) return { kind: "combos" };
   if (currentModelId !== "") {
     const match = partition.groups.find((g) =>
       g.items.some((entry) => entry.modelId === currentModelId),
@@ -861,19 +871,91 @@ export function defaultPickerCategory<T extends ModelRowLike>(
   return { kind: "all" };
 }
 
-/** Validates a selected category against live groups/ungrouped items. */
+/** Validates a selected category against live groups/ungrouped/pairs items. */
 export function resolvePickerCategory<T extends ModelRowLike>(
   candidate: PickerCategory | null,
   partition: PickerPartition<T>,
+  opts?: { hasPairs?: boolean | undefined },
 ): PickerCategory | null {
   if (candidate === null) return null;
   if (candidate.kind === "all") return candidate;
+  if (candidate.kind === "combos") {
+    return opts?.hasPairs ? candidate : { kind: "all" };
+  }
   if (candidate.kind === "ungrouped") {
     return partition.ungrouped.length > 0 ? candidate : { kind: "all" };
   }
   return partition.groups.some((g) => g.section.id === candidate.sectionId)
     ? candidate
     : { kind: "all" };
+}
+
+/** P2-03: model-based fallback title for a Hydra pair in the picker. */
+export function pickerPairModelsTitle(
+  pair: HydraPair,
+  modelName: (provider: string, modelId: string | undefined) => string | undefined,
+  providerLabel: (provider: string) => string,
+  formatAnyModel: (providerName: string) => string,
+  formatWithItself: (leadName: string) => string,
+): string {
+  const lead =
+    modelName(pair.provider, pair.orchestratorModel) ??
+    formatAnyModel(providerLabel(pair.provider));
+  const headsProv = pairHeadsProvider(pair);
+  const worker =
+    modelName(headsProv, pair.workerModel) ??
+    (pairSendsHeadsElsewhere(pair) ? providerLabel(headsProv) : undefined);
+  return worker === undefined ? formatWithItself(lead) : `${lead} + ${worker}`;
+}
+
+/** P2-03: display title for a Hydra pair (user custom name or models title). */
+export function pickerPairTitle(
+  pair: HydraPair,
+  modelName: (provider: string, modelId: string | undefined) => string | undefined,
+  providerLabel: (provider: string) => string,
+  formatAnyModel: (providerName: string) => string,
+  formatWithItself: (leadName: string) => string,
+): string {
+  return (
+    pairCustomName(pair) ??
+    pickerPairModelsTitle(pair, modelName, providerLabel, formatAnyModel, formatWithItself)
+  );
+}
+
+/** P2-03: case-insensitive search match for a Hydra pair (name, models, detail). */
+export function pickerPairMatches(
+  pair: HydraPair,
+  query: string,
+  title: string,
+  detail: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (q === "") return true;
+  return (
+    title.toLowerCase().includes(q) ||
+    detail.toLowerCase().includes(q) ||
+    (pairCustomName(pair)?.toLowerCase().includes(q) ?? false) ||
+    (pair.orchestratorModel?.toLowerCase().includes(q) ?? false) ||
+    (pair.workerModel?.toLowerCase().includes(q) ?? false)
+  );
+}
+
+/** P2-03: resolve the most recently selected Hydra pair if still present. */
+export function resolveRecentPickerPair(
+  pairs: readonly HydraPair[],
+  lastHydraPairId: string | undefined,
+): HydraPair | undefined {
+  if (!lastHydraPairId) return undefined;
+  return pairs.find((p) => p.id === lastHydraPairId);
+}
+
+/** P2-03: resolve the most recently selected model entry if present in the picker list. */
+export function resolveRecentPickerModel<T extends ModelRowLike>(
+  entries: readonly PickerEntry<T>[],
+  lastNewChatModel: ModelPin | undefined,
+): PickerEntry<T> | undefined {
+  if (!lastNewChatModel || lastNewChatModel.provider !== "codex") return undefined;
+  return entries.find((e) => e.modelId === lastNewChatModel.modelID);
 }
 
 /** Section id — UUID shape so stored sections stay frozen-compatible. */

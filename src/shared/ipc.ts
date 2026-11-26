@@ -544,6 +544,7 @@ export const requestValidators = {
     hydraReviewFirst: vOptional(vNullable(vHydraReviewChoice)),
     hydraReviewSecond: vOptional(vNullable(vHydraReviewChoice)),
     lastHydraPairId: vOptional(vNullable(vNonEmptyString(120))),
+    lastNewChatModel: vOptional(vNullable(vModelPin)),
     // F17: frozen modelList / modelSections / collapsedModelSections /
     // modelPreferences — whole-array writes (layout ops are computed
     // renderer-side via shared/modelList.ts, then persisted wholesale).
@@ -739,6 +740,7 @@ export const requestValidators = {
     model: vNullable(vNonEmptyString(200)),
     effort: vNullable(vNonEmptyString(100)),
     fastTier: vNullable(vNonEmptyString(100)),
+    hydraPairId: vOptional(vNullable(vNonEmptyString(120))),
   }),
   // Codex question card. The renderer names only the opaque providerKey
   // it was SHOWN plus bounded answer strings — never raw RPC content,

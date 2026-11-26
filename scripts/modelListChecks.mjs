@@ -277,7 +277,7 @@ export async function runModelListChecks({
   await page.locator(".model-groups-btn").click();
   await page.waitForSelector(".model-picker-pop", { timeout: 5000 });
   await page.locator('.model-pop-cat[data-picker-cat="all"]').click();
-  await page.locator(".model-pop-row", { hasText: "Fixture Model" }).click();
+  await page.locator(".model-pop-row", { hasText: "Fixture Model" }).first().click();
   await waitSnapshot(page, async () => {
     const st = await snap(page);
     const t = st.threads.find((x) => x.id === threadId);
@@ -440,6 +440,8 @@ export async function runModelListChecks({
       modelSections: [],
       collapsedModelSections: [],
       modelPreferences: {},
+      lastHydraPairId: null,
+      lastNewChatModel: null,
     }),
   );
 
@@ -513,6 +515,159 @@ export async function runModelListChecks({
     window.tivano.invoke("settings:set", { hideOutdatedModels: true }),
   );
   await closeSettings(page);
+
+  // ML-18 (P2-03): two-column composer picker (Pairs + Models) with recents,
+  // search across pair names, single-column fallback without pairs, and keyboard nav.
+  // First verify single-column when no pairs exist.
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { hydraPairs: [], hydraEnabled: true }),
+  );
+  await page.locator(".model-picker-btn").click();
+  await page.waitForSelector(".model-picker-pop.single-col", { timeout: 5000 });
+  verify(
+    "ML-18a single-column picker without pairs",
+    (await page.locator(".model-pop-pairs-col").count()) === 0 &&
+      (await page.locator(".model-pop-list .model-pop-row").count()) >= 2,
+  );
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".model-picker-pop", { state: "detached", timeout: 5000 });
+
+  // Add two pairs and choose a model + pair to seed recents and test two-column layout.
+  const pairAlpha = {
+    id: "p203-pair-alpha",
+    provider: "codex",
+    orchestratorModel: "fixture-model",
+    workerModel: "fixture-max",
+    name: "Alpha Pair",
+    headProfiles: [],
+  };
+  const pairBeta = {
+    id: "p203-pair-beta",
+    provider: "codex",
+    orchestratorModel: "fixture-max",
+    workerModel: "fixture-model",
+    name: "Beta Pair",
+    headProfiles: [],
+  };
+  await page.evaluate(
+    ({ p1, p2 }) =>
+      window.tivano.invoke("settings:set", {
+        hydraEnabled: true,
+        hydraPairs: [p1, p2],
+        lastHydraPairId: p2.id,
+        lastNewChatModel: { provider: "codex", modelID: "fixture-max" },
+      }),
+    { p1: pairAlpha, p2: pairBeta },
+  );
+  await page.locator(".model-picker-btn").click();
+  await page.waitForSelector(".model-picker-pop.two-col", { timeout: 5000 });
+  const twoColMetrics = await page.evaluate(() => {
+    const pairsCol = document.querySelector(".model-pop-pairs-col");
+    const modelsCol = document.querySelector(".model-pop-list");
+    const pairItems = [...(pairsCol?.querySelectorAll("[data-pop-item]") ?? [])].map((el) =>
+      el.getAttribute("data-pop-item"),
+    );
+    const modelItems = [...(modelsCol?.querySelectorAll("[data-pop-item]") ?? [])].map((el) =>
+      el.getAttribute("data-pop-item"),
+    );
+    return {
+      pairsOverflow: pairsCol ? getComputedStyle(pairsCol).overflowY : "",
+      modelsOverflow: modelsCol ? getComputedStyle(modelsCol).overflowY : "",
+      pairItems,
+      modelItems,
+      pairsHead: pairsCol?.querySelector(".model-pop-head")?.textContent ?? "",
+      modelsHead: modelsCol?.querySelector(".model-pop-head")?.textContent ?? "",
+    };
+  });
+  verify(
+    "ML-18b two-column picker shows independent scroll columns with recent pair & model on top",
+    twoColMetrics.pairsOverflow === "auto" &&
+      twoColMetrics.modelsOverflow === "auto" &&
+      twoColMetrics.pairsHead === "Recent" &&
+      twoColMetrics.modelsHead === "Recent" &&
+      twoColMetrics.pairItems[0] === "recent-pair:p203-pair-beta" &&
+      twoColMetrics.modelItems[0] === "recent-model:fixture-max",
+    twoColMetrics,
+  );
+
+  // Search filters both columns including pair names.
+  await page.locator(".model-pop-search").fill("Alpha");
+  await page.waitForTimeout(80);
+  const alphaSearch = await page.evaluate(() => ({
+    pairs: [...document.querySelectorAll(".model-pop-pairs-col .model-pop-name")].map(
+      (n) => n.textContent,
+    ),
+    modelsEmpty: document.querySelector(".model-pop-list .model-pop-empty")?.textContent ?? "",
+  }));
+  verify(
+    "ML-18c search filters pairs by name and narrows models column",
+    alphaSearch.pairs.length === 1 &&
+      alphaSearch.pairs[0] === "Alpha Pair" &&
+      alphaSearch.modelsEmpty === "No models match",
+    alphaSearch,
+  );
+  await page.locator(".model-pop-search").fill("");
+  await page.waitForTimeout(80);
+
+  // Keyboard navigation: ArrowDown into Pairs column, ArrowRight to Models column,
+  // ArrowLeft back to Pairs column, Enter selects the focused pair.
+  await page.keyboard.press("ArrowDown");
+  const focusInPairs = await page.evaluate(
+    () => document.activeElement?.closest(".model-pop-pairs-col") !== null,
+  );
+  await page.keyboard.press("ArrowRight");
+  const focusInModels = await page.evaluate(
+    () => document.activeElement?.closest(".model-pop-list") !== null,
+  );
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".model-picker-pop", { state: "detached", timeout: 5000 });
+  await waitSnapshot(page, (st) => {
+    const t = st.threads.find((x) => x.id === threadId);
+    return t?.hydraPairId === "p203-pair-alpha" && t?.subagentMode === "preset";
+  });
+  const afterPairPick = await snap(page);
+  const pickedThread = afterPairPick.threads.find((x) => x.id === threadId);
+  verify(
+    "ML-18d keyboard navigation + Enter chooses pair and applies threads:set-model / lastHydraPairId",
+    focusInPairs &&
+      focusInModels &&
+      pickedThread?.hydraPairId === "p203-pair-alpha" &&
+      pickedThread?.codexModel === "fixture-model" &&
+      pickedThread?.subagentMode === "preset" &&
+      afterPairPick.settings.lastHydraPairId === "p203-pair-alpha",
+    {
+      focusInPairs,
+      focusInModels,
+      hydraPairId: pickedThread?.hydraPairId,
+      codexModel: pickedThread?.codexModel,
+      lastHydraPairId: afterPairPick.settings.lastHydraPairId,
+    },
+  );
+
+  // Choosing a model from the picker leaves the pair and updates lastNewChatModel.
+  await page.locator(".model-picker-btn").click();
+  await page.waitForSelector(".model-picker-pop.two-col", { timeout: 5000 });
+  await page.locator('.model-pop-list [data-pop-item="model:fixture-max"]').click();
+  await waitSnapshot(page, (st) => {
+    const t = st.threads.find((x) => x.id === threadId);
+    return (
+      t?.codexModel === "fixture-max" &&
+      t?.hydraPairId === undefined &&
+      st.settings.lastNewChatModel?.modelID === "fixture-max"
+    );
+  });
+  verify("ML-18e choosing a model leaves the pair and persists recent model", true);
+
+  // Clean up test pairs and recents before close.
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", {
+      hydraPairs: [],
+      lastHydraPairId: null,
+      lastNewChatModel: null,
+    }),
+  );
 
   {
     const c = await boundedClose(app, proc);

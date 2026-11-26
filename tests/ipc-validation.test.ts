@@ -205,6 +205,30 @@ describe("IPC request validators", () => {
         fastTier: null,
       }),
     ).toBeTruthy();
+    expect(
+      requestValidators["threads:set-model"]({
+        threadId: uuid,
+        model: "gpt-5",
+        effort: "high",
+        fastTier: null,
+        hydraPairId: "pair-1",
+      }),
+    ).toBeTruthy();
+    expect(
+      requestValidators["threads:set-model"]({
+        threadId: uuid,
+        model: "gpt-5",
+        effort: null,
+        fastTier: null,
+        hydraPairId: null,
+      }),
+    ).toBeTruthy();
+    expect(
+      requestValidators["settings:set"]({
+        lastNewChatModel: { provider: "codex", modelID: "gpt-5" },
+      }),
+    ).toBeTruthy();
+    expect(requestValidators["settings:set"]({ lastNewChatModel: null })).toBeTruthy();
     for (const bad of [
       { threadId: uuid, model: 5, effort: null, fastTier: null },
       { threadId: uuid, model: "", effort: null, fastTier: null },
@@ -213,6 +237,8 @@ describe("IPC request validators", () => {
       { threadId: uuid, model: "m", effort: null, fastTier: "t".repeat(101) },
       { threadId: uuid, model: "m", effort: null, fastTier: "" },
       { threadId: uuid, model: "m", effort: null, fastTier: 5 },
+      { threadId: uuid, model: "m", effort: null, fastTier: null, hydraPairId: "" },
+      { threadId: uuid, model: "m", effort: null, fastTier: null, hydraPairId: "p".repeat(121) },
       { threadId: "not-a-uuid", model: "m", effort: null, fastTier: null },
       { threadId: uuid, model: "m", effort: null, fastTier: null, extra: 1 },
       { threadId: uuid },

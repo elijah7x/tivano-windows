@@ -3012,6 +3012,7 @@ export class Engine {
     hasSeenHydraIntro?: boolean | undefined;
     hydraPairs?: import("../shared/hydra").HydraPair[] | undefined;
     lastHydraPairId?: string | null | undefined;
+    lastNewChatModel?: import("../shared/modelList").ModelPin | null | undefined;
     subagentModeDefault?: SubagentMode | undefined;
     chimeraPresets?: import("../shared/chimera").ChimeraPreset[] | undefined;
     chimeraAutoDispatch?: boolean | undefined;
@@ -3176,6 +3177,10 @@ export class Engine {
         if (patch.lastHydraPairId === null) delete d.settings.lastHydraPairId;
         else d.settings.lastHydraPairId = patch.lastHydraPairId;
       }
+      if (patch.lastNewChatModel !== undefined) {
+        if (patch.lastNewChatModel === null) delete d.settings.lastNewChatModel;
+        else d.settings.lastNewChatModel = patch.lastNewChatModel;
+      }
       if (patch.subagentModeDefault !== undefined)
         d.settings.subagentModeDefault = patch.subagentModeDefault;
       if (patch.chimeraPresets !== undefined) {
@@ -3319,6 +3324,7 @@ export class Engine {
     model: string | null,
     effort: string | null,
     fastTier: string | null = null,
+    hydraPairId?: string | null,
   ): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
@@ -3329,6 +3335,22 @@ export class Engine {
       throw new EngineError("invalid effort");
     if (fastTier !== null && (fastTier.length === 0 || fastTier.length > 100))
       throw new EngineError("invalid service tier");
+    if (
+      hydraPairId !== undefined &&
+      hydraPairId !== null &&
+      (hydraPairId.length === 0 || hydraPairId.length > 120)
+    )
+      throw new EngineError("invalid hydra pair id");
+    if (
+      hydraPairId !== undefined &&
+      hydraPairId !== null &&
+      !thread.hydraHead &&
+      this.subagentModeFor(thread) === "adaptive" &&
+      (this.hydraLeadBusy(threadId) ||
+        (this.hydraWaiting.get(threadId)?.length ?? 0) > 0)
+    ) {
+      throw new EngineError("switch modes when no sub-agents are at work");
+    }
     const modelBefore = thread.codexModel;
     this.store.update(() => {
       if (model === null) delete thread.codexModel;
@@ -3337,6 +3359,14 @@ export class Engine {
       else thread.codexEffort = effort;
       if (fastTier === null) delete thread.codexServiceTier;
       else thread.codexServiceTier = fastTier;
+      if (hydraPairId === null) {
+        delete thread.hydraPairId;
+        if (thread.subagentMode === "preset") delete thread.subagentMode;
+      } else if (hydraPairId !== undefined) {
+        thread.hydraPairId = hydraPairId;
+        if (!thread.hydraHead) thread.subagentMode = "preset";
+        if (thread.hydraEnabled === false) thread.hydraEnabled = true;
+      }
       thread.updatedAt = Date.now();
     });
     this.emit({ type: "thread-updated", thread });
