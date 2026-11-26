@@ -2115,6 +2115,4 @@ export const ko: Record<string, string> = {
   "Where Droppy Code began": "Droppy Code의 시작",
   "Responsive chat architecture": "반응형 대화 아키텍처",
   "Streaming text fade": "스트리밍 텍스트 페이드 효과",
-  "Writing guidance": "글쓰기 지침",
-  "Usage reset flow": "사용량 초기화 흐름",
 };

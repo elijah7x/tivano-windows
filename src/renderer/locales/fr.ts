@@ -2115,6 +2115,4 @@ export const fr: Record<string, string> = {
   "Where Droppy Code began": "Aux origines de Droppy Code",
   "Responsive chat architecture": "Architecture de discussion réactive",
   "Streaming text fade": "Fondu du texte en streaming",
-  "Writing guidance": "Guide de rédaction",
-  "Usage reset flow": "Parcours de réinitialisation d’utilisation",
 };

@@ -49,18 +49,19 @@ describe("P1-11 CreditsSection", () => {
       expect(html).toContain(entry.role);
     }
     expect(html).toContain("Synara");
+    expect(html).not.toContain("anti-slop");
+    expect(html).not.toContain("MonoCode");
+    expect(html).not.toContain("SwiftTerm");
+    expect(html).not.toContain("Thinking orbs");
+    expect(html).not.toContain("OpenAI Codex");
     expect(html).not.toMatch(/<a\b/i);
     expect(html).not.toMatch(/<button\b/i);
   });
 
   it("sources every credit entry from THIRD_PARTY_NOTICES.md", () => {
     const notices = readFileSync(join(root, "THIRD_PARTY_NOTICES.md"), "utf8");
-    const sectionAliases: Record<string, string> = {
-      "anti-slop": "## Anti-slop guidance",
-    };
     for (const entry of CREDIT_ENTRIES) {
-      const heading = sectionAliases[entry.name] ?? `## ${entry.name}`;
-      expect(notices, entry.name).toContain(heading);
+      expect(notices, entry.name).toContain(`## ${entry.name}`);
     }
   });
 

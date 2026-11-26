@@ -318,7 +318,10 @@ try {
       creditsText.includes("Zeron") &&
       creditsText.includes("xterm.js") &&
       creditsText.includes("node-pty") &&
-      creditsText.includes("nlohmann/json"),
+      creditsText.includes("nlohmann/json") &&
+      creditsText.includes("mugen-markdown") &&
+      !creditsText.includes("anti-slop") &&
+      !creditsText.includes("MonoCode"),
   );
   check(
     "About Credits contains no link buttons or anchors",

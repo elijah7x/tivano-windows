@@ -2115,6 +2115,4 @@ export const zhHant: Record<string, string> = {
   "Where Droppy Code began": "Droppy Code 的起源",
   "Responsive chat architecture": "流暢對話架構參考",
   "Streaming text fade": "串流文字漸顯",
-  "Writing guidance": "寫作規範",
-  "Usage reset flow": "額度重設流程參考",
 };

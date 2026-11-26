@@ -2115,6 +2115,4 @@ export const ja: Record<string, string> = {
   "Where Droppy Code began": "Droppy Code の原点",
   "Responsive chat architecture": "レスポンシブなチャット設計",
   "Streaming text fade": "ストリーミングテキストのフェード表示",
-  "Writing guidance": "ライティング指針",
-  "Usage reset flow": "使用量リセットのフロー",
 };

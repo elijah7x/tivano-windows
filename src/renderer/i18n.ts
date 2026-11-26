@@ -2303,8 +2303,6 @@ const zhHans: Record<string, string> = {
   "Where Droppy Code began": "Droppy Code 的起源",
   "Responsive chat architecture": "对话流畅度架构参考",
   "Streaming text fade": "流式文字渐显",
-  "Writing guidance": "写作规范",
-  "Usage reset flow": "额度重置交互参考",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
