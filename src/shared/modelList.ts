@@ -759,6 +759,78 @@ export function dropPinOnGroupEnd(
   return next;
 }
 
+export type ModelDragTarget =
+  | { kind: "pin"; id: string }
+  | { kind: "section"; id: string };
+
+/** Parses the renderer's drag token without trusting it as a live model id.
+ *  Drop planning then re-resolves the target against the freshest settings
+ *  snapshot, so a row removed mid-drag cannot be recreated by the drop. */
+export function parseModelDragTarget(dragged: string | null): ModelDragTarget | null {
+  if (!dragged) return null;
+  if (dragged.startsWith("section/")) {
+    const id = dragged.slice("section/".length);
+    return id === "" ? null : { kind: "section", id };
+  }
+  return dragged === "" ? null : { kind: "pin", id: dragged };
+}
+
+function liveDraggedPin(pins: readonly ModelPin[], id: string): ModelPin | null {
+  return pins.find((p) => pinId(p) === id) ?? null;
+}
+
+/** Pure drop-on-pin plan: searching and non-pin drags are inert, and a pin
+ *  missing from the fresh snapshot produces no write. */
+export function planModelDropOnPin(
+  pins: ModelPin[],
+  sections: ModelSection[],
+  dragged: string | null,
+  target: ModelPin,
+  isSearching: boolean,
+): { modelList: ModelPin[]; modelSections: ModelSection[] } | null {
+  const drag = parseModelDragTarget(dragged);
+  if (!drag || drag.kind !== "pin" || isSearching) return null;
+  const pin = liveDraggedPin(pins, drag.id);
+  return pin ? dropPinOnPin(pins, sections, pin, target) : null;
+}
+
+/** Pure drop-on-wall-group plan with the same fresh-snapshot guard. */
+export function planModelDropOnWallGroup(
+  pins: ModelPin[],
+  sections: ModelSection[],
+  dragged: string | null,
+  sectionId: string | null,
+  isSearching: boolean,
+  options?: { requireDifferentGroup?: boolean },
+): { modelList: ModelPin[]; modelSections: ModelSection[] } | null {
+  const drag = parseModelDragTarget(dragged);
+  if (!drag || drag.kind !== "pin" || isSearching) return null;
+  const pin = liveDraggedPin(pins, drag.id);
+  return pin ? dropPinOnGroupEnd(pins, sections, pin, sectionId, options) : null;
+}
+
+/** Pure rail-drop plan: section-on-section reorder or pin-to-group end. A
+ *  dragged section/pin that vanished after the drag started yields null —
+ *  the caller must make no write. */
+export function planModelDropOnRail(
+  pins: ModelPin[],
+  sections: ModelSection[],
+  dragged: string | null,
+  targetSectionId: string | null,
+  isSearching: boolean,
+): { modelList: ModelPin[]; modelSections: ModelSection[] } | null {
+  const drag = parseModelDragTarget(dragged);
+  if (!drag) return null;
+  if (drag.kind === "section") {
+    if (isSearching || targetSectionId === null) return null;
+    return moveSectionToTarget(pins, sections, drag.id, targetSectionId);
+  }
+  const pin = liveDraggedPin(pins, drag.id);
+  return pin
+    ? dropPinOnGroupEnd(pins, sections, pin, targetSectionId, { requireDifferentGroup: true })
+    : null;
+}
+
 /** Frozen RailCardDropDelegate (.group on .group): moves `draggedId` directly
  *  to `targetId`'s slot, carrying its models; ungrouped models stay on top. */
 export function moveSectionToTarget(

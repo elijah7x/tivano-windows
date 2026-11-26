@@ -31,6 +31,9 @@ import {
   partitionPickerModels,
   pickerCategoryKey,
   pinId,
+  planModelDropOnPin,
+  planModelDropOnRail,
+  planModelDropOnWallGroup,
   prefKey,
   protectedModelIds,
   removePin,
@@ -556,5 +559,42 @@ describe("P2-56 chip drag-reorder and rail drops", () => {
       ["Alpha", 0],
     ]);
     expect(unpinnedPart.ungrouped.map((e) => e.modelId)).toEqual(["u1"]);
+  });
+});
+
+describe("P2-33 pure drop planning guards", () => {
+  it("a section dropped after its removal produces no write plan", () => {
+    const pins = [P("u"), P("a"), P("b")];
+    const secs = [S("s1", "One", 1), S("s2", "Two", 2)];
+    expect(planModelDropOnRail(pins, secs, "section/s2", "s1", false)).not.toBeNull();
+    const withoutDragged = secs.filter((s) => s.id !== "s2");
+    expect(planModelDropOnRail(pins, withoutDragged, "section/s2", "s1", false)).toBeNull();
+  });
+
+  it("a pin dropped after its removal produces no write plan on pin, wall, or rail", () => {
+    const pins = [P("u"), P("a"), P("b")];
+    const secs = [S("s1", "One", 1), S("s2", "Two", 2)];
+    const stalePins = pins.filter((p) => p.modelID !== "b");
+    expect(planModelDropOnPin(stalePins, secs, "codex/b", P("a"), false)).toBeNull();
+    expect(planModelDropOnWallGroup(stalePins, secs, "codex/b", "s1", false)).toBeNull();
+    expect(planModelDropOnRail(stalePins, secs, "codex/b", null, false)).toBeNull();
+  });
+
+  it("live pin and section drags produce the same reorder plans the component writes", () => {
+    const pins = [P("u"), P("a"), P("b")];
+    const secs = [S("s1", "One", 1), S("s2", "Two", 2)];
+    const pinPlan = planModelDropOnRail(pins, secs, "codex/b", null, false);
+    expect(pinPlan!.modelList.map((p) => p.modelID)).toEqual(["u", "b", "a"]);
+    const sectionPlan = planModelDropOnRail(pins, secs, "section/s2", "s1", false);
+    expect(sectionPlan!.modelSections.map((s) => s.id)).toEqual(["s2", "s1"]);
+  });
+
+  it("searching drops and mismatched drag kinds are inert", () => {
+    const pins = [P("u"), P("a")];
+    const secs = [S("s1", "One", 1)];
+    expect(planModelDropOnPin(pins, secs, "codex/a", P("u"), true)).toBeNull();
+    expect(planModelDropOnWallGroup(pins, secs, "section/s1", null, false)).toBeNull();
+    expect(planModelDropOnRail(pins, secs, "section/s1", null, false)).toBeNull();
+    expect(planModelDropOnRail(pins, secs, null, "s1", false)).toBeNull();
   });
 });
