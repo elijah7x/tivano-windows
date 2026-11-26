@@ -49,6 +49,71 @@ const heads = (engine: Engine, leadId: string) =>
     .threads.filter((t) => t.hydraHead?.leadId === leadId)
     .sort((a, b) => a.hydraHead!.spawnedAt - b.hydraHead!.spawnedAt);
 
+async function exerciseHydraOffQueue(mode: "global" | "thread") {
+  const { engine, store } = make();
+  engine.setSettings({ hydraMaxHeads: 1 });
+  const lead = engine.createThread(null, "lead");
+
+  // Cap 1: one real head occupies the only slot and parks on approval.
+  engine.sendTurn(lead.id, "go [mock:hydra-wait]");
+  await waitFor(
+    () =>
+      thread(engine, lead.id).turn?.status === "done" &&
+      heads(engine, lead.id).length === 1 &&
+      heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+  );
+
+  // A later lead turn creates a separate batch whose only delegation is
+  // cap-held. This is the stranded-queue shape the adaptive switch audit
+  // found: the earlier head belongs to a different batch and will settle
+  // after Hydra is off.
+  engine.sendTurn(lead.id, "again [mock:hydra-waitq]");
+  const e = engine as any;
+  await waitFor(
+    () =>
+      (e.hydraWaiting.get(lead.id)?.length ?? 0) === 1 &&
+      thread(engine, lead.id).turn?.status === "done",
+  );
+  const queuedBatch = e.hydraWaiting.get(lead.id)![0]!.batchId as string;
+  expect(e.hydraBatchRequest.has(queuedBatch)).toBe(true);
+  expect(e.hydraBatchGen.has(queuedBatch)).toBe(true);
+  expect(e.hydraBatchJob.has(queuedBatch)).toBe(true);
+  const job = () =>
+    thread(engine, lead.id).hydraJobs?.find((j) => j.id === queuedBatch);
+  expect(job()).toMatchObject({ isOpen: true });
+
+  if (mode === "global") {
+    engine.setSettings({ hydraEnabled: false });
+  } else {
+    engine.setThreadHydra(lead.id, false);
+  }
+
+  // The queue and the queue-only batch's bookkeeping disappear together;
+  // the synthetic job settles instead of remaining open forever.
+  expect(e.hydraWaiting.get(lead.id) ?? []).toHaveLength(0);
+  expect(e.hydraBatchRequest.has(queuedBatch)).toBe(false);
+  expect(e.hydraBatchGen.has(queuedBatch)).toBe(false);
+  expect(e.hydraBatchJob.has(queuedBatch)).toBe(false);
+  expect(job()).toMatchObject({
+    isOpen: false,
+    ending: "stopped",
+    merge: "nothing",
+  });
+
+  // The earlier head is real work, not queue bookkeeping: it can finish,
+  // its report flushes, and afterwards the adaptive switch is free.
+  engine.stopHydraHead(heads(engine, lead.id)[0]!.id);
+  await waitFor(() =>
+    thread(engine, lead.id).messages.some((m) =>
+      m.content.includes("Hydra reports:"),
+    ),
+  );
+  await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+  expect(() => engine.setSubagentMode(lead.id, "adaptive")).not.toThrow();
+  expect(thread(engine, lead.id).subagentMode).toBe("adaptive");
+  store.close();
+}
+
 describe("F22 Hydra runtime (frozen delegation slice)", () => {
   it("a delegation block spawns rostered heads; their reports land batched", async () => {
     const { engine, store } = make();
@@ -393,30 +458,54 @@ describe("A58 pair binding (frozen hydraLaunch slice)", () => {
   });
 
   // The queued-cap scenario above always has the held head busy too, so
-  // it cannot prove the queue term alone refuses. Isolate it: a stranded
-  // hydraWaiting entry with no running heads and no pending reports —
+  // it cannot prove the queue term alone refuses. A public flow can still
+  // strand the queue: deleting the occupying head removes the head thread
+  // without synthesizing a finish report, while the later turn's cap-held
+  // delegation remains queued. With no head or pending report left,
   // hydraLeadBusy is false, so only the waiting-queue clause can throw.
-  // (Queued entries share their head's batch, which keeps that head's
-  // report pending — no public flow reaches queue>0 && !busy, so the
-  // queue is seeded directly; reverting the clause fails this test.)
   it("the waiting queue alone locks the adaptive switch", async () => {
     const { engine, store } = make();
+    engine.setSettings({ hydraMaxHeads: 1 });
     const lead = engine.createThread(null, "lead");
-    const waiting = (
-      engine as unknown as {
-        hydraWaiting: Map<string, { d: { task: string }; batchId: string; queuedAt: number }[]>;
-      }
-    ).hydraWaiting;
-    waiting.set(lead.id, [
-      { d: { task: "stranded" }, batchId: "stranded-batch", queuedAt: 1 },
-    ]);
-    // Control: nothing is at work — no heads, no reports.
+    const internal = engine as unknown as {
+      hydraWaiting: Map<string, unknown[]>;
+      hydraPendingReports: Map<string, unknown[]>;
+    };
+
+    engine.sendTurn(lead.id, "go [mock:hydra-wait]");
+    await waitFor(
+      () =>
+        thread(engine, lead.id).turn?.status === "done" &&
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+    engine.sendTurn(lead.id, "again [mock:hydra-waitq]");
+    await waitFor(
+      () =>
+        thread(engine, lead.id).turn?.status === "done" &&
+        (internal.hydraWaiting.get(lead.id)?.length ?? 0) === 1,
+    );
+
+    engine.deleteThread(heads(engine, lead.id)[0]!.id);
+
+    // Controls: the queue was reached publicly and nothing else is at
+    // work — no head remains and no finish report was synthesized.
     expect(heads(engine, lead.id)).toHaveLength(0);
+    expect(internal.hydraWaiting.get(lead.id) ?? []).toHaveLength(1);
+    expect(internal.hydraPendingReports.get(lead.id) ?? []).toHaveLength(0);
     expect(() => engine.setSubagentMode(lead.id, "adaptive")).toThrow(
       /switch modes/,
     );
     expect(() => engine.setSubagentMode(lead.id, "same")).not.toThrow();
     store.close();
+  });
+
+  it("app-wide Hydra off clears a later turn's cap-held batch bookkeeping and frees the adaptive switch", async () => {
+    await exerciseHydraOffQueue("global");
+  });
+
+  it("per-chat Hydra off clears a later turn's cap-held batch bookkeeping and frees the adaptive switch", async () => {
+    await exerciseHydraOffQueue("thread");
   });
 
   it("leaving adaptive also refuses while delegations wait", async () => {
@@ -1158,7 +1247,16 @@ describe("P2-62 Hydra finish-signal & unread suppression (frozen AppModel.turnFi
     );
 
     // Disable Hydra globally while two delegations sit in hydraWaiting.
+    // They share the held head's batch, so that batch's bookkeeping must
+    // survive the queue drop and settle only when the real head reports.
+    const e = engine as any;
+    const mixedBatch = e.hydraWaiting.get(lead.id)![0]!.batchId as string;
+    expect(e.hydraBatchRequest.has(mixedBatch)).toBe(true);
+    expect(e.hydraBatchGen.has(mixedBatch)).toBe(true);
     engine.setSettings({ hydraEnabled: false });
+    expect(e.hydraWaiting.get(lead.id) ?? []).toHaveLength(0);
+    expect(e.hydraBatchRequest.has(mixedBatch)).toBe(true);
+    expect(e.hydraBatchGen.has(mixedBatch)).toBe(true);
     engine.stopHydraHead(heads(engine, lead.id)[0]!.id);
 
     await waitFor(() =>
@@ -1168,6 +1266,13 @@ describe("P2-62 Hydra finish-signal & unread suppression (frozen AppModel.turnFi
     );
     await waitFor(() => thread(engine, lead.id).turn?.status === "done");
     expect(heads(engine, lead.id)).toHaveLength(1);
+    expect(e.hydraBatchRequest.has(mixedBatch)).toBe(false);
+    expect(e.hydraBatchGen.has(mixedBatch)).toBe(false);
+    expect(thread(engine, lead.id).hydraJobs?.find((j) => j.id === mixedBatch)).toMatchObject({
+      isOpen: false,
+      ending: "stopped",
+      merge: "nothing",
+    });
 
     const afterReport = signals.filter((s) => s.threadId === lead.id).at(-1);
     expect(afterReport).toMatchObject({

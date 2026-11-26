@@ -13,9 +13,12 @@ import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
 import {
   MODEL_LIST_LIMIT,
+  PICKER_MODELS_CACHE_LIMIT,
+  PickerModelsCache,
   addPin,
   addSection,
   applyDraftRename,
+  cachedPickerModels,
   defaultPickerCategory,
   dropPinOnGroupEnd,
   dropPinOnPin,
@@ -30,13 +33,20 @@ import {
   partitionModelBlocks,
   partitionPickerModels,
   pickerCategoryKey,
+  pickerPairMatches,
+  pickerPairTitle,
   pinId,
+  planModelDropOnPin,
+  planModelDropOnRail,
+  planModelDropOnWallGroup,
   prefKey,
   protectedModelIds,
   removePin,
   removeSection,
   renameSection,
   resolvePickerCategory,
+  resolveRecentPickerModel,
+  resolveRecentPickerPair,
   sectionEditTargetAlive,
   sectionIdOfPin,
   setModelListItems,
@@ -556,5 +566,337 @@ describe("P2-56 chip drag-reorder and rail drops", () => {
       ["Alpha", 0],
     ]);
     expect(unpinnedPart.ungrouped.map((e) => e.modelId)).toEqual(["u1"]);
+  });
+
+  it("P2-03 resolves combos category, pair titles/search, and recent pair/model", () => {
+    const opts = new Map([
+      ["m1", M("m1", "GPT-5.4")],
+      ["m2", M("m2", "GPT-5.4 Mini")],
+    ]);
+    const part = partitionPickerModels([P("m1")], [S("s1", "Reasoning", 0)], [], opts);
+    expect(
+      pickerCategoryKey(
+        defaultPickerCategory(part, "m1", { leadsWithPair: true, hasPairs: true }),
+      ),
+    ).toBe("combos");
+    expect(
+      pickerCategoryKey(
+        resolvePickerCategory({ kind: "combos" }, part, { hasPairs: true })!,
+      ),
+    ).toBe("combos");
+    expect(
+      pickerCategoryKey(
+        resolvePickerCategory({ kind: "combos" }, part, { hasPairs: false })!,
+      ),
+    ).toBe("all");
+
+    const pairNamed = {
+      id: "pair-1",
+      provider: "codex",
+      orchestratorModel: "m1",
+      workerModel: "m2",
+      name: "Fast Duo",
+      headProfiles: [],
+    };
+    const pairAuto = {
+      id: "pair-2",
+      provider: "codex",
+      orchestratorModel: "m1",
+      headProfiles: [],
+    };
+    const modelName = (_p: string, id: string | undefined) => (id ? opts.get(id)?.name : undefined);
+    expect(
+      pickerPairTitle(
+        pairNamed,
+        modelName,
+        () => "Codex",
+        (p) => `Any ${p} model`,
+        (l) => `${l} + itself`,
+      ),
+    ).toBe("Fast Duo");
+    expect(
+      pickerPairTitle(
+        pairAuto,
+        modelName,
+        () => "Codex",
+        (p) => `Any ${p} model`,
+        (l) => `${l} + itself`,
+      ),
+    ).toBe("GPT-5.4 + itself");
+
+    expect(pickerPairMatches(pairNamed, "duo", "Fast Duo", "Codex")).toBe(true);
+    expect(pickerPairMatches(pairNamed, "mini", "Fast Duo", "GPT-5.4 + GPT-5.4 Mini")).toBe(true);
+    expect(pickerPairMatches(pairNamed, "opus", "Fast Duo", "Codex")).toBe(false);
+
+    expect(resolveRecentPickerPair([pairNamed, pairAuto], "pair-2")?.id).toBe("pair-2");
+    expect(resolveRecentPickerPair([pairNamed, pairAuto], "missing")).toBeUndefined();
+    expect(
+      resolveRecentPickerModel(part.groups[0]!.items, { provider: "codex", modelID: "m1" })
+        ?.modelId,
+    ).toBe("m1");
+    expect(
+      resolveRecentPickerModel(part.groups[0]!.items, {
+        provider: "codex",
+        modelID: "missing",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("P2-03 persists recents, applies/clears hydraPairId via setThreadModel, and enforces adaptive lock", () => {
+    const root = freshRoot();
+    const { store, engine } = makeEngine(root);
+    const t = engine.createThread(null, "picker-thread");
+    engine.setSettings({
+      lastNewChatModel: { provider: "codex", modelID: "gpt-5.4" },
+    });
+    engine.setThreadModel(t.id, "gpt-5.4", "high", null, "pair-1");
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.hydraPairId).toBe("pair-1");
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.subagentMode).toBe("preset");
+    expect(engine.snapshot().settings.lastHydraPairId).toBe("pair-1");
+    expect(engine.snapshot().settings.lastNewChatPairId).toBe("pair-1");
+    expect(engine.snapshot().settings.lastNewChatModel).toEqual({
+      provider: "codex",
+      modelID: "gpt-5.4",
+    });
+
+    // Leaving pair via setThreadModel(..., null) clears hydraPairId, preset mode,
+    // and lastHydraPairId (so new chats start on no pair), while keeping lastNewChatPairId
+    // for the picker's Recent row.
+    engine.setThreadModel(t.id, "gpt-5.4-mini", null, null, null);
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.hydraPairId).toBeUndefined();
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.subagentMode).toBeUndefined();
+    expect(engine.snapshot().settings.lastHydraPairId).toBeUndefined();
+    expect(engine.snapshot().settings.lastNewChatPairId).toBe("pair-1");
+    const nextChat = engine.createThread(null, "after-leaving-pair");
+    expect(nextChat.hydraPairId).toBeUndefined();
+
+    // Re-enables hydraEnabled on the thread when applying a pair.
+    engine.setThreadHydra(t.id, false);
+    engine.setThreadModel(t.id, "gpt-5.4", "high", null, "pair-1");
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.hydraEnabled).toBe(true);
+
+    // Adaptive lock: throws while a head is running under adaptive mode and leaves recents untouched.
+    engine.setSubagentMode(t.id, "adaptive");
+    store.update((d) => {
+      d.threads.push({
+        id: "head-busy-1",
+        projectId: null,
+        title: "Busy head",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [],
+        turn: null,
+        sessionGrants: [],
+        hydraHead: {
+          leadId: t.id,
+          headIndex: 0,
+          name: "worker",
+          task: "work",
+          batchId: "b1",
+          status: "running",
+          spawnedAt: Date.now(),
+        },
+      });
+    });
+    expect(() => engine.setThreadModel(t.id, "gpt-5.4", "high", null, "pair-2")).toThrow(
+      "switch modes when no sub-agents are at work",
+    );
+    expect(engine.snapshot().settings.lastHydraPairId).toBe("pair-1");
+    expect(engine.snapshot().settings.lastNewChatPairId).toBe("pair-1");
+
+    // Flush and reload from disk to prove storeDoc persistence.
+    store.close();
+    const store2 = new Store(root);
+    store2.open();
+    expect(store2.state.settings.lastNewChatModel).toEqual({
+      provider: "codex",
+      modelID: "gpt-5.4",
+    });
+    expect(store2.state.settings.lastNewChatPairId).toBe("pair-1");
+    store2.close();
+  });
+
+  it("P1-24 partitionPickerModels keeps an unpinned chosen model visible in ungrouped", () => {
+    const opts = new Map([
+      ["p1", M("p1", "Pinned 1")],
+      ["old", M("old", "Old Model")],
+    ]);
+    const part = partitionPickerModels(
+      [P("p1")],
+      [S("s1", "Alpha", 0)],
+      [],
+      opts,
+      "old",
+    );
+    expect(part.groups[0]!.items.map((i) => i.modelId)).toEqual(["p1"]);
+    expect(part.ungrouped.map((e) => e.modelId)).toEqual(["old"]);
+    // When the chosen model is already pinned, it is not duplicated in ungrouped.
+    const dup = partitionPickerModels([P("p1")], [S("s1", "Alpha", 0)], [], opts, "p1");
+    expect(dup.ungrouped).toEqual([]);
+  });
+});
+
+describe("P1-24 PickerModelsCache and cachedPickerModels", () => {
+  const sampleCatalog = () => [
+    M("v1", "Fixture 1.0"),
+    M("v2", "Fixture 2.0"),
+    M("v3", "Fixture 3.0"),
+    M("v4", "Fixture 4.0"),
+    M("v5", "Fixture 5.0"),
+    M("plain", "Fixture Model", true),
+  ];
+
+  it("computes the trimmed list once per catalog/settings change and reuses across renders", () => {
+    const cache = new PickerModelsCache();
+    let computes = 0;
+    const onCompute = () => {
+      computes++;
+    };
+
+    const first = cachedPickerModels(sampleCatalog(), {
+      provider: "codex",
+      hideOutdatedModels: true,
+      protectedIds: new Set(),
+      cache,
+      onCompute,
+    });
+    expect(first.map((m) => m.id)).toEqual(["v3", "v4", "v5", "plain"]);
+    expect(computes).toBe(1);
+
+    // New array + Set references with identical values must hit the cache.
+    for (let i = 0; i < 5; i++) {
+      const again = cachedPickerModels(sampleCatalog(), {
+        provider: "codex",
+        hideOutdatedModels: true,
+        protectedIds: new Set(),
+        cache,
+        onCompute,
+      });
+      expect(again).toBe(first);
+    }
+    expect(computes).toBe(1);
+
+    // Toggling hideOutdatedModels off returns full catalog without recomputing;
+    // toggling back on hits the cached entry.
+    const off = cachedPickerModels(sampleCatalog(), {
+      provider: "codex",
+      hideOutdatedModels: false,
+      protectedIds: new Set(),
+      cache,
+      onCompute,
+    });
+    expect(off.map((m) => m.id)).toEqual(["v1", "v2", "v3", "v4", "v5", "plain"]);
+    expect(computes).toBe(1);
+
+    const backOn = cachedPickerModels(sampleCatalog(), {
+      provider: "codex",
+      hideOutdatedModels: true,
+      protectedIds: new Set(),
+      cache,
+      onCompute,
+    });
+    expect(backOn).toBe(first);
+    expect(computes).toBe(1);
+
+    // Changing the chosen protected model recomputes once and protects it.
+    const withChosen = cachedPickerModels(sampleCatalog(), {
+      provider: "codex",
+      hideOutdatedModels: true,
+      protectedIds: new Set(["v1"]),
+      cache,
+      onCompute,
+    });
+    expect(withChosen.map((m) => m.id)).toEqual(["v1", "v3", "v4", "v5", "plain"]);
+    expect(computes).toBe(2);
+
+    // Changing the catalog models recomputes once.
+    const extended = [...sampleCatalog(), M("v6", "Fixture 6.0")];
+    const nextCat = cachedPickerModels(extended, {
+      provider: "codex",
+      hideOutdatedModels: true,
+      protectedIds: new Set(["v1"]),
+      cache,
+      onCompute,
+    });
+    expect(nextCat.map((m) => m.id)).toEqual(["v1", "v4", "v5", "plain", "v6"]);
+    expect(computes).toBe(3);
+  });
+
+  it("evicts oldest entries past the bounded limit", () => {
+    const cache = new PickerModelsCache();
+    let computes = 0;
+    for (let i = 0; i < PICKER_MODELS_CACHE_LIMIT + 1; i++) {
+      cachedPickerModels([M(`m-${i}`, `Vendor ${i}.0`)], {
+        provider: "codex",
+        hideOutdatedModels: true,
+        protectedIds: new Set(),
+        cache,
+        onCompute: () => {
+          computes++;
+        },
+      });
+    }
+    expect(cache.size).toBe(PICKER_MODELS_CACHE_LIMIT);
+    expect(computes).toBe(PICKER_MODELS_CACHE_LIMIT + 1);
+
+    // Oldest key (m-0) was evicted, so asking for it recomputes; newest (m-48) hits.
+    cachedPickerModels([M(`m-${PICKER_MODELS_CACHE_LIMIT}`, `Vendor ${PICKER_MODELS_CACHE_LIMIT}.0`)], {
+      provider: "codex",
+      hideOutdatedModels: true,
+      protectedIds: new Set(),
+      cache,
+      onCompute: () => {
+        computes++;
+      },
+    });
+    expect(computes).toBe(PICKER_MODELS_CACHE_LIMIT + 1);
+
+    cachedPickerModels([M("m-0", "Vendor 0.0")], {
+      provider: "codex",
+      hideOutdatedModels: true,
+      protectedIds: new Set(),
+      cache,
+      onCompute: () => {
+        computes++;
+      },
+    });
+    expect(computes).toBe(PICKER_MODELS_CACHE_LIMIT + 2);
+  });
+});
+
+describe("P2-33 pure drop planning guards", () => {
+  it("a section dropped after its removal produces no write plan", () => {
+    const pins = [P("u"), P("a"), P("b")];
+    const secs = [S("s1", "One", 1), S("s2", "Two", 2)];
+    expect(planModelDropOnRail(pins, secs, "section/s2", "s1", false)).not.toBeNull();
+    const withoutDragged = secs.filter((s) => s.id !== "s2");
+    expect(planModelDropOnRail(pins, withoutDragged, "section/s2", "s1", false)).toBeNull();
+  });
+
+  it("a pin dropped after its removal produces no write plan on pin, wall, or rail", () => {
+    const pins = [P("u"), P("a"), P("b")];
+    const secs = [S("s1", "One", 1), S("s2", "Two", 2)];
+    const stalePins = pins.filter((p) => p.modelID !== "b");
+    expect(planModelDropOnPin(stalePins, secs, "codex/b", P("a"), false)).toBeNull();
+    expect(planModelDropOnWallGroup(stalePins, secs, "codex/b", "s1", false)).toBeNull();
+    expect(planModelDropOnRail(stalePins, secs, "codex/b", null, false)).toBeNull();
+  });
+
+  it("live pin and section drags produce the same reorder plans the component writes", () => {
+    const pins = [P("u"), P("a"), P("b")];
+    const secs = [S("s1", "One", 1), S("s2", "Two", 2)];
+    const pinPlan = planModelDropOnRail(pins, secs, "codex/b", null, false);
+    expect(pinPlan!.modelList.map((p) => p.modelID)).toEqual(["u", "b", "a"]);
+    const sectionPlan = planModelDropOnRail(pins, secs, "section/s2", "s1", false);
+    expect(sectionPlan!.modelSections.map((s) => s.id)).toEqual(["s2", "s1"]);
+  });
+
+  it("searching drops and mismatched drag kinds are inert", () => {
+    const pins = [P("u"), P("a")];
+    const secs = [S("s1", "One", 1)];
+    expect(planModelDropOnPin(pins, secs, "codex/a", P("u"), true)).toBeNull();
+    expect(planModelDropOnWallGroup(pins, secs, "section/s1", null, false)).toBeNull();
+    expect(planModelDropOnRail(pins, secs, "section/s1", null, false)).toBeNull();
+    expect(planModelDropOnRail(pins, secs, null, "s1", false)).toBeNull();
   });
 });

@@ -5,7 +5,12 @@
 // The catalog stays provider-owned (models:list) — pins only ORGANIZE the
 // picker; a pin whose model never appeared in a catalog still shows by id.
 
-import { pairHeadsProvider } from "./hydra";
+import {
+  pairCustomName,
+  pairHeadsProvider,
+  pairSendsHeadsElsewhere,
+  type HydraPair,
+} from "./hydra";
 
 /** Frozen ProviderKind — this build ships one provider adapter. The field
  *  rides along so stored pins keep the frozen identity shape. */
@@ -401,6 +406,103 @@ export function simplifiedModels<T extends ModelRowLike>(
     .map((e) => e.option);
 }
 
+export const PICKER_MODELS_CACHE_LIMIT = 48;
+
+/** Bounded cache for `simplifiedModels` results (frozen `PickerModelsCache`
+ *  in `ModelVisibility.swift`), keyed by provider, hideOutdated flag,
+ *  protected ids, catalog signature, and knownVersions signature. */
+export class PickerModelsCache<T extends ModelRowLike = ModelRowLike> {
+  private values = new Map<string, T[]>();
+  private order: string[] = [];
+  private readonly limit: number;
+
+  constructor(limit = PICKER_MODELS_CACHE_LIMIT) {
+    this.limit = Math.max(1, limit);
+  }
+
+  get size(): number {
+    return this.values.size;
+  }
+
+  get(key: string): T[] | undefined {
+    return this.values.get(key);
+  }
+
+  set(key: string, value: T[]): void {
+    if (!this.values.has(key)) {
+      this.order.push(key);
+    }
+    this.values.set(key, value);
+    while (this.order.length > this.limit) {
+      const oldest = this.order.shift();
+      if (oldest !== undefined) this.values.delete(oldest);
+    }
+  }
+
+  clear(): void {
+    this.values.clear();
+    this.order = [];
+  }
+}
+
+export const sharedPickerModelsCache = new PickerModelsCache<ModelRowLike>();
+
+function catalogSignature(models: readonly ModelRowLike[]): string {
+  return `${models.length}\0${models
+    .map((m) => `${m.id}\u0001${m.name}\u0001${m.isDefault ? "1" : "0"}`)
+    .join("\0")}`;
+}
+
+function knownVersionsSignature(
+  knownVersions?: ReadonlyMap<string, ReadonlySet<string>>,
+): string {
+  if (!knownVersions || knownVersions.size === 0) return "";
+  return [...knownVersions.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([vendor, versions]) => `${vendor}:${[...versions].sort().join(",")}`)
+    .join("\0");
+}
+
+/** Returns the trimmed model list for a picker, reusing cached results
+ *  when the catalog, protection set, and `hideOutdatedModels` are unchanged. */
+export function cachedPickerModels<T extends ModelRowLike>(
+  models: T[],
+  options: {
+    provider: string;
+    hideOutdatedModels?: boolean | undefined;
+    protectedIds?: ReadonlySet<string> | undefined;
+    keepingVersions?: number | undefined;
+    knownVersions?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+    cache?: PickerModelsCache<T> | undefined;
+    onCompute?: (() => void) | undefined;
+  },
+): T[] {
+  const hideOutdated = options.hideOutdatedModels ?? true;
+  if (!hideOutdated || models.length === 0) return models;
+  const protectedSet = options.protectedIds ?? new Set<string>();
+  const keeping = options.keepingVersions ?? 3;
+  const protectedKey = [...protectedSet].sort().join("\0");
+  const key = [
+    options.provider,
+    "1",
+    String(keeping),
+    protectedKey,
+    catalogSignature(models),
+    knownVersionsSignature(options.knownVersions),
+  ].join("\u0002");
+  const cache = options.cache ?? (sharedPickerModelsCache as unknown as PickerModelsCache<T>);
+  const hit = cache.get(key);
+  if (hit !== undefined) return hit;
+  options.onCompute?.();
+  const result = simplifiedModels(models, {
+    keepingVersions: keeping,
+    knownVersions: options.knownVersions,
+    isProtected: (m) => protectedSet.has(m.id),
+  });
+  cache.set(key, result);
+  return result;
+}
+
 /** Frozen protectedModelIDs(): the ids a trimmed picker keeps anyway —
  *  the caller's extras (the picker's own choice, the open chat's model),
  *  the settings' pins, and every pair's lead and heads models on
@@ -759,6 +861,78 @@ export function dropPinOnGroupEnd(
   return next;
 }
 
+export type ModelDragTarget =
+  | { kind: "pin"; id: string }
+  | { kind: "section"; id: string };
+
+/** Parses the renderer's drag token without trusting it as a live model id.
+ *  Drop planning then re-resolves the target against the freshest settings
+ *  snapshot, so a row removed mid-drag cannot be recreated by the drop. */
+export function parseModelDragTarget(dragged: string | null): ModelDragTarget | null {
+  if (!dragged) return null;
+  if (dragged.startsWith("section/")) {
+    const id = dragged.slice("section/".length);
+    return id === "" ? null : { kind: "section", id };
+  }
+  return { kind: "pin", id: dragged };
+}
+
+function liveDraggedPin(pins: readonly ModelPin[], id: string): ModelPin | null {
+  return pins.find((p) => pinId(p) === id) ?? null;
+}
+
+/** Pure drop-on-pin plan: searching and non-pin drags are inert, and a pin
+ *  missing from the fresh snapshot produces no write. */
+export function planModelDropOnPin(
+  pins: ModelPin[],
+  sections: ModelSection[],
+  dragged: string | null,
+  target: ModelPin,
+  isSearching: boolean,
+): { modelList: ModelPin[]; modelSections: ModelSection[] } | null {
+  const drag = parseModelDragTarget(dragged);
+  if (!drag || drag.kind !== "pin" || isSearching) return null;
+  const pin = liveDraggedPin(pins, drag.id);
+  return pin ? dropPinOnPin(pins, sections, pin, target) : null;
+}
+
+/** Pure drop-on-wall-group plan with the same fresh-snapshot guard. */
+export function planModelDropOnWallGroup(
+  pins: ModelPin[],
+  sections: ModelSection[],
+  dragged: string | null,
+  sectionId: string | null,
+  isSearching: boolean,
+  options?: { requireDifferentGroup?: boolean },
+): { modelList: ModelPin[]; modelSections: ModelSection[] } | null {
+  const drag = parseModelDragTarget(dragged);
+  if (!drag || drag.kind !== "pin" || isSearching) return null;
+  const pin = liveDraggedPin(pins, drag.id);
+  return pin ? dropPinOnGroupEnd(pins, sections, pin, sectionId) : null;
+}
+
+/** Pure rail-drop plan: section-on-section reorder or pin-to-group end. A
+ *  dragged section/pin that vanished after the drag started yields null —
+ *  the caller must make no write. */
+export function planModelDropOnRail(
+  pins: ModelPin[],
+  sections: ModelSection[],
+  dragged: string | null,
+  targetSectionId: string | null,
+  isSearching: boolean,
+): { modelList: ModelPin[]; modelSections: ModelSection[] } | null {
+  const drag = parseModelDragTarget(dragged);
+  if (!drag) return null;
+  if (drag.kind === "section") {
+    if (isSearching || targetSectionId === null) return null;
+    return moveSectionToTarget(pins, sections, drag.id, targetSectionId);
+  }
+  const pin = liveDraggedPin(pins, drag.id);
+  return pin
+    ? dropPinOnGroupEnd(pins, sections, pin, targetSectionId, { requireDifferentGroup: true })
+    : null;
+}
+
 /** Frozen RailCardDropDelegate (.group on .group): moves `draggedId` directly
  *  to `targetId`'s slot, carrying its models; ungrouped models stay on top. */
 export function moveSectionToTarget(
@@ -791,11 +965,13 @@ export function moveSectionToTarget(
 export type PickerCategory =
   | { kind: "all" }
   | { kind: "ungrouped" }
-  | { kind: "group"; sectionId: string };
+  | { kind: "group"; sectionId: string }
+  | { kind: "combos" };
 
 export function pickerCategoryKey(cat: PickerCategory): string {
   if (cat.kind === "all") return "all";
   if (cat.kind === "ungrouped") return "ungrouped";
+  if (cat.kind === "combos") return "combos";
   return `group/${cat.sectionId}`;
 }
 
@@ -811,13 +987,16 @@ export interface PickerPartition<T extends ModelRowLike> {
 }
 
 /** Partitions models for the group-aware picker (frozen partitionedGroups).
- *  When pins exist, only pinned models appear in their group / ungrouped order;
- *  otherwise `visibleModels` sit under ungrouped while sections stay visible. */
+ *  When pins exist, only pinned models appear in their group / ungrouped order
+ *  (plus `selectedModelId` if it is in the catalog and not already pinned, so
+ *  the chosen model always stays visible); otherwise `visibleModels` sit under
+ *  ungrouped while sections stay visible. */
 export function partitionPickerModels<T extends ModelRowLike>(
   pins: ModelPin[],
   sections: ModelSection[],
   visibleModels: T[],
   optionById: ReadonlyMap<string, T>,
+  selectedModelId?: string,
 ): PickerPartition<T> {
   if (pins.length === 0) {
     const orderedSections = [...sections]
@@ -830,28 +1009,40 @@ export function partitionPickerModels<T extends ModelRowLike>(
     };
   }
   const blocks = partitionModelBlocks(pins, sections);
-  return {
-    groups: blocks.groups.map((g) => ({
-      section: g.section,
-      items: g.pins.map((pin) => ({
-        modelId: pin.modelID,
-        pin,
-        option: optionById.get(pin.modelID),
-      })),
-    })),
-    ungrouped: blocks.ungrouped.map((pin) => ({
+  const ungrouped: PickerEntry<T>[] = blocks.ungrouped.map((pin) => ({
+    modelId: pin.modelID,
+    pin,
+    option: optionById.get(pin.modelID),
+  }));
+  const groups = blocks.groups.map((g) => ({
+    section: g.section,
+    items: g.pins.map((pin) => ({
       modelId: pin.modelID,
       pin,
       option: optionById.get(pin.modelID),
     })),
-  };
+  }));
+  if (
+    selectedModelId &&
+    !blocks.ungrouped.some((p) => p.modelID === selectedModelId) &&
+    !blocks.groups.some((g) => g.pins.some((p) => p.modelID === selectedModelId))
+  ) {
+    const selectedOpt = optionById.get(selectedModelId);
+    if (selectedOpt) {
+      ungrouped.unshift({ modelId: selectedModelId, option: selectedOpt });
+    }
+  }
+  return { groups, ungrouped };
 }
 
-/** Frozen defaultCategory: opens on the group holding `currentModelId`, else All. */
+/** Frozen defaultCategory: opens on Combos when leading with a pair,
+ *  else the group holding `currentModelId`, else All. */
 export function defaultPickerCategory<T extends ModelRowLike>(
   partition: PickerPartition<T>,
   currentModelId: string,
+  opts?: { leadsWithPair?: boolean | undefined; hasPairs?: boolean | undefined },
 ): PickerCategory {
+  if (opts?.leadsWithPair && opts?.hasPairs) return { kind: "combos" };
   if (currentModelId !== "") {
     const match = partition.groups.find((g) =>
       g.items.some((entry) => entry.modelId === currentModelId),
@@ -861,19 +1052,91 @@ export function defaultPickerCategory<T extends ModelRowLike>(
   return { kind: "all" };
 }
 
-/** Validates a selected category against live groups/ungrouped items. */
+/** Validates a selected category against live groups/ungrouped/pairs items. */
 export function resolvePickerCategory<T extends ModelRowLike>(
   candidate: PickerCategory | null,
   partition: PickerPartition<T>,
+  opts?: { hasPairs?: boolean | undefined },
 ): PickerCategory | null {
   if (candidate === null) return null;
   if (candidate.kind === "all") return candidate;
+  if (candidate.kind === "combos") {
+    return opts?.hasPairs ? candidate : { kind: "all" };
+  }
   if (candidate.kind === "ungrouped") {
     return partition.ungrouped.length > 0 ? candidate : { kind: "all" };
   }
   return partition.groups.some((g) => g.section.id === candidate.sectionId)
     ? candidate
     : { kind: "all" };
+}
+
+/** P2-03: model-based fallback title for a Hydra pair in the picker. */
+export function pickerPairModelsTitle(
+  pair: HydraPair,
+  modelName: (provider: string, modelId: string | undefined) => string | undefined,
+  providerLabel: (provider: string) => string,
+  formatAnyModel: (providerName: string) => string,
+  formatWithItself: (leadName: string) => string,
+): string {
+  const lead =
+    modelName(pair.provider, pair.orchestratorModel) ??
+    formatAnyModel(providerLabel(pair.provider));
+  const headsProv = pairHeadsProvider(pair);
+  const worker =
+    modelName(headsProv, pair.workerModel) ??
+    (pairSendsHeadsElsewhere(pair) ? providerLabel(headsProv) : undefined);
+  return worker === undefined ? formatWithItself(lead) : `${lead} + ${worker}`;
+}
+
+/** P2-03: display title for a Hydra pair (user custom name or models title). */
+export function pickerPairTitle(
+  pair: HydraPair,
+  modelName: (provider: string, modelId: string | undefined) => string | undefined,
+  providerLabel: (provider: string) => string,
+  formatAnyModel: (providerName: string) => string,
+  formatWithItself: (leadName: string) => string,
+): string {
+  return (
+    pairCustomName(pair) ??
+    pickerPairModelsTitle(pair, modelName, providerLabel, formatAnyModel, formatWithItself)
+  );
+}
+
+/** P2-03: case-insensitive search match for a Hydra pair (name, models, detail). */
+export function pickerPairMatches(
+  pair: HydraPair,
+  query: string,
+  title: string,
+  detail: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (q === "") return true;
+  return (
+    title.toLowerCase().includes(q) ||
+    detail.toLowerCase().includes(q) ||
+    (pairCustomName(pair)?.toLowerCase().includes(q) ?? false) ||
+    (pair.orchestratorModel?.toLowerCase().includes(q) ?? false) ||
+    (pair.workerModel?.toLowerCase().includes(q) ?? false)
+  );
+}
+
+/** P2-03: resolve the most recently selected Hydra pair if still present. */
+export function resolveRecentPickerPair(
+  pairs: readonly HydraPair[],
+  lastHydraPairId: string | undefined,
+): HydraPair | undefined {
+  if (!lastHydraPairId) return undefined;
+  return pairs.find((p) => p.id === lastHydraPairId);
+}
+
+/** P2-03: resolve the most recently selected model entry if present in the picker list. */
+export function resolveRecentPickerModel<T extends ModelRowLike>(
+  entries: readonly PickerEntry<T>[],
+  lastNewChatModel: ModelPin | undefined,
+): PickerEntry<T> | undefined {
+  if (!lastNewChatModel || lastNewChatModel.provider !== "codex") return undefined;
+  return entries.find((e) => e.modelId === lastNewChatModel.modelID);
 }
 
 /** Section id — UUID shape so stored sections stay frozen-compatible. */

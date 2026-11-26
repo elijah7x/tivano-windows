@@ -568,6 +568,8 @@ export const zhHant: Record<string, string> = {
   "The picker is full (30 models)": "選擇器已滿（30 個模型）",
   "No models reported": "未回報模型",
   "No models match": "沒有符合的模型",
+  "Clear search": "清除搜尋",
+  "Other models": "其他模型",
   "Done": "完成",
   "Provider reports": "服務商回報",
   "Applies to the next turn": "下輪生效",
@@ -901,6 +903,7 @@ export const zhHant: Record<string, string> = {
   "Heads run on this chat's model and effort.": "子代理使用此對話的模型與推論強度。",
   "No heads out yet": "尚未派出子代理",
   "Show the panel": "顯示面板",
+  "Show the sub-agent panel": "顯示子代理面板",
   "Hide the panel": "隱藏面板",
   "1 head working": "1 個子代理正在工作",
   "%d heads working": "%d 個子代理正在工作",
@@ -957,6 +960,7 @@ export const zhHant: Record<string, string> = {
   "Auto-dispatch": "自動派發",
   "Adaptive heads go out at once; off, each role's model is confirmed first.": "開啟後自適應子代理會立即派發；關閉則先確認每個角色的模型。",
   "Follow the lead": "跟隨主代理",
+  "%@ cannot run here; the identity follows the lead": "%@ 無法在此執行；該身分將跟隨主代理",
   "Edit this identity": "編輯此身分",
   "New identity": "新增身分",
   "Identity name": "身分名稱",
@@ -1025,8 +1029,8 @@ export const zhHant: Record<string, string> = {
   "%@ is working": "%@ 正在工作",
   "%d sub-agents working": "%d 個子代理運作中",
   "Does not open floating panels automatically. The chat still shows which sub-agents are running, and you can open a panel yourself.": "不會自動開啟懸浮面板。對話中仍會顯示哪些子代理正在執行，需要時可手動開啟面板。",
-  "When multiple sub-agents run, each sub-agent after the first automatically opens its own floating panel: on both sides of the chat when wide enough, or stacked on one side when narrow.": "多個子代理同時執行時，第 2 個起的子代理會自動開啟各自的浮動面板：視窗夠寬時分列對話兩側，較窄時則於單側堆疊顯示。",
-  "Keeps all running sub-agents in one floating panel; switch between them from its top-left menu, or pop individual sub-agents out manually.": "將所有執行中的子代理集中於同一個懸浮面板；可從面板左上角選單切換檢視，或手動將個別子代理單獨彈出。",
+  "When multiple sub-agents run, later running sub-agents automatically open their own floating panels in the chat area.": "多個子代理同時執行時，後續正在執行的子代理會在對話區域中自動開啟各自的懸浮面板。",
+  "Opens one team panel; use its rows to open a sub-agent's chat.": "開啟一個團隊面板；透過其中的列開啟子代理的對話。",
   "Lower the default reasoning effort for heads": "調降子代理的預設推理強度",
   "Effort set in a pair is unaffected. When no effort is specified and the head uses the same provider as the lead, the head stays at the standard effort (usually medium); if the lead uses a lower effort, the head inherits it.": "模型搭配中設定的推理強度不受影響。未指定推理強度且子代理與主代理使用同一供應商時，子代理會維持標準推理強度（通常為「中」）；若主代理使用較低的推理強度，子代理則會沿用。",
   "Messages": "訊息",
@@ -2066,6 +2070,7 @@ export const zhHant: Record<string, string> = {
   "ChatGPT plan or API key": "ChatGPT 方案或 API 金鑰",
   "Synthetic provider": "合成提供方",
   "Provider checklist": "供應商清單",
+  "This task's parent is unavailable.": "此任務的父工作階段無法使用。",
   // P1-36
   "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
     "已達子代理並行上限（%d）\n1 個任務正在排隊：同時最多執行 %d 個子代理（設定 › Hydra）。執行中的子代理完成後會自動派出。",
@@ -2075,4 +2080,39 @@ export const zhHant: Record<string, string> = {
     "已達子代理並行上限（%d）\n1 個任務正在排隊：同時最多執行 %d 個子代理。執行中的子代理完成後會自動派出。",
   "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "已達子代理並行上限（%d）\n%d 個任務正在排隊：同時最多執行 %d 個子代理。執行中的子代理完成後會自動派出。",
+  // P2-03
+  "Recent": "最近",
+  "No pairs match": "沒有符合的組合",
+  "Pairs & models": "組合與模型",
+  "Browse models": "瀏覽模型",
+  // P2-01
+  "Press Tab to accept": "按 Tab 鍵接受",
+  // P2-18
+  "Specific model": "指定模型",
+  "Choose a model": "選擇模型",
+  "Reasoning effort": "推理強度",
+  "%@ (unavailable)": "%@（無法使用）",
+  "No models loaded for %@ yet.": "尚未載入 %@ 的模型。",
+  "Uses %@ at low effort. For thread titles, commit messages and composer predictions.":
+    "使用 %@（低推理強度）。用於對話標題、提交訊息與輸入框預測。",
+  "Writes thread titles, commit messages and composer predictions. Fast, inexpensive models are usually enough.":
+    "用於產生對話標題、提交訊息與輸入框預測。快速、經濟的模型通常就已足夠。",
+  "No thread titles, commit messages or composer predictions are generated.":
+    "不會產生對話標題、提交訊息或輸入框預測。",
+  "Send a turn in Codex to load its models.": "在 Codex 中傳送一輪訊息以載入其模型。",
+  // P1-33
+  "Invalid null byte in command or arguments.": "指令或參數中包含無效的空位元組。",
+  "Invalid newline in command or arguments.": "指令或參數中包含無效的換行符號。",
+  // P1-11
+  "Credits": "致謝",
+  "Where Tivano began": "Tivano 的起點",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano 是 Droppy Code 的衍生分支，依 AGPL-3.0 並附帶姓名標示條款授權。",
+  "Working indicators": "工作狀態指示器",
+  "Built-in terminal": "內建終端機",
+  "Terminal PTY layer": "終端機 PTY 層",
+  "Windows job-helper JSON parser": "Windows 作業輔助程式 JSON 解析器",
+  "Where Droppy Code began": "Droppy Code 的起源",
+  "Responsive chat architecture": "流暢對話架構參考",
+  "Streaming text fade": "串流文字漸顯",
 };

@@ -19,6 +19,20 @@ export async function runThemeChecks({
   };
   const css = (page, prop) =>
     page.evaluate((p) => getComputedStyle(document.documentElement).getPropertyValue(p).trim(), prop);
+  const normalizeOsAccent = (raw) => {
+    if (typeof raw !== "string") return null;
+    const hex = raw.trim().replace(/^#/, "");
+    if (/^[0-9a-fA-F]{6}$/.test(hex)) return hex.toUpperCase();
+    if (/^[0-9a-fA-F]{8}$/.test(hex)) {
+      if (hex.slice(6, 8) === "00") return null;
+      return hex.slice(0, 6).toUpperCase();
+    }
+    return null;
+  };
+  const hexToRgbCss = (hex6) => {
+    const n = parseInt(hex6, 16);
+    return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+  };
 
   const s1 = await launch("theme-main");
   instances.push(s1);
@@ -147,6 +161,38 @@ export async function runThemeChecks({
     osFollow.scheme === (osFollow.osDark ? "dark" : "light") && osFollow.accent.toLowerCase() === "#7ba58f",
     osFollow);
 
+  // TH-09: selecting System Accent uses the host OS accent color reported by
+  // Electron's systemPreferences.getAccentColor() (and paints the picker swatch).
+  const rawOsAccent = await s2.app.evaluate(({ systemPreferences }) =>
+    typeof systemPreferences.getAccentColor === "function"
+      ? systemPreferences.getAccentColor()
+      : null,
+  );
+  const osAccentHex = normalizeOsAccent(rawOsAccent);
+  await page2.locator(".sidebar-foot button.row").click();
+  await page2.waitForSelector(".modal", { timeout: 8000 });
+  await page2.locator(".theme-btn").click();
+  await page2.waitForSelector(".theme-menu", { timeout: 5000 });
+  await page2.locator('.theme-menu [role="menuitemradio"]', { hasText: "System Accent" }).click();
+  await page2.waitForFunction(
+    () => document.documentElement.dataset.theme === "system",
+    { timeout: 5000 },
+  );
+  const snapSys = await snap(page2);
+  const sysState = await page2.evaluate(() => ({
+    accent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
+    scheme: document.documentElement.style.colorScheme,
+    swatchBg: getComputedStyle(document.querySelector(".theme-btn .theme-swatch")).backgroundColor,
+  }));
+  const expectedSysHex = osAccentHex ?? (sysState.scheme === "dark" ? "0A84FF" : "0A6DFF");
+  verify("TH-09",
+    snapSys.info.systemAccentColor === osAccentHex
+      && sysState.accent.toLowerCase() === `#${expectedSysHex.toLowerCase()}`
+      && sysState.swatchBg === hexToRgbCss(expectedSysHex),
+    { rawOsAccent, osAccentHex, snapSystemAccent: snapSys.info.systemAccentColor, sysState });
+  await page2.locator(".modal-actions .primary").click();
+  await page2.waitForSelector(".modal", { state: "detached", timeout: 5000 });
+
   await boundedClose(s2.app, s2.proc);
-  check("TH-09", true, "clean shutdown");
+  check("TH-10", true, "clean shutdown");
 }

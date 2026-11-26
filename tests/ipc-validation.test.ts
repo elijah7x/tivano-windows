@@ -205,6 +205,35 @@ describe("IPC request validators", () => {
         fastTier: null,
       }),
     ).toBeTruthy();
+    expect(
+      requestValidators["threads:set-model"]({
+        threadId: uuid,
+        model: "gpt-5",
+        effort: "high",
+        fastTier: null,
+        hydraPairId: "pair-1",
+      }),
+    ).toBeTruthy();
+    expect(
+      requestValidators["threads:set-model"]({
+        threadId: uuid,
+        model: "gpt-5",
+        effort: null,
+        fastTier: null,
+        hydraPairId: null,
+      }),
+    ).toBeTruthy();
+    expect(
+      requestValidators["settings:set"]({
+        lastNewChatModel: { provider: "codex", modelID: "gpt-5" },
+      }),
+    ).toBeTruthy();
+    expect(requestValidators["settings:set"]({ lastNewChatModel: null })).toBeTruthy();
+    expect(requestValidators["settings:set"]({ lastNewChatPairId: "pair-1" })).toBeTruthy();
+    expect(requestValidators["settings:set"]({ lastNewChatPairId: null })).toBeTruthy();
+    expect(() => requestValidators["settings:set"]({ lastNewChatPairId: "" })).toThrow(
+      ValidationError,
+    );
     for (const bad of [
       { threadId: uuid, model: 5, effort: null, fastTier: null },
       { threadId: uuid, model: "", effort: null, fastTier: null },
@@ -213,6 +242,8 @@ describe("IPC request validators", () => {
       { threadId: uuid, model: "m", effort: null, fastTier: "t".repeat(101) },
       { threadId: uuid, model: "m", effort: null, fastTier: "" },
       { threadId: uuid, model: "m", effort: null, fastTier: 5 },
+      { threadId: uuid, model: "m", effort: null, fastTier: null, hydraPairId: "" },
+      { threadId: uuid, model: "m", effort: null, fastTier: null, hydraPairId: "p".repeat(121) },
       { threadId: "not-a-uuid", model: "m", effort: null, fastTier: null },
       { threadId: uuid, model: "m", effort: null, fastTier: null, extra: 1 },
       { threadId: uuid },
@@ -501,6 +532,22 @@ describe("checkpoints:diff payload (F10/A32)", () => {
       { threadId: uuid, turnId: uuid, path: "a.txt", command: "rm" },
     ])
       expect(() => requestValidators["checkpoints:diff"](bad), JSON.stringify(bad)).toThrow(
+        ValidationError,
+      );
+  });
+});
+
+describe("threads:predict-next payload (P2-01)", () => {
+  const uuid = "123e4567-e89b-42d3-a456-426614174000";
+  it("accepts threadId with optional turnId", () => {
+    expect(requestValidators["threads:predict-next"]({ threadId: uuid }).threadId).toBe(uuid);
+    expect(
+      requestValidators["threads:predict-next"]({ threadId: uuid, turnId: uuid }).turnId,
+    ).toBe(uuid);
+  });
+  it("rejects malformed or extra fields", () => {
+    for (const bad of [{}, { threadId: "bad" }, { threadId: uuid, turnId: "bad" }, { threadId: uuid, extra: true }])
+      expect(() => requestValidators["threads:predict-next"](bad), JSON.stringify(bad)).toThrow(
         ValidationError,
       );
   });

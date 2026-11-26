@@ -79,6 +79,7 @@ import type {
   ProviderAdapter,
   ProviderTurnHandle,
   ReasoningActivity,
+  TextGenerationOptions,
   ToolActivity,
   WorkspaceGrant,
 } from "./provider";
@@ -95,7 +96,7 @@ import { limitHandoffText } from "./limitHandoff";
 import type { AppEvent } from "../shared/ipc";
 import { INTERRUPTED_MARKER } from "../shared/types";
 import { threadsInAffiliation } from "../shared/threadOrder";
-import { extractTitle } from "../shared/textGen";
+import { buildPredictionContext, extractNextPrompt, extractTitle } from "../shared/textGen";
 import type {
   AppInfo,
   ApprovalRequest,
@@ -113,6 +114,7 @@ import type {
   RuntimeMode,
   Snapshot,
   SubagentMode,
+  TextGenerationChoice,
   TodoStep,
   Turn,
   WorktreeResult,
@@ -320,6 +322,11 @@ export class Engine {
   /** P2-58: threads currently running an async provider rewind (frozen
    *  ThreadRuntime.isReverting). Prevents concurrent sends or rewinds. */
   private readonly revertingThreads = new Set<string>();
+  /** P2-01: per-thread generation token for next-prompt predictions (bumped
+   *  on new sends, rewinds, archive/delete, or textGeneration=off) and
+   *  external local-control turns that should not trigger predictions. */
+  private readonly predictionGen = new Map<string, number>();
+  private readonly externalTurnIds = new Set<string>();
 
   /** F19: daily token-spend ledger + per-session cumulative trackers.
    *  Trackers key on the PROVIDER session identity (Codex rollout id,
@@ -627,6 +634,9 @@ export class Engine {
   /** Codex runtime status for AppInfo — supplied by bootstrap (index.ts)
    *  because it owns the resolved CodexRuntimeConfig. */
   codexInfo?: CodexInfo;
+  /** P2-51: OS system accent color (6-char uppercase RGB hex or null)
+   *  supplied and kept current by the Electron main bootstrap. */
+  systemAccentColor: string | null = null;
 
   /** Read-only descriptor for external surfaces (local control). */
   get providerDescriptor() {
@@ -657,6 +667,7 @@ export class Engine {
       ...(this.codexInfo ? { codex: this.codexInfo } : {}),
       ...(this.recoveredFrom ? { recoveredFrom: this.recoveredFrom } : {}),
       ...(whatsNew ? { whatsNew } : {}),
+      systemAccentColor: this.systemAccentColor,
       ...(typeof TIVANO_TERMINAL_CANDIDATE !== "undefined" &&
           TIVANO_TERMINAL_CANDIDATE === true
         ? { terminalCandidate: true as const }
@@ -1393,6 +1404,7 @@ export class Engine {
     this.assertMutable();
     const thread = this.mustThread(id);
     if (thread.isArchived) return;
+    this.bumpPredictionGen(id);
     // Compute neighbor BEFORE mutating isArchived so index math preserves
     // the thread's sidebar slot (frozen AppModel.archive neighbor(of:)).
     const archivedSet = new Set([id]);
@@ -1466,6 +1478,7 @@ export class Engine {
 
   deleteThread(id: string): void {
     this.assertMutable();
+    this.bumpPredictionGen(id);
     // Latch the queue first — a synchronous cancel→endTurn callback must
     // never fire a pendingSend on a thread being deleted.
     this.pendingSends.delete(id);
@@ -1523,10 +1536,18 @@ export class Engine {
         else void this.worktrees.worktreeRemove(projectId, wt).catch(() => {});
       }
     }
+    const removeOwnTaskWorkspace =
+      !del.projectId &&
+      !del.parentThreadId &&
+      this.paths?.hasTaskWorkspaceRoot() === true &&
+      !this.isTaskWorkspaceReferenced(id);
     this.store.update((d) => {
       d.threads = d.threads.filter((t) => t.id !== id);
       if (d.ui.selectedThreadId === id) d.ui.selectedThreadId = null;
     });
+    if (removeOwnTaskWorkspace) {
+      this.paths!.removeTaskWorkspace(id);
+    }
     this.emit({ type: "thread-removed", threadId: id });
   }
 
@@ -1613,9 +1634,10 @@ export class Engine {
   sendTurn(
     threadId: string,
     text: string,
-    opts?: { authored?: boolean; hydraReport?: number[]; hydraBrief?: boolean },
+    opts?: { authored?: boolean; hydraReport?: number[]; hydraBrief?: boolean; external?: boolean },
   ): Turn {
     this.assertMutable();
+    this.bumpPredictionGen(threadId);
     // Frozen beginTurn(userAuthored): a real user request restarts the
     // delegation-round budget; Hydra report/refusal turns don't. The
     // generation bump voids refunds charged under earlier requests.
@@ -1695,6 +1717,13 @@ export class Engine {
       startedAt: now,
       assistantMessageId: randomUUID(),
     };
+    if (opts?.external) {
+      this.externalTurnIds.add(turn.id);
+      if (this.externalTurnIds.size > 256) {
+        const oldest = this.externalTurnIds.values().next().value;
+        if (oldest !== undefined) this.externalTurnIds.delete(oldest);
+      }
+    }
     const userMsg: Message = {
       id: randomUUID(),
       role: "user",
@@ -1727,6 +1756,11 @@ export class Engine {
       thread.updatedAt = now;
       if (needsTitle) thread.title = text.slice(0, 60) || attached[0]?.name || "New thread";
     });
+    // Frozen AutoContinue.turnOpened: whatever opened this turn, the
+    // limit stop is behind it now. A user who picks the chat up (or any
+    // continuation that really starts) never leaves a superseded wait
+    // pinning the checkout until the old reset timer fires.
+    this.clearLimitWait(threadId);
     this.emit({ type: "thread-updated", thread });
     this.emit({ type: "turn-status", threadId, turnId: turn.id, status: "running" });
     this.updateSleepGuard();
@@ -1765,44 +1799,76 @@ export class Engine {
       this.emit({ type: "thread-updated", thread: steeredHead });
     }
 
-    // Every NON-mock adapter needs a workspace authorized for this project
-    // by main/test harness. No grant → WORKSPACE_NOT_CONFIGURED; the grant
-    // is re-verified at the moment of spawn.
+    // Every NON-mock adapter needs an authorized workspace: either the
+    // project's main-registered grant (or thread worktree) or, for a
+    // standalone ("Just chat") thread, its app-owned task workspace under
+    // `<dataRoot>/task-workspaces/<ownerThreadId>`.
     let workspace: WorkspaceGrant | undefined;
     if (this.provider.descriptor.mode !== "mock") {
       if (!thread.projectId) {
-        this.preProviderFail(
-          thread, turn, text, opts,
-          "WORKSPACE_NOT_CONFIGURED: thread has no project",
-         attached);
-        return turn;
-      }
-      workspace = this.paths?.lookup(thread.projectId);
-      if (!workspace) {
-        this.preProviderFail(
-          thread, turn, text, opts,
-          "WORKSPACE_NOT_CONFIGURED: no authorized directory is bound to this project",
-         attached);
-        return turn;
-      }
-      try {
-        this.paths!.verify(workspace);
-      } catch (err) {
-        this.preProviderFail(thread, turn, text, opts, (err as Error).message, attached);
-        return turn;
-      }
-      // F11: a worktree-bound thread executes in its own directory —
-      // authorization is inherited from the live project grant, and a
-      // dead worktree refuses rather than silently falling back.
-      if (thread.worktreeDir !== undefined) {
-        if (!this.paths!.dirLive(thread.worktreeDir)) {
+        if (this.paths?.hasTaskWorkspaceRoot()) {
+          try {
+            workspace = this.paths.ensureTaskWorkspace(
+              this.taskWorkspaceOwnerId(thread),
+            );
+          } catch (err) {
+            this.preProviderFail(
+              thread,
+              turn,
+              text,
+              opts,
+              (err as Error).message,
+              attached,
+            );
+            return turn;
+          }
+        } else {
           this.preProviderFail(
-            thread, turn, text, opts,
-            "WORKSPACE_NOT_CONFIGURED: the thread's worktree is missing or moved",
-           attached);
+            thread,
+            turn,
+            text,
+            opts,
+            "WORKSPACE_NOT_CONFIGURED: thread has no project",
+            attached,
+          );
           return turn;
         }
-        workspace = { projectId: thread.projectId, directory: thread.worktreeDir };
+      } else {
+        workspace = this.paths?.lookup(thread.projectId);
+        if (!workspace) {
+          this.preProviderFail(
+            thread,
+            turn,
+            text,
+            opts,
+            "WORKSPACE_NOT_CONFIGURED: no authorized directory is bound to this project",
+            attached,
+          );
+          return turn;
+        }
+        try {
+          this.paths!.verify(workspace);
+        } catch (err) {
+          this.preProviderFail(thread, turn, text, opts, (err as Error).message, attached);
+          return turn;
+        }
+        // F11: a worktree-bound thread executes in its own directory —
+        // authorization is inherited from the live project grant, and a
+        // dead worktree refuses rather than silently falling back.
+        if (thread.worktreeDir !== undefined) {
+          if (!this.paths!.dirLive(thread.worktreeDir)) {
+            this.preProviderFail(
+              thread,
+              turn,
+              text,
+              opts,
+              "WORKSPACE_NOT_CONFIGURED: the thread's worktree is missing or moved",
+              attached,
+            );
+            return turn;
+          }
+          workspace = { projectId: thread.projectId, directory: thread.worktreeDir };
+        }
       }
     } else if (thread.worktreeDir !== undefined || thread.projectId) {
       // The Mock ignores workspace for its scripts — but an isolation
@@ -2119,12 +2185,21 @@ export class Engine {
       return;
     if (workspace) {
       try {
-        // A worktree-bound thread executes in its app-owned checkout —
-        // verifyExec proves the dir is confined under the project worktree
-        // root AND the project grant is still live (F11). Every other
-        // turn still must equal the registered grant exactly.
-        if (live.worktreeDir !== undefined) this.paths!.verifyExec(workspace);
-        else this.paths!.verify(workspace);
+        // A standalone thread executes in its app-owned task workspace;
+        // a worktree-bound thread executes in its app-owned checkout
+        // (verifyExec proves confinement under the project worktree root
+        // AND live project grant); every other turn must equal the
+        // registered grant.
+        if (!live.projectId) {
+          this.paths!.verifyTaskWorkspace(
+            workspace,
+            this.taskWorkspaceOwnerId(live),
+          );
+        } else if (live.worktreeDir !== undefined) {
+          this.paths!.verifyExec(workspace);
+        } else {
+          this.paths!.verify(workspace);
+        }
       } catch (err) {
         this.failTurnSync(live, liveTurn, (err as Error).message);
         return;
@@ -2929,7 +3004,9 @@ export class Engine {
     showsSkylight?: boolean | undefined;
     cliInstallationTarget?: string | null | undefined;
     taskSleepMode?: "off" | "system" | "display" | undefined;
-    textGeneration?: "automatic" | "off" | undefined;
+    textGeneration?: TextGenerationChoice | undefined;
+    textGenerationModelID?: string | null | undefined;
+    textGenerationEffort?: string | null | undefined;
     threadTitles?: "once" | "updated" | undefined;
     autoShelveDays?: number | undefined;
     shelvedGroupName?: string | null | undefined;
@@ -2959,6 +3036,8 @@ export class Engine {
     hasSeenHydraIntro?: boolean | undefined;
     hydraPairs?: import("../shared/hydra").HydraPair[] | undefined;
     lastHydraPairId?: string | null | undefined;
+    lastNewChatPairId?: string | null | undefined;
+    lastNewChatModel?: import("../shared/modelList").ModelPin | null | undefined;
     subagentModeDefault?: SubagentMode | undefined;
     chimeraPresets?: import("../shared/chimera").ChimeraPreset[] | undefined;
     chimeraAutoDispatch?: boolean | undefined;
@@ -3033,6 +3112,21 @@ export class Engine {
       }
       if (patch.taskSleepMode !== undefined) d.settings.taskSleepMode = patch.taskSleepMode;
       if (patch.textGeneration !== undefined) d.settings.textGeneration = patch.textGeneration;
+      if (patch.textGenerationModelID !== undefined) {
+        if (patch.textGenerationModelID === null) delete d.settings.textGenerationModelID;
+        else d.settings.textGenerationModelID = patch.textGenerationModelID;
+      }
+      if (patch.textGenerationEffort !== undefined) {
+        if (patch.textGenerationEffort === null) delete d.settings.textGenerationEffort;
+        else d.settings.textGenerationEffort = patch.textGenerationEffort;
+      }
+      if (
+        patch.textGeneration !== undefined ||
+        patch.textGenerationModelID !== undefined ||
+        patch.textGenerationEffort !== undefined
+      ) {
+        for (const tid of this.predictionGen.keys()) this.bumpPredictionGen(tid);
+      }
       if (patch.threadTitles !== undefined) d.settings.threadTitles = patch.threadTitles;
       if (patch.autoShelveDays !== undefined)
         // Frozen picker only offers 0/3/7/14 — a stray value degrades
@@ -3052,8 +3146,10 @@ export class Engine {
         else d.settings.shortcuts = patch.shortcuts;
       }
       if (patch.alphaEnabled !== undefined) d.settings.alphaEnabled = patch.alphaEnabled;
-      if (patch.externalControlEnabled !== undefined)
+      if (patch.externalControlEnabled !== undefined) {
         d.settings.externalControlEnabled = patch.externalControlEnabled;
+        d.settings.controlLeftAlpha = true;
+      }
       if (patch.remoteMCPEnabled !== undefined)
         d.settings.remoteMCPEnabled = patch.remoteMCPEnabled;
       if (patch.remoteMCPFullAccess !== undefined)
@@ -3122,6 +3218,14 @@ export class Engine {
       if (patch.lastHydraPairId !== undefined) {
         if (patch.lastHydraPairId === null) delete d.settings.lastHydraPairId;
         else d.settings.lastHydraPairId = patch.lastHydraPairId;
+      }
+      if (patch.lastNewChatPairId !== undefined) {
+        if (patch.lastNewChatPairId === null) delete d.settings.lastNewChatPairId;
+        else d.settings.lastNewChatPairId = patch.lastNewChatPairId;
+      }
+      if (patch.lastNewChatModel !== undefined) {
+        if (patch.lastNewChatModel === null) delete d.settings.lastNewChatModel;
+        else d.settings.lastNewChatModel = patch.lastNewChatModel;
       }
       if (patch.subagentModeDefault !== undefined)
         d.settings.subagentModeDefault = patch.subagentModeDefault;
@@ -3199,9 +3303,15 @@ export class Engine {
       }
     });
     this.emit({ type: "settings-changed", settings: this.store.state.settings });
+    // Frozen switch-to-Manual parity: turning automatic continue off
+    // ends every parked wait immediately; the old reset timer must not
+    // keep a now-idle checkout busy or fire into a later turn.
+    if (patch.autoContinueAfterLimit === false) {
+      for (const threadId of [...this.limitWaits.keys()]) this.clearLimitWait(threadId);
+    }
     if (patch.hydraEnabled === false) {
       for (const leadId of [...this.hydraWaiting.keys()]) {
-        this.hydraWaiting.delete(leadId);
+        this.clearQueuedHydraHeads(leadId);
         this.flushHydraReports(leadId);
       }
     }
@@ -3266,6 +3376,7 @@ export class Engine {
     model: string | null,
     effort: string | null,
     fastTier: string | null = null,
+    hydraPairId?: string | null,
   ): void {
     this.assertMutable();
     const thread = this.mustThread(threadId);
@@ -3276,17 +3387,59 @@ export class Engine {
       throw new EngineError("invalid effort");
     if (fastTier !== null && (fastTier.length === 0 || fastTier.length > 100))
       throw new EngineError("invalid service tier");
+    if (
+      hydraPairId !== undefined &&
+      hydraPairId !== null &&
+      (hydraPairId.length === 0 || hydraPairId.length > 120)
+    )
+      throw new EngineError("invalid hydra pair id");
+    if (
+      hydraPairId !== undefined &&
+      hydraPairId !== null &&
+      !thread.hydraHead &&
+      this.subagentModeFor(thread) === "adaptive" &&
+      (this.hydraLeadBusy(threadId) ||
+        (this.hydraWaiting.get(threadId)?.length ?? 0) > 0)
+    ) {
+      throw new EngineError("switch modes when no sub-agents are at work");
+    }
     const modelBefore = thread.codexModel;
-    this.store.update(() => {
+    let settingsChanged = false;
+    this.store.update((d) => {
       if (model === null) delete thread.codexModel;
       else thread.codexModel = model;
       if (effort === null) delete thread.codexEffort;
       else thread.codexEffort = effort;
       if (fastTier === null) delete thread.codexServiceTier;
       else thread.codexServiceTier = fastTier;
+      if (hydraPairId === null) {
+        delete thread.hydraPairId;
+        if (thread.subagentMode === "preset") delete thread.subagentMode;
+        if (!thread.hydraHead && d.settings.lastHydraPairId !== undefined) {
+          delete d.settings.lastHydraPairId;
+          settingsChanged = true;
+        }
+      } else if (hydraPairId !== undefined) {
+        thread.hydraPairId = hydraPairId;
+        if (!thread.hydraHead) {
+          thread.subagentMode = "preset";
+          if (d.settings.lastHydraPairId !== hydraPairId) {
+            d.settings.lastHydraPairId = hydraPairId;
+            settingsChanged = true;
+          }
+          if (d.settings.lastNewChatPairId !== hydraPairId) {
+            d.settings.lastNewChatPairId = hydraPairId;
+            settingsChanged = true;
+          }
+        }
+        if (thread.hydraEnabled === false) thread.hydraEnabled = true;
+      }
       thread.updatedAt = Date.now();
     });
     this.emit({ type: "thread-updated", thread });
+    if (settingsChanged) {
+      this.emit({ type: "settings-changed", settings: this.store.state.settings });
+    }
     // 2.2.12 parity (frozen AutoContinue.applies): a wait armed against
     // the old model's limit must end the moment the model changes — the
     // composer wait state clears now, not at fire time. Effort and
@@ -3345,8 +3498,9 @@ export class Engine {
   /** P1-39 (frozen isLocalCheckoutBusy, bounded): another chat already
    *  works in this project's checkout — a live turn, a latched
    *  send-now, a parked limit-wait, a queued follow-up, or a lead's
-   *  pending head reports/review on a non-archived, non-worktree thread
-   *  bound to the same project (frozen isUsingWorkspace also counts
+   *  working/landing heads, pending reports or review on a non-archived,
+   *  non-worktree thread bound to the same project (frozen
+   *  isUsingWorkspace also counts
    *  isWaitingForLimit and followUps). A deferred auto-bind's turn
    *  reads "running" the whole probe, so no separate reservation is
    *  needed; worktree-bound and head-with-copy threads isolate
@@ -3365,7 +3519,7 @@ export class Engine {
         this.pendingSends.has(t.id) ||
         this.limitWaits.has(t.id) ||
         (t.followUps?.length ?? 0) > 0 ||
-        (this.hydraPendingReports.get(t.id)?.length ?? 0) > 0 ||
+        this.hydraLeadBusy(t.id) ||
         this.hydraReviewPending.has(t.id)
       )
         return true;
@@ -3835,7 +3989,7 @@ export class Engine {
     this.emit({ type: "thread-updated", thread });
     this.emit({ type: "settings-changed", settings: this.store.state.settings });
     if (!enabled) {
-      this.hydraWaiting.delete(threadId);
+      this.clearQueuedHydraHeads(threadId);
       this.flushHydraReports(threadId);
     }
   }
@@ -4538,17 +4692,40 @@ export class Engine {
    *  The off setting and a missing adapter capability report the same
    *  honest unavailable; output is sanitized like frozen (fences stripped,
    *  empty rejected) and returned as a DRAFT — never auto-committed. */
-  async commitMessageFor(summary: string, patch: string): Promise<GitCommitMessageResult> {
-    if (this.store.state.settings.textGeneration === "off")
-      return { kind: "unavailable", reason: "text-generation-off" };
+  private textGenOptions(workspaceDir?: string): TextGenerationOptions | null {
+    const s = this.store.state.settings;
+    const choice = s.textGeneration ?? "automatic";
+    if (choice === "off") return null;
+    if (choice === "codex") {
+      return {
+        mode: "codex",
+        ...(s.textGenerationModelID ? { model: s.textGenerationModelID } : {}),
+        ...(s.textGenerationEffort ? { effort: s.textGenerationEffort } : {}),
+        allowsDefaultModel: true,
+        ...(workspaceDir ? { workspaceDir } : {}),
+      };
+    }
+    return {
+      mode: "automatic",
+      allowsDefaultModel: true,
+      ...(workspaceDir ? { workspaceDir } : {}),
+    };
+  }
+
+  async commitMessageFor(
+    summary: string,
+    patch: string,
+    projectId?: string,
+  ): Promise<GitCommitMessageResult> {
+    const workspaceDir = projectId
+      ? this.store.state.projects.find((p) => p.id === projectId)?.directory
+      : undefined;
+    const opts = this.textGenOptions(workspaceDir);
+    if (!opts) return { kind: "unavailable", reason: "text-generation-off" };
     const gen = this.provider.generateCommitMessage?.bind(this.provider);
     if (!gen) return { kind: "unavailable", reason: "no-engine" };
     try {
-      const raw = await gen(
-        summary,
-        patch,
-        "",
-      );
+      const raw = await gen(summary, patch, "", opts);
       const message = (raw ?? "").replace(/```/g, "").trim();
       if (!message) return { kind: "unavailable", reason: "generation-empty" };
       return { kind: "ok", message };
@@ -4558,11 +4735,12 @@ export class Engine {
   }
 
   private maybeGenerateTitle(threadId: string, prompt: string): void {
-    if (this.store.state.settings.textGeneration === "off") return;
+    const opts = this.textGenOptions();
+    if (!opts) return;
     const gen = this.provider.generateTitle?.bind(this.provider);
     if (!gen) return;
     const atSend = this.store.state.threads.find((t) => t.id === threadId)?.title;
-    void gen(prompt)
+    void gen(prompt, opts)
       .then((raw) => {
         const title = raw ? extractTitle(raw) : null;
         if (!title) return;
@@ -4587,6 +4765,8 @@ export class Engine {
    */
   private maybeReviewTitle(thread: ChatThread): void {
     if (this.store.state.settings.threadTitles !== "updated") return;
+    const opts = this.textGenOptions();
+    if (!opts) return;
     if (thread.titleUserSet) return;
     const gen = this.provider.generateTitle?.bind(this.provider);
     if (!gen) return;
@@ -4600,7 +4780,7 @@ export class Engine {
       .join("\n---\n");
     if (!context.trim()) return;
     const atReview = thread.title;
-    void gen(context)
+    void gen(context, { ...opts, refresh: { currentTitle: atReview, context } })
       .then((raw) => {
         const title = raw ? extractTitle(raw) : null;
         if (!title || title === atReview) return;
@@ -4612,6 +4792,82 @@ export class Engine {
         this.emit({ type: "thread-updated", thread: t });
       })
       .catch(() => {});
+  }
+
+  private bumpPredictionGen(threadId: string): number {
+    const next = (this.predictionGen.get(threadId) ?? 0) + 1;
+    this.predictionGen.set(threadId, next);
+    return next;
+  }
+
+  private isTextGenerationOff(): boolean {
+    return this.store.state.settings.textGeneration === "off";
+  }
+
+  /**
+   * P2-01 (frozen ThreadRuntime.predictNextPromptIfDue + TextGeneration.nextPrompt):
+   * predict the likely next user message after a completed turn when Text
+   * generation is not off, the thread is idle and not a Hydra head, and the
+   * provider supports generation. Failures/empty/stale replies return null and
+   * never throw or interrupt subsequent turns.
+   */
+  async predictNextPrompt(
+    threadId: string,
+    turnId?: string,
+  ): Promise<{ prediction: string | null }> {
+    const opts = this.textGenOptions();
+    if (this.workGate !== "open" || !opts) {
+      return { prediction: null };
+    }
+    const thread = this.store.state.threads.find((t) => t.id === threadId);
+    if (!thread || thread.isArchived || thread.hydraHead || thread.isInPanel) {
+      return { prediction: null };
+    }
+    this.ensureThreadLoaded(threadId);
+    const turn = thread.turn;
+    if (!turn || turn.status !== "done") return { prediction: null };
+    if (turnId !== undefined && turn.id !== turnId) return { prediction: null };
+    if (this.externalTurnIds.has(turn.id)) return { prediction: null };
+    if (
+      this.pendingSends.has(threadId) ||
+      this.limitResumes.has(threadId) ||
+      this.revertingThreads.has(threadId) ||
+      this.hydraLeadBusy(threadId) ||
+      (this.hydraWaiting.get(threadId)?.length ?? 0) > 0 ||
+      (thread.followUps?.length ?? 0) > 0
+    ) {
+      return { prediction: null };
+    }
+    const gen = this.provider.generateNextPrompt?.bind(this.provider);
+    if (!gen) return { prediction: null };
+    const context = buildPredictionContext(thread.messages);
+    if (!context.trim()) return { prediction: null };
+    const expectedTurnId = turn.id;
+    const seq = this.bumpPredictionGen(threadId);
+    try {
+      const raw = await gen(context, { ...opts, allowsDefaultModel: false });
+      if (this.workGate !== "open" || this.isTextGenerationOff()) return { prediction: null };
+      if (this.predictionGen.get(threadId) !== seq) return { prediction: null };
+      const cur = this.store.state.threads.find((t) => t.id === threadId);
+      if (!cur || cur.isArchived || cur.hydraHead || cur.isInPanel) return { prediction: null };
+      if (cur.turn?.id !== expectedTurnId || cur.turn?.status !== "done") {
+        return { prediction: null };
+      }
+      if (
+        this.pendingSends.has(threadId) ||
+        this.limitResumes.has(threadId) ||
+        this.revertingThreads.has(threadId) ||
+        this.hydraLeadBusy(threadId) ||
+        (this.hydraWaiting.get(threadId)?.length ?? 0) > 0 ||
+        (cur.followUps?.length ?? 0) > 0
+      ) {
+        return { prediction: null };
+      }
+      const prediction = raw ? extractNextPrompt(raw) : null;
+      return { prediction };
+    } catch {
+      return { prediction: null };
+    }
   }
 
   private onProviderNotice(
@@ -5251,7 +5507,7 @@ export class Engine {
     if (!queue?.length) return;
     const launch = this.hydraLaunchFor(lead);
     if (!launch) {
-      this.hydraWaiting.delete(leadId);
+      this.clearQueuedHydraHeads(leadId);
       return;
     }
     while (queue.length) {
@@ -6673,6 +6929,43 @@ export class Engine {
     );
   }
 
+  /** Frozen ThreadRuntime.clearQueuedHydraHeads: dropping unspawned
+   *  cap-held entries is batch bookkeeping too, not just a queue delete.
+   *  A batch with a head still out (or a report already waiting) keeps
+   *  its bookkeeping until that real work settles; a batch whose only
+   *  work was queued is settled here so it cannot hold an open job or
+   *  poison a later adaptive-mode switch. */
+  private clearQueuedHydraHeads(leadId: string): void {
+    const queued = this.hydraWaiting.get(leadId) ?? [];
+    if (!queued.length) return;
+    this.hydraWaiting.delete(leadId);
+    const batchIds = [...new Set(queued.map((q) => q.batchId))];
+    const pendingReports = this.hydraPendingReports.get(leadId) ?? [];
+    let jobsChanged = false;
+    for (const batchId of batchIds) {
+      const hasActiveHead = this.store.state.threads.some(
+        (t) =>
+          t.hydraHead?.leadId === leadId &&
+          t.hydraHead.batchId === batchId &&
+          (t.hydraHead.status === "running" || t.hydraHead.landingPending === true),
+      );
+      const hasPendingReport = pendingReports.some((r) => r.batchId === batchId);
+      if (hasActiveHead || hasPendingReport) continue;
+      this.hydraBatchRequest.delete(batchId);
+      this.hydraBatchGen.delete(batchId);
+      this.hydraBatchJob.delete(batchId);
+      const lead = this.store.state.threads.find((t) => t.id === leadId);
+      const job = lead?.hydraJobs?.find((j) => j.id === batchId && j.isOpen);
+      if (job) {
+        job.isOpen = false;
+        job.ending = "stopped";
+        job.merge = "nothing";
+        jobsChanged = true;
+      }
+    }
+    if (jobsChanged) this.store.update(() => {});
+  }
+
   /** Frozen pendingReports: a batch's reports flush together once every
    *  head in the batch is back AND the lead is idle. Reports whose
    *  batch still has running heads keep waiting; unrelated batches
@@ -6699,7 +6992,7 @@ export class Engine {
         .map((t) => t.hydraHead!.batchId),
     );
     if (this.hydraWaiting.has(leadId) && this.hydraLaunchFor(lead) === undefined) {
-      this.hydraWaiting.delete(leadId);
+      this.clearQueuedHydraHeads(leadId);
     }
     for (const w of this.hydraWaiting.get(leadId) ?? [])
       runningBatches.add(w.batchId);
@@ -7459,6 +7752,7 @@ export class Engine {
     )
       throw new EngineError("Stop the running agents before reverting this conversation.");
     const removed = this.removedTurnSet(thread, turnId);
+    this.bumpPredictionGen(threadId);
     if (!this.provider.rollback) {
       this.provider.endSession?.(threadId);
       delete thread.providerThread;
@@ -7550,8 +7844,44 @@ export class Engine {
     }
   }
 
+  private taskWorkspaceOwnerId(thread: ChatThread): string {
+    let cur = thread;
+    const visited = new Set<string>([cur.id]);
+    while (cur.parentThreadId) {
+      if (visited.has(cur.parentThreadId)) {
+        throw new EngineError("This task's parent is unavailable.");
+      }
+      visited.add(cur.parentThreadId);
+      const parent = this.store.state.threads.find(
+        (t) => t.id === cur.parentThreadId,
+      );
+      if (!parent) {
+        throw new EngineError("This task's parent is unavailable.");
+      }
+      if (parent.projectId) {
+        throw new EngineError("WORKSPACE_NOT_CONFIGURED: thread has no project");
+      }
+      cur = parent;
+    }
+    return cur.id;
+  }
+
+  private isTaskWorkspaceReferenced(ownerId: string): boolean {
+    return this.store.state.threads.some((t) => {
+      if (t.id === ownerId || t.projectId) return false;
+      try {
+        return this.taskWorkspaceOwnerId(t) === ownerId;
+      } catch {
+        return false;
+      }
+    });
+  }
+
   private resolveAuthorizedWorkspace(thread: ChatThread): WorkspaceGrant {
     if (!thread.projectId) {
+      if (this.paths?.hasTaskWorkspaceRoot()) {
+        return this.paths.ensureTaskWorkspace(this.taskWorkspaceOwnerId(thread));
+      }
       throw new EngineError("WORKSPACE_NOT_CONFIGURED: thread has no project");
     }
     const grant = this.paths?.lookup(thread.projectId);

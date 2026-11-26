@@ -58,6 +58,13 @@ export const MCP_MAX_SERVERS = 32;
 export const MCP_MAX_ARGS = 64;
 export const MCP_MAX_ENV = 64;
 
+export interface CodexMcpResolveOptions {
+  /** Resolve a non-empty stdio command to an executable path, or `null` to skip. */
+  resolveCommand?: (command: string, env?: Record<string, string>) => string | null;
+  /** Collects server names skipped because `resolveCommand` returned `null`. */
+  skipped?: string[];
+}
+
 /** Frozen MCPProviderConfig.codex: the Settings-connected servers as a
  *  codex `config.mcp_servers` object, keyed by server name. A name the
  *  provider could not read as a plain key — whitespace or config-syntax
@@ -67,11 +74,14 @@ export const MCP_MAX_ENV = 64;
  *  configured — an all-empty header map is dropped like an empty env. */
 export function codexMcpServers(
   servers: readonly McpServerConfig[],
+  opts?: CodexMcpResolveOptions,
 ): Record<string, Record<string, unknown>> | undefined {
   const out: Record<string, Record<string, unknown>> = {};
+  const seen = new Set<string>();
   for (const s of servers) {
     const key = s.name.trim();
-    if (!key || /[\s\[\]'",.]/.test(key) || out[key] !== undefined) continue;
+    if (!key || /[\s\[\]'",.]/.test(key) || seen.has(key)) continue;
+    seen.add(key);
     if (s.transport === "http") {
       const url = s.url?.trim();
       if (!url) continue;
@@ -80,8 +90,15 @@ export function codexMcpServers(
       if (headers.length) entry.http_headers = Object.fromEntries(headers);
       out[key] = entry;
     } else {
-      const command = s.command.trim();
-      if (!command) continue;
+      const rawCommand = s.command.trim();
+      if (!rawCommand) continue;
+      const command = opts?.resolveCommand
+        ? opts.resolveCommand(rawCommand, s.env)
+        : rawCommand;
+      if (!command) {
+        opts?.skipped?.push(key);
+        continue;
+      }
       const entry: Record<string, unknown> = {
         command,
         args: s.args.filter((a) => typeof a === "string"),

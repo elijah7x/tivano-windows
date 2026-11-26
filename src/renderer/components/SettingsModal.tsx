@@ -38,8 +38,10 @@ import { RemoteMcpSection } from "./RemoteMcpSection";
 import { ForgeSection } from "./ForgeSection";
 import { WallpaperSection } from "./WallpaperSection";
 import { ModelListSettings } from "./ModelListSettings";
+import { TextGenerationPicker } from "./TextGenerationPicker";
 import { ArchiveSection } from "./ArchiveSection";
 import { VersionSection } from "./WhatsNewViews";
+import { CreditsSection } from "./CreditsSection";
 import {
   RUNTIME_MODES,
   RUNTIME_MODE_TITLE,
@@ -218,7 +220,7 @@ export function SettingsModal(props: {
 
   useEffect(() => {
     void refreshControl();
-  }, [settings.alphaEnabled, settings.externalControlEnabled, refreshControl]);
+  }, [settings.externalControlEnabled, refreshControl]);
 
   useEffect(() => {
     if (paneRef.current) paneRef.current.scrollTop = 0;
@@ -280,6 +282,7 @@ export function SettingsModal(props: {
                 value={settings.theme}
                 appearanceMode={settings.appearanceMode ?? "system"}
                 osDark={osDark}
+                systemAccentHex={info.systemAccentColor ?? null}
                 onChange={setTheme}
               />
             </div>
@@ -624,31 +627,7 @@ export function SettingsModal(props: {
             </p>
 
             <h3>{t("Text generation")}</h3>
-            <div
-              className="choice-row"
-              role="radiogroup"
-              aria-label={t("Thread titles")}
-            >
-              {(
-                [
-                  ["automatic", "Automatic"],
-                  ["off", "Off"],
-                ] as const
-              ).map(([mode, label]) => (
-                <button
-                  key={mode}
-                  role="radio"
-                  aria-checked={(settings.textGeneration ?? "automatic") === mode}
-                  className={`choice${(settings.textGeneration ?? "automatic") === mode ? " active" : ""}`}
-                  onClick={() => tryCall("settings:set", { textGeneration: mode })}
-                >
-                  {t(label)}
-                </button>
-              ))}
-            </div>
-            <p className="codex-note">
-              {t("Automatic uses the thread's own provider to write a title for a new thread and a draft for a commit message. Provider-specific picks are not supported yet.")}
-            </p>
+            <TextGenerationPicker settings={settings} providerMode={info.mode} />
             <label className="wt-field settings-field-gap">
               <span>{t("Thread titles")}</span>
               <div className="choices" role="radiogroup">
@@ -802,137 +781,123 @@ export function SettingsModal(props: {
           <div className="connections-section" data-testid="connections-section">
             <h3>{t("Connections")}</h3>
             <McpSection settings={settings} home={info.home} />
+
+            <div className="local-control-section" data-testid="local-control-section">
+              <h4 className="sub-head">{t("Local control")}</h4>
+              <div className="choice-row">
+                <button
+                  role="switch"
+                  aria-checked={settings.externalControlEnabled === true}
+                  data-testid="local-control-toggle"
+                  className={`choice${settings.externalControlEnabled === true ? " active" : ""}`}
+                  onClick={() =>
+                    tryCall("settings:set", {
+                      externalControlEnabled: settings.externalControlEnabled !== true,
+                    })
+                  }
+                >
+                  {t("Local control")}
+                </button>
+              </div>
+              <p className="codex-note" data-testid="local-control-detail">
+                {t("Let a command-line client control this running edition of Tivano. Other processes in your account can use this access. Approvals stay in Tivano. No network listener or automatic app launch.")}
+              </p>
+              <div className="kv control-status" data-testid="local-control-status">
+                <span>{t("Local control status")}</span>
+                <span>
+                  {!control || !control.enabled
+                    ? t("Disabled")
+                    : control.listening
+                      ? t("Listening for this account only")
+                      : t("Local control could not start. Retry after resolving the socket or permission conflict.")}
+                  {control?.enabled && !control.listening && (
+                    <button
+                      className="choice control-retry settings-btn-compact"
+                      onClick={() =>
+                        void api()
+                          .invoke("control:retry", {})
+                          .then(() => refreshControl())
+                      }
+                    >
+                      {t("Retry")}
+                    </button>
+                  )}
+                </span>
+              </div>
+
+              <h4 className="sub-head">{t("CLI command")}</h4>
+              <p className="codex-note" data-testid="cli-detail">
+                {t("Install the command in a user-owned bin directory on your request only. Installation never enables local control. Add that directory to PATH yourself if needed; Tivano does not edit shell configuration.")}
+              </p>
+              <div className="kv control-status" data-testid="cli-status">
+                <span>{t("CLI command")}</span>
+                <span>
+                  {!cli || cli.state === "unavailable"
+                    ? t("unavailable in this build")
+                    : cli.state === "absent"
+                      ? t("Not installed")
+                      : cli.state === "foreign"
+                        ? t("Another tivano command exists — Tivano will not replace it")
+                        : cli.state === "repair"
+                          ? t("Installed, but it points to an older copy of Tivano. Repair it to use this one.")
+                          : t("Installed")}
+                  {cli?.dir && cli.state !== "unavailable" && (
+                    <span className="mono dim"> {cli.dir}</span>
+                  )}
+                </span>
+              </div>
+              <div className="choice-row">
+                <button
+                  className="choice"
+                  data-testid="cli-install"
+                  onClick={() =>
+                    void api()
+                      .invoke("cli:install", {})
+                      .then((r) => {
+                        if (mounted.current) setCli(r as CliState);
+                        if ((r as { state?: string }).state !== "installed")
+                          setCliErr(t("Could not change the CLI command"));
+                      })
+                      .catch(async () => {
+                        if (!mounted.current) return;
+                        setCliErr(t("Could not change the CLI command"));
+                        await refreshCli();
+                      })
+                  }
+                >
+                  {cli?.state === "installed"
+                    ? t("Reinstall CLI")
+                    : cli?.state === "repair"
+                      ? t("Repair CLI")
+                      : t("Install CLI")}
+                </button>
+                <button
+                  className="choice danger"
+                  data-testid="cli-uninstall"
+                  disabled={!cli || (cli.state !== "installed" && cli.state !== "repair")}
+                  onClick={() =>
+                    void api()
+                      .invoke("cli:uninstall", {})
+                      .then((r) => {
+                        if (mounted.current) setCli(r as CliState);
+                      })
+                      .catch(async () => {
+                        if (!mounted.current) return;
+                        setCliErr(t("Could not change the CLI command"));
+                        await refreshCli();
+                      })
+                  }
+                >
+                  {t("Uninstall CLI")}
+                </button>
+              </div>
+              {cliErr && (
+                <p className="codex-note" data-testid="cli-error">{cliErr}</p>
+              )}
+            </div>
+
             <RemoteMcpSection settings={settings} />
             <ForgeSection worktreesDir={info.worktreesDir} />
-
-            <h3>{t("Alpha")}</h3>
-            <p className="codex-note">
-              {t("Features here are early versions and may be unstable. Turning Alpha off disables local control. Individual feature choices are kept.")}
-            </p>
-            <div className="choice-row">
-              <button
-                role="switch"
-                aria-checked={settings.alphaEnabled === true}
-                className={`choice${settings.alphaEnabled === true ? " active" : ""}`}
-                onClick={() =>
-                  tryCall("settings:set", { alphaEnabled: settings.alphaEnabled !== true })
-                }
-              >
-                {t("Alpha")}
-              </button>
-            </div>
-            <p className="codex-note">
-              {t("Switch Alpha on to try its features.")}
-            </p>
-            <div className="choice-row">
-              <button
-                role="switch"
-                aria-checked={settings.externalControlEnabled === true}
-                className={`choice${settings.externalControlEnabled === true ? " active" : ""}`}
-                onClick={() =>
-                  tryCall("settings:set", {
-                    externalControlEnabled: settings.externalControlEnabled !== true,
-                  })
-                }
-              >
-                {t("Local control")}
-              </button>
-            </div>
-            <p className="codex-note" data-testid="local-control-detail">
-              {t("Let a command-line client control this running edition of Tivano. Other processes in your account can use this access. Approvals stay in Tivano. No network listener or automatic app launch.")}
-            </p>
-            <div className="kv control-status" data-testid="local-control-status">
-              <span>{t("Local control status")}</span>
-              <span>
-                {!control || !control.enabled
-                  ? t("Disabled")
-                  : control.listening
-                    ? t("Listening for this account only")
-                    : t("Local control could not start. Retry after resolving the socket or permission conflict.")}
-                {control?.enabled && !control.listening && (
-                  <button
-                    className="choice control-retry settings-btn-compact"
-                    onClick={() =>
-                      void api()
-                        .invoke("control:retry", {})
-                        .then(() => refreshControl())
-                    }
-                  >
-                    {t("Retry")}
-                  </button>
-                )}
-              </span>
-            </div>
-
-            <h4 className="sub-head">{t("CLI command")}</h4>
-            <p className="codex-note" data-testid="cli-detail">
-              {t("Install the command in a user-owned bin directory on your request only. Installation never enables local control. Add that directory to PATH yourself if needed; Tivano does not edit shell configuration.")}
-            </p>
-            <div className="kv control-status" data-testid="cli-status">
-              <span>{t("CLI command")}</span>
-              <span>
-                {!cli || cli.state === "unavailable"
-                  ? t("unavailable in this build")
-                  : cli.state === "absent"
-                    ? t("Not installed")
-                    : cli.state === "foreign"
-                      ? t("Another tivano command exists — Tivano will not replace it")
-                      : cli.state === "repair"
-                        ? t("Installed, but it points to an older copy of Tivano. Repair it to use this one.")
-                        : t("Installed")}
-                {cli?.dir && cli.state !== "unavailable" && (
-                  <span className="mono dim"> {cli.dir}</span>
-                )}
-              </span>
-            </div>
-            <div className="choice-row">
-              <button
-                className="choice"
-                data-testid="cli-install"
-                onClick={() =>
-                  void api()
-                    .invoke("cli:install", {})
-                    .then((r) => {
-                      if (mounted.current) setCli(r as CliState);
-                      if ((r as { state?: string }).state !== "installed")
-                        setCliErr(t("Could not change the CLI command"));
-                    })
-                    .catch(async () => {
-                      if (!mounted.current) return;
-                      setCliErr(t("Could not change the CLI command"));
-                      await refreshCli();
-                    })
-                }
-              >
-                {cli?.state === "installed"
-                  ? t("Reinstall CLI")
-                  : cli?.state === "repair"
-                    ? t("Repair CLI")
-                    : t("Install CLI")}
-              </button>
-              <button
-                className="choice danger"
-                data-testid="cli-uninstall"
-                disabled={!cli || (cli.state !== "installed" && cli.state !== "repair")}
-                onClick={() =>
-                  void api()
-                    .invoke("cli:uninstall", {})
-                    .then((r) => {
-                      if (mounted.current) setCli(r as CliState);
-                    })
-                    .catch(async () => {
-                      if (!mounted.current) return;
-                      setCliErr(t("Could not change the CLI command"));
-                      await refreshCli();
-                    })
-                }
-              >
-                {t("Uninstall CLI")}
-              </button>
-            </div>
-            {cliErr && (
-              <p className="codex-note" data-testid="cli-error">{cliErr}</p>
-            )}
           </div>
         );
 
@@ -1036,6 +1001,8 @@ export function SettingsModal(props: {
                 <p>{t("A previous store file was unreadable and was preserved aside.")}</p>
               )}
             </div>
+
+            <CreditsSection />
           </>
         );
     }

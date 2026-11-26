@@ -113,6 +113,25 @@ export function chimeraPickLabel(pick: ChimeraPick | undefined): string {
     : pick.model;
 }
 
+/** How the engine resolves an identity pick for the one provider this
+ *  build runs. A saved foreign provider discards the whole pick, while
+ *  an absent or matching provider lets the model/effort ride the head. */
+export type ChimeraPickProviderResolution =
+  | { kind: "follow" }
+  | { kind: "runs"; providerId: string }
+  | { kind: "unavailable"; providerId: string };
+
+export function chimeraPickProviderResolution(
+  pick: ChimeraPick | undefined,
+  activeProviderId: string,
+): ChimeraPickProviderResolution {
+  if (!pick?.model?.trim()) return { kind: "follow" };
+  if (pick.provider === undefined || pick.provider === activeProviderId) {
+    return { kind: "runs", providerId: activeProviderId };
+  }
+  return { kind: "unavailable", providerId: pick.provider };
+}
+
 /** The list the lead and the editor see: the six built-ins whenever no
  *  stored list exists, custom rows appended after (frozen seed
  *  semantics — an absent settings field means the default roster). */

@@ -717,6 +717,44 @@ function Set-DevinForeground {
 # Keyboard shortcuts toggle the chat panel or land in an open editor depending on what had focus, so the
 # chat input is clicked instead: maximized, it is the box at the bottom of the right-hand Devin panel.
 # No Ctrl+A/Delete afterwards: if the click ever lands in an editor, a paste is recoverable, a wipe is not.
+# Finds Devin's chat composer (the Slate editor exposed as an Edit control named Prompt) through UI
+# Automation, so the click lands in the chat in both the Agents view and the IDE view's side panel.
+# Chromium builds its accessibility tree only after a first UIA query, so one wake-up pass runs per script run.
+function Find-DevinPromptElement {
+  param([IntPtr]$Window)
+  try {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop
+    $root = [Windows.Automation.AutomationElement]::FromHandle($Window)
+    if ($null -eq $root) { return $null }
+    $cond = New-Object Windows.Automation.AndCondition(
+      (New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Edit)),
+      (New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::NameProperty, 'Prompt')))
+    $found = $root.FindAll([Windows.Automation.TreeScope]::Descendants, $cond)
+    if ($found.Count -eq 0 -and -not $script:DevinUiaWoken) {
+      $script:DevinUiaWoken = $true
+      $null = $root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition).Count
+      Start-Sleep -Seconds 4
+      $found = $root.FindAll([Windows.Automation.TreeScope]::Descendants, $cond)
+    }
+    $best = $null
+    $bestBottom = [double]::MinValue
+    foreach ($el in $found) {
+      try {
+        if ($el.Current.IsOffscreen) { continue }
+        $r = $el.Current.BoundingRectangle
+        if ($r.IsEmpty) { continue }
+        if ([double]::IsInfinity($r.X) -or [double]::IsNaN($r.X) -or [double]::IsInfinity($r.Y) -or [double]::IsNaN($r.Y)) { continue }
+        if ($r.Width -le 0 -or $r.Height -le 0) { continue }
+        $bottom = $r.Y + $r.Height
+        if ($bottom -gt $bestBottom) { $bestBottom = $bottom; $best = $el }
+      } catch { continue }
+    }
+    return $best
+  } catch {
+    return $null
+  }
+}
+
 function Focus-DevinChatInput {
   param([IntPtr]$Window)
   if (-not (Set-DevinForeground $Window)) { return $false }
@@ -742,12 +780,29 @@ function Focus-DevinChatInput {
   try {
     [DevLoopWindows]::SetTopmost($Window, $true) | Out-Null
     Start-Sleep -Milliseconds 300
+    $prompt = Find-DevinPromptElement $Window
+    if ($null -ne $prompt) {
+      $pr = $prompt.Current.BoundingRectangle
+      $px = [int]($pr.X + $pr.Width / 2)
+      $py = [int]($pr.Y + $pr.Height / 2)
+      if (-not [DevLoopWindows]::IsPointOnWindow($Window, $px, $py)) {
+        Write-Log 'chat input click skipped: another window covers the Devin Prompt box'
+        return $false
+      }
+      [DevLoopWindows]::SetCursorPos($px, $py) | Out-Null
+      Start-Sleep -Milliseconds 200
+      [DevLoopWindows]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+      [DevLoopWindows]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+      Start-Sleep -Milliseconds 600
+      return (Test-DevinForeground $Window)
+    }
+    Write-Log 'chat input: UI Automation found no Prompt box; using the fixed click point'
     $rect = New-Object DevLoopWindows+RECT
     if (-not [DevLoopWindows]::GetWindowRect($Window, [ref]$rect)) { return $false }
     $width = $rect.Right - $rect.Left
     $height = $rect.Bottom - $rect.Top
-    # Lands in the chat input both in the IDE view's side chat and in the
-    # Agents view with its right-hand panel hidden (maximized window).
+    # Fallback only: aimed at the Agents view with its right-hand panel hidden (maximized window);
+    # in the IDE view this point is the editor, which is why the UI Automation path comes first.
     # The input box is centred in the chat column; a "N files changed" strip above it pushes it down,
     # so aim low (11% from the bottom) and at 60% of the width, inside the box with or without the strip.
     $x = [int]($rect.Left + $width * 0.60)
@@ -863,7 +918,9 @@ function Wait-DevinSessionNew {
       $files = @(Get-DevinLogFiles $logs)
       foreach ($file in $files) {
         foreach ($line in (Read-LogLinesShared $file.FullName)) {
-          if ($line -notmatch '(?i)session/new') { continue }
+          # session/new when Ctrl+N created a backend session; session/prompt when the mission reached a chat
+          # whose session already existed (an empty IDE-view side chat logs no session/new).
+          if ($line -notmatch '(?i)method="session/(new|prompt)"') { continue }
           if ($line -notmatch '^(\S+Z)(?:\s|$)') { continue }
           $parsed = [DateTime]::MinValue
           if ([DateTime]::TryParse($Matches[1], [Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) {
@@ -932,6 +989,12 @@ function Start-FreshDevinSession {
     return $false
   }
 
+  # Ctrl+N opens a new chat only while the chat has focus. In the IDE view (what `devin desktop <folder>`
+  # opens after a restart) it otherwise opens an Untitled editor tab, so focus the chat input first.
+  if (-not (Focus-DevinChatInput $Window)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; chat input not focused before Ctrl+N)')
+    return $false
+  }
   $pressSince = [DateTime]::Now
   if (-not (Send-DevinKeysSafe $Window '^n')) {
     Write-Log ('session rotation unconfirmed (' + $Reason + '; Ctrl+N not sent)')
@@ -942,28 +1005,24 @@ function Start-FreshDevinSession {
     $script:LastFreshSessionDeferred = $true
     return $false
   }
-  # Turn on bypass in the new chat and confirm it from the log before any mission text goes out.
-  # If Ctrl+N landed in an editor instead of a new chat, /bypass is never confirmed and nothing
-  # else is sent, so the caller falls back to its normal path.
-  if (-not (Send-DevinBypassCommandSafe $Window)) {
-    Write-Log ('session rotation unconfirmed (' + $Reason + '; /bypass not confirmed after Ctrl+N)')
-    return $false
-  }
-  if (-not (Wait-DevinSessionNew $pressSince 10)) {
-    Write-Log ('session rotation unconfirmed (' + $Reason + '; no session/new in log)')
+  # New Devin Desktop sessions already open in Bypass Permissions, and current clients no longer log a
+  # mode change for /bypass, so the mission goes out directly. Only session/new in the log afterwards
+  # counts as a rotation; without it the caller falls back to its normal path.
+  if (-not (Set-DevinForeground $Window) -or -not (Focus-DevinChatInput $Window)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; focus lost before mission)')
     return $false
   }
   if (Test-Stop) {
     $script:LastFreshSessionDeferred = $true
     return $false
   }
-  if (-not (Set-DevinForeground $Window) -or -not (Focus-DevinChatInput $Window)) {
-    Write-Log ('session rotation unconfirmed (' + $Reason + '; focus lost before mission)')
-    return $false
-  }
   $freshMessage = Get-AutopilotMessage -FreshSession
   if (-not (Send-DevinTextSafe $Window $freshMessage)) {
     Write-Log ('session rotation unconfirmed (' + $Reason + '; mission paste failed)')
+    return $false
+  }
+  if (-not (Wait-DevinSessionNew $pressSince 30)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; mission sent but no session/new or session/prompt in log within 30s)')
     return $false
   }
 
@@ -1781,10 +1840,10 @@ function Invoke-Kickoff {
       continue
     }
     if (Test-Stop) { Write-Log 'STOP file present; kickoff exiting'; return 'deferred' }
+    # Bypass is the default for new sessions and current clients do not log /bypass, so an
+    # unconfirmed /bypass no longer blocks the prompt (it used to fail every kickoff and reset Devin).
     if (-not (Send-DevinBypassCommandSafe $window)) {
-      Write-Log ('kickoff try ' + ($try + 1) + '/3: /bypass failed or focus changed')
-      Start-Sleep -Seconds 2
-      continue
+      Write-Log ('kickoff try ' + ($try + 1) + '/3: /bypass not confirmed; sending prompt anyway')
     }
     if (-not (Set-DevinForeground $window)) {
       Write-Log ('kickoff try ' + ($try + 1) + '/3: lost focus after /bypass')
@@ -1805,7 +1864,7 @@ function Invoke-Kickoff {
   }
 
   if (-not $sent) {
-    Write-Log 'kickoff failed: Devin Desktop chat did not take /bypass or focus changed'
+    Write-Log 'kickoff failed: focus changed before the prompt was sent'
     Set-KickoffOutcome 'failed'
     return 'failed'
   }

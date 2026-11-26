@@ -568,6 +568,8 @@ export const fr: Record<string, string> = {
   "The picker is full (30 models)": "Le sélecteur est plein (30 modèles)",
   "No models reported": "Aucun modèle signalé",
   "No models match": "Aucun modèle correspondant",
+  "Clear search": "Effacer la recherche",
+  "Other models": "Autres modèles",
   "Done": "Terminé",
   "Provider reports": "Rapports du fournisseur",
   "Applies to the next turn": "S’applique au tour suivant",
@@ -901,6 +903,7 @@ export const fr: Record<string, string> = {
   "Heads run on this chat's model and effort.": "Les sous-agents utilisent le modèle et l’effort de cette conversation.",
   "No heads out yet": "Aucun sous-agent lancé",
   "Show the panel": "Afficher le panneau",
+  "Show the sub-agent panel": "Afficher le panneau du sous-agent",
   "Hide the panel": "Masquer le panneau",
   "1 head working": "1 sous-agent au travail",
   "%d heads working": "%d sous-agents au travail",
@@ -957,6 +960,7 @@ export const fr: Record<string, string> = {
   "Auto-dispatch": "Envoi automatique",
   "Adaptive heads go out at once; off, each role's model is confirmed first.": "Activé, les sous-agents adaptatifs partent aussitôt ; désactivé, le modèle de chaque rôle est d’abord confirmé.",
   "Follow the lead": "Suivre l’agent principal",
+  "%@ cannot run here; the identity follows the lead": "%@ ne peut pas s’exécuter ici ; l’identité suit l’agent principal",
   "Edit this identity": "Modifier cette identité",
   "New identity": "Nouvelle identité",
   "Identity name": "Nom de l’identité",
@@ -1025,8 +1029,8 @@ export const fr: Record<string, string> = {
   "%@ is working": "%@ travaille",
   "%d sub-agents working": "%d sous-agents actifs",
   "Does not open floating panels automatically. The chat still shows which sub-agents are running, and you can open a panel yourself.": "N’ouvre pas automatiquement les panneaux flottants. La discussion indique toujours quels sous-agents sont en cours d’exécution, et vous pouvez ouvrir un panneau vous-même.",
-  "When multiple sub-agents run, each sub-agent after the first automatically opens its own floating panel: on both sides of the chat when wide enough, or stacked on one side when narrow.": "Lorsque plusieurs sous-agents s’exécutent, chacun après le premier ouvre automatiquement son propre panneau flottant : de chaque côté de la discussion si la fenêtre est assez large, ou empilés d’un côté si elle est étroite.",
-  "Keeps all running sub-agents in one floating panel; switch between them from its top-left menu, or pop individual sub-agents out manually.": "Regroupe tous les sous-agents actifs dans un même panneau flottant ; passez de l’un à l’autre depuis son menu en haut à gauche, ou détachez-en un manuellement.",
+  "When multiple sub-agents run, later running sub-agents automatically open their own floating panels in the chat area.": "Lorsque plusieurs sous-agents s’exécutent, les sous-agents actifs suivants ouvrent automatiquement leur propre panneau flottant dans la zone de discussion.",
+  "Opens one team panel; use its rows to open a sub-agent's chat.": "Ouvre un panneau d’équipe ; ouvrez la conversation d’un sous-agent depuis sa ligne.",
   "Lower the default reasoning effort for heads": "Réduire l’intensité de raisonnement par défaut des sous-agents",
   "Effort set in a pair is unaffected. When no effort is specified and the head uses the same provider as the lead, the head stays at the standard effort (usually medium); if the lead uses a lower effort, the head inherits it.": "Le niveau de raisonnement défini dans une paire reste inchangé. Si aucun niveau n’est indiqué et que le sous-agent utilise le même fournisseur que l’agent principal, il conserve le niveau standard (généralement moyen) ; si l’agent principal utilise un niveau inférieur, le sous-agent en hérite.",
   "Messages": "Messages",
@@ -2066,6 +2070,7 @@ export const fr: Record<string, string> = {
   "ChatGPT plan or API key": "Forfait ChatGPT ou clé API",
   "Synthetic provider": "Fournisseur synthétique",
   "Provider checklist": "Liste des fournisseurs",
+  "This task's parent is unavailable.": "La session parente de cette tâche n’est pas disponible.",
   // P1-36
   "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
     "Limite de sous-agents atteinte (%d)\n1 tâche est en file d’attente : %d sous-agents au maximum s’exécutent à la fois (Réglages › Hydra). Elle démarrera automatiquement dès qu’un sous-agent en cours aura terminé.",
@@ -2075,4 +2080,39 @@ export const fr: Record<string, string> = {
     "Limite de sous-agents atteinte (%d)\n1 tâche est en file d’attente : %d sous-agents au maximum s’exécutent à la fois. Elle démarrera automatiquement dès qu’un sous-agent en cours aura terminé.",
   "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "Limite de sous-agents atteinte (%d)\n%d tâches sont en file d’attente : %d sous-agents au maximum s’exécutent à la fois. Elles démarreront automatiquement à mesure que les sous-agents en cours termineront.",
+  // P2-03
+  "Recent": "Récent",
+  "No pairs match": "Aucune paire correspondante",
+  "Pairs & models": "Paires et modèles",
+  "Browse models": "Parcourir les modèles",
+  // P2-01
+  "Press Tab to accept": "Appuyez sur Tab pour accepter",
+  // P2-18
+  "Specific model": "Modèle spécifique",
+  "Choose a model": "Choisir un modèle",
+  "Reasoning effort": "Niveau de raisonnement",
+  "%@ (unavailable)": "%@ (indisponible)",
+  "No models loaded for %@ yet.": "Aucun modèle chargé pour %@.",
+  "Uses %@ at low effort. For thread titles, commit messages and composer predictions.":
+    "Utilise %@ (intensité faible). Pour les titres de conversation, messages de commit et suggestions de saisie.",
+  "Writes thread titles, commit messages and composer predictions. Fast, inexpensive models are usually enough.":
+    "Rédige les titres de conversation, les messages de commit et les suggestions de saisie. Des modèles rapides et économiques suffisent généralement.",
+  "No thread titles, commit messages or composer predictions are generated.":
+    "Aucun titre de conversation, message de commit ou suggestion de saisie n’est généré.",
+  "Send a turn in Codex to load its models.": "Envoyez un tour dans Codex pour charger ses modèles.",
+  // P1-33
+  "Invalid null byte in command or arguments.": "Caractère nul invalide dans la commande ou les arguments.",
+  "Invalid newline in command or arguments.": "Saut de ligne invalide dans la commande ou les arguments.",
+  // P1-11
+  "Credits": "Crédits",
+  "Where Tivano began": "Aux origines de Tivano",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano est un fork de Droppy Code, sous licence AGPL-3.0 avec clauses d’attribution.",
+  "Working indicators": "Indicateurs d’activité",
+  "Built-in terminal": "Terminal intégré",
+  "Terminal PTY layer": "Couche PTY du terminal",
+  "Windows job-helper JSON parser": "Analyseur JSON de l’assistant de tâche Windows",
+  "Where Droppy Code began": "Aux origines de Droppy Code",
+  "Responsive chat architecture": "Architecture de discussion réactive",
+  "Streaming text fade": "Fondu du texte en streaming",
 };

@@ -509,9 +509,10 @@ const RETIRED_SETTING_KEYS = [
   "antiSlopEnabled",
 ] as const;
 
-/** Drop v2.x settings retired in v3.0.0 (P2-62) and migrate legacy
+/** Drop v2.x settings retired in v3.0.0 (P2-62), migrate legacy
  *  light/dark theme variants onto the 12 accent families + appearanceMode
- *  (P2-51) so existing stores load cleanly without failing validation. */
+ *  (P2-51), and migrate local control out of Alpha (P2-23) while keeping
+ *  the effective state (`alphaEnabled && externalControlEnabled`) on first load. */
 function stripRetiredSettings(raw: Record<string, unknown>): Record<string, unknown> {
   const s = raw.settings;
   if (typeof s !== "object" || s === null || Array.isArray(s)) return raw;
@@ -522,9 +523,14 @@ function stripRetiredSettings(raw: Record<string, unknown>): Record<string, unkn
     rawTheme !== null &&
     !(THEME_IDS as readonly string[]).includes(rawTheme) &&
     migrateLegacyTheme(rawTheme) !== null;
-  if (!hasRetired && !isLegacyTheme) return raw;
+  const needsControlLeftAlpha = rec.controlLeftAlpha !== true;
+  const hasNullTextGen =
+    rec.textGenerationModelID === null || rec.textGenerationEffort === null;
+  if (!hasRetired && !isLegacyTheme && !needsControlLeftAlpha && !hasNullTextGen) return raw;
   const nextSettings = { ...rec };
   for (const k of RETIRED_SETTING_KEYS) delete nextSettings[k];
+  if (nextSettings.textGenerationModelID === null) delete nextSettings.textGenerationModelID;
+  if (nextSettings.textGenerationEffort === null) delete nextSettings.textGenerationEffort;
   if (isLegacyTheme && rawTheme !== null) {
     const migrated = migrateLegacyTheme(rawTheme);
     if (migrated !== null) nextSettings.theme = migrated;
@@ -532,6 +538,11 @@ function stripRetiredSettings(raw: Record<string, unknown>): Record<string, unkn
       const legacyMode = legacyAppearanceOfTheme(rawTheme);
       if (legacyMode !== null) nextSettings.appearanceMode = legacyMode;
     }
+  }
+  if (needsControlLeftAlpha) {
+    nextSettings.externalControlEnabled =
+      rec.alphaEnabled === true && rec.externalControlEnabled === true;
+    nextSettings.controlLeftAlpha = true;
   }
   return { ...raw, settings: nextSettings };
 }
@@ -571,7 +582,9 @@ const vSettings = vObject({
   codexExecutable: vOptional(vNonEmptyString(4000)),
   // Optional so every pre-A21 store loads verbatim — absent means off.
   taskSleepMode: vOptional(vEnum(["off", "system", "display"] as const)),
-  textGeneration: vOptional(vEnum(["automatic", "off"] as const)),
+  textGeneration: vOptional(vEnum(["automatic", "codex", "off"] as const)),
+  textGenerationModelID: vOptional(vNullable(vNonEmptyString(200))),
+  textGenerationEffort: vOptional(vNullable(vNonEmptyString(64))),
   threadTitles: vOptional(vEnum(["once", "updated"] as const)),
   autoShelveDays: vOptional(vInt(0, 14)),
   shelvedGroupName: vOptional(vNullable(vNonEmptyString(60))),
@@ -579,10 +592,12 @@ const vSettings = vObject({
   // Optional so every pre-A35 store loads verbatim — overrides only;
   // a stored null chord means the shortcut was cleared (frozen Override).
   shortcuts: vOptional(vShortcuts),
-  // Optional so every pre-A39 store loads verbatim — absent = both
-  // gates off (the control socket never listens without them).
+  // P2-23: local control now follows externalControlEnabled alone;
+  // alphaEnabled is kept for older stores and controlLeftAlpha marks
+  // completion of the one-time conjunction migration.
   alphaEnabled: vOptional(vBoolean),
   externalControlEnabled: vOptional(vBoolean),
+  controlLeftAlpha: vOptional(vBoolean),
   // P2-25: Remote MCP lives outside Alpha under Settings > Connections.
   remoteMCPEnabled: vOptional(vBoolean),
   remoteMCPFullAccess: vOptional(vBoolean),
@@ -611,6 +626,8 @@ const vSettings = vObject({
   hasSeenHydraIntro: vOptional(vBoolean),
   hydraPairs: vOptional(vArray(vHydraPair, PERSIST_MAX_HYDRA_PAIRS)),
   lastHydraPairId: vOptional(vNonEmptyString(120)),
+  lastNewChatPairId: vOptional(vNonEmptyString(120)),
+  lastNewChatModel: vOptional(vModelPin),
   // P1-36: the sub-agent mode new chats seed from — optional so every
   // pre-P1-36 store loads verbatim; absent = derived per chat.
   subagentModeDefault: vOptional(

@@ -272,10 +272,8 @@ const zhHans: Record<string, string> = {
   "Sub-agent": "子代理",
   "Does not open floating panels automatically. The chat still shows which sub-agents are running, and you can open a panel yourself.":
     "不自动打开悬浮面板。对话中仍会显示子代理的运行状态，需要时可手动打开面板。",
-  "When multiple sub-agents run, each sub-agent after the first automatically opens its own floating panel: on both sides of the chat when wide enough, or stacked on one side when narrow.":
-    "多个子代理并行时，第 2 个起自动弹出各自的悬浮面板：窗口够宽时分列对话两侧，较窄时同侧纵向堆叠。",
-  "Keeps all running sub-agents in one floating panel; switch between them from its top-left menu, or pop individual sub-agents out manually.":
-    "多个子代理共用同一个悬浮面板，可在面板左上角切换查看，也可手动将某个子代理单独弹出。",
+  "When multiple sub-agents run, later running sub-agents automatically open their own floating panels in the chat area.": "多个子代理并行时，后续正在运行的子代理会在对话区域中自动打开各自的悬浮面板。",
+  "Opens one team panel; use its rows to open a sub-agent's chat.": "打开一个团队面板；通过其中的行打开子代理的对话。",
   "Text generation": "文本生成",
   "Name once": "首次命名",
   "Keep updated": "持续更新",
@@ -667,6 +665,8 @@ const zhHans: Record<string, string> = {
   "The picker is full (30 models)": "选择器已满（30 个模型）",
   "No models reported": "未报告模型",
   "No models match": "没有匹配的模型",
+  "Clear search": "清除搜索",
+  "Other models": "其他模型",
   "Done": "完成",
   "Provider reports": "服务商报告",
   "Applies to the next turn": "下一轮生效",
@@ -1051,6 +1051,7 @@ const zhHans: Record<string, string> = {
   "Heads run on this chat's model and effort.": "子智能体使用此对话的模型与推理强度。",
   "No heads out yet": "尚未派出子智能体",
   "Show the panel": "显示面板",
+  "Show the sub-agent panel": "显示子代理面板",
   "Hide the panel": "隐藏面板",
   "1 head working": "1 个子智能体正在工作",
   "%d heads working": "%d 个子智能体正在工作",
@@ -1136,6 +1137,7 @@ const zhHans: Record<string, string> = {
   "Adaptive heads go out at once; off, each role's model is confirmed first.":
     "开启后自适应子智能体立即派发；关闭则先确认每个角色的模型。",
   "Follow the lead": "跟随主代理",
+  "%@ cannot run here; the identity follows the lead": "%@ 无法在此运行；该身份将跟随主代理",
   "Edit this identity": "编辑此身份",
   "New identity": "新建身份",
   "Identity name": "身份名称",
@@ -2265,6 +2267,42 @@ const zhHans: Record<string, string> = {
   "ChatGPT plan or API key": "ChatGPT 套餐或 API 密钥",
   "Synthetic provider": "合成提供方",
   "Provider checklist": "服务商列表",
+  "This task's parent is unavailable.": "此任务的父会话不可用。",
+  // P2-03: two-column Hydra pairs + models picker with recents.
+  "Recent": "最近",
+  "No pairs match": "没有匹配的组合",
+  "Pairs & models": "组合与模型",
+  "Browse models": "浏览模型",
+  // P2-01: composer next-prompt prediction hint (v3.0.0 Localizable.xcstrings).
+  "Press Tab to accept": "按 Tab 键接受",
+  // P2-18: Text generation Model picker.
+  "Specific model": "指定模型",
+  "Choose a model": "选择模型",
+  "Reasoning effort": "推理强度",
+  "%@ (unavailable)": "%@（不可用）",
+  "No models loaded for %@ yet.": "尚未加载 %@ 的模型。",
+  "Uses %@ at low effort. For thread titles, commit messages and composer predictions.":
+    "使用 %@（低推理强度）。用于对话标题、提交信息和输入框预测。",
+  "Writes thread titles, commit messages and composer predictions. Fast, inexpensive models are usually enough.":
+    "用于生成对话标题、提交信息和输入框预测。快速、便宜的模型通常就够用。",
+  "No thread titles, commit messages or composer predictions are generated.":
+    "不生成对话标题、提交信息和输入框预测。",
+  "Send a turn in Codex to load its models.": "在 Codex 中发送一轮消息以加载其模型。",
+  // P1-33: MCP command validation probe reasons.
+  "Invalid null byte in command or arguments.": "命令或参数中包含无效的空字节。",
+  "Invalid newline in command or arguments.": "命令或参数中包含无效的换行符。",
+  // P1-11: Credits card (v3.0.0 CreditsSettingsPage.swift).
+  "Credits": "致谢",
+  "Where Tivano began": "Tivano 的起点",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano 是 Droppy Code 的分支，沿用 AGPL-3.0 及署名条款。",
+  "Working indicators": "工作状态指示器",
+  "Built-in terminal": "内置终端",
+  "Terminal PTY layer": "终端 PTY 层",
+  "Windows job-helper JSON parser": "Windows 作业辅助进程 JSON 解析器",
+  "Where Droppy Code began": "Droppy Code 的起源",
+  "Responsive chat architecture": "对话流畅度架构参考",
+  "Streaming text fade": "流式文字渐显",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
@@ -2397,6 +2435,7 @@ const EXTRA_NOTICE_KEYS = [
   "approval answer %@ — the request was expired unanswered",
   "The endpoint answered HTTP %@.",
   "HTTP %@ — no JSON-RPC reply",
+  "MCP servers skipped for this session because their command was not found on PATH: %@",
   "tomorrow at %@",
   "%@ at %@",
   "cwd: %@",

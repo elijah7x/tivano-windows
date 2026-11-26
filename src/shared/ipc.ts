@@ -227,6 +227,7 @@ export const REQUEST_CHANNELS = [
   "turns:send",
   "turns:cancel",
   "turns:continue",
+  "threads:predict-next",
   "approvals:resolve",
   "settings:set",
   "links:open-external",
@@ -464,6 +465,9 @@ export const requestValidators = {
   // P1-35: continue a failed or stopped turn — opaque id only (frozen
   // sendContinuation; the engine picks the canned resume prompt).
   "turns:continue": vObject({ threadId: vId }),
+  // P2-01: composer next-prompt prediction — opaque thread id + optional
+  // completed turnId so stale or mid-turn requests return null cleanly.
+  "threads:predict-next": vObject({ threadId: vId, turnId: vOptional(vId) }),
   "approvals:resolve": vObject({ threadId: vId, approvalId: vId, optionId: vString }),
   "settings:set": vObject({
     theme: vOptional(vTheme),
@@ -493,7 +497,9 @@ export const requestValidators = {
     // target path; the settings:set patch clears it with null.
     cliInstallationTarget: vOptional(vNullable(vNonEmptyString(4000))),
     taskSleepMode: vOptional(vEnum(["off", "system", "display"] as const)),
-    textGeneration: vOptional(vEnum(["automatic", "off"] as const)),
+    textGeneration: vOptional(vEnum(["automatic", "codex", "off"] as const)),
+    textGenerationModelID: vOptional(vNullable(vNonEmptyString(200))),
+    textGenerationEffort: vOptional(vNullable(vNonEmptyString(64))),
     threadTitles: vOptional(vEnum(["once", "updated"] as const)),
     autoShelveDays: vOptional(vInt(0, 14)),
     quickChatEnabled: vOptional(vBoolean),
@@ -501,7 +507,8 @@ export const requestValidators = {
     // F27: whole overrides map (id → chord|null); structural shape only —
     // the refusal/conflict rules live in the recorder + shortcut model.
     shortcuts: vOptional(vShortcuts),
-    // F33: double gate — both must be true before the socket listens.
+    // P2-23: local control follows externalControlEnabled alone;
+    // alphaEnabled is kept for backward compatibility.
     alphaEnabled: vOptional(vBoolean),
     externalControlEnabled: vOptional(vBoolean),
     remoteMCPEnabled: vOptional(vBoolean),
@@ -544,6 +551,8 @@ export const requestValidators = {
     hydraReviewFirst: vOptional(vNullable(vHydraReviewChoice)),
     hydraReviewSecond: vOptional(vNullable(vHydraReviewChoice)),
     lastHydraPairId: vOptional(vNullable(vNonEmptyString(120))),
+    lastNewChatPairId: vOptional(vNullable(vNonEmptyString(120))),
+    lastNewChatModel: vOptional(vNullable(vModelPin)),
     // F17: frozen modelList / modelSections / collapsedModelSections /
     // modelPreferences — whole-array writes (layout ops are computed
     // renderer-side via shared/modelList.ts, then persisted wholesale).
@@ -739,6 +748,7 @@ export const requestValidators = {
     model: vNullable(vNonEmptyString(200)),
     effort: vNullable(vNonEmptyString(100)),
     fastTier: vNullable(vNonEmptyString(100)),
+    hydraPairId: vOptional(vNullable(vNonEmptyString(120))),
   }),
   // Codex question card. The renderer names only the opaque providerKey
   // it was SHOWN plus bounded answer strings — never raw RPC content,
@@ -868,4 +878,5 @@ type AppEventPayload =
     }
   | { type: "window-activity"; active: boolean }
   | { type: "memory-pressure"; critical: boolean }
+  | { type: "system-accent-changed"; accentColor: string | null }
   | { type: "remote-mcp-changed"; status: import("./types").RemoteMcpStatus };

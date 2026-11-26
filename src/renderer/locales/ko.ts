@@ -568,6 +568,8 @@ export const ko: Record<string, string> = {
   "The picker is full (30 models)": "선택기가 가득 찼습니다(30개 모델)",
   "No models reported": "보고된 모델 없음",
   "No models match": "일치하는 모델이 없습니다",
+  "Clear search": "검색 지우기",
+  "Other models": "기타 모델",
   "Done": "완료",
   "Provider reports": "제공자 보고",
   "Applies to the next turn": "다음 턴부터 적용",
@@ -901,6 +903,7 @@ export const ko: Record<string, string> = {
   "Heads run on this chat's model and effort.": "하위 에이전트는 이 채팅의 모델과 강도로 실행됩니다.",
   "No heads out yet": "아직 파견된 하위 에이전트가 없습니다",
   "Show the panel": "패널 표시",
+  "Show the sub-agent panel": "하위 에이전트 패널 표시",
   "Hide the panel": "패널 숨기기",
   "1 head working": "하위 에이전트 1개 작업 중",
   "%d heads working": "하위 에이전트 %d개 작업 중",
@@ -957,6 +960,7 @@ export const ko: Record<string, string> = {
   "Auto-dispatch": "자동 파견",
   "Adaptive heads go out at once; off, each role's model is confirmed first.": "켜면 적응형 하위 에이전트가 즉시 파견되고, 끄면 각 역할의 모델을 먼저 확인합니다.",
   "Follow the lead": "리드 에이전트 따르기",
+  "%@ cannot run here; the identity follows the lead": "%@는 여기에서 실행할 수 없습니다. 이 정체성은 리드를 따릅니다",
   "Edit this identity": "이 정체성 편집",
   "New identity": "새 정체성",
   "Identity name": "정체성 이름",
@@ -1025,8 +1029,8 @@ export const ko: Record<string, string> = {
   "%@ is working": "%@ 작업 중",
   "%d sub-agents working": "하위 에이전트 %d개 작업 중",
   "Does not open floating panels automatically. The chat still shows which sub-agents are running, and you can open a panel yourself.": "플로팅 패널을 자동으로 열지 않습니다. 실행 중인 하위 에이전트는 대화에 계속 표시되며, 필요할 때 패널을 직접 열 수 있습니다.",
-  "When multiple sub-agents run, each sub-agent after the first automatically opens its own floating panel: on both sides of the chat when wide enough, or stacked on one side when narrow.": "여러 하위 에이전트가 실행되면 두 번째부터 각자 플로팅 패널이 자동으로 열립니다. 창이 충분히 넓으면 대화 양쪽에 배치되고, 좁으면 한쪽에 세로로 쌓입니다.",
-  "Keeps all running sub-agents in one floating panel; switch between them from its top-left menu, or pop individual sub-agents out manually.": "실행 중인 모든 하위 에이전트를 하나의 플로팅 패널에 모아 표시합니다. 왼쪽 상단 메뉴에서 전환하거나 개별 하위 에이전트를 수동으로 분리할 수 있습니다.",
+  "When multiple sub-agents run, later running sub-agents automatically open their own floating panels in the chat area.": "여러 하위 에이전트가 실행되면 이후의 실행 중인 하위 에이전트가 대화 영역에 각자의 플로팅 패널을 자동으로 엽니다.",
+  "Opens one team panel; use its rows to open a sub-agent's chat.": "팀 패널 하나를 열고, 패널 행에서 하위 에이전트의 대화를 열 수 있습니다.",
   "Lower the default reasoning effort for heads": "서브에이전트의 기본 추론 강도 낮추기",
   "Effort set in a pair is unaffected. When no effort is specified and the head uses the same provider as the lead, the head stays at the standard effort (usually medium); if the lead uses a lower effort, the head inherits it.": "페어에 설정된 추론 강도는 영향을 받지 않습니다. 추론 강도가 지정되지 않았고 서브에이전트가 리드와 같은 제공자를 사용하는 경우 서브에이전트는 표준 추론 강도(보통 '중간')를 유지하며, 리드가 더 낮은 추론 강도를 사용하면 이를 그대로 따릅니다.",
   "Messages": "메시지",
@@ -2066,6 +2070,7 @@ export const ko: Record<string, string> = {
   "ChatGPT plan or API key": "ChatGPT 플랜 또는 API 키",
   "Synthetic provider": "합성 제공자",
   "Provider checklist": "제공자 목록",
+  "This task's parent is unavailable.": "이 작업의 상위 세션을 사용할 수 없습니다.",
   // P1-36
   "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
     "하위 에이전트 동시 실행 한도(%d)에 도달함\n작업 1개가 대기 중입니다. 한 번에 최대 %d개의 하위 에이전트만 실행됩니다(설정 › Hydra). 실행 중인 하위 에이전트가 끝나면 자동으로 시작됩니다.",
@@ -2075,4 +2080,39 @@ export const ko: Record<string, string> = {
     "하위 에이전트 동시 실행 한도(%d)에 도달함\n작업 1개가 대기 중입니다. 한 번에 최대 %d개의 하위 에이전트만 실행됩니다. 실행 중인 하위 에이전트가 끝나면 자동으로 시작됩니다.",
   "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "하위 에이전트 동시 실행 한도(%d)에 도달함\n작업 %d개가 대기 중입니다. 한 번에 최대 %d개의 하위 에이전트만 실행됩니다. 실행 중인 하위 에이전트가 끝나면 차례대로 자동 시작됩니다.",
+  // P2-03
+  "Recent": "최근",
+  "No pairs match": "일치하는 조합이 없습니다",
+  "Pairs & models": "조합 및 모델",
+  "Browse models": "모델 찾아보기",
+  // P2-01
+  "Press Tab to accept": "Tab 키를 눌러 수락",
+  // P2-18
+  "Specific model": "지정 모델",
+  "Choose a model": "모델 선택",
+  "Reasoning effort": "추론 강도",
+  "%@ (unavailable)": "%@ (사용 불가)",
+  "No models loaded for %@ yet.": "%@의 모델이 아직 로드되지 않았습니다.",
+  "Uses %@ at low effort. For thread titles, commit messages and composer predictions.":
+    "%@ (낮은 추론 강도)를 사용합니다. 스레드 제목, 커밋 메시지 및 입력창 예측에 사용됩니다.",
+  "Writes thread titles, commit messages and composer predictions. Fast, inexpensive models are usually enough.":
+    "스레드 제목, 커밋 메시지, 입력창 예측을 작성합니다. 빠르고 저렴한 모델이면 보통 충분합니다.",
+  "No thread titles, commit messages or composer predictions are generated.":
+    "스레드 제목, 커밋 메시지, 입력창 예측을 생성하지 않습니다.",
+  "Send a turn in Codex to load its models.": "Codex에서 턴을 한 번 보내 모델을 불러오세요.",
+  // P1-33
+  "Invalid null byte in command or arguments.": "명령 또는 인수에 잘못된 널 바이트가 포함되어 있습니다.",
+  "Invalid newline in command or arguments.": "명령 또는 인수에 잘못된 줄 바꿈이 포함되어 있습니다.",
+  // P1-11
+  "Credits": "크레딧",
+  "Where Tivano began": "Tivano의 시작",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano는 Droppy Code의 포크이며, 저작자 표시 조항이 포함된 AGPL-3.0 라이선스를 따릅니다.",
+  "Working indicators": "작업 상태 표시기",
+  "Built-in terminal": "내장 터미널",
+  "Terminal PTY layer": "터미널 PTY 계층",
+  "Windows job-helper JSON parser": "Windows 작업 도우미 JSON 파서",
+  "Where Droppy Code began": "Droppy Code의 시작",
+  "Responsive chat architecture": "반응형 대화 아키텍처",
+  "Streaming text fade": "스트리밍 텍스트 페이드 효과",
 };

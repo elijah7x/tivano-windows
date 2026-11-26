@@ -420,3 +420,173 @@ describe("finish-signal notification visibility (P2-62)", () => {
     }
   });
 });
+
+describe("P2-51 system-accent-changed event", () => {
+  it("updates snapshot.info.systemAccentColor and notifies subscribers after hydration", () => {
+    const store = new ClientStore(async () => ({}));
+    const s = snap(5);
+    s.info.systemAccentColor = "0078D4";
+    store.hydrate(s, store.beginHydration());
+
+    let notified = 0;
+    const unsub = store.subscribe(() => {
+      notified += 1;
+    });
+    store.onBridgeEvent({ type: "system-accent-changed", accentColor: "D13438" });
+    unsub();
+
+    expect(notified).toBe(1);
+    expect(store.snapshot!.info.systemAccentColor).toBe("D13438");
+  });
+
+  it("retains pre-hydration system-accent-changed updates when the snapshot lands", () => {
+    const store = new ClientStore(async () => ({}));
+    const gen = store.beginHydration();
+    store.onBridgeEvent({ type: "system-accent-changed", accentColor: "E81123" });
+
+    const s = snap(5);
+    s.info.systemAccentColor = "0078D4";
+    store.hydrate(s, gen);
+
+    expect(store.snapshot!.info.systemAccentColor).toBe("E81123");
+  });
+});
+
+describe("P2-01 ClientStore composer predictions", () => {
+  it("requests a prediction on turn completion, accepts it into draft, and dismisses on typing", async () => {
+    const invoke = vi.fn(async (ch: string) => {
+      if (ch === "threads:predict-next") return { prediction: "Run the unit tests" };
+      return {};
+    });
+    const store = new ClientStore(invoke);
+    store.hydrate(snap(1, [streamingThread("t1", "u1", "m1")]), store.beginHydration());
+
+    store.apply({ type: "turn-status", threadId: "t1", turnId: "u1", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(invoke).toHaveBeenCalledWith("threads:predict-next", { threadId: "t1", turnId: "u1" });
+    expect(store.prediction("t1")).toBe("Run the unit tests");
+
+    expect(store.acceptPrediction("t1")).toBe(true);
+    expect(store.prediction("t1")).toBeUndefined();
+    expect(store.draft("t1")).toBe("Run the unit tests");
+
+    // Next completed turn: typing dismisses prediction and sends only what was typed.
+    store.setDraft("t1", "");
+    store.apply({ type: "thread-updated", thread: streamingThread("t1", "u2", "m2") });
+    store.apply({ type: "turn-status", threadId: "t1", turnId: "u2", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.prediction("t1")).toBe("Run the unit tests");
+
+    store.setDraft("t1", "my own prompt");
+    expect(store.prediction("t1")).toBeUndefined();
+    await store.sendDraft("t1");
+    expect(invoke).toHaveBeenCalledWith("turns:send", { threadId: "t1", text: "my own prompt" });
+  });
+
+  it("skips prediction when textGeneration is off or draft is non-empty, and clears on settings change", async () => {
+    const invoke = vi.fn(async (ch: string) => {
+      if (ch === "threads:predict-next") return { prediction: "Suggested" };
+      return {};
+    });
+    const store = new ClientStore(invoke);
+    const s = snap(1, [streamingThread("t1", "u1", "m1"), streamingThread("t2", "u2", "m2")]);
+    s.settings.textGeneration = "off";
+    store.hydrate(s, store.beginHydration());
+
+    store.apply({ type: "turn-status", threadId: "t1", turnId: "u1", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(store.prediction("t1")).toBeUndefined();
+
+    // Re-enable textGeneration, verify non-empty draft skips request.
+    store.apply({
+      type: "settings-changed",
+      settings: { ...s.settings, textGeneration: "automatic" },
+    });
+    store.setDraft("t2", "already typing");
+    store.apply({ type: "turn-status", threadId: "t2", turnId: "u2", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(invoke).not.toHaveBeenCalled();
+
+    // Empty draft requests prediction, then switching to off clears it.
+    store.apply({ type: "turn-status", threadId: "t1", turnId: "u1", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.prediction("t1")).toBe("Suggested");
+    store.apply({
+      type: "settings-changed",
+      settings: { ...s.settings, textGeneration: "off" },
+    });
+    expect(store.prediction("t1")).toBeUndefined();
+  });
+
+  it("swallows prediction failures without surfacing an error or blocking the next send", async () => {
+    const invoke = vi.fn(async (ch: string) => {
+      if (ch === "threads:predict-next") throw new Error("prediction failed");
+      return {};
+    });
+    const store = new ClientStore(invoke);
+    store.hydrate(snap(1, [streamingThread("t1", "u1", "m1")]), store.beginHydration());
+
+    store.apply({ type: "turn-status", threadId: "t1", turnId: "u1", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store.prediction("t1")).toBeUndefined();
+    expect(store.lastError).toBeNull();
+
+    store.setDraft("t1", "next message");
+    await store.sendDraft("t1");
+    expect(invoke).toHaveBeenCalledWith("turns:send", { threadId: "t1", text: "next message" });
+    expect(store.lastError).toBeNull();
+  });
+
+  it("suppresses prediction when readOnly, survives synchronous invoke throws, and supports dismissPrediction", async () => {
+    const syncThrowInvoke = vi.fn(() => {
+      throw new Error("bridge missing");
+    });
+    const store1 = new ClientStore(syncThrowInvoke);
+    store1.hydrate(snap(1, [streamingThread("t1", "u1", "m1")]), store1.beginHydration());
+    store1.apply({ type: "turn-status", threadId: "t1", turnId: "u1", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store1.prediction("t1")).toBeUndefined();
+    expect(store1.lastError).toBeNull();
+
+    const roInvoke = vi.fn(async () => ({ prediction: "Should not run" }));
+    const store2 = new ClientStore(roInvoke);
+    const roSnap = snap(1, [
+      streamingThread("t1", "u1", "m1"),
+      { ...streamingThread("t2", "u2", "m2"), isInPanel: true },
+    ]);
+    roSnap.readOnly = true;
+    store2.hydrate(roSnap, store2.beginHydration());
+    store2.apply({ type: "turn-status", threadId: "t1", turnId: "u1", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(roInvoke).not.toHaveBeenCalled();
+
+    const panelStore = new ClientStore(roInvoke);
+    panelStore.hydrate(
+      snap(1, [{ ...streamingThread("t2", "u2", "m2"), isInPanel: true }]),
+      panelStore.beginHydration(),
+    );
+    panelStore.apply({ type: "turn-status", threadId: "t2", turnId: "u2", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(roInvoke).not.toHaveBeenCalled();
+
+    const okStore = new ClientStore(async () => ({ prediction: "Dismiss me" }));
+    okStore.hydrate(snap(1, [streamingThread("t1", "u1", "m1")]), okStore.beginHydration());
+    okStore.apply({ type: "turn-status", threadId: "t1", turnId: "u1", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(okStore.prediction("t1")).toBe("Dismiss me");
+    okStore.dismissPrediction("t1");
+    expect(okStore.prediction("t1")).toBeUndefined();
+  });
+});

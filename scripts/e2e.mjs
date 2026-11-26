@@ -86,6 +86,7 @@ import { runLayoutChecks, runShelfChecks, runQuickChecks } from "./layoutChecks.
 import { runRemoteMcpChecks } from "./remoteMcpChecks.mjs";
 import { runWelcomeChecks } from "./welcomeChecks.mjs";
 import { runP253ChromeChecks } from "./p253ChromeChecks.mjs";
+import { runPredictionChecks } from "./predictionChecks.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "package.json"));
@@ -304,6 +305,27 @@ try {
   check(
     "About is honest about the mock provider",
     /Mock Provider|模拟提供方/.test(about) && /synthetic|合成/.test(about),
+  );
+  const creditsSection = page.locator(".modal .credits-section");
+  const creditsText = await creditsSection.innerText();
+  check(
+    "About Credits shows attribution and compact project list including Synara",
+    creditsText.includes("Droppy Code by Jordy Spruit") &&
+      creditsText.includes("getdroppycode.app") &&
+      creditsText.includes("AGPL-3.0") &&
+      creditsText.includes("T3 Code") &&
+      creditsText.includes("Synara") &&
+      creditsText.includes("Zeron") &&
+      creditsText.includes("xterm.js") &&
+      creditsText.includes("node-pty") &&
+      creditsText.includes("nlohmann/json") &&
+      creditsText.includes("mugen-markdown") &&
+      !creditsText.includes("anti-slop") &&
+      !creditsText.includes("MonoCode"),
+  );
+  check(
+    "About Credits contains no link buttons or anchors",
+    (await creditsSection.locator("a, button").count()) === 0,
   );
   await page.screenshot({ path: join(outDir, "04-settings-about.png") });
 
@@ -2103,6 +2125,30 @@ try {
   // ---- session 33: P2-50 First-launch WelcomeView + NoThreadView ----------
   await runWelcomeChecks({
     launchFresh,
+    instances,
+    snap,
+    codexFixture,
+    outDir,
+    check,
+    boundedClose,
+  });
+
+  // ---- session 34: P2-53 Window chrome simplification ---------------------
+  await runP253ChromeChecks({
+    launch,
+    instances,
+    snap,
+    dataRoot,
+    workspaceRoot,
+    codexFixture,
+    outDir,
+    check,
+    boundedClose,
+  });
+
+  // ---- session 35: P2-01 Composer predictions ------------------------------
+  await runPredictionChecks({
+    launch,
     instances,
     snap,
     outDir,

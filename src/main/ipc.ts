@@ -376,6 +376,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("turns:send", (p) => engine.sendTurn(p.threadId, p.text));
   handle("turns:cancel", (p) => engine.cancelTurn(p.threadId));
   handle("turns:continue", (p) => engine.continueTurn(p.threadId));
+  handle("threads:predict-next", (p) => engine.predictNextPrompt(p.threadId, p.turnId));
   handle("hydra:stop", (p) => engine.stopHydraHead(p.threadId));
   handle("hydra:continue", (p) => engine.continueHydraHead(p.threadId));
   handle("threads:set-hydra", (p) => engine.setThreadHydra(p.threadId, p.enabled));
@@ -393,7 +394,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   // reports the real socket state — never an optimistic flag.
   handle("control:status", () => {
     const s = engine.snapshot().settings;
-    const enabled = s.alphaEnabled === true && s.externalControlEnabled === true;
+    const enabled = s.externalControlEnabled === true;
     return {
       enabled,
       listening: opts.localControl?.listening === true,
@@ -403,7 +404,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("control:retry", () => {
     opts.localControl?.refreshListening();
     const s = engine.snapshot().settings;
-    const enabled = s.alphaEnabled === true && s.externalControlEnabled === true;
+    const enabled = s.externalControlEnabled === true;
     return {
       enabled,
       listening: opts.localControl?.listening === true,
@@ -482,7 +483,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("git:commit-message", async (p) => {
     const changes = await git().workingChanges(p.projectId);
     if (changes.kind !== "ok") return { kind: "unavailable", reason: changes.reason };
-    return engine.commitMessageFor(changes.summary, changes.patch);
+    return engine.commitMessageFor(changes.summary, changes.patch, p.projectId);
   });
 
   // Checkpoint ledger + non-mutating preview. Thread/turn identity only —
@@ -561,7 +562,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   });
   handle("hydra:catalog", () => engine.hydraCatalog());
   handle("threads:set-model", (p) =>
-    engine.setThreadModel(p.threadId, p.model, p.effort, p.fastTier),
+    engine.setThreadModel(p.threadId, p.model, p.effort, p.fastTier, p.hydraPairId),
   );
   handle("followUps:enqueue", (p) =>
     engine.enqueueFollowUp(p.threadId, p.text, {

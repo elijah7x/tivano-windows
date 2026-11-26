@@ -568,6 +568,8 @@ export const ja: Record<string, string> = {
   "The picker is full (30 models)": "ピッカーがいっぱいです（最大 30 モデル）",
   "No models reported": "モデルが報告されませんでした",
   "No models match": "一致するモデルはありません",
+  "Clear search": "検索を消去",
+  "Other models": "その他のモデル",
   "Done": "完了",
   "Provider reports": "プロバイダーの報告",
   "Applies to the next turn": "次のターンから適用",
@@ -901,6 +903,7 @@ export const ja: Record<string, string> = {
   "Heads run on this chat's model and effort.": "サブエージェントはこのチャットのモデルと推論レベルで実行されます。",
   "No heads out yet": "稼働中のサブエージェントはまだいません",
   "Show the panel": "パネルを表示",
+  "Show the sub-agent panel": "サブエージェントパネルを表示",
   "Hide the panel": "パネルを隠す",
   "1 head working": "1 件のサブエージェントが作業中",
   "%d heads working": "%d 件のサブエージェントが作業中",
@@ -957,6 +960,7 @@ export const ja: Record<string, string> = {
   "Auto-dispatch": "自動ディスパッチ",
   "Adaptive heads go out at once; off, each role's model is confirmed first.": "オンにすると適応型サブエージェントが即座に派遣されます。オフにすると各ロールのモデルを先に確認します。",
   "Follow the lead": "リードエージェントに従う",
+  "%@ cannot run here; the identity follows the lead": "%@ はここでは実行できません。この ID はリードに従います",
   "Edit this identity": "この ID を編集",
   "New identity": "新しい ID",
   "Identity name": "ID 名",
@@ -1025,8 +1029,8 @@ export const ja: Record<string, string> = {
   "%@ is working": "%@ が作業中",
   "%d sub-agents working": "%d 個のサブエージェントが稼働中",
   "Does not open floating panels automatically. The chat still shows which sub-agents are running, and you can open a panel yourself.": "フローティングパネルを自動で開きません。稼働中のサブエージェントはチャットに表示され、必要に応じて手動でパネルを開けます。",
-  "When multiple sub-agents run, each sub-agent after the first automatically opens its own floating panel: on both sides of the chat when wide enough, or stacked on one side when narrow.": "複数のサブエージェントが実行されると、2 つ目以降はそれぞれ独自のフローティングパネルを自動的に開きます。ウィンドウ幅が十分な場合はチャットの両側に、狭い場合は片側に縦に重ねて表示されます。",
-  "Keeps all running sub-agents in one floating panel; switch between them from its top-left menu, or pop individual sub-agents out manually.": "実行中のすべてのサブエージェントを 1 つのフローティングパネルにまとめます。左上のメニューから切り替えたり、個別に手動でポップアウトしたりできます。",
+  "When multiple sub-agents run, later running sub-agents automatically open their own floating panels in the chat area.": "複数のサブエージェントが実行されると、後続の実行中サブエージェントがチャット領域にそれぞれのフローティングパネルを自動的に開きます。",
+  "Opens one team panel; use its rows to open a sub-agent's chat.": "チームパネルを1つ開き、その行からサブエージェントのチャットを開けます。",
   "Lower the default reasoning effort for heads": "サブエージェントの既定の推論レベルを下げる",
   "Effort set in a pair is unaffected. When no effort is specified and the head uses the same provider as the lead, the head stays at the standard effort (usually medium); if the lead uses a lower effort, the head inherits it.": "ペアで設定された推論レベルは影響を受けません。推論レベルが指定されておらず、サブエージェントがリードと同じプロバイダーを使用している場合、サブエージェントは標準の推論レベル（通常は「中」）に保たれます。リードがより低い推論レベルを使用している場合は、それを引き継ぎます。",
   "Messages": "メッセージ",
@@ -2066,6 +2070,7 @@ export const ja: Record<string, string> = {
   "ChatGPT plan or API key": "ChatGPT プランまたは API キー",
   "Synthetic provider": "合成プロバイダー",
   "Provider checklist": "プロバイダー一覧",
+  "This task's parent is unavailable.": "このタスクの親セッションは利用できません。",
   // P1-36
   "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
     "サブエージェントの同時実行上限（%d）に達しました\n1 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です（設定 › Hydra）。実行中のサブエージェントが完了すると自動的に送信されます。",
@@ -2075,4 +2080,39 @@ export const ja: Record<string, string> = {
     "サブエージェントの同時実行上限（%d）に達しました\n1 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です。実行中のサブエージェントが完了すると自動的に送信されます。",
   "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
     "サブエージェントの同時実行上限（%d）に達しました\n%d 件のタスクが待機中です。同時に実行できるサブエージェントは最大 %d 件です。実行中のサブエージェントが完了すると順次自動的に送信されます。",
+  // P2-03
+  "Recent": "最近",
+  "No pairs match": "一致するペアはありません",
+  "Pairs & models": "ペアとモデル",
+  "Browse models": "モデルを参照",
+  // P2-01
+  "Press Tab to accept": "Tab キーで確定",
+  // P2-18
+  "Specific model": "指定モデル",
+  "Choose a model": "モデルを選択",
+  "Reasoning effort": "推論レベル",
+  "%@ (unavailable)": "%@（利用不可）",
+  "No models loaded for %@ yet.": "%@ のモデルはまだ読み込まれていません。",
+  "Uses %@ at low effort. For thread titles, commit messages and composer predictions.":
+    "%@（低推論レベル）を使用します。スレッドのタイトル、コミットメッセージ、入力欄の予測に使われます。",
+  "Writes thread titles, commit messages and composer predictions. Fast, inexpensive models are usually enough.":
+    "スレッドのタイトル、コミットメッセージ、入力欄の予測を生成します。高速で低コストなモデルで通常は十分です。",
+  "No thread titles, commit messages or composer predictions are generated.":
+    "スレッドタイトル、コミットメッセージ、入力欄の予測は生成されません。",
+  "Send a turn in Codex to load its models.": "Codex で 1 ターン送信してモデルを読み込んでください。",
+  // P1-33
+  "Invalid null byte in command or arguments.": "コマンドまたは引数に無効な null バイトが含まれています。",
+  "Invalid newline in command or arguments.": "コマンドまたは引数に無効な改行が含まれています。",
+  // P1-11
+  "Credits": "クレジット",
+  "Where Tivano began": "Tivano の原点",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano は Droppy Code のフォークであり、帰属表示条項付きの AGPL-3.0 に基づいて公開されています。",
+  "Working indicators": "作業状況インジケーター",
+  "Built-in terminal": "組み込みターミナル",
+  "Terminal PTY layer": "ターミナル PTY レイヤー",
+  "Windows job-helper JSON parser": "Windows ジョブヘルパー JSON パーサー",
+  "Where Droppy Code began": "Droppy Code の原点",
+  "Responsive chat architecture": "レスポンシブなチャット設計",
+  "Streaming text fade": "ストリーミングテキストのフェード表示",
 };

@@ -40,7 +40,9 @@ import {
   CHIMERA_BUILTINS,
   chimeraBuiltin,
   chimeraBriefName,
+  chimeraPickProviderResolution,
   chimeraPresets,
+  type ChimeraPick,
   type ChimeraPreset,
 } from "../../shared/chimera";
 import { useT } from "../locale";
@@ -91,6 +93,24 @@ function allEfforts(models: { efforts: string[] }[]): string[] {
 
 function providerLabel(providers: CatalogProvider[], id: string): string {
   return providers.find((p) => p.id === id)?.label ?? id;
+}
+
+export function identityPickTitle(
+  t: T,
+  providers: CatalogProvider[],
+  pick: ChimeraPick | undefined,
+): string {
+  const activeProviderId = (providers.find((p) => p.ready) ?? providers[0])?.id;
+  if (!activeProviderId) return t("Follow the lead");
+  const resolution = chimeraPickProviderResolution(pick, activeProviderId);
+  if (resolution.kind === "follow") return t("Follow the lead");
+  if (resolution.kind === "unavailable") {
+    return t(
+      "%@ cannot run here; the identity follows the lead",
+      hydraProviderName(resolution.providerId),
+    );
+  }
+  return `${t("Provider")}: ${providerLabel(providers, resolution.providerId)}`;
 }
 
 function modelName(
@@ -299,11 +319,7 @@ function IdentitySection(props: {
                    *  at spawn (engine pick filter). */}
                   <label
                     className="kv"
-                    title={
-                      editing.pick?.provider
-                        ? `${t("Provider")}: ${providerLabel(props.providers, editing.pick.provider)}`
-                        : t("Follow the lead")
-                    }
+                    title={identityPickTitle(t, props.providers, editing.pick)}
                   >
                     <span>{t("Model")}</span>
                     <input
@@ -1395,8 +1411,8 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
           {hydraPanelLayout(settings) === "off"
             ? t("Does not open floating panels automatically. The chat still shows which sub-agents are running, and you can open a panel yourself.")
             : hydraPanelLayout(settings) === "independent"
-              ? t("When multiple sub-agents run, each sub-agent after the first automatically opens its own floating panel: on both sides of the chat when wide enough, or stacked on one side when narrow.")
-              : t("Keeps all running sub-agents in one floating panel; switch between them from its top-left menu, or pop individual sub-agents out manually.")}
+              ? t("When multiple sub-agents run, later running sub-agents automatically open their own floating panels in the chat area.")
+              : t("Opens one team panel; use its rows to open a sub-agent's chat.")}
         </p>
         <ToggleRow
           title="Lower the default reasoning effort for heads"

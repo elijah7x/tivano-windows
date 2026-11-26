@@ -11,6 +11,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Engine } from "../src/main/engine";
+import type { GitService } from "../src/main/gitService";
 import { MockProvider } from "../src/main/mockProvider";
 import { ProjectRuntimePaths } from "../src/main/projectRuntimePaths";
 import { Store } from "../src/main/store";
@@ -53,6 +54,55 @@ function rig(tickMs = 1) {
   const leadDir = tmp("tivano-lead-");
   const { project } = engine.openUserDirectory(leadDir);
   return { engine, paths, projectId: project.id, dataRoot };
+}
+
+type WorktreeSlice = Pick<
+  GitService,
+  | "worktreeCheck"
+  | "worktreeAdd"
+  | "worktreeRemove"
+  | "branches"
+  | "switchBranch"
+  | "createBranch"
+  | "renameBranch"
+  | "hydraCapture"
+  | "hydraCopyAdd"
+  | "hydraEndTree"
+  | "hydraLand"
+  | "hydraCopyRemove"
+  | "hydraReviewDiff"
+  | "autoWorktreeEligibility"
+>;
+
+/** Worktree seam double: enough of GitService for the engine's isolated-head
+ *  path, without depending on direct Git availability on the host. */
+function hydraWorktreeDouble(dataRoot: string): WorktreeSlice {
+  const fail = { kind: "unavailable" as const, reason: "unused in this suite" };
+  return {
+    worktreeCheck: async (_p, name) => ({ kind: "ok" as const, name }),
+    worktreeAdd: async () => fail,
+    worktreeRemove: async () => fail,
+    branches: async () => fail,
+    switchBranch: async () => fail,
+    createBranch: async () => fail,
+    renameBranch: async () => fail,
+    autoWorktreeEligibility: async () => "unavailable",
+    hydraCapture: async () => ({
+      kind: "captured" as const,
+      tree: "0".repeat(40),
+      commit: "1".repeat(40),
+    }),
+    hydraCopyAdd: async (projectId, slug) => {
+      const parent = join(dataRoot, "worktrees", projectId);
+      mkdirSync(parent, { recursive: true });
+      const dir = mkdtempSync(join(parent, `head-${slug}-`));
+      return { kind: "created" as const, directory: realpathSync(dir), branch: "" };
+    },
+    hydraEndTree: async () => fail,
+    hydraLand: async () => fail,
+    hydraCopyRemove: async () => fail,
+    hydraReviewDiff: async () => fail,
+  };
 }
 
 const heads = (engine: Engine, leadId: string) =>
@@ -182,6 +232,20 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(head3.hydraHead!.summary).not.toContain(homedir());
   });
 
+  it("a positive tilde-rooted route under the home folder expands and routes", async () => {
+    const { engine } = rig();
+    const folder = mkdtempSync(join(homedir(), "tivano-tilde-route-"));
+    roots.push(folder);
+    const leaf = folder.replace(/\\/g, "/").split("/").pop()!;
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]~/${leaf}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe("completed");
+    expect(head.hydraHead!.targetCheckout).toBe(realpathSync(folder));
+  });
+
   it("a quoted path with a space routes whole", async () => {
     const { engine } = rig();
     const folder = join(tmp("tivano-space-"), "with space");
@@ -224,15 +288,14 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
     expect(existsSync("PhysicalDrive0")).toBe(false);
   });
 
-  it("a missing leaf under a junction into a protected root is refused", async () => {
+  it("a missing leaf under a junction into a protected root is refused", async (ctx) => {
     const { engine, dataRoot } = rig();
     const base = tmp("tivano-junction-");
     const junction = join(base, "junc");
     try {
       symlinkSync(dataRoot, junction, "junction");
     } catch {
-      // Host cannot make junctions — nothing to prove here.
-      return;
+      ctx.skip("host cannot create junctions");
     }
     const leaf = join(junction, "newleaf");
     const lead = engine.createThread(null, "lead");
@@ -337,6 +400,28 @@ describe("P1-08 heads in non-Git folders (frozen routeHydraHead)", () => {
       );
     expect(bound).toBeDefined();
     expect(head.projectId).toBe(bound!.id);
+  });
+
+  it("a routed Git head uses an isolated copy when worktrees are attached", async () => {
+    const { engine, dataRoot } = rig();
+    engine.attachWorktrees(hydraWorktreeDouble(dataRoot));
+    engine.setSettings({ hydraIsolateHeads: true });
+    const repo = join(tmp("tivano-routed-copy-"), "repo");
+    const sub = join(repo, "sub");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    mkdirSync(sub, { recursive: true });
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, `do it [mock:hydra-path]${sub}`);
+    await waitFor(() => heads(engine, lead.id).length === 1);
+    const head = heads(engine, lead.id)[0]!;
+    await waitFor(() => head.worktreeDir !== undefined);
+    await waitFor(() => head.hydraHead!.status !== "running");
+    expect(head.hydraHead!.status).toBe("completed");
+    expect(head.hydraHead!.isNonGitCheckout).toBe(false);
+    expect(head.hydraHead!.baseTree).toBe("0".repeat(40));
+    expect(head.hydraHead!.landingCheckout).toBe(realpathSync(repo));
+    expect(head.worktreeDir!.replace(/\\/g, "/")).toContain("/worktrees/");
   });
 
   it("a routed folder whose repo top is protected is still refused", async () => {

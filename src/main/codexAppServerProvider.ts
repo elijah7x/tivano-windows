@@ -29,8 +29,8 @@
 //     DELIVERED — fatal errors, failed binds and session ends retain the
 //     still-living child so provider.dispose can retry it honestly.
 
-import { realpathSync } from "node:fs";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { mkdirSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type {
   ApprovalRequest,
   CodexModelOption,
@@ -68,9 +68,9 @@ import {
   ProcessTreeError,
 } from "./providerProcessLifecycle";
 import {
-  codexMcpServers,
   type McpServerConfig,
 } from "../shared/mcp";
+import { resolveCodexMcpServers } from "./mcpService";
 import type {
   AdapterDisposeResult,
   ChildCleanupResult,
@@ -78,10 +78,20 @@ import type {
   ProviderCallbacks,
   ProviderDescriptor,
   ProviderTurnHandle,
+  TextGenerationOptions,
   ToolActivity,
   TurnContext,
   WorkspaceGrant,
 } from "./provider";
+import {
+  buildCommitMessagePrompt,
+  buildNextPromptRequest,
+  buildRefreshedTitlePrompt,
+  buildThreadTitlePrompt,
+  extractRefreshedTitle,
+  extractTitle,
+  resolveTextGenerationPlan,
+} from "../shared/textGen";
 
 export const ORDINARY_CODEX_THREAD_INSTRUCTIONS =
   "Tivano's helper agents (heads) are off for this conversation. Disregard any earlier instructions about delegating work with a hydra block; do the work and answer directly.";
@@ -164,6 +174,8 @@ export interface CodexProviderLimits {
   interruptTimeoutMs: number;
   disposeInterruptMs: number;
   rollbackTimeoutMs: number;
+  /** P2-01/F31 one-shot text generation turn completion cap (180s matching macOS TextGeneration.swift). */
+  predictionTimeoutMs: number;
 }
 
 export const DEFAULT_CODEX_LIMITS: CodexProviderLimits = {
@@ -198,6 +210,7 @@ export const DEFAULT_CODEX_LIMITS: CodexProviderLimits = {
   interruptTimeoutMs: 10_000,
   disposeInterruptMs: 5_000,
   rollbackTimeoutMs: 30_000,
+  predictionTimeoutMs: 180_000,
 };
 
 export interface CodexProviderOptions {
@@ -232,6 +245,10 @@ export interface CodexProviderOptions {
    * no `config` key at all.
    */
   mcpServers?(): readonly McpServerConfig[] | undefined;
+  /** Test seam for MCP command resolution. */
+  resolveMcpServers?(
+    servers: readonly McpServerConfig[],
+  ): { mcpServers: Record<string, Record<string, unknown>> | undefined; skipped: string[] };
 }
 
 // ---------------------------------------------------------------------------
@@ -640,7 +657,17 @@ class CodexSession {
     params: Record<string, unknown>,
   ): Promise<unknown> {
     const servers = this.provider.mcpServersForThread();
-    const mcp = servers?.length ? codexMcpServers(servers) : undefined;
+    const { mcpServers: mcp, skipped } = servers?.length
+      ? this.provider.resolveMcpServersForThread(servers)
+      : { mcpServers: undefined, skipped: [] };
+    if (skipped.length > 0) {
+      const note = `MCP servers skipped for this session because their command was not found on PATH: ${skipped.join(", ")}`;
+      if (this.turn && !this.turn.terminal && this.turn.cb.onNotice) {
+        this.notice(note, "warning");
+      } else {
+        this.provider.threadNotice(this.localThreadId, note, "warning");
+      }
+    }
     const sent = mcp
       ? {
           ...params,
@@ -1538,10 +1565,12 @@ class CodexSession {
     if (this.phase !== "ready" || !rpc)
       throw new CodexProtocolError("session is not bound", "CODEX_CONNECTION_CLOSED");
     const gen = this.gen;
-    return fetchModelList(rpc, this.limits.requestTimeoutMs, () => {
+    const models = await fetchModelList(rpc, this.limits.requestTimeoutMs, () => {
       if (gen !== this.gen || this.rpc !== rpc)
         throw new CodexProtocolError("connection recycled", "CODEX_CONNECTION_CLOSED");
     });
+    this.provider.cacheCatalog(models);
+    return models;
   }
 
   /**
@@ -2948,6 +2977,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
   private oneShotTransports = new Set<StdioTransport<CodexMessage>>();
   private oneShotRpcs = new Set<CodexRpc>();
   private oneShotCleanupFailures = new Map<StdioTransport<CodexMessage>, ChildCleanupResult>();
+  private cachedCatalog: CodexModelOption[] | null = null;
   private disposed = false;
 
   constructor(opts: CodexProviderOptions) {
@@ -2991,6 +3021,14 @@ export class CodexAppServerProvider implements ProviderAdapter {
    *  thread, never retro-mutating a bound one. */
   mcpServersForThread(): readonly McpServerConfig[] | undefined {
     return this.opts.mcpServers?.();
+  }
+
+  resolveMcpServersForThread(
+    servers: readonly McpServerConfig[],
+  ): { mcpServers: Record<string, Record<string, unknown>> | undefined; skipped: string[] } {
+    return this.opts.resolveMcpServers
+      ? this.opts.resolveMcpServers(servers)
+      : resolveCodexMcpServers(servers);
   }
 
   buildSpec(workspaceDir: string, opts: CodexLaunchOptions = {}): SpawnSpec {
@@ -3114,6 +3152,11 @@ export class CodexAppServerProvider implements ProviderAdapter {
     });
   }
 
+  /** Cache a non-empty model catalog fetched by a bound session or one-shot probe. */
+  cacheCatalog(models: CodexModelOption[]): void {
+    if (models.length > 0) this.cachedCatalog = models;
+  }
+
   /** Session visibility for tests/diagnostics. */
   sessionCount(): number {
     return this.sessions.size;
@@ -3209,6 +3252,10 @@ export class CodexAppServerProvider implements ProviderAdapter {
   async runOneShot<T>(
     workspaceDir: string,
     fn: (rpc: CodexRpc, initResult: Record<string, unknown>) => Promise<T>,
+    opts?: {
+      onNotification?: (method: string, params: unknown) => void;
+      onClose?: (err: Error) => void;
+    },
   ): Promise<T> {
     this.assertCanLaunch();
     if (
@@ -3246,6 +3293,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
         onProtocolError: (err) => {
           alive = false;
           rpc?.failAllPending(err.message);
+          opts?.onClose?.(err);
           void transport.dispose();
         },
         onExit: () => {},
@@ -3254,14 +3302,17 @@ export class CodexAppServerProvider implements ProviderAdapter {
           this.oneShotTransports.delete(transport);
           this.recordOneShotCleanupFailure(transport, code, signal);
           const tail = transport.stderrTail().trim();
-          rpc?.failAllPending(
+          const msg =
             `CODEX_CONNECTION_CLOSED: one-shot connection closed (code ${code ?? "?"}, signal ${signal ?? "?"})` +
-              (tail ? ` — stderr tail: ${bounded(tail, 400)}` : ""),
-          );
+            (tail ? ` — stderr tail: ${bounded(tail, 400)}` : "");
+          rpc?.failAllPending(msg);
+          opts?.onClose?.(new CodexProtocolError(msg, "CODEX_CONNECTION_CLOSED"));
         },
         onSpawnError: (err) => {
           alive = false;
-          rpc?.failAllPending(`CODEX_PROTOCOL_ERROR: spawn failed: ${err.message}`);
+          const msg = `CODEX_PROTOCOL_ERROR: spawn failed: ${err.message}`;
+          rpc?.failAllPending(msg);
+          opts?.onClose?.(new CodexProtocolError(msg, "CODEX_PROTOCOL_ERROR"));
           void transport.dispose();
         },
       },
@@ -3274,11 +3325,14 @@ export class CodexAppServerProvider implements ProviderAdapter {
         onServerRequest: (id, method) => {
           rpc?.respondError(id, -32601, `unsupported server request in one-shot session: ${method}`);
         },
-        onNotification: () => {},
+        onNotification: (method, params) => {
+          if (alive) opts?.onNotification?.(method, params);
+        },
         onClosed: () => {},
         onFatal: (err) => {
           alive = false;
           rpc?.failAllPending(err.message);
+          opts?.onClose?.(err);
           void transport.dispose();
         },
       },
@@ -3286,9 +3340,9 @@ export class CodexAppServerProvider implements ProviderAdapter {
         requestTimeoutMs: this.limits.requestTimeoutMs,
         onMutatingTimeout: (method) => {
           alive = false;
-          rpc?.failAllPending(
-            `CODEX_REQUEST_TIMEOUT: mutating request ${method} timed out — wire state unknown`,
-          );
+          const msg = `CODEX_REQUEST_TIMEOUT: mutating request ${method} timed out — wire state unknown`;
+          rpc?.failAllPending(msg);
+          opts?.onClose?.(new CodexProtocolError(msg, "CODEX_REQUEST_TIMEOUT"));
           void transport.dispose();
         },
       },
@@ -3323,6 +3377,12 @@ export class CodexAppServerProvider implements ProviderAdapter {
       alive = false;
       this.oneShotRpcs.delete(rpc);
       rpc.failAllPending("CODEX_CONNECTION_CLOSED: one-shot connection closed");
+      opts?.onClose?.(
+        new CodexProtocolError(
+          "CODEX_CONNECTION_CLOSED: one-shot connection closed",
+          "CODEX_CONNECTION_CLOSED",
+        ),
+      );
       const res = await transport.dispose();
       this.recordOneShotCleanupFailure(transport, res.exitCode, res.signal);
       if (res.confirmed || !transport.hasChild) this.oneShotTransports.delete(transport);
@@ -3334,9 +3394,276 @@ export class CodexAppServerProvider implements ProviderAdapter {
    * one-shot `app-server` process (no plugins, apps, or telemetry).
    */
   async fetchModelCatalogOneShot(workspaceDir: string): Promise<CodexModelOption[]> {
-    return this.runOneShot(workspaceDir, (rpc) =>
+    const models = await this.runOneShot(workspaceDir, (rpc) =>
       fetchModelList(rpc, this.limits.requestTimeoutMs),
     );
+    this.cacheCatalog(models);
+    return models;
+  }
+
+  private textGenWorkspaceDir(preferred?: string): string {
+    if (
+      preferred &&
+      !preferred.includes("\0") &&
+      !preferred.startsWith("\\\\") &&
+      !preferred.startsWith("//") &&
+      !/^file:/i.test(preferred) &&
+      isAbsolute(preferred)
+    ) {
+      try {
+        return realpathSync(preferred);
+      } catch {
+        /* fall back to codexHome tmp */
+      }
+    }
+    const fallback = join(this.config.codexHome, "tmp");
+    mkdirSync(fallback, { recursive: true });
+    return fallback;
+  }
+
+  /**
+   * P2-18: run an ephemeral, read-only, tool-free one-shot turn over
+   * `runOneShot` using the exact resolved model and reasoning effort.
+   */
+  private async runOneShotTextTurn(
+    prompt: string,
+    options?: TextGenerationOptions,
+  ): Promise<string | null> {
+    const workspaceDir = this.textGenWorkspaceDir(options?.workspaceDir);
+    let activeThreadId: string | null = null;
+    let admittedTurnId: string | null = null;
+    let finished = false;
+    const buffered: Array<{ method: string; params: unknown }> = [];
+    const deltas: string[] = [];
+    const finalTexts: string[] = [];
+    let resolveTurn: ((status: string) => void) | null = null;
+    let rejectTurn: ((err: Error) => void) | null = null;
+
+    const handleNotification = (method: string, params: unknown): void => {
+      if (finished || !isObj(params)) return;
+      const tid = s(params.threadId);
+      if (activeThreadId && tid && tid !== activeThreadId) return;
+      if (!admittedTurnId) {
+        if (buffered.length < 256) buffered.push({ method, params });
+        return;
+      }
+      if (method === "item/agentMessage/delta") {
+        const turnId = s(params.turnId);
+        if (turnId && turnId !== admittedTurnId) return;
+        const delta = s(params.delta);
+        if (delta) deltas.push(delta);
+        return;
+      }
+      if (method === "item/completed") {
+        const turnId = s(params.turnId);
+        if (turnId && turnId !== admittedTurnId) return;
+        const item = isObj(params.item) ? params.item : null;
+        if (item && s(item.type) === "agentMessage") {
+          const text = s(item.text);
+          if (text) finalTexts.push(text);
+        }
+        return;
+      }
+      if (method === "turn/completed") {
+        const turn = isObj(params.turn) ? params.turn : null;
+        const turnId = turn ? s(turn.id) : s(params.turnId);
+        if (turnId && turnId !== admittedTurnId) return;
+        const status = (turn ? s(turn.status) : null) ?? "failed";
+        finished = true;
+        resolveTurn?.(status);
+      }
+    };
+
+    return this.runOneShot(
+      workspaceDir,
+      async (rpc) => {
+        let chosenModel: string | undefined;
+        let chosenEffort: string | undefined;
+        const explicitModel = options?.mode === "codex" ? options.model?.trim() : undefined;
+        if (explicitModel) {
+          chosenModel = explicitModel;
+          chosenEffort = options?.effort?.trim() || undefined;
+        } else {
+          const models =
+            this.cachedCatalog && this.cachedCatalog.length > 0
+              ? this.cachedCatalog
+              : await fetchModelList(rpc, this.limits.requestTimeoutMs);
+          this.cacheCatalog(models);
+          const plan = resolveTextGenerationPlan(
+            {
+              textGeneration: options?.mode ?? "automatic",
+              textGenerationModelID: options?.model,
+              textGenerationEffort: options?.effort,
+            },
+            models,
+            { allowsDefaultModel: options?.allowsDefaultModel },
+          );
+          if (!plan.enabled || !plan.model) return null;
+          chosenModel = plan.model;
+          chosenEffort = plan.effort;
+        }
+
+        const threadRes = await rpc.request(
+          "thread/start",
+          {
+            cwd: workspaceDir,
+            ephemeral: true,
+            approvalPolicy: "never",
+            approvalsReviewer: "user",
+            sandbox: "read-only",
+            model: chosenModel,
+          },
+          { timeoutMs: this.limits.threadTimeoutMs, mutating: true },
+        );
+        const codexThreadId =
+          isObj(threadRes) && isObj(threadRes.thread) ? s(threadRes.thread.id) : null;
+        if (!codexThreadId) {
+          throw new CodexProtocolError(
+            "thread/start response lacks thread.id",
+            "CODEX_PROTOCOL_ERROR",
+          );
+        }
+        activeThreadId = codexThreadId;
+
+        const completion = new Promise<string>((resolveP, rejectP) => {
+          resolveTurn = resolveP;
+          rejectTurn = rejectP;
+        });
+        void completion.catch(() => {});
+        const turnTimeoutMs = options?.timeoutMs ?? this.limits.turnStartTimeoutMs;
+        const timer = setTimeout(() => {
+          if (!finished) {
+            finished = true;
+            rejectTurn?.(
+              new CodexProtocolError(
+                "CODEX_REQUEST_TIMEOUT: one-shot text turn timed out",
+                "CODEX_REQUEST_TIMEOUT",
+              ),
+            );
+          }
+        }, turnTimeoutMs);
+        timer.unref?.();
+
+        try {
+          const turnRes = await rpc.request(
+            "turn/start",
+            {
+              threadId: codexThreadId,
+              input: [{ type: "text", text: prompt, text_elements: [] }],
+              summary: "auto",
+              approvalPolicy: "never",
+              approvalsReviewer: "user",
+              sandboxPolicy: { type: "readOnly" },
+              model: chosenModel,
+              ...(chosenEffort ? { effort: chosenEffort } : {}),
+              collaborationMode: {
+                mode: "default",
+                settings: {
+                  model: chosenModel,
+                  reasoning_effort: chosenEffort ?? null,
+                  developer_instructions: null,
+                },
+              },
+            },
+            { timeoutMs: this.limits.turnStartTimeoutMs, mutating: true },
+          );
+          const providerTurnId =
+            isObj(turnRes) && isObj(turnRes.turn) ? s(turnRes.turn.id) : null;
+          if (!providerTurnId) {
+            throw new CodexProtocolError(
+              "turn/start response lacks turn.id",
+              "CODEX_PROTOCOL_ERROR",
+            );
+          }
+          admittedTurnId = providerTurnId;
+          const pending = buffered.splice(0, buffered.length);
+          for (const frame of pending) handleNotification(frame.method, frame.params);
+
+          const status = await completion;
+          if (status !== "completed") return null;
+          const out = (finalTexts.length > 0 ? finalTexts.join("") : deltas.join("")).trim();
+          return out || null;
+        } finally {
+          finished = true;
+          resolveTurn = null;
+          rejectTurn = null;
+          clearTimeout(timer);
+        }
+      },
+      {
+        onNotification: handleNotification,
+        onClose: (err) => {
+          if (!finished) {
+            finished = true;
+            rejectTurn?.(err);
+          }
+        },
+      },
+    );
+  }
+
+  async generateTitle(
+    message: string,
+    options?: TextGenerationOptions,
+  ): Promise<string | null> {
+    const prompt = options?.refresh
+      ? buildRefreshedTitlePrompt(options.refresh.currentTitle, options.refresh.context)
+      : buildThreadTitlePrompt(message);
+    try {
+      const raw = await this.runOneShotTextTurn(prompt, options);
+      if (!raw) return null;
+      if (options?.refresh) {
+        return extractRefreshedTitle(options.refresh.currentTitle, raw);
+      }
+      return extractTitle(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  async generateCommitMessage(
+    summary: string,
+    patch: string,
+    instructions: string,
+    options?: TextGenerationOptions,
+  ): Promise<string | null> {
+    const prompt = buildCommitMessagePrompt(summary, patch, instructions);
+    const raw = await this.runOneShotTextTurn(prompt, options);
+    if (!raw) return null;
+    const cleaned = raw.replace(/```/g, "").trim();
+    return cleaned || null;
+  }
+
+  /**
+   * P2-01 / P2-18: one-shot composer next-prompt prediction over a lightweight
+   * ephemeral `app-server` turn (`allowsDefaultModel: false`, `predictionTimeoutMs`).
+   */
+  async generateNextPrompt(
+    context: string,
+    options?: TextGenerationOptions,
+  ): Promise<string | null> {
+    const effectiveOpts: TextGenerationOptions = {
+      ...options,
+      allowsDefaultModel: false,
+      timeoutMs: options?.timeoutMs ?? this.limits.predictionTimeoutMs,
+    };
+    if (this.cachedCatalog && this.cachedCatalog.length > 0 && effectiveOpts.mode !== "codex") {
+      const plan = resolveTextGenerationPlan(
+        {
+          textGeneration: effectiveOpts.mode ?? "automatic",
+          textGenerationModelID: effectiveOpts.model,
+          textGenerationEffort: effectiveOpts.effort,
+        },
+        this.cachedCatalog,
+        { allowsDefaultModel: false },
+      );
+      if (!plan.enabled || !plan.model) return null;
+    }
+    try {
+      return await this.runOneShotTextTurn(buildNextPromptRequest(context), effectiveOpts);
+    } catch {
+      return null;
+    }
   }
 
   async modelCatalog(): Promise<CodexModelOption[] | null> {

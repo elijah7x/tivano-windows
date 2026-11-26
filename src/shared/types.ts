@@ -117,6 +117,20 @@ export function legacyAppearanceOfTheme(raw: string): AppearanceMode | null {
   if (LEGACY_DARK_THEMES.has(raw)) return "dark";
   return null;
 }
+
+/** P2-51: normalize an OS accent color string (Electron `systemPreferences.getAccentColor()`
+ *  8-char RGBA hex like `"0078d4ff"`, or 6-char RGB hex) into a 6-char uppercase RGB hex,
+ *  returning null when absent, malformed, or fully transparent (`alpha === "00"`). */
+export function normalizeOsAccentHex(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().replace(/^#/, "");
+  if (/^[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed.toUpperCase();
+  if (/^[0-9a-fA-F]{8}$/.test(trimmed)) {
+    if (trimmed.slice(6, 8) === "00") return null;
+    return trimmed.slice(0, 6).toUpperCase();
+  }
+  return null;
+}
 export const LANGUAGE_IDS = ["en", "zh-Hans", "zh-Hant", "ja", "ko", "fr"] as const;
 export type LanguageId = (typeof LANGUAGE_IDS)[number];
 
@@ -128,6 +142,8 @@ export const LANGUAGE_LABELS: Record<LanguageId, string> = {
   ko: "한국어",
   fr: "Français",
 };
+
+export type TextGenerationChoice = "automatic" | "codex" | "off";
 
 export interface Settings {
   theme: ThemeId;
@@ -220,13 +236,15 @@ export interface Settings {
    */
   taskSleepMode?: TaskSleepMode;
   /**
-   * F31: provider-generated thread titles. "automatic" uses the thread's
-   * own provider when the adapter supports it; "off" keeps the
-   * prompt-derived fallback. Claude/Codex-specific picks are deferred —
-   * they need a signed-in provider CLI, which this build does not have.
-   * Absent on old stores = automatic (frozen default).
+   * P2-18: background text generation (thread titles, commit messages,
+   * composer predictions). "automatic" uses the cheapest mini-tier Codex
+   * model at low effort; "codex" uses the chosen textGenerationModelID /
+   * textGenerationEffort; "off" disables all background text generation.
+   * Absent on old stores = "automatic".
    */
-  textGeneration?: "automatic" | "off";
+  textGeneration?: TextGenerationChoice;
+  textGenerationModelID?: string;
+  textGenerationEffort?: string;
   /**
    * v2.2.34 Settings › Text generation › Thread titles. "once" names a
    * chat from its first turn and leaves it (today's behavior); "updated"
@@ -262,13 +280,15 @@ export interface Settings {
    */
   shortcuts?: Record<string, KeyChord | null>;
   /**
-   * F33: the frozen double gate — alpha master switch AND the separate
-   * local-control switch must both be on before the control socket
-   * listens (frozen `isExternalControlEnabled = alpha && external`).
-   * Absent on old stores = both off (secure default).
+   * P2-23: local control now follows `externalControlEnabled` alone (absent =
+   * off). `alphaEnabled` is retained for older stores and callers, and
+   * `controlLeftAlpha` marks that the one-time conjunction migration
+   * (`externalControlEnabled = alphaEnabled && externalControlEnabled`) has
+   * already run on load.
    */
   alphaEnabled?: boolean;
   externalControlEnabled?: boolean;
+  controlLeftAlpha?: boolean;
   /** P2-25: Remote MCP (outside Alpha, under Settings > Connections). */
   remoteMCPEnabled?: boolean;
   remoteMCPFullAccess?: boolean;
@@ -331,6 +351,10 @@ export interface Settings {
   hydraPairs?: HydraPair[];
   /** The pair the model picker last put a chat on. */
   lastHydraPairId?: string;
+  /** P2-03: the pair the picker last selected locally (kept for the Recent row). */
+  lastNewChatPairId?: string;
+  /** P2-03: the model the picker last selected locally. */
+  lastNewChatModel?: ModelPin;
   /** P1-36: the sub-agent mode new chats seed from (frozen picker
    *  default); absent = derived per chat. */
   subagentModeDefault?: SubagentMode;
@@ -1168,6 +1192,9 @@ export interface AppInfo {
   /** P2-55: release notes since the previous installed version, read from
    *  CHANGELOG.md in main for en + zh-Hans. */
   whatsNew?: WhatsNewInfo;
+  /** P2-51: current OS system accent color as 6-char uppercase RGB hex,
+   *  or null when unavailable on the host platform. */
+  systemAccentColor?: string | null;
 }
 
 /** Per-turn checkpoint record as the renderer may see it — ledger
