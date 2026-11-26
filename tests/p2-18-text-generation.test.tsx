@@ -244,7 +244,7 @@ describe("P2-18 old store migration", () => {
 });
 
 describe("P2-18 fake Codex app-server transcript", () => {
-  function setupTranscriptRig() {
+  function setupTranscriptRig(opts?: { failTurnStart?: boolean }) {
     const root = tmp("tivano-p218-codex-");
     const codexHome = join(root, "codex-home");
     mkdirSync(codexHome, { recursive: true });
@@ -306,6 +306,10 @@ describe("P2-18 fake Codex app-server transcript", () => {
               },
             });
           } else if (method === "turn/start") {
+            if (opts?.failTurnStart) {
+              c.write({ id, error: { code: -32000, message: "synthetic turn/start failure" } });
+              return;
+            }
             const turnId = "codex-turn-1";
             const usedModel = String(params.model ?? "none");
             const usedEffort = String(params.effort ?? "default");
@@ -400,6 +404,37 @@ describe("P2-18 fake Codex app-server transcript", () => {
 
     await provider.dispose();
     store.close();
+  });
+
+  it("handles turn/start RPC errors and connection close without unhandled rejections", async () => {
+    const { provider, store, engine } = setupTranscriptRig({ failTurnStart: true });
+    let unhandled: unknown = null;
+    const onUnhandled = (reason: unknown) => {
+      unhandled = reason;
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      engine.setSettings({
+        textGeneration: "codex",
+        textGenerationModelID: "gpt-5.4-mini",
+        textGenerationEffort: "low",
+      });
+      const title = await provider.generateTitle("fix crash", {
+        mode: "codex",
+        model: "gpt-5.4-mini",
+        effort: "low",
+      });
+      expect(title).toBeNull();
+
+      const commit = await engine.commitMessageFor("M src/a.ts", "diff");
+      expect(commit.kind).toBe("unavailable");
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).toBeNull();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      await provider.dispose();
+      store.close();
+    }
   });
 });
 

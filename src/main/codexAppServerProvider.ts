@@ -3495,6 +3495,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
           resolveTurn = resolveP;
           rejectTurn = rejectP;
         });
+        void completion.catch(() => {});
         const turnTimeoutMs = this.limits.turnStartTimeoutMs;
         const timer = setTimeout(() => {
           if (!finished) {
@@ -3549,6 +3550,9 @@ export class CodexAppServerProvider implements ProviderAdapter {
           const out = (finalTexts.length > 0 ? finalTexts.join("") : deltas.join("")).trim();
           return out || null;
         } finally {
+          finished = true;
+          resolveTurn = null;
+          rejectTurn = null;
           clearTimeout(timer);
         }
       },
