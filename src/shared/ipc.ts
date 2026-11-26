@@ -21,7 +21,7 @@ import {
   ValidationError,
   type Validator,
 } from "./validate";
-import { APPEARANCE_MODES, LANGUAGE_IDS, THEME_IDS } from "./types";
+import { APPEARANCE_MODES, LANGUAGE_IDS, THEME_IDS, WEATHER_WINDOW_MODES } from "./types";
 import { SHORTCUT_COMMANDS, type KeyChord } from "./shortcuts";
 import type { ModelPreference } from "./modelList";
 
@@ -486,7 +486,8 @@ export const requestValidators = {
     defaultWorkspaceMode: vOptional(vEnum(["local", "worktree", "auto"] as const)),
     showReasoning: vOptional(vBoolean),
     showsWorkingCard: vOptional(vBoolean),
-    // F26: sidebar weather hero (frozen showsSkylight, default true).
+    // P2-47: Weather window mode (porthole / full / off) + legacy showsSkylight alias.
+    weatherWindowMode: vOptional(vEnum(WEATHER_WINDOW_MODES)),
     showsSkylight: vOptional(vBoolean),
     // F33: CLI install receipt (frozen cliInstallationTarget) — the shim
     // target path; the settings:set patch clears it with null.

@@ -85,6 +85,7 @@ import { runWorkingIndicatorChecks } from "./workingIndicatorChecks.mjs";
 import { runLayoutChecks, runShelfChecks, runQuickChecks } from "./layoutChecks.mjs";
 import { runRemoteMcpChecks } from "./remoteMcpChecks.mjs";
 import { runWelcomeChecks } from "./welcomeChecks.mjs";
+import { runP253ChromeChecks } from "./p253ChromeChecks.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "package.json"));
@@ -2104,6 +2105,19 @@ try {
     launchFresh,
     instances,
     snap,
+    outDir,
+    check,
+    boundedClose,
+  });
+
+  // ---- session 34: P2-53 Window chrome simplification ---------------------
+  await runP253ChromeChecks({
+    launch,
+    instances,
+    snap,
+    dataRoot,
+    workspaceRoot,
+    codexFixture,
     outDir,
     check,
     boundedClose,

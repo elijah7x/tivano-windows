@@ -15,7 +15,7 @@ param(
   [ValidatePattern('^[A-Za-z0-9._:/-]+$')][string]$DevinModel = 'swe-2-high',
   [ValidatePattern('^[A-Za-z0-9_.-]+$')][string]$Label = 'nyx-auto',
   [ValidateRange(1, 200)][int]$MaxIssuesPerRun = 50,
-  [ValidateRange(1, 200)][int]$MaxMergesPerDay = 20,
+  [ValidateRange(1, 200)][int]$MaxMergesPerDay = 40,
   [ValidateRange(0, 5)][int]$MaxFixRounds = 2,
   [ValidateRange(5, 480)][int]$DevinTimeoutMin = 90,
   # gui: the task is typed into a Devin Desktop chat on the signed-in desktop, so it can be watched and joined there.

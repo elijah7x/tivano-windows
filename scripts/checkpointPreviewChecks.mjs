@@ -469,13 +469,22 @@ export async function runCheckpointChecks({
     tabText,
   );
   const tabBox = await page.locator(".thread-changes-tab").boundingBox();
+  const compBox = await page.locator(".composer").boundingBox();
   await page.locator(".thread-changes-tab").click();
-  await page.locator(".thread-changes-pop").waitFor({ timeout: 10000 });
-  const popBox = await page.locator(".thread-changes-pop").boundingBox();
+  await page.locator('.thread-changes-pop[data-anchor="topbar"]').waitFor({ timeout: 10000 });
+  const popBox = await page.locator('.thread-changes-pop[data-anchor="topbar"]').boundingBox();
   verify(
     "changes popover opens directly below top-bar +/- numbers",
-    Boolean(tabBox && popBox && popBox.y >= tabBox.y),
-    { tabBox, popBox },
+    Boolean(
+      tabBox &&
+        popBox &&
+        compBox &&
+        popBox.y >= tabBox.y + tabBox.height - 2 &&
+        popBox.y <= tabBox.y + tabBox.height + 20 &&
+        Math.abs(popBox.x + popBox.width - (tabBox.x + tabBox.width)) <= 40 &&
+        popBox.y < compBox.y,
+    ),
+    { tabBox, popBox, compBox },
   );
   const popText = await page.locator(".thread-changes-pop").innerText();
   verify(

@@ -30,6 +30,7 @@ import { join } from "node:path";
 import type { Engine } from "./engine";
 import type { ChatThread } from "../shared/types";
 import { hydraPairForProvider, type HydraPair } from "../shared/hydra";
+import { resolveWeatherWindowMode } from "../shared/skylight";
 
 const VERSION = 1;
 const MAX_FRAME = 1_048_576;
@@ -752,8 +753,8 @@ export class LocalControlService {
       },
       {
         key: "showsSkylight",
-        preference: { bool: s.showsSkylight !== false },
-        effective: { bool: s.showsSkylight !== false },
+        preference: { bool: resolveWeatherWindowMode(s) !== "off" },
+        effective: { bool: resolveWeatherWindowMode(s) !== "off" },
       },
     ];
   }

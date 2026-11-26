@@ -9,10 +9,11 @@ import { createPortal } from "react-dom";
 import type { ChatThread, OpenDirectoryResult, Snapshot } from "../../shared/types";
 import { compareThreads } from "../../shared/threadOrder";
 import { useT } from "../locale";
-import { api, callApi, clientStore, tryCall } from "../client";
+import { api, callApi, clientStore, tryCall, type WeatherFlashStatus } from "../client";
 import { ProjectIconPicker } from "./ProjectIconPicker";
 import { MiniSpinner } from "./SpinnerCells";
 import { Skylight } from "./Skylight";
+import { resolveWeatherWindowMode } from "../../shared/skylight";
 
 /** P2-34 (frozen SidebarView RowActionsButton): a thread row's hover strip
  *  keeps the immediate affordances but never a bare archive button — archive
@@ -59,6 +60,7 @@ function statusMark(t: ChatThread): React.JSX.Element {
 
 export function Sidebar(props: {
   snapshot: Snapshot;
+  finishFlashes?: Readonly<Record<string, WeatherFlashStatus>> | undefined;
   onOpenSettings: () => void;
   onOpenPalette: () => void;
 }): React.JSX.Element {
@@ -612,14 +614,15 @@ export function Sidebar(props: {
           </svg>
         </button>
       </div>
-      {/* F26 (frozen SidebarHero): the skylight hero folds every visible
-          thread into one weather and creates a thread on tap. */}
-      {snapshot.settings.showsSkylight !== false && (
-          <Skylight
-            threads={snapshot.threads}
-            onNewThread={() => tryCall("threads:create", { projectId: null })}
-          />
-        )}
+      {/* P2-47 (frozen SidebarPorthole): non-interactive weather porthole
+          above the thread list when Weather window is set to Porthole. */}
+      {resolveWeatherWindowMode(snapshot.settings) === "porthole" && (
+        <Skylight
+          threads={snapshot.threads}
+          projects={snapshot.projects}
+          finishFlashes={props.finishFlashes}
+        />
+      )}
       {creatingProject && (
         <div className="search">
           <input

@@ -1084,6 +1084,14 @@ const zhHans: Record<string, string> = {
     "主代理把工作拆成不同角色，并为每个角色匹配合适服务商的模型。",
   "New chats start on this mode; each chat switches it in the model picker. With no saved pair, Preset falls back to Same-model.":
     "新对话使用该模式；每个对话可在模型选择器中切换。没有保存的组合时，“模型搭配”回退为“同模型”。",
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
+    "已达子代理并发上限（%d）\n1 个任务在排队：同时最多运行 %d 个子代理（设置 › Hydra）。正在运行的子代理完成后会自动派出。",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on their own as running sub-agents finish.":
+    "已达子代理并发上限（%d）\n%d 个任务在排队：同时最多运行 %d 个子代理（设置 › Hydra）。正在运行的子代理完成后会自动派出。",
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once. It goes out on its own as a running sub-agent finishes.":
+    "已达子代理并发上限（%d）\n1 个任务在排队：同时最多运行 %d 个子代理。正在运行的子代理完成后会自动派出。",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
+    "已达子代理并发上限（%d）\n%d 个任务在排队：同时最多运行 %d 个子代理。正在运行的子代理完成后会自动派出。",
   // P1-12: delegation level picker — titles use the upstream canonical
   // zh-Hans verbatim.
   "How much sub-agents take on": "子代理承担多少工作",
@@ -2229,6 +2237,15 @@ const zhHans: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "1 个文件已更改，新增 %@ 行，删除 %@ 行",
   "%@ files changed, %@ lines added, %@ lines removed": "%@ 个文件已更改，新增 %@ 行，删除 %@ 行",
   "Show this thread's changes": "显示此对话的改动",
+  // P2-47: Weather window (v3.0.0 Localizable.xcstrings verbatim zh-Hans)
+  "Weather window": "天气窗",
+  "Porthole": "舷窗",
+  "Full window": "落地窗",
+  "No weather.": "不显示天气。",
+  "A small window above the thread list: wind when waiting on you, sunlight when a turn finishes, rain when one fails.":
+    "对话列表上方的一扇小窗：等你回复时起风，回合完成时出太阳，失败时下雨。",
+  "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
+    "在等待你回答或确认时拂过微风、完成时洒下暖阳、失败时落下细雨。",
   // P2-50: first-launch page (Work in a project / Just chat + provider checklist).
   "Where shall we begin today?": "今天从哪里开始？",
   "Work in a project": "在项目里工作",
@@ -2360,6 +2377,10 @@ const EXTRA_NOTICE_KEYS = [
   "Why it did not land: %@.\n\n",
   "%@ is waiting for your answer. Open it from the Hydra panel to reply.",
   "%@ is waiting for your answer. Open it from the sub-agents panel to reply.",
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on their own as running sub-agents finish.",
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once. It goes out on its own as a running sub-agent finishes.",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.",
   "The head could not start: %@",
   "%@ sent nothing for 10 minutes, so Tivano stopped the turn.",
   "%@ sent nothing for 30 minutes while a tool ran, so Tivano stopped the turn.",

@@ -17,7 +17,7 @@ param(
   [ValidateRange(1, 1440)][int]$IntervalMinutes = 30,
   [ValidateRange(1, 720)][int]$ExecutionLimitHours = 72,
   [ValidateRange(1, 200)][int]$MaxIssuesPerRun = 50,
-  [ValidateRange(1, 200)][int]$MaxMergesPerDay = 20,
+  [ValidateRange(1, 200)][int]$MaxMergesPerDay = 40,
   [ValidateRange(0, 5)][int]$MaxFixRounds = 2,
   [ValidateRange(5, 480)][int]$DevinTimeoutMin = 90,
   [ValidateRange(5, 240)][int]$StallMinutes = 20,

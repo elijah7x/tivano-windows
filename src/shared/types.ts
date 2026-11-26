@@ -44,6 +44,10 @@ export type ThemeId = (typeof THEME_IDS)[number];
 export const APPEARANCE_MODES = ["system", "light", "dark"] as const;
 export type AppearanceMode = (typeof APPEARANCE_MODES)[number];
 
+/** P2-47: v3.0.0 Weather window mode (AppSettings.swift WeatherWindowMode). */
+export const WEATHER_WINDOW_MODES = ["porthole", "full", "off"] as const;
+export type WeatherWindowMode = (typeof WEATHER_WINDOW_MODES)[number];
+
 const LEGACY_THEME_MAP: Record<string, ThemeId> = {
   breezeLight: "breeze",
   breezeDark: "breeze",
@@ -184,9 +188,11 @@ export interface Settings {
    */
   showsWorkingCard?: boolean;
   /**
-   * F26: frozen showsSkylight (default true) — the sidebar's weather hero.
-   * Absent on old stores = on.
+   * P2-47: v3.0.0 Weather window mode (default "porthole").
+   * Legacy showsSkylight is kept for pre-P2-47 stores and localControl bool alias.
    */
+  weatherWindowMode?: WeatherWindowMode;
+  lastWeatherWindowMode?: "porthole" | "full";
   showsSkylight?: boolean;
   /**
    * F33: receipt for the CLI command shim installed on request — the

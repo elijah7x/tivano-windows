@@ -2038,6 +2038,15 @@ export const fr: Record<string, string> = {
   "1 file changed, %@ lines added, %@ lines removed": "1 fichier modifié, %@ lignes ajoutées, %@ lignes supprimées",
   "%@ files changed, %@ lines added, %@ lines removed": "%@ fichiers modifiés, %@ lignes ajoutées, %@ lignes supprimées",
   "Show this thread's changes": "Afficher les modifications de cette conversation",
+  // P2-47
+  "Weather window": "Fenêtre météo",
+  "Porthole": "Hublot",
+  "Full window": "Pleine fenêtre",
+  "No weather.": "Aucune météo.",
+  "A small window above the thread list: wind when waiting on you, sunlight when a turn finishes, rain when one fails.":
+    "Une petite fenêtre au-dessus de la liste des conversations : du vent lorsqu’elle attend votre réponse, du soleil quand un tour se termine, de la pluie en cas d’échec.",
+  "Shows subtle wind when waiting on you, sunlight when a turn finishes, and rain when one fails.":
+    "Affiche une brise légère lorsqu’une réponse ou une confirmation est attendue, du soleil lorsqu’un tour se termine et de la pluie en cas d’échec.",
   // P2-50
   "Where shall we begin today?": "Par où commençons-nous aujourd’hui ?",
   "Work in a project": "Travailler dans un projet",
@@ -2057,4 +2066,13 @@ export const fr: Record<string, string> = {
   "ChatGPT plan or API key": "Forfait ChatGPT ou clé API",
   "Synthetic provider": "Fournisseur synthétique",
   "Provider checklist": "Liste des fournisseurs",
+  // P1-36
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once (Settings › Hydra). It goes out on its own as a running sub-agent finishes.":
+    "Limite de sous-agents atteinte (%d)\n1 tâche est en file d’attente : %d sous-agents au maximum s’exécutent à la fois (Réglages › Hydra). Elle démarrera automatiquement dès qu’un sous-agent en cours aura terminé.",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once (Settings › Hydra). They go out on their own as running sub-agents finish.":
+    "Limite de sous-agents atteinte (%d)\n%d tâches sont en file d’attente : %d sous-agents au maximum s’exécutent à la fois (Réglages › Hydra). Elles démarreront automatiquement à mesure que les sous-agents en cours termineront.",
+  "Sub-agent limit reached (%d)\n1 task is queued: at most %d sub-agents run at once. It goes out on its own as a running sub-agent finishes.":
+    "Limite de sous-agents atteinte (%d)\n1 tâche est en file d’attente : %d sous-agents au maximum s’exécutent à la fois. Elle démarrera automatiquement dès qu’un sous-agent en cours aura terminé.",
+  "Sub-agent limit reached (%d)\n%d tasks are queued: at most %d sub-agents run at once. They go out on their own as running sub-agents finish.":
+    "Limite de sous-agents atteinte (%d)\n%d tâches sont en file d’attente : %d sous-agents au maximum s’exécutent à la fois. Elles démarreront automatiquement à mesure que les sous-agents en cours termineront.",
 };

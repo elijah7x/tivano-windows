@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ProjectRuntimePaths, WorkspaceError } from "../src/main/projectRuntimePaths";
+import { ProjectRuntimePaths, WorkspaceError, sameDirectoryPath } from "../src/main/projectRuntimePaths";
 
 function ws(): string {
   return mkdtempSync(join(tmpdir(), "tivano-ws-"));
@@ -269,5 +269,29 @@ describe("lead R2 workspace durability", () => {
     expect(JSON.parse(readFileSync(file, "utf8")).grants.b).toBe(bPath);
     paths.revoke("b");
     expect(JSON.parse(readFileSync(file, "utf8")).grants.b).toBeUndefined();
+  });
+});
+
+describe("sameDirectoryPath and case-insensitive grant lookup", () => {
+  it("matches case-insensitively with normalized separators on win32 and strictly on posix", () => {
+    expect(sameDirectoryPath("C:\\Work\\Proj\\", "c:/work/proj", "win32")).toBe(true);
+    expect(sameDirectoryPath("\\\\?\\D:\\Repo", "d:\\repo", "win32")).toBe(true);
+    expect(sameDirectoryPath("C:\\Work\\ProjA", "C:\\Work\\ProjB", "win32")).toBe(false);
+    expect(sameDirectoryPath("/tmp/Proj", "/tmp/proj", "linux")).toBe(false);
+    expect(sameDirectoryPath("/tmp/Proj", "/tmp/Proj", "linux")).toBe(true);
+  });
+
+  it.skipIf(process.platform !== "win32")("findProjectByDirectory matches an existing user grant spelled with different case", () => {
+    const root = ws();
+    const dir = join(root, "CaseFolder");
+    mkdirSync(dir);
+    const file = join(root, "grants.json");
+    const paths = new ProjectRuntimePaths([], file, root);
+    const grant = paths.registerUser("p1", dir);
+    const flipped = grant.directory.replace(/[A-Za-z]/g, (c) =>
+      c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase(),
+    );
+    expect(flipped).not.toBe(grant.directory);
+    expect(paths.findProjectByDirectory(flipped)).toBe("p1");
   });
 });
