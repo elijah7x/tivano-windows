@@ -287,9 +287,7 @@ if (isMain) {
       proc = null;
     }
     const ledger = { label, pid: proc?.pid ?? null, exited: false, outcome: "pending" };
-    const entry = { app, proc, ledger, freshDataRoot };
-    instances.push(entry);
-    return entry;
+    return { app, proc, ledger, freshDataRoot };
   };
 
   let runErr = null;

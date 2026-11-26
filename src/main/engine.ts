@@ -1523,17 +1523,17 @@ export class Engine {
         else void this.worktrees.worktreeRemove(projectId, wt).catch(() => {});
       }
     }
+    const removeOwnTaskWorkspace =
+      !del.projectId &&
+      !del.parentThreadId &&
+      this.paths?.hasTaskWorkspaceRoot() === true &&
+      !this.isTaskWorkspaceReferenced(id);
     this.store.update((d) => {
       d.threads = d.threads.filter((t) => t.id !== id);
       if (d.ui.selectedThreadId === id) d.ui.selectedThreadId = null;
     });
-    if (
-      !del.projectId &&
-      !del.parentThreadId &&
-      this.paths?.hasTaskWorkspaceRoot() &&
-      !this.isTaskWorkspaceReferenced(id)
-    ) {
-      this.paths.removeTaskWorkspace(id);
+    if (removeOwnTaskWorkspace) {
+      this.paths!.removeTaskWorkspace(id);
     }
     this.emit({ type: "thread-removed", threadId: id });
   }
@@ -7623,7 +7623,7 @@ export class Engine {
 
   private isTaskWorkspaceReferenced(ownerId: string): boolean {
     return this.store.state.threads.some((t) => {
-      if (t.projectId) return false;
+      if (t.id === ownerId || t.projectId) return false;
       try {
         return this.taskWorkspaceOwnerId(t) === ownerId;
       } catch {

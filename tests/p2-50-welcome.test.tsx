@@ -406,6 +406,9 @@ describe("P2-50 first-launch WelcomeView & readiness rules", () => {
       expect(translate(lang, "Where shall we begin today?")).not.toBe(
         "Where shall we begin today?",
       );
+      expect(translate(lang, "This task's parent is unavailable.")).not.toBe(
+        "This task's parent is unavailable.",
+      );
       expect(translate(lang, "%lld providers ready")).toContain("%lld");
     }
   });
