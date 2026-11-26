@@ -891,11 +891,28 @@ describe("P2-33 pure drop planning guards", () => {
     expect(sectionPlan!.modelSections.map((s) => s.id)).toEqual(["s2", "s1"]);
   });
 
+  it("forwards requireDifferentGroup through wall-group drop planning", () => {
+    const pins = [P("u1"), P("a1"), P("a2")];
+    const secs = [S("s1", "Alpha", 1), S("s2", "Beta", 3)];
+    expect(
+      planModelDropOnWallGroup(pins, secs, "codex/a1", "s1", false, {
+        requireDifferentGroup: true,
+      }),
+    ).toBeNull();
+    expect(
+      planModelDropOnWallGroup(pins, secs, "codex/a1", null, false, {
+        requireDifferentGroup: true,
+      }),
+    ).not.toBeNull();
+  });
+
   it("searching drops and mismatched drag kinds are inert", () => {
     const pins = [P("u"), P("a")];
     const secs = [S("s1", "One", 1)];
     expect(planModelDropOnPin(pins, secs, "codex/a", P("u"), true)).toBeNull();
+    expect(planModelDropOnPin(pins, secs, "section/s1", P("u"), false)).toBeNull();
     expect(planModelDropOnWallGroup(pins, secs, "section/s1", null, false)).toBeNull();
+    expect(planModelDropOnRail(pins, secs, "codex/a", "s1", true)).toBeNull();
     expect(planModelDropOnRail(pins, secs, "section/s1", null, false)).toBeNull();
     expect(planModelDropOnRail(pins, secs, null, "s1", false)).toBeNull();
   });

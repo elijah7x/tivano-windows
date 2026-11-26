@@ -908,7 +908,7 @@ export function planModelDropOnWallGroup(
   const drag = parseModelDragTarget(dragged);
   if (!drag || drag.kind !== "pin" || isSearching) return null;
   const pin = liveDraggedPin(pins, drag.id);
-  return pin ? dropPinOnGroupEnd(pins, sections, pin, sectionId) : null;
+  return pin ? dropPinOnGroupEnd(pins, sections, pin, sectionId, options) : null;
 }
 
 /** Pure rail-drop plan: section-on-section reorder or pin-to-group end. A
