@@ -33,7 +33,6 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
-  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -817,22 +816,5 @@ export class ProjectRuntimePaths {
       );
     }
     return { projectId: "", directory: dirPhys };
-  }
-
-  /** Best-effort cleanup of an app-owned task workspace on thread deletion. */
-  removeTaskWorkspace(ownerThreadId: string): void {
-    if (this.dataRoot === undefined) return;
-    try {
-      const id = this.validateTaskWorkspaceId(ownerThreadId);
-      const basePhys = this.resolveTaskWorkspacesBase(false);
-      const dir = join(basePhys, id);
-      const st = lstatSync(dir);
-      if (st.isSymbolicLink() || !st.isDirectory()) return;
-      const dirPhys = stripNsPrefix(realpathSync(dir));
-      if (!sameDirectoryPath(dirPhys, dir) || !isInsideRoot(basePhys, dirPhys)) return;
-      rmSync(dirPhys, { recursive: true, force: true });
-    } catch {
-      /* best effort: missing dir or Windows lock on async child shutdown */
-    }
   }
 }

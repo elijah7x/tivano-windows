@@ -508,9 +508,13 @@ describe("P2-50 standalone task-workspaces for Just chat on Codex", () => {
     const rewound = engine.snapshot().threads.find((x) => x.id === thread.id)!;
     expect(rewound.turn).toBeNull();
 
-    // Deleting the standalone thread cleans up its task workspace directory.
+    // Deleting the standalone thread retains its task workspace and files
+    // on disk (matching upstream AppModel.delete / Storage.deleteDocuments).
+    const keptFile = join(expectedTaskDir, "agent-output.txt");
+    writeFileSync(keptFile, "retained output");
     engine.deleteThread(thread.id);
-    expect(existsSync(expectedTaskDir)).toBe(false);
+    expect(existsSync(expectedTaskDir)).toBe(true);
+    expect(existsSync(keptFile)).toBe(true);
   });
 
   it("shares the parent standalone thread task workspace with spawned helpers", async () => {
