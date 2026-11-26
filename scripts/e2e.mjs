@@ -2105,6 +2105,7 @@ try {
     launchFresh,
     instances,
     snap,
+    codexFixture,
     outDir,
     check,
     boundedClose,

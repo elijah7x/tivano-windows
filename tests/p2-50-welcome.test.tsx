@@ -6,10 +6,18 @@
 // NoThreadView fallback once a project/thread exists, ChatView routing, and
 // en / zh-Hans / zh-Hant / ja / ko / fr localization.
 
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
-import { defaultSettings } from "../src/main/store";
+import { CodexAppServerProvider } from "../src/main/codexAppServerProvider";
+import { resolveCodexHome, type CodexRuntimeConfig } from "../src/main/codexRuntimeConfig";
+import { Engine } from "../src/main/engine";
+import { ProjectRuntimePaths } from "../src/main/projectRuntimePaths";
+import { defaultSettings, Store } from "../src/main/store";
 import { ChatView } from "../src/renderer/components/ChatView";
 import {
   CODEX_INSTALL_URL,
@@ -400,5 +408,137 @@ describe("P2-50 first-launch WelcomeView & readiness rules", () => {
       );
       expect(translate(lang, "%lld providers ready")).toContain("%lld");
     }
+  });
+});
+
+describe("P2-50 standalone task-workspaces for Just chat on Codex", () => {
+  const roots: string[] = [];
+  const cleanups: Array<() => Promise<void> | void> = [];
+
+  afterEach(async () => {
+    while (cleanups.length) {
+      try {
+        await cleanups.pop()!();
+      } catch {
+        /* best effort */
+      }
+    }
+    while (roots.length) {
+      try {
+        rmSync(roots.pop()!, { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  });
+
+  async function waitFor(cond: () => boolean, ms = 12000): Promise<void> {
+    const start = Date.now();
+    while (!cond()) {
+      if (Date.now() - start > ms) throw new Error("waitFor timed out");
+      await new Promise((r) => setTimeout(r, 15));
+    }
+  }
+
+  function makeCodexEngine(): {
+    root: string;
+    store: Store;
+    engine: Engine;
+    provider: CodexAppServerProvider;
+  } {
+    const root = mkdtempSync(join(tmpdir(), "tivano-p250-codex-"));
+    roots.push(root);
+    const store = new Store(root);
+    store.open();
+    const { codexHome, codexHomeId } = resolveCodexHome(root);
+    const fixture = fileURLToPath(
+      new URL("./fixtures/codex-app-server.mjs", import.meta.url),
+    );
+    const config: CodexRuntimeConfig = {
+      mode: "fixture",
+      configuredFrom: "fixture",
+      fixtureScript: fixture,
+      fixtureNode: process.execPath,
+      codexHome,
+      codexHomeId,
+      args: [],
+      env: { CODEX_HOME: codexHome },
+      treeCapability: { supported: false, platform: process.platform, reason: "fixture" },
+    };
+    const paths = new ProjectRuntimePaths([], join(root, "grants.json"), root);
+    let engine!: Engine;
+    const provider = new CodexAppServerProvider({
+      config,
+      lookupBinding: (t) => engine.lookupProviderThread(t),
+      bindThread: (t, b) => engine.bindProviderThread(t, b),
+      onThreadNotice: (t, text, level) => engine.onThreadNotice(t, text, level),
+    });
+    engine = new Engine(store, provider, root, "0.3.0-test", paths);
+    cleanups.push(async () => {
+      await provider.dispose();
+      store.close();
+    });
+    return { root, store, engine, provider };
+  }
+
+  it("lets a Just chat standalone thread send, complete, and rewind on Codex", async () => {
+    const { root, engine } = makeCodexEngine();
+    const thread = engine.createThread(null);
+    engine.sendTurn(thread.id, "hello from just chat");
+
+    await waitFor(() => {
+      const t = engine.snapshot().threads.find((x) => x.id === thread.id);
+      return t?.turn?.status === "done";
+    });
+
+    const after = engine.snapshot().threads.find((x) => x.id === thread.id)!;
+    const assistant = after.messages.find((m) => m.role === "assistant");
+    expect(assistant?.content).toMatch(/fixture response/);
+
+    const expectedTaskDir = realpathSync(join(root, "task-workspaces", thread.id));
+    expect(existsSync(expectedTaskDir)).toBe(true);
+    expect(after.providerThread?.cwd).toBe(expectedTaskDir);
+
+    // Rewinding on the standalone Codex thread also resolves its task workspace.
+    const firstTurnId = after.turn!.id;
+    await engine.revertTurn(thread.id, firstTurnId);
+    const rewound = engine.snapshot().threads.find((x) => x.id === thread.id)!;
+    expect(rewound.turn).toBeNull();
+
+    // Deleting the standalone thread cleans up its task workspace directory.
+    engine.deleteThread(thread.id);
+    expect(existsSync(expectedTaskDir)).toBe(false);
+  });
+
+  it("shares the parent standalone thread task workspace with spawned helpers", async () => {
+    const { root, engine } = makeCodexEngine();
+    const parent = engine.createThread(null, "Parent");
+    const helper = engine.spawnHelper(parent.id, "Helper", "answer directly");
+
+    await waitFor(() => {
+      const t = engine.snapshot().threads.find((x) => x.id === helper.id);
+      return t?.turn?.status === "done";
+    });
+
+    const afterHelper = engine.snapshot().threads.find((x) => x.id === helper.id)!;
+    const parentTaskDir = realpathSync(join(root, "task-workspaces", parent.id));
+    expect(afterHelper.providerThread?.cwd).toBe(parentTaskDir);
+    expect(existsSync(join(root, "task-workspaces", helper.id))).toBe(false);
+  });
+
+  it("refuses a non-directory obstruction at task-workspaces/<id> without spawning", () => {
+    const { root, engine, provider } = makeCodexEngine();
+    const thread = engine.createThread(null);
+    const base = join(root, "task-workspaces");
+    const paths = new ProjectRuntimePaths([], join(root, "grants.json"), root);
+    const created = paths.ensureTaskWorkspace(thread.id);
+    rmSync(created.directory, { recursive: true, force: true });
+    writeFileSync(join(base, thread.id), "not a directory");
+
+    const turn = engine.sendTurn(thread.id, "should fail");
+    expect(turn.status).toBe("cancelled");
+    expect(provider.sessionCount()).toBe(0);
+    const after = engine.snapshot().threads.find((x) => x.id === thread.id)!;
+    expect(after.messages.at(-1)?.content).toContain("WORKSPACE_INVALID");
   });
 });

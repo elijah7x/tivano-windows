@@ -1527,6 +1527,14 @@ export class Engine {
       d.threads = d.threads.filter((t) => t.id !== id);
       if (d.ui.selectedThreadId === id) d.ui.selectedThreadId = null;
     });
+    if (
+      !del.projectId &&
+      !del.parentThreadId &&
+      this.paths?.hasTaskWorkspaceRoot() &&
+      !this.isTaskWorkspaceReferenced(id)
+    ) {
+      this.paths.removeTaskWorkspace(id);
+    }
     this.emit({ type: "thread-removed", threadId: id });
   }
 
@@ -1765,44 +1773,76 @@ export class Engine {
       this.emit({ type: "thread-updated", thread: steeredHead });
     }
 
-    // Every NON-mock adapter needs a workspace authorized for this project
-    // by main/test harness. No grant → WORKSPACE_NOT_CONFIGURED; the grant
-    // is re-verified at the moment of spawn.
+    // Every NON-mock adapter needs an authorized workspace: either the
+    // project's main-registered grant (or thread worktree) or, for a
+    // standalone ("Just chat") thread, its app-owned task workspace under
+    // `<dataRoot>/task-workspaces/<ownerThreadId>`.
     let workspace: WorkspaceGrant | undefined;
     if (this.provider.descriptor.mode !== "mock") {
       if (!thread.projectId) {
-        this.preProviderFail(
-          thread, turn, text, opts,
-          "WORKSPACE_NOT_CONFIGURED: thread has no project",
-         attached);
-        return turn;
-      }
-      workspace = this.paths?.lookup(thread.projectId);
-      if (!workspace) {
-        this.preProviderFail(
-          thread, turn, text, opts,
-          "WORKSPACE_NOT_CONFIGURED: no authorized directory is bound to this project",
-         attached);
-        return turn;
-      }
-      try {
-        this.paths!.verify(workspace);
-      } catch (err) {
-        this.preProviderFail(thread, turn, text, opts, (err as Error).message, attached);
-        return turn;
-      }
-      // F11: a worktree-bound thread executes in its own directory —
-      // authorization is inherited from the live project grant, and a
-      // dead worktree refuses rather than silently falling back.
-      if (thread.worktreeDir !== undefined) {
-        if (!this.paths!.dirLive(thread.worktreeDir)) {
+        if (this.paths?.hasTaskWorkspaceRoot()) {
+          try {
+            workspace = this.paths.ensureTaskWorkspace(
+              this.taskWorkspaceOwnerId(thread),
+            );
+          } catch (err) {
+            this.preProviderFail(
+              thread,
+              turn,
+              text,
+              opts,
+              (err as Error).message,
+              attached,
+            );
+            return turn;
+          }
+        } else {
           this.preProviderFail(
-            thread, turn, text, opts,
-            "WORKSPACE_NOT_CONFIGURED: the thread's worktree is missing or moved",
-           attached);
+            thread,
+            turn,
+            text,
+            opts,
+            "WORKSPACE_NOT_CONFIGURED: thread has no project",
+            attached,
+          );
           return turn;
         }
-        workspace = { projectId: thread.projectId, directory: thread.worktreeDir };
+      } else {
+        workspace = this.paths?.lookup(thread.projectId);
+        if (!workspace) {
+          this.preProviderFail(
+            thread,
+            turn,
+            text,
+            opts,
+            "WORKSPACE_NOT_CONFIGURED: no authorized directory is bound to this project",
+            attached,
+          );
+          return turn;
+        }
+        try {
+          this.paths!.verify(workspace);
+        } catch (err) {
+          this.preProviderFail(thread, turn, text, opts, (err as Error).message, attached);
+          return turn;
+        }
+        // F11: a worktree-bound thread executes in its own directory —
+        // authorization is inherited from the live project grant, and a
+        // dead worktree refuses rather than silently falling back.
+        if (thread.worktreeDir !== undefined) {
+          if (!this.paths!.dirLive(thread.worktreeDir)) {
+            this.preProviderFail(
+              thread,
+              turn,
+              text,
+              opts,
+              "WORKSPACE_NOT_CONFIGURED: the thread's worktree is missing or moved",
+              attached,
+            );
+            return turn;
+          }
+          workspace = { projectId: thread.projectId, directory: thread.worktreeDir };
+        }
       }
     } else if (thread.worktreeDir !== undefined || thread.projectId) {
       // The Mock ignores workspace for its scripts — but an isolation
@@ -2119,12 +2159,21 @@ export class Engine {
       return;
     if (workspace) {
       try {
-        // A worktree-bound thread executes in its app-owned checkout —
-        // verifyExec proves the dir is confined under the project worktree
-        // root AND the project grant is still live (F11). Every other
-        // turn still must equal the registered grant exactly.
-        if (live.worktreeDir !== undefined) this.paths!.verifyExec(workspace);
-        else this.paths!.verify(workspace);
+        // A standalone thread executes in its app-owned task workspace;
+        // a worktree-bound thread executes in its app-owned checkout
+        // (verifyExec proves confinement under the project worktree root
+        // AND live project grant); every other turn must equal the
+        // registered grant.
+        if (!live.projectId) {
+          this.paths!.verifyTaskWorkspace(
+            workspace,
+            this.taskWorkspaceOwnerId(live),
+          );
+        } else if (live.worktreeDir !== undefined) {
+          this.paths!.verifyExec(workspace);
+        } else {
+          this.paths!.verify(workspace);
+        }
       } catch (err) {
         this.failTurnSync(live, liveTurn, (err as Error).message);
         return;
@@ -7550,8 +7599,44 @@ export class Engine {
     }
   }
 
+  private taskWorkspaceOwnerId(thread: ChatThread): string {
+    let cur = thread;
+    const visited = new Set<string>([cur.id]);
+    while (cur.parentThreadId) {
+      if (visited.has(cur.parentThreadId)) {
+        throw new EngineError("This task's parent is unavailable.");
+      }
+      visited.add(cur.parentThreadId);
+      const parent = this.store.state.threads.find(
+        (t) => t.id === cur.parentThreadId,
+      );
+      if (!parent) {
+        throw new EngineError("This task's parent is unavailable.");
+      }
+      if (parent.projectId) {
+        throw new EngineError("WORKSPACE_NOT_CONFIGURED: thread has no project");
+      }
+      cur = parent;
+    }
+    return cur.id;
+  }
+
+  private isTaskWorkspaceReferenced(ownerId: string): boolean {
+    return this.store.state.threads.some((t) => {
+      if (t.projectId) return false;
+      try {
+        return this.taskWorkspaceOwnerId(t) === ownerId;
+      } catch {
+        return false;
+      }
+    });
+  }
+
   private resolveAuthorizedWorkspace(thread: ChatThread): WorkspaceGrant {
     if (!thread.projectId) {
+      if (this.paths?.hasTaskWorkspaceRoot()) {
+        return this.paths.ensureTaskWorkspace(this.taskWorkspaceOwnerId(thread));
+      }
       throw new EngineError("WORKSPACE_NOT_CONFIGURED: thread has no project");
     }
     const grant = this.paths?.lookup(thread.projectId);

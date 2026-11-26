@@ -6,14 +6,19 @@
 // a chat + showing Install a coding agent first, project creation -> NoThreadView,
 // and zh-Hans localization).
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { _electron as electron } from "playwright-core";
+import { boundedClose } from "./closeBound.mjs";
 
 export async function runWelcomeChecks({
   launchFresh,
   instances,
   snap,
+  codexFixture,
   outDir,
   check,
   boundedClose,
@@ -178,4 +183,144 @@ export async function runWelcomeChecks({
     rmSync(s2.freshDataRoot, { recursive: true, force: true });
   }
   rmSync(openLogDir, { recursive: true, force: true });
+
+  // --- 3. Fresh Codex fixture launch: Start a chat sends via task-workspace -
+  if (codexFixture) {
+    const s3 = await launchFresh(
+      {
+        TIVANO_PROVIDER: "codex",
+        TIVANO_CODEX_FIXTURE: codexFixture,
+        TIVANO_CODEX_NODE: process.execPath,
+      },
+      "welcome-codex-fixture",
+    );
+    instances.push(s3);
+    const page3 = await s3.app.firstWindow();
+    await page3.waitForSelector('[data-testid="welcome-view"]', { timeout: 15000 });
+    await page3.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
+    await page3.waitForSelector('h1:has-text("Where shall we begin today?")', { timeout: 8000 });
+
+    const codexReadyText = await page3.locator('[data-testid="welcome-view"]').innerText();
+    const codexStartEnabled = await page3
+      .locator('[data-testid="welcome-start-chat"]')
+      .isEnabled();
+    verify(
+      "WEL-11 Codex fixture launch shows 1 provider ready and enables Start a chat",
+      codexReadyText.includes("1 provider ready") && codexStartEnabled,
+      codexReadyText,
+    );
+
+    await page3.locator('[data-testid="welcome-start-chat"]').click();
+    const codexThreadState = await waitSnap(
+      page3,
+      (s) => s.threads.length === 1 && s.selectedThreadId === s.threads[0]?.id,
+    );
+    const codexThreadId = codexThreadState.threads[0].id;
+    await page3.waitForSelector(".composer textarea", { timeout: 8000 });
+    await page3.locator(".composer textarea").fill("just chat on codex");
+    await page3.keyboard.press("Enter");
+    const codexDone = await waitSnap(
+      page3,
+      (s) => {
+        const t = s.threads.find((x) => x.id === codexThreadId);
+        return t?.turn?.status === "done";
+      },
+      20000,
+    );
+    const doneThread = codexDone.threads.find((x) => x.id === codexThreadId);
+    const lastAsst = doneThread?.messages?.filter((m) => m.role === "assistant").at(-1);
+    const taskWsDir = join(s3.freshDataRoot, "task-workspaces", codexThreadId);
+    verify(
+      "WEL-12 Just chat standalone thread completes a Codex turn in its task-workspace",
+      doneThread?.projectId === null &&
+        /fixture response/.test(lastAsst?.content ?? "") &&
+        existsSync(taskWsDir),
+      {
+        projectId: doneThread?.projectId,
+        assistant: lastAsst?.content?.slice(0, 80),
+        taskWsDirExists: existsSync(taskWsDir),
+      },
+    );
+    await page3.screenshot({ path: join(outDir, "67-welcome-codex-just-chat.png") });
+
+    const c3 = await boundedClose(s3.app, s3.proc, { closeMs: 8000, exitMs: 5000, killWaitMs: 3000 });
+    s3.ledger.exited = c3.exited;
+    s3.ledger.outcome = c3.killed ? `${c3.outcome}+killed` : c3.outcome;
+    if (c3.exited && s3.freshDataRoot) {
+      rmSync(s3.freshDataRoot, { recursive: true, force: true });
+    }
+  }
+}
+
+const isMain =
+  Boolean(process.argv[1]) &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMain) {
+  const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  const require = createRequire(join(root, "package.json"));
+  const electronBin = require("electron");
+  const codexFixture = join(root, "tests", "fixtures", "codex-app-server.mjs");
+  const outDir = mkdtempSync(join(tmpdir(), "tivano-welcome-e2e-"));
+  const instances = [];
+  const results = [];
+  const env = { ...process.env, TIVANO_MOCK_TICK_MS: "3" };
+  delete env.ELECTRON_RUN_AS_NODE;
+
+  const check = (name, ok, detail = "") => {
+    results.push({ name, ok, detail });
+    console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? " — " + detail : ""}`);
+  };
+  const snap = (page) => page.evaluate(() => window.tivano.invoke("state:get", {}));
+  const launchFresh = async (envOverrides = {}, label = "instance") => {
+    const freshDataRoot = mkdtempSync(join(tmpdir(), "tivano-welcome-fresh-"));
+    const app = await electron.launch({
+      executablePath: electronBin,
+      args: [root, `--data-root=${freshDataRoot}`],
+      env: { ...env, ...envOverrides },
+      timeout: 30000,
+    });
+    let proc = null;
+    try {
+      proc = app.process();
+    } catch {
+      proc = null;
+    }
+    const ledger = { label, pid: proc?.pid ?? null, exited: false, outcome: "pending" };
+    const entry = { app, proc, ledger, freshDataRoot };
+    instances.push(entry);
+    return entry;
+  };
+
+  let runErr = null;
+  try {
+    await runWelcomeChecks({
+      launchFresh,
+      instances,
+      snap,
+      codexFixture,
+      outDir,
+      check,
+      boundedClose,
+    });
+  } catch (err) {
+    runErr = err;
+    console.error("Welcome E2E failure:", err);
+  } finally {
+    for (const inst of instances) {
+      if (inst.proc && inst.proc.exitCode === null && inst.proc.signalCode === null) {
+        const r = await boundedClose(inst.app, inst.proc, { closeMs: 8000, exitMs: 5000, killWaitMs: 3000 });
+        inst.ledger.exited = r.exited;
+      }
+      if (inst.ledger.exited && inst.freshDataRoot && existsSync(inst.freshDataRoot)) {
+        rmSync(inst.freshDataRoot, { recursive: true, force: true });
+      }
+    }
+    if (!runErr && results.every((r) => r.ok)) {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  }
+  const passed = results.filter((r) => r.ok).length;
+  console.log(`\n${passed}/${results.length} welcome checks passed`);
+  if (runErr || passed !== results.length) process.exit(1);
 }
