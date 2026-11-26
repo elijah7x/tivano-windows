@@ -119,12 +119,13 @@ try {
   $prTask = New-ScheduledTask -Action $prAction -Principal $principal -Trigger $prTrigger -Settings $prSettings
   Register-ScheduledTask -TaskName $PrTaskName -TaskPath $TaskPath -InputObject $prTask -Force | Out-Null
 
-  # 2. \TivanoAudit\postmerge -- daily at 03:00
+  # 2. \TivanoAudit\postmerge -- daily at 03:00. A day of merges takes several hours to audit
+  # (about 10 minutes each), so the limit only has to stop a run before the next day's start.
   $postArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + $postScriptPath + '" -ConfigPath "' + $configFullPath + '"'
   $postAction = New-ScheduledTaskAction -Execute $powershellPath -Argument $postArgs -WorkingDirectory $workRoot
   $postTrigger = New-ScheduledTaskTrigger -Daily -At '03:00'
   $postSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 4)
+    -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 20)
   $postTask = New-ScheduledTask -Action $postAction -Principal $principal -Trigger $postTrigger -Settings $postSettings
   Register-ScheduledTask -TaskName $PostMergeTaskName -TaskPath $TaskPath -InputObject $postTask -Force | Out-Null
 

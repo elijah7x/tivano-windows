@@ -893,6 +893,13 @@ try {
     }
   }
   Write-AuditLog ('selected ' + $targetPrs.Count + ' PR(s) for post-merge audit')
+  # Record every selected PR as pending before auditing starts, so a run stopped by the task time limit
+  # leaves its unaudited tail for the next run instead of losing it once it leaves the time window.
+  # Finished PRs are dropped again at the end of the run (and skipped as done if a run is cut short).
+  if (-not $DryRun -and $targetPrs.Count -gt 0) {
+    $earlyPending = @(@($pendingPrs) + @($targetPrs | ForEach-Object { [int](Get-Prop $_ 'number') }) | Sort-Object -Unique)
+    Write-TextAtomic $pendingPath ((ConvertTo-Json -InputObject @($earlyPending) -Compress) + "`n")
+  }
 
   if ($targetPrs.Count -gt 0) {
     Ensure-AuditRepoClone -Repo $repo -RepoDir $repoDir
