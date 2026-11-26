@@ -4020,8 +4020,8 @@ export class Engine {
 
   /**
    * The provider-owned model catalog (Codex model/list). Never
-   * fabricated: non-Codex providers → unsupported; no live session →
-   * pending; a failed read → unavailable with the real reason.
+   * fabricated: non-Codex providers → unsupported; null catalog →
+   * pending; a failed read (or unconfigured CLI) → unavailable with the real reason.
    */
   async codexModels(): Promise<CodexModelCatalog> {
     if (this.provider.descriptor.mode !== "codex")

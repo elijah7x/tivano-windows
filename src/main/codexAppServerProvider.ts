@@ -29,7 +29,8 @@
 //     DELIVERED — fatal errors, failed binds and session ends retain the
 //     still-living child so provider.dispose can retry it honestly.
 
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
 import type {
   ApprovalRequest,
@@ -2946,8 +2947,10 @@ export class CodexAppServerProvider implements ProviderAdapter {
    *  child attribution until provider.dispose confirms the close. */
   private retired = new Set<CodexSession>();
   private oneShotTransports = new Set<StdioTransport<CodexMessage>>();
+  private retiredOneShotTransports = new Set<StdioTransport<CodexMessage>>();
   private oneShotRpcs = new Set<CodexRpc>();
   private oneShotCleanupFailures = new Map<StdioTransport<CodexMessage>, ChildCleanupResult>();
+  private pendingModelCatalogOneShot: Promise<CodexModelOption[]> | null = null;
   private disposed = false;
 
   constructor(opts: CodexProviderOptions) {
@@ -3211,6 +3214,20 @@ export class CodexAppServerProvider implements ProviderAdapter {
     fn: (rpc: CodexRpc, initResult: Record<string, unknown>) => Promise<T>,
   ): Promise<T> {
     this.assertCanLaunch();
+    for (const old of [...this.retiredOneShotTransports]) {
+      const res = await old.dispose();
+      this.recordOneShotCleanupFailure(old, res.exitCode, res.signal);
+      if (res.confirmed || !old.hasChild) {
+        this.oneShotTransports.delete(old);
+        this.retiredOneShotTransports.delete(old);
+      } else {
+        throw new CodexProviderError(
+          `CODEX_BUSY: previous one-shot child pid ${old.pid ?? "?"} still unconfirmed — refusing a new spawn`,
+          "CODEX_BUSY",
+        );
+      }
+    }
+    this.assertCanLaunch();
     if (
       !workspaceDir ||
       workspaceDir.includes("\0") ||
@@ -3227,10 +3244,22 @@ export class CodexAppServerProvider implements ProviderAdapter {
     let cwd: string;
     try {
       cwd = realpathSync(workspaceDir);
+      if (cwd.startsWith("\\\\") || cwd.startsWith("//") || !statSync(cwd).isDirectory()) {
+        throw new Error("resolved workspace is not a local directory");
+      }
     } catch {
       throw new CodexProviderError(
         "CODEX_WORKSPACE_REQUIRED: workspace directory cannot be resolved",
         "CODEX_WORKSPACE_REQUIRED",
+      );
+    }
+    if (
+      this.sessions.size + this.retired.size + this.oneShotTransports.size >=
+      this.limits.maxSessions
+    ) {
+      throw new CodexProviderError(
+        `CODEX_SESSION_LIMIT: ${this.limits.maxSessions} sessions`,
+        "CODEX_SESSION_LIMIT",
       );
     }
     const spec = this.buildSpec(cwd, { lightweight: true });
@@ -3252,6 +3281,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
         onClose: (code, signal) => {
           alive = false;
           this.oneShotTransports.delete(transport);
+          this.retiredOneShotTransports.delete(transport);
           this.recordOneShotCleanupFailure(transport, code, signal);
           const tail = transport.stderrTail().trim();
           rpc?.failAllPending(
@@ -3325,7 +3355,12 @@ export class CodexAppServerProvider implements ProviderAdapter {
       rpc.failAllPending("CODEX_CONNECTION_CLOSED: one-shot connection closed");
       const res = await transport.dispose();
       this.recordOneShotCleanupFailure(transport, res.exitCode, res.signal);
-      if (res.confirmed || !transport.hasChild) this.oneShotTransports.delete(transport);
+      if (res.confirmed || !transport.hasChild) {
+        this.oneShotTransports.delete(transport);
+        this.retiredOneShotTransports.delete(transport);
+      } else {
+        this.retiredOneShotTransports.add(transport);
+      }
     }
   }
 
@@ -3339,11 +3374,23 @@ export class CodexAppServerProvider implements ProviderAdapter {
     );
   }
 
+  /**
+   * Provider-owned model catalog (`model/list`). Reuses a live ready
+   * session when one is already open; otherwise launches a lightweight
+   * one-shot `app-server` process (frozen `CodexSession.listModels`, no
+   * plugins, apps, or telemetry) so `models:list` works before any chat
+   * session binds.
+   */
   async modelCatalog(): Promise<CodexModelOption[] | null> {
     for (const s of this.sessions.values()) {
       if (s.phase === "ready") return s.fetchModelCatalog();
     }
-    return null;
+    if (!this.pendingModelCatalogOneShot) {
+      this.pendingModelCatalogOneShot = this.fetchModelCatalogOneShot(tmpdir()).finally(() => {
+        this.pendingModelCatalogOneShot = null;
+      });
+    }
+    return this.pendingModelCatalogOneShot;
   }
 
   async dispose(): Promise<AdapterDisposeResult> {
@@ -3351,7 +3398,8 @@ export class CodexAppServerProvider implements ProviderAdapter {
     const children: ChildCleanupResult[] = [];
     let orphaned = 0;
     for (const r of [...this.oneShotRpcs]) {
-      orphaned += r.pendingCount;
+      // Cancel in-flight background one-shots cleanly on shutdown without
+      // reporting them as orphaned user-session requests.
       r.failAllPending("CODEX_CONNECTION_CLOSED: provider disposed");
       this.oneShotRpcs.delete(r);
     }
@@ -3359,7 +3407,12 @@ export class CodexAppServerProvider implements ProviderAdapter {
       const result = await tr.dispose();
       this.recordOneShotCleanupFailure(tr, result.exitCode, result.signal);
       children.push(result);
-      if (result.confirmed || !tr.hasChild) this.oneShotTransports.delete(tr);
+      if (result.confirmed || !tr.hasChild) {
+        this.oneShotTransports.delete(tr);
+        this.retiredOneShotTransports.delete(tr);
+      } else {
+        this.retiredOneShotTransports.add(tr);
+      }
     }
     children.push(...this.oneShotCleanupFailures.values());
     for (const s of [...this.sessions.values(), ...this.retired]) {

@@ -13,8 +13,10 @@
 //
 // Invariants enforced HERE, not by the renderer: executable must be an
 // approved absolute native path (Windows: codex.exe only; .cmd/.bat, shell
-// strings, npx and PATH probing are refused); argv is fixed to
-// ["app-server"]; env is rebuilt from a whitelist — never inheriting API
+// strings, npx and PATH probing are refused); base argv is pinned to
+// ["-c", 'cli_auth_credentials_store="file"', "app-server"] (with
+// `CODEX_ONE_SHOT_CONFIG_ARGS` appended only for lightweight one-shot
+// background launches); env is rebuilt from a whitelist — never inheriting API
 // keys, tokens, proxy secrets or other provider configuration;
 // CODEX_HOME is an app-private, persistent, main-resolved directory that
 // is never shared with ~/.codex or any production location.
