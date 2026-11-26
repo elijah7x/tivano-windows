@@ -2085,6 +2085,8 @@ export const zhHant: Record<string, string> = {
   "No pairs match": "沒有符合的組合",
   "Pairs & models": "組合與模型",
   "Browse models": "瀏覽模型",
+  // P2-01
+  "Press Tab to accept": "按 Tab 鍵接受",
   // P2-18
   "Specific model": "指定模型",
   "Choose a model": "選擇模型",

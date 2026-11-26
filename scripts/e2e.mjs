@@ -86,6 +86,7 @@ import { runLayoutChecks, runShelfChecks, runQuickChecks } from "./layoutChecks.
 import { runRemoteMcpChecks } from "./remoteMcpChecks.mjs";
 import { runWelcomeChecks } from "./welcomeChecks.mjs";
 import { runP253ChromeChecks } from "./p253ChromeChecks.mjs";
+import { runPredictionChecks } from "./predictionChecks.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "package.json"));
@@ -2119,6 +2120,16 @@ try {
     dataRoot,
     workspaceRoot,
     codexFixture,
+    outDir,
+    check,
+    boundedClose,
+  });
+
+  // ---- session 35: P2-01 Composer predictions ------------------------------
+  await runPredictionChecks({
+    launch,
+    instances,
+    snap,
     outDir,
     check,
     boundedClose,

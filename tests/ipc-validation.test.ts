@@ -536,3 +536,19 @@ describe("checkpoints:diff payload (F10/A32)", () => {
       );
   });
 });
+
+describe("threads:predict-next payload (P2-01)", () => {
+  const uuid = "123e4567-e89b-42d3-a456-426614174000";
+  it("accepts threadId with optional turnId", () => {
+    expect(requestValidators["threads:predict-next"]({ threadId: uuid }).threadId).toBe(uuid);
+    expect(
+      requestValidators["threads:predict-next"]({ threadId: uuid, turnId: uuid }).turnId,
+    ).toBe(uuid);
+  });
+  it("rejects malformed or extra fields", () => {
+    for (const bad of [{}, { threadId: "bad" }, { threadId: uuid, turnId: "bad" }, { threadId: uuid, extra: true }])
+      expect(() => requestValidators["threads:predict-next"](bad), JSON.stringify(bad)).toThrow(
+        ValidationError,
+      );
+  });
+});

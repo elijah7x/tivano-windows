@@ -277,6 +277,7 @@ export interface TextGenerationOptions {
   allowsDefaultModel?: boolean | undefined;
   workspaceDir?: string | undefined;
   refresh?: { currentTitle: string; context: string } | undefined;
+  timeoutMs?: number | undefined;
 }
 
 export interface ProviderAdapter {
@@ -322,6 +323,13 @@ export interface ProviderAdapter {
     instructions: string,
     options?: TextGenerationOptions,
   ): Promise<string | null>;
+  /**
+   * P2-01: one-shot composer next-prompt prediction after a completed turn,
+   * run with no tools (frozen TextGeneration.nextPrompt). Optional —
+   * adapters without a text engine omit it. Returns raw model output (JSON
+   * `{"suggestion": string | null}`) or null when unavailable/empty.
+   */
+  generateNextPrompt?(context: string, options?: TextGenerationOptions): Promise<string | null>;
   /**
    * P1-38: one-shot independent review of a job's unified diff (frozen
    *  TextGeneration.review). Optional — adapters without a detached

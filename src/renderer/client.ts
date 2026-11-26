@@ -145,6 +145,9 @@ export class ClientStore {
   private cachedWeatherFlashes: Readonly<Record<string, WeatherFlashStatus>> = {};
   /** P2-51: latest OS system-accent update observed before/after hydrate. */
   private pendingSystemAccentColor: string | null | undefined = undefined;
+  /** P2-01: per-thread next-prompt predictions + sequence tokens to drop stale replies. */
+  private predictions = new Map<string, string>();
+  private predictionSeq = new Map<string, number>();
   private readonly invoke: InvokeFn;
 
   constructor(invoke?: InvokeFn) {
@@ -214,6 +217,7 @@ export class ClientStore {
     for (const id of this.pacedNotifyTimers.values()) clearTimeout(id);
     this.pacedNotifyTimers.clear();
     this.clearAllWeatherFlashes();
+    this.clearAllPredictions();
     this.snapshot =
       this.pendingSystemAccentColor !== undefined
         ? { ...s, info: { ...s.info, systemAccentColor: this.pendingSystemAccentColor } }
@@ -238,7 +242,92 @@ export class ClientStore {
     this.notify();
   }
 
-  // ---- per-thread drafts ------------------------------------------------
+  // ---- per-thread drafts & predictions -----------------------------------
+
+  prediction(threadId: string): string | undefined {
+    return this.predictions.get(threadId);
+  }
+
+  dismissPrediction(threadId: string): void {
+    this.clearPrediction(threadId, true);
+  }
+
+  acceptPrediction(threadId: string): boolean {
+    const pred = this.predictions.get(threadId);
+    if (!pred) return false;
+    this.clearPrediction(threadId, false);
+    this.setDraft(threadId, pred);
+    return true;
+  }
+
+  private clearPrediction(threadId: string, notifyAfter: boolean): void {
+    this.predictionSeq.set(threadId, (this.predictionSeq.get(threadId) ?? 0) + 1);
+    const had = this.predictions.delete(threadId);
+    if (had && notifyAfter) this.notify();
+  }
+
+  private clearAllPredictions(): void {
+    this.predictions.clear();
+    for (const id of this.predictionSeq.keys()) {
+      this.predictionSeq.set(id, (this.predictionSeq.get(id) ?? 0) + 1);
+    }
+    for (const t of this.snapshot?.threads ?? []) {
+      this.predictionSeq.set(t.id, (this.predictionSeq.get(t.id) ?? 0) + 1);
+    }
+  }
+
+  private canShowPrediction(threadId: string, turnId: string): boolean {
+    const s = this.snapshot;
+    if (!s || s.readOnly || s.settings.textGeneration === "off") return false;
+    const t = this.thread(threadId);
+    if (!t || t.isArchived || t.hydraHead || t.isInPanel) return false;
+    if (t.turn?.id !== turnId || t.turn.status !== "done") return false;
+    if ((t.followUps?.length ?? 0) > 0) return false;
+    if (this.limitResumes[threadId] !== undefined) return false;
+    if (this.pendingSends.has(threadId) || this.editTargets.has(threadId)) return false;
+    const leadBusy = s.threads.some(
+      (x) =>
+        x.hydraHead?.leadId === threadId &&
+        (x.hydraHead.status === "running" || x.hydraHead.landingPending === true),
+    );
+    if (leadBusy) return false;
+    const d = this.drafts.get(threadId);
+    if (
+      d &&
+      (d.text !== "" ||
+        d.command !== undefined ||
+        (d.attachments?.length ?? 0) > 0 ||
+        (d.quotes?.length ?? 0) > 0)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  private schedulePrediction(threadId: string, turnId: string): void {
+    const seq = this.predictionSeq.get(threadId) ?? 0;
+    queueMicrotask(() => {
+      if ((this.predictionSeq.get(threadId) ?? 0) !== seq) return;
+      if (!this.canShowPrediction(threadId, turnId)) return;
+      try {
+        void this.invoke("threads:predict-next", { threadId, turnId })
+          .then((res) => {
+            const pred =
+              typeof res === "object" && res !== null
+                ? (res as { prediction?: unknown }).prediction
+                : undefined;
+            if (typeof pred !== "string" || !pred) return;
+            if ((this.predictionSeq.get(threadId) ?? 0) !== seq) return;
+            if (!this.canShowPrediction(threadId, turnId)) return;
+            this.predictions.set(threadId, pred);
+            this.notify();
+          })
+          .catch(() => {});
+      } catch {
+        /* ignore synchronous invoke faults */
+      }
+    });
+  }
 
   draft(threadId: string): string {
     return this.drafts.get(threadId)?.text ?? "";
@@ -251,6 +340,7 @@ export class ClientStore {
   setDraftCommand(threadId: string, command: DraftCommand | undefined): void {
     const prev = this.drafts.get(threadId);
     if (command) {
+      this.clearPrediction(threadId, false);
       // Frozen pick(): the typed "/query" is replaced by the chip.
       this.drafts.set(threadId, {
         text: "",
@@ -260,6 +350,7 @@ export class ClientStore {
         ...(prev?.quotes ? { quotes: prev.quotes } : {}),
       });
     } else if (prev?.command) {
+      this.clearPrediction(threadId, false);
       this.drafts.set(threadId, {
         text: prev.text,
         version: prev.version + 1,
@@ -285,6 +376,7 @@ export class ClientStore {
   addDraftQuote(threadId: string, text: string): void {
     const prev = this.drafts.get(threadId);
     if (prev?.quotes?.some((q) => q.text === text)) return;
+    this.clearPrediction(threadId, false);
     this.drafts.set(threadId, {
       text: prev?.text ?? "",
       version: (prev?.version ?? 0) + 1,
@@ -323,6 +415,7 @@ export class ClientStore {
       };
       const prev = this.drafts.get(threadId);
       if (r.attached.length > 0) {
+        this.clearPrediction(threadId, false);
         this.drafts.set(threadId, {
           text: prev?.text ?? "",
           version: (prev?.version ?? 0) + 1,
@@ -352,6 +445,7 @@ export class ClientStore {
       };
       const prev = this.drafts.get(threadId);
       if (r.attached.length > 0) {
+        this.clearPrediction(threadId, false);
         this.drafts.set(threadId, {
           text: prev?.text ?? "",
           version: (prev?.version ?? 0) + 1,
@@ -383,6 +477,7 @@ export class ClientStore {
       };
       const prev = this.drafts.get(threadId);
       if (r.attached.length > 0) {
+        this.clearPrediction(threadId, false);
         this.drafts.set(threadId, {
           text: prev?.text ?? "",
           version: (prev?.version ?? 0) + 1,
@@ -425,6 +520,7 @@ export class ClientStore {
   setDraft(threadId: string, text: string): void {
     const prev = this.drafts.get(threadId);
     if (prev?.text === text) return;
+    this.clearPrediction(threadId, false);
     this.drafts.set(threadId, {
       text,
       version: (prev?.version ?? 0) + 1,
@@ -454,6 +550,7 @@ export class ClientStore {
     // F05: an attachment-carried draft is sendable with no typed text
     // (frozen draft.isEmpty counts attachments).
     if ((!text && !(d?.attachments?.length)) || this.pendingSends.has(threadId)) return;
+    this.clearPrediction(threadId, false);
     const version = d!.version;
     this.pendingSends.add(threadId);
     this.sentVersions.set(threadId, version);
@@ -506,6 +603,7 @@ export class ClientStore {
     const d = this.drafts.get(threadId);
     const text = d ? this.outgoingText(d) : "";
     if (!text || this.pendingSends.has(threadId)) return;
+    this.clearPrediction(threadId, false);
     const version = d!.version;
     this.pendingSends.add(threadId);
     this.notify();
@@ -550,6 +648,7 @@ export class ClientStore {
   private dropThreadState(threadId: string): void {
     this.clearPacedTimer(threadId);
     this.clearWeatherFlash(threadId, false);
+    this.clearPrediction(threadId, false);
     this.drafts.delete(threadId);
     this.editTargets.delete(threadId);
     this.pendingSends.delete(threadId);
@@ -599,6 +698,7 @@ export class ClientStore {
     switch (event.type) {
       case "snapshot":
         this.clearAllWeatherFlashes();
+        this.clearAllPredictions();
         this.snapshot = event.snapshot;
         this.snapshotRev = event.snapshot.rev;
         this.notify();
@@ -622,6 +722,9 @@ export class ClientStore {
         s.threads = [...s.threads.filter((t) => t.id !== event.thread.id), event.thread];
         break;
       case "thread-updated":
+        if (event.thread.isArchived || event.thread.turn?.status !== "done") {
+          this.clearPrediction(event.thread.id, false);
+        }
         if (
           event.thread.hasUnread ||
           event.thread.isArchived ||
@@ -645,6 +748,7 @@ export class ClientStore {
         break;
       case "settings-changed":
         s.settings = event.settings;
+        if (event.settings.textGeneration === "off") this.clearAllPredictions();
         break;
       case "app-state":
         if (event.readOnly) s.readOnly = true;
@@ -685,6 +789,7 @@ export class ClientStore {
       }
       case "turn-status": {
         this.clearPacedTimer(event.threadId);
+        this.clearPrediction(event.threadId, false);
         if (event.status === "running" || event.status === "waiting-approval") {
           this.clearWeatherFlash(event.threadId, false);
         }
@@ -696,6 +801,7 @@ export class ClientStore {
         const m = t.messages.find((x) => x.id === turn.assistantMessageId);
         if (m && m.status === "streaming" && event.status !== "running" && event.status !== "waiting-approval")
           m.status = event.status === "done" ? "done" : event.status;
+        if (event.status === "done") this.schedulePrediction(event.threadId, event.turnId);
         break;
       }
       case "finish-signal": {
