@@ -1395,8 +1395,8 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
           {hydraPanelLayout(settings) === "off"
             ? t("Does not open floating panels automatically. The chat still shows which sub-agents are running, and you can open a panel yourself.")
             : hydraPanelLayout(settings) === "independent"
-              ? t("When multiple sub-agents run, each sub-agent after the first automatically opens its own floating panel: on both sides of the chat when wide enough, or stacked on one side when narrow.")
-              : t("Keeps all running sub-agents in one floating panel; switch between them from its top-left menu, or pop individual sub-agents out manually.")}
+              ? t("When multiple sub-agents run, later running sub-agents automatically open their own floating panels in the chat area.")
+              : t("Opens one team panel; use its rows to open a sub-agent's chat.")}
         </p>
         <ToggleRow
           title="Lower the default reasoning effort for heads"

@@ -272,10 +272,8 @@ const zhHans: Record<string, string> = {
   "Sub-agent": "子代理",
   "Does not open floating panels automatically. The chat still shows which sub-agents are running, and you can open a panel yourself.":
     "不自动打开悬浮面板。对话中仍会显示子代理的运行状态，需要时可手动打开面板。",
-  "When multiple sub-agents run, each sub-agent after the first automatically opens its own floating panel: on both sides of the chat when wide enough, or stacked on one side when narrow.":
-    "多个子代理并行时，第 2 个起自动弹出各自的悬浮面板：窗口够宽时分列对话两侧，较窄时同侧纵向堆叠。",
-  "Keeps all running sub-agents in one floating panel; switch between them from its top-left menu, or pop individual sub-agents out manually.":
-    "多个子代理共用同一个悬浮面板，可在面板左上角切换查看，也可手动将某个子代理单独弹出。",
+  "When multiple sub-agents run, later running sub-agents automatically open their own floating panels in the chat area.": "多个子代理并行时，后续正在运行的子代理会在对话区域中自动打开各自的悬浮面板。",
+  "Opens one team panel; use its rows to open a sub-agent's chat.": "打开一个团队面板；通过其中的行打开子代理的对话。",
   "Text generation": "文本生成",
   "Name once": "首次命名",
   "Keep updated": "持续更新",
