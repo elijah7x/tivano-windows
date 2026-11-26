@@ -2083,4 +2083,6 @@ export const fr: Record<string, string> = {
   "No pairs match": "Aucune paire correspondante",
   "Pairs & models": "Paires et modèles",
   "Browse models": "Parcourir les modèles",
+  // P2-01
+  "Press Tab to accept": "Appuyez sur Tab pour accepter",
 };

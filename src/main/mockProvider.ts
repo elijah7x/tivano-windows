@@ -579,6 +579,36 @@ export class MockProvider implements ProviderAdapter {
     ].join("\n");
   }
 
+  /**
+   * P2-01: deterministic synthetic composer prediction — inspects ONLY the
+   * latest `User:` line in `context` for `[mock:predict*]` fixture markers:
+   * - `[mock:predict-fail]` rejects to exercise error resilience
+   * - `[mock:predict-empty]` returns `{"suggestion":null}`
+   * - `[mock:predict-invalid]` returns non-JSON output
+   * - `[mock:predict:TEXT]` returns `{"suggestion":"TEXT"}`
+   * Everything else returns a fixed single-line JSON suggestion.
+   */
+  async generateNextPrompt(context: string): Promise<string | null> {
+    const userLines = context
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("User: "));
+    const latestUser = userLines[userLines.length - 1] ?? context;
+    if (latestUser.includes("[mock:predict-fail]")) {
+      throw new Error("Synthetic prediction failure");
+    }
+    if (latestUser.includes("[mock:predict-empty]")) {
+      return JSON.stringify({ suggestion: null });
+    }
+    if (latestUser.includes("[mock:predict-invalid]")) {
+      return "not valid json";
+    }
+    const custom = /\[mock:predict:([^\]\r\n]*)\]/.exec(latestUser);
+    if (custom) {
+      return JSON.stringify({ suggestion: custom[1] });
+    }
+    return JSON.stringify({ suggestion: "Run the tests to verify the changes." });
+  }
+
   /** No children to reap — cancel every live driver and report cleanly. */
   async dispose(): Promise<AdapterDisposeResult> {
     this.disposed = true;

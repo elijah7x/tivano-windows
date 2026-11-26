@@ -95,7 +95,7 @@ import { limitHandoffText } from "./limitHandoff";
 import type { AppEvent } from "../shared/ipc";
 import { INTERRUPTED_MARKER } from "../shared/types";
 import { threadsInAffiliation } from "../shared/threadOrder";
-import { extractTitle } from "../shared/textGen";
+import { buildPredictionContext, extractNextPrompt, extractTitle } from "../shared/textGen";
 import type {
   AppInfo,
   ApprovalRequest,
@@ -320,6 +320,11 @@ export class Engine {
   /** P2-58: threads currently running an async provider rewind (frozen
    *  ThreadRuntime.isReverting). Prevents concurrent sends or rewinds. */
   private readonly revertingThreads = new Set<string>();
+  /** P2-01: per-thread generation token for next-prompt predictions (bumped
+   *  on new sends, rewinds, archive/delete, or textGeneration=off) and
+   *  external local-control turns that should not trigger predictions. */
+  private readonly predictionGen = new Map<string, number>();
+  private readonly externalTurnIds = new Set<string>();
 
   /** F19: daily token-spend ledger + per-session cumulative trackers.
    *  Trackers key on the PROVIDER session identity (Codex rollout id,
@@ -1397,6 +1402,7 @@ export class Engine {
     this.assertMutable();
     const thread = this.mustThread(id);
     if (thread.isArchived) return;
+    this.bumpPredictionGen(id);
     // Compute neighbor BEFORE mutating isArchived so index math preserves
     // the thread's sidebar slot (frozen AppModel.archive neighbor(of:)).
     const archivedSet = new Set([id]);
@@ -1470,6 +1476,7 @@ export class Engine {
 
   deleteThread(id: string): void {
     this.assertMutable();
+    this.bumpPredictionGen(id);
     // Latch the queue first — a synchronous cancel→endTurn callback must
     // never fire a pendingSend on a thread being deleted.
     this.pendingSends.delete(id);
@@ -1625,9 +1632,10 @@ export class Engine {
   sendTurn(
     threadId: string,
     text: string,
-    opts?: { authored?: boolean; hydraReport?: number[]; hydraBrief?: boolean },
+    opts?: { authored?: boolean; hydraReport?: number[]; hydraBrief?: boolean; external?: boolean },
   ): Turn {
     this.assertMutable();
+    this.bumpPredictionGen(threadId);
     // Frozen beginTurn(userAuthored): a real user request restarts the
     // delegation-round budget; Hydra report/refusal turns don't. The
     // generation bump voids refunds charged under earlier requests.
@@ -1707,6 +1715,13 @@ export class Engine {
       startedAt: now,
       assistantMessageId: randomUUID(),
     };
+    if (opts?.external) {
+      this.externalTurnIds.add(turn.id);
+      if (this.externalTurnIds.size > 256) {
+        const oldest = this.externalTurnIds.values().next().value;
+        if (oldest !== undefined) this.externalTurnIds.delete(oldest);
+      }
+    }
     const userMsg: Message = {
       id: randomUUID(),
       role: "user",
@@ -3092,7 +3107,12 @@ export class Engine {
         else d.settings.cliInstallationTarget = patch.cliInstallationTarget;
       }
       if (patch.taskSleepMode !== undefined) d.settings.taskSleepMode = patch.taskSleepMode;
-      if (patch.textGeneration !== undefined) d.settings.textGeneration = patch.textGeneration;
+      if (patch.textGeneration !== undefined) {
+        d.settings.textGeneration = patch.textGeneration;
+        if (patch.textGeneration === "off") {
+          for (const tid of this.predictionGen.keys()) this.bumpPredictionGen(tid);
+        }
+      }
       if (patch.threadTitles !== undefined) d.settings.threadTitles = patch.threadTitles;
       if (patch.autoShelveDays !== undefined)
         // Frozen picker only offers 0/3/7/14 — a stray value degrades
@@ -4730,6 +4750,81 @@ export class Engine {
         this.emit({ type: "thread-updated", thread: t });
       })
       .catch(() => {});
+  }
+
+  private bumpPredictionGen(threadId: string): number {
+    const next = (this.predictionGen.get(threadId) ?? 0) + 1;
+    this.predictionGen.set(threadId, next);
+    return next;
+  }
+
+  private isTextGenerationOff(): boolean {
+    return this.store.state.settings.textGeneration === "off";
+  }
+
+  /**
+   * P2-01 (frozen ThreadRuntime.predictNextPromptIfDue + TextGeneration.nextPrompt):
+   * predict the likely next user message after a completed turn when Text
+   * generation is not off, the thread is idle and not a Hydra head, and the
+   * provider supports generation. Failures/empty/stale replies return null and
+   * never throw or interrupt subsequent turns.
+   */
+  async predictNextPrompt(
+    threadId: string,
+    turnId?: string,
+  ): Promise<{ prediction: string | null }> {
+    if (this.isTextGenerationOff()) {
+      return { prediction: null };
+    }
+    const thread = this.store.state.threads.find((t) => t.id === threadId);
+    if (!thread || thread.isArchived || thread.hydraHead) {
+      return { prediction: null };
+    }
+    this.ensureThreadLoaded(threadId);
+    const turn = thread.turn;
+    if (!turn || turn.status !== "done") return { prediction: null };
+    if (turnId !== undefined && turn.id !== turnId) return { prediction: null };
+    if (this.externalTurnIds.has(turn.id)) return { prediction: null };
+    if (
+      this.pendingSends.has(threadId) ||
+      this.limitResumes.has(threadId) ||
+      this.revertingThreads.has(threadId) ||
+      this.hydraLeadBusy(threadId) ||
+      (this.hydraWaiting.get(threadId)?.length ?? 0) > 0 ||
+      (thread.followUps?.length ?? 0) > 0
+    ) {
+      return { prediction: null };
+    }
+    const gen = this.provider.generateNextPrompt?.bind(this.provider);
+    if (!gen) return { prediction: null };
+    const context = buildPredictionContext(thread.messages);
+    if (!context.trim()) return { prediction: null };
+    const expectedTurnId = turn.id;
+    const seq = this.bumpPredictionGen(threadId);
+    try {
+      const raw = await gen(context);
+      if (this.isTextGenerationOff()) return { prediction: null };
+      if (this.predictionGen.get(threadId) !== seq) return { prediction: null };
+      const cur = this.store.state.threads.find((t) => t.id === threadId);
+      if (!cur || cur.isArchived || cur.hydraHead) return { prediction: null };
+      if (cur.turn?.id !== expectedTurnId || cur.turn?.status !== "done") {
+        return { prediction: null };
+      }
+      if (
+        this.pendingSends.has(threadId) ||
+        this.limitResumes.has(threadId) ||
+        this.revertingThreads.has(threadId) ||
+        this.hydraLeadBusy(threadId) ||
+        (this.hydraWaiting.get(threadId)?.length ?? 0) > 0 ||
+        (cur.followUps?.length ?? 0) > 0
+      ) {
+        return { prediction: null };
+      }
+      const prediction = raw ? extractNextPrompt(raw) : null;
+      return { prediction };
+    } catch {
+      return { prediction: null };
+    }
   }
 
   private onProviderNotice(
@@ -7614,6 +7709,7 @@ export class Engine {
     )
       throw new EngineError("Stop the running agents before reverting this conversation.");
     const removed = this.removedTurnSet(thread, turnId);
+    this.bumpPredictionGen(threadId);
     if (!this.provider.rollback) {
       this.provider.endSession?.(threadId);
       delete thread.providerThread;

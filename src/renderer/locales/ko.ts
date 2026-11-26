@@ -2083,4 +2083,6 @@ export const ko: Record<string, string> = {
   "No pairs match": "일치하는 조합이 없습니다",
   "Pairs & models": "조합 및 모델",
   "Browse models": "모델 찾아보기",
+  // P2-01
+  "Press Tab to accept": "Tab 키를 눌러 수락",
 };

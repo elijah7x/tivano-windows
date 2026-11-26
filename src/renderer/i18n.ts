@@ -2271,6 +2271,8 @@ const zhHans: Record<string, string> = {
   "No pairs match": "没有匹配的组合",
   "Pairs & models": "组合与模型",
   "Browse models": "浏览模型",
+  // P2-01: composer next-prompt prediction hint (v3.0.0 Localizable.xcstrings).
+  "Press Tab to accept": "按 Tab 键接受",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {

@@ -284,6 +284,19 @@ export function Composer(props: {
   // The queue hint reflects the effective queueChat binding — it tracks
   // remaps and disappears when the command is cleared.
   const isDarwin = api().platform === "darwin";
+  const prediction = clientStore.prediction(thread.id);
+  const textGenOff = clientStore.snapshot?.settings.textGeneration === "off";
+  const showsPrediction =
+    !readOnly &&
+    !textGenOff &&
+    !running &&
+    !editTarget &&
+    !!prediction &&
+    text === "" &&
+    !command &&
+    attachments.length === 0 &&
+    quotes.length === 0 &&
+    !thread.hydraHead;
   const queueChord = effectiveChord(
     "queueChat",
     clientStore.snapshot?.settings.shortcuts,
@@ -443,93 +456,138 @@ export function Composer(props: {
           )}
         </div>
       )}
-      <textarea
-        ref={taRef}
-        aria-label={t("Message")}
-        placeholder={
-          readOnly
-            ? t("read-only: close failed earlier — no new work is accepted")
-            : thread.interactionMode === "plan"
-              ? t("Describe what you want to plan")
-              : t("Ask %@ to build, fix or explain.", providerName)
-        }
-        value={text}
-        rows={2}
-        disabled={readOnly}
-        onChange={(e) => {
-          clientStore.setDraft(thread.id, e.target.value);
-          setCaret(e.target.selectionStart);
-          if (dismissedText !== null && e.target.value !== dismissedText)
-            setDismissedText(null);
-          setSelIdx(0);
-        }}
-        onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
-        onPaste={(e) => {
-          if (readOnly) return;
-          const fl = e.clipboardData?.files;
-          if (fl && fl.length > 0) {
-            e.preventDefault();
-            void attachFileList(fl);
+      <div className="composer-input-wrap">
+        <textarea
+          ref={taRef}
+          aria-label={t("Message")}
+          className={showsPrediction ? "has-prediction" : undefined}
+          placeholder={
+            readOnly
+              ? t("read-only: close failed earlier — no new work is accepted")
+              : thread.interactionMode === "plan"
+                ? t("Describe what you want to plan")
+                : t("Ask %@ to build, fix or explain.", providerName)
           }
-          // No files → the default text paste proceeds untouched.
-        }}
-        onKeyDown={(e) => {
-          if (e.nativeEvent.isComposing) return;
-          if (suggestOpen) {
-            if (e.key === "ArrowUp") {
+          value={text}
+          rows={2}
+          disabled={readOnly}
+          onCompositionStart={() => {
+            if (showsPrediction) clientStore.dismissPrediction(thread.id);
+          }}
+          onChange={(e) => {
+            clientStore.setDraft(thread.id, e.target.value);
+            setCaret(e.target.selectionStart);
+            if (dismissedText !== null && e.target.value !== dismissedText)
+              setDismissedText(null);
+            setSelIdx(0);
+          }}
+          onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
+          onPaste={(e) => {
+            if (readOnly) return;
+            const fl = e.clipboardData?.files;
+            if (fl && fl.length > 0) {
               e.preventDefault();
-              setSelIdx((i) => Math.max(0, i - 1));
+              void attachFileList(fl);
+            }
+            // No files → the default text paste proceeds untouched.
+          }}
+          onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return;
+            if (suggestOpen) {
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setSelIdx((i) => Math.max(0, i - 1));
+                return;
+              }
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                const rows = items.length || fileRows.length;
+                setSelIdx((i) => Math.min(rows - 1, i + 1));
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setDismissedText(text);
+                return;
+              }
+              if (e.key === "Enter" || e.key === "Tab") {
+                e.preventDefault();
+                const item = items.length > 0 ? items[sel] : fileRows[sel];
+                if (item === undefined) return;
+                if (items.length > 0) pick(item as SlashCommand);
+                else pickFile(item as string);
+                return;
+              }
+            }
+            if (
+              showsPrediction &&
+              !e.shiftKey &&
+              !e.ctrlKey &&
+              !e.metaKey &&
+              !e.altKey &&
+              (e.key === "Tab" || e.key === "ArrowRight")
+            ) {
+              e.preventDefault();
+              const accepted = prediction;
+              if (accepted && clientStore.acceptPrediction(thread.id)) {
+                setCaret(accepted.length);
+                requestAnimationFrame(() => {
+                  const el = taRef.current;
+                  if (el) {
+                    el.focus();
+                    el.setSelectionRange(accepted.length, accepted.length);
+                  }
+                });
+              }
               return;
             }
-            if (e.key === "ArrowDown") {
+            if (
+              showsPrediction &&
+              e.key === "Escape" &&
+              !e.ctrlKey &&
+              !e.metaKey &&
+              !e.altKey
+            ) {
               e.preventDefault();
-              const rows = items.length || fileRows.length;
-              setSelIdx((i) => Math.min(rows - 1, i + 1));
+              clientStore.dismissPrediction(thread.id);
               return;
             }
-            if (e.key === "Escape") {
+            if (e.key === "Backspace" && text === "" && command) {
               e.preventDefault();
-              setDismissedText(text);
+              clientStore.setDraftCommand(thread.id, undefined);
               return;
             }
-            if (e.key === "Enter" || e.key === "Tab") {
+            // Frozen backspace order: the command chip goes first, then
+            // the last reply quote peels off the next empty backspace.
+            if (e.key === "Backspace" && text === "" && !command && quotes.length > 0) {
               e.preventDefault();
-              const item = items.length > 0 ? items[sel] : fileRows[sel];
-              if (item === undefined) return;
-              if (items.length > 0) pick(item as SlashCommand);
-              else pickFile(item as string);
+              clientStore.removeDraftQuote(thread.id, quotes[quotes.length - 1]!.id);
               return;
             }
-          }
-          if (e.key === "Backspace" && text === "" && command) {
+            // After the command and quotes are gone the last attachment
+            // chip peels off on the next empty backspace.
+            if (e.key === "Backspace" && text === "" && !command && attachments.length > 0) {
+              e.preventDefault();
+              const last = attachments[attachments.length - 1];
+              if (last) void clientStore.removeDraftAttachment(thread.id, last.id);
+              return;
+            }
+            if (e.key !== "Enter") return;
+            if (e.shiftKey) return; // newline
+            // ⌘↵/Ctrl+↵ is the queueChat command — the app-level shortcut
+            // dispatcher owns it (queues while running, sends while idle).
+            if (e.ctrlKey || e.metaKey) return;
             e.preventDefault();
-            clientStore.setDraftCommand(thread.id, undefined);
-            return;
-          }
-          // Frozen backspace order: the command chip goes first, then
-          // the last reply quote peels off the next empty backspace.
-          if (e.key === "Backspace" && text === "" && !command && quotes.length > 0) {
-            e.preventDefault();
-            clientStore.removeDraftQuote(thread.id, quotes[quotes.length - 1]!.id);
-            return;
-          }
-          // After the command and quotes are gone the last attachment
-          // chip peels off on the next empty backspace.
-          if (e.key === "Backspace" && text === "" && !command && attachments.length > 0) {
-            e.preventDefault();
-            const last = attachments[attachments.length - 1];
-            if (last) void clientStore.removeDraftAttachment(thread.id, last.id);
-            return;
-          }
-          if (e.key !== "Enter") return;
-          if (e.shiftKey) return; // newline
-          // ⌘↵/Ctrl+↵ is the queueChat command — the app-level shortcut
-          // dispatcher owns it (queues while running, sends while idle).
-          if (e.ctrlKey || e.metaKey) return;
-          e.preventDefault();
-          send();
-        }}
-      />
+            send();
+          }}
+        />
+        {showsPrediction && (
+          <div className="composer-prediction" role="status" aria-live="polite">
+            <span className="composer-prediction-text">{prediction}</span>
+            <span className="composer-prediction-hint">{t("Press Tab to accept")}</span>
+          </div>
+        )}
+      </div>
       {dlPicker ? (
         <span className="dl-anchor">
           <button

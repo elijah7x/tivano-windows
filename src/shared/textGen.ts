@@ -1,8 +1,10 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-29.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F31 text generation — frozen `TextCleanup.singleLine` + `TextGeneration`
-// title validation ported verbatim. A generated reply only becomes a thread
-// title when it reads like one; chatty model output is rejected.
+// title validation ported verbatim, plus P2-01 `TextGeneration.nextPrompt`
+// JSON parsing and context assembly.
+
+import type { Message } from "./types";
 
 /** Frozen TextCleanup.singleLine: first non-empty line, capped with "…". */
 export function singleLine(text: string, limit = 120): string {
@@ -50,4 +52,82 @@ export function extractTitle(text: string): string | null {
     .map((l) => l.trim())
     .find((l) => l.length > 0);
   return firstLine ? usableTitle(firstLine.replace(TITLE_TRIM, "")) : null;
+}
+
+/**
+ * P2-01 (frozen TextGeneration.nextPrompt): parse JSON `{"suggestion": string | null}`,
+ * reject newlines, strip control characters, trim, and enforce the 240-char cap.
+ */
+export function extractNextPrompt(raw: string): string | null {
+  const stripped = raw.replaceAll("```json", "").replaceAll("```", "");
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
+  if (start === -1 || end < start) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripped.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const suggestion = (parsed as Record<string, unknown>).suggestion;
+  if (typeof suggestion !== "string") return null;
+  if (/[\r\n]/.test(suggestion)) return null;
+  const cleaned = suggestion.replace(/[\u0000-\u001F\u007F-\u009F]/g, "").trim();
+  if (!cleaned || cleaned.length > 240) return null;
+  return cleaned;
+}
+
+/**
+ * P2-01 (frozen ThreadRuntime.promptPredictionContext): build an <=8000-char
+ * conversation transcript starting with the first user request and up to the
+ * 6 most recent user/assistant turns (full last assistant prefix up to 3000 chars).
+ */
+export function buildPredictionContext(
+  messages: readonly Pick<Message, "role" | "content" | "turnId">[],
+): string {
+  const turns: { user: string; assistant: string }[] = [];
+  const byTurnId = new Map<string, number>();
+  for (const m of messages) {
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    if (m.turnId) {
+      let idx = byTurnId.get(m.turnId);
+      if (idx === undefined) {
+        idx = turns.length;
+        turns.push({ user: "", assistant: "" });
+        byTurnId.set(m.turnId, idx);
+      }
+      if (m.role === "user") {
+        turns[idx]!.user = turns[idx]!.user ? `${turns[idx]!.user}\n${m.content}` : m.content;
+      } else {
+        turns[idx]!.assistant = turns[idx]!.assistant
+          ? `${turns[idx]!.assistant}\n${m.content}`
+          : m.content;
+      }
+    } else if (m.role === "user") {
+      turns.push({ user: m.content, assistant: "" });
+    } else if (turns.length > 0 && !turns[turns.length - 1]!.assistant) {
+      turns[turns.length - 1]!.assistant = m.content;
+    } else {
+      turns.push({ user: "", assistant: m.content });
+    }
+  }
+  const firstUser = turns[0]?.user ? singleLine(turns[0].user, 600) : "";
+  const firstSection = firstUser ? [`First request: ${firstUser}`] : [];
+  const tail = turns.slice(-6);
+  const recent: string[] = [];
+  for (let i = 0; i < tail.length; i++) {
+    const t = tail[i]!;
+    const lines: string[] = [];
+    const u = singleLine(t.user, 600);
+    if (u) lines.push(`User: ${u}`);
+    const isLast = i === tail.length - 1;
+    const a = isLast ? t.assistant.slice(0, 3000).trim() : singleLine(t.assistant, 600);
+    if (a) lines.push(`Assistant: ${a}`);
+    if (lines.length > 0) recent.push(lines.join("\n"));
+  }
+  while ([...firstSection, ...recent].join("\n").length > 8000 && recent.length > 0) {
+    recent.shift();
+  }
+  return [...firstSection, ...recent].join("\n");
 }

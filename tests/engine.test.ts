@@ -643,3 +643,109 @@ describe("P1-35 continue (frozen sendContinuation)", () => {
     expect(() => engine.continueHydraHead(running.id)).toThrow(EngineError);
   });
 });
+
+describe("P2-01 composer next-prompt predictions", () => {
+  it("returns scripted prediction after a completed turn and respects textGeneration=off", async () => {
+    const root = freshRoot();
+    const { engine } = makeEngine(root);
+    const t = engine.createThread(null, "Predict");
+    engine.sendTurn(t.id, "implement feature [mock:predict:Run the unit tests]");
+    pump();
+    await Promise.resolve();
+    const res = await engine.predictNextPrompt(t.id);
+    expect(res).toEqual({ prediction: "Run the unit tests" });
+
+    engine.setSettings({ textGeneration: "off" });
+    expect(await engine.predictNextPrompt(t.id)).toEqual({ prediction: null });
+  });
+
+  it("handles empty, invalid, and throwing provider predictions without interrupting the next turn", async () => {
+    const root = freshRoot();
+    const { engine } = makeEngine(root);
+    const t = engine.createThread(null, "PredictErr");
+
+    engine.sendTurn(t.id, "one [mock:predict-empty]");
+    pump();
+    expect(await engine.predictNextPrompt(t.id)).toEqual({ prediction: null });
+
+    engine.sendTurn(t.id, "two [mock:predict-invalid]");
+    pump();
+    expect(await engine.predictNextPrompt(t.id)).toEqual({ prediction: null });
+
+    engine.sendTurn(t.id, "three [mock:predict-fail]");
+    pump();
+    await expect(engine.predictNextPrompt(t.id)).resolves.toEqual({ prediction: null });
+
+    // Next turn proceeds cleanly after a failed prediction.
+    engine.sendTurn(t.id, "four [mock:predict:Check status]");
+    pump();
+    const snap = engine.snapshot().threads.find((x) => x.id === t.id)!;
+    expect(snap.turn?.status).toBe("done");
+    expect(await engine.predictNextPrompt(t.id)).toEqual({ prediction: "Check status" });
+  });
+
+  it("discards stale prediction results if a new turn starts or textGeneration turns off mid-flight", async () => {
+    const root = freshRoot();
+    const store = new Store(root);
+    store.open();
+    const base = new MockProvider({ tickMs: 1 });
+    let resolvePred!: (v: string | null) => void;
+    const spyProvider = Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
+      generateNextPrompt: () =>
+        new Promise<string | null>((r) => {
+          resolvePred = r;
+        }),
+    });
+    const engine = new Engine(store, spyProvider, root, "0.0.0-test");
+    const t = engine.createThread(null, "Race");
+    engine.sendTurn(t.id, "hello");
+    pump();
+
+    const p1 = engine.predictNextPrompt(t.id);
+    engine.sendTurn(t.id, "follow up started before prediction returned");
+    resolvePred(JSON.stringify({ suggestion: "Stale suggestion" }));
+    expect(await p1).toEqual({ prediction: null });
+    pump();
+
+    const p2 = engine.predictNextPrompt(t.id);
+    engine.setSettings({ textGeneration: "off" });
+    resolvePred(JSON.stringify({ suggestion: "Disabled suggestion" }));
+    expect(await p2).toEqual({ prediction: null });
+  });
+
+  it("skips prediction for external local-control turns, running turns, hydra heads, and queued follow-ups", async () => {
+    const root = freshRoot();
+    const { engine } = makeEngine(root);
+    const ext = engine.createThread(null, "External");
+    engine.sendTurn(ext.id, "from local control", { external: true });
+    pump();
+    expect(await engine.predictNextPrompt(ext.id)).toEqual({ prediction: null });
+
+    const active = engine.createThread(null, "Running");
+    engine.sendTurn(active.id, "still running");
+    expect(await engine.predictNextPrompt(active.id)).toEqual({ prediction: null });
+    pump();
+    engine.enqueueFollowUp(active.id, "queued next");
+    expect(await engine.predictNextPrompt(active.id)).toEqual({ prediction: null });
+
+    const head = engine.createThread(null, "Head");
+    head.hydraHead = {
+      leadId: active.id,
+      headIndex: 0,
+      name: "Hank",
+      task: "work",
+      batchId: "b1",
+      status: "completed",
+      spawnedAt: 1,
+    };
+    head.turn = {
+      id: "u1",
+      threadId: head.id,
+      status: "done",
+      seq: 1,
+      startedAt: 1,
+      assistantMessageId: "m1",
+    };
+    expect(await engine.predictNextPrompt(head.id)).toEqual({ prediction: null });
+  });
+});
