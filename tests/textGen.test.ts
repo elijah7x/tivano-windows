@@ -5,6 +5,8 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  NEXT_PROMPT_HEADER,
+  buildNextPromptRequest,
   buildPredictionContext,
   extractNextPrompt,
   extractTitle,
@@ -73,20 +75,26 @@ describe("extractNextPrompt (P2-01 frozen nextPrompt)", () => {
     );
   });
 
-  it("rejects null, missing, non-JSON, multiline, empty, and >240 char suggestions", () => {
+  it("rejects null, missing, non-JSON, multiline/U+2028/U+2029, empty, and >240 code-point suggestions, and strips bidi/zero-width chars", () => {
     expect(extractNextPrompt('{"suggestion":null}')).toBeNull();
     expect(extractNextPrompt('{"other":"x"}')).toBeNull();
     expect(extractNextPrompt("plain text")).toBeNull();
     expect(extractNextPrompt('{"suggestion":"line 1\\nline 2"}')).toBeNull();
+    expect(extractNextPrompt('{"suggestion":"line 1\\u2028line 2"}')).toBeNull();
+    expect(extractNextPrompt('{"suggestion":"line 1\\u2029line 2"}')).toBeNull();
     expect(extractNextPrompt('{"suggestion":"   "}')).toBeNull();
+    expect(extractNextPrompt('{"suggestion":"Run\\u200B tests\\u202E"}')).toBe("Run tests");
     expect(extractNextPrompt(JSON.stringify({ suggestion: "a".repeat(241) }))).toBeNull();
     expect(extractNextPrompt(JSON.stringify({ suggestion: "a".repeat(240) }))).toBe(
       "a".repeat(240),
     );
+    expect(extractNextPrompt(JSON.stringify({ suggestion: "🚀".repeat(240) }))).toBe(
+      "🚀".repeat(240),
+    );
   });
 });
 
-describe("buildPredictionContext (P2-01)", () => {
+describe("buildPredictionContext and buildNextPromptRequest (P2-01)", () => {
   it("includes first request, keeps up to 6 recent turns, and caps total at 8000 chars", () => {
     const msgs = Array.from({ length: 8 }, (_, i) => [
       { role: "user" as const, content: `user-${i} ` + "u".repeat(900), turnId: `t${i}` },
@@ -96,5 +104,20 @@ describe("buildPredictionContext (P2-01)", () => {
     expect(ctx.startsWith("First request: user-0")).toBe(true);
     expect(ctx).toContain("User: user-7");
     expect(ctx.length).toBeLessThanOrEqual(8000);
+  });
+
+  it("pairs messages without turnId and avoids splitting surrogate pairs at 3000 chars", () => {
+    const emojiReply = "a".repeat(2999) + "🚀tail";
+    const ctx = buildPredictionContext([
+      { role: "user", content: "first prompt" },
+      { role: "assistant", content: emojiReply },
+    ]);
+    expect(ctx).toContain("First request: first prompt");
+    expect(ctx).toContain("User: first prompt");
+    expect(ctx).toContain("Assistant: " + "a".repeat(2999) + "🚀");
+    expect(ctx).not.toContain("\uD83D\uDE80".slice(0, 1) + "\n");
+    const req = buildNextPromptRequest(ctx);
+    expect(req.startsWith(NEXT_PROMPT_HEADER)).toBe(true);
+    expect(req).toContain("Conversation:");
   });
 });

@@ -724,9 +724,10 @@ describe("P2-01 composer next-prompt predictions", () => {
     const active = engine.createThread(null, "Running");
     engine.sendTurn(active.id, "still running");
     expect(await engine.predictNextPrompt(active.id)).toEqual({ prediction: null });
-    pump();
+    // Enqueue a follow-up while the turn is running so followUps stays populated after done.
     engine.enqueueFollowUp(active.id, "queued next");
     expect(await engine.predictNextPrompt(active.id)).toEqual({ prediction: null });
+    pump();
 
     const head = engine.createThread(null, "Head");
     head.hydraHead = {
@@ -747,5 +748,38 @@ describe("P2-01 composer next-prompt predictions", () => {
       assistantMessageId: "m1",
     };
     expect(await engine.predictNextPrompt(head.id)).toEqual({ prediction: null });
+  });
+
+  it("returns null for adapters without generateNextPrompt, archived threads, mismatched turnIds, and closed workGate", async () => {
+    const root = freshRoot();
+    const store = new Store(root);
+    store.open();
+    const base = new MockProvider({ tickMs: 1 });
+    const bare = Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
+      generateNextPrompt: undefined,
+    });
+    const engineNoGen = new Engine(store, bare, root, "0.0.0-test");
+    const t0 = engineNoGen.createThread(null, "NoGen");
+    engineNoGen.sendTurn(t0.id, "hi");
+    pump();
+    expect(await engineNoGen.predictNextPrompt(t0.id)).toEqual({ prediction: null });
+
+    const { engine } = makeEngine(freshRoot());
+    const t = engine.createThread(null, "Guards");
+    const turn = engine.sendTurn(t.id, "hello [mock:predict:Next]");
+    pump();
+    expect(await engine.predictNextPrompt(t.id, "00000000-0000-0000-0000-000000000000")).toEqual({
+      prediction: null,
+    });
+    expect(await engine.predictNextPrompt(t.id, turn.id)).toEqual({ prediction: "Next" });
+
+    engine.archiveThread(t.id);
+    expect(await engine.predictNextPrompt(t.id)).toEqual({ prediction: null });
+
+    const t2 = engine.createThread(null, "Readonly");
+    engine.sendTurn(t2.id, "hello [mock:predict:Next]");
+    pump();
+    engine.shutdown();
+    expect(await engine.predictNextPrompt(t2.id)).toEqual({ prediction: null });
   });
 });

@@ -63,14 +63,33 @@ export async function runPredictionChecks({
   const predText = await page.locator(".composer-prediction-text").innerText();
   const hintText = await page.locator(".composer-prediction-hint").innerText();
   const predColor = await pred.evaluate((el) => getComputedStyle(el).color);
+  const taColor = await page.locator(".composer textarea").evaluate((el) => getComputedStyle(el).color);
   verify(
     "PRED-01 suggestion and Press Tab to accept hint appear after turn completes",
-    predText === "Run the unit tests" && hintText === "Press Tab to accept" && !!predColor,
-    { predText, hintText, predColor },
+    predText === "Run the unit tests" &&
+      hintText === "Press Tab to accept" &&
+      !!predColor &&
+      predColor !== taColor,
+    { predText, hintText, predColor, taColor },
   );
   await page.screenshot({ path: join(outDir, "92-composer-prediction-en.png") });
 
+  // 1b. Shift+Tab does not accept; Escape dismisses the prediction.
+  await page.locator(".composer textarea").focus();
+  await page.keyboard.press("Shift+Tab");
+  const stillVisibleAfterShiftTab = (await pred.count()) === 1 && (await page.locator(".composer textarea").inputValue()) === "";
+  await page.locator(".composer textarea").focus();
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".composer-prediction"));
+  verify(
+    "PRED-01b Shift+Tab leaves prediction intact and Escape dismisses it",
+    stillVisibleAfterShiftTab && (await pred.count()) === 0,
+    { stillVisibleAfterShiftTab },
+  );
+
   // 2. Tab puts suggestion in the draft for editing.
+  await sendTurn(page, tid, "first-b request [mock:predict:Run the unit tests]");
+  await pred.waitFor({ timeout: 10000 });
   await page.locator(".composer textarea").focus();
   await page.keyboard.press("Tab");
   await page.waitForFunction(() => !document.querySelector(".composer-prediction"));
@@ -124,7 +143,7 @@ export async function runPredictionChecks({
   // 5. Failed prediction shows nothing, surfaces no error, and allows the next turn.
   await sendTurn(page, tid, "fourth request [mock:predict-fail]");
   await new Promise((r) => setTimeout(r, 250));
-  const errCount = await page.locator(".error-banner").count();
+  const errCount = await page.locator(".banner.error, .app-error").count();
   const predCountAfterFail = await pred.count();
   await page.locator(".composer textarea").fill("after failure [mock:predict:Follow up]");
   await page.keyboard.press("Enter");
@@ -154,6 +173,7 @@ export async function runPredictionChecks({
   await pred.waitFor({ timeout: 10000 });
   const zhHint = await page.locator(".composer-prediction-hint").innerText();
   verify("PRED-07 zh-Hans shows 按 Tab 键接受", zhHint === "按 Tab 键接受", zhHint);
+  await page.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
 
   const c = await boundedClose(app, proc);
   ledger.exited = c.exited;

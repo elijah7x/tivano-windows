@@ -582,7 +582,7 @@ export function Composer(props: {
           }}
         />
         {showsPrediction && (
-          <div className="composer-prediction" role="status" aria-live="polite">
+          <div className="composer-prediction" aria-live="off">
             <span className="composer-prediction-text">{prediction}</span>
             <span className="composer-prediction-hint">{t("Press Tab to accept")}</span>
           </div>

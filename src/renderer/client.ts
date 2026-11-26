@@ -278,7 +278,7 @@ export class ClientStore {
 
   private canShowPrediction(threadId: string, turnId: string): boolean {
     const s = this.snapshot;
-    if (!s || s.settings.textGeneration === "off") return false;
+    if (!s || s.readOnly || s.settings.textGeneration === "off") return false;
     const t = this.thread(threadId);
     if (!t || t.isArchived || t.hydraHead) return false;
     if (t.turn?.id !== turnId || t.turn.status !== "done") return false;
@@ -309,19 +309,23 @@ export class ClientStore {
     queueMicrotask(() => {
       if ((this.predictionSeq.get(threadId) ?? 0) !== seq) return;
       if (!this.canShowPrediction(threadId, turnId)) return;
-      void this.invoke("threads:predict-next", { threadId, turnId })
-        .then((res) => {
-          const pred =
-            typeof res === "object" && res !== null
-              ? (res as { prediction?: unknown }).prediction
-              : undefined;
-          if (typeof pred !== "string" || !pred) return;
-          if ((this.predictionSeq.get(threadId) ?? 0) !== seq) return;
-          if (!this.canShowPrediction(threadId, turnId)) return;
-          this.predictions.set(threadId, pred);
-          this.notify();
-        })
-        .catch(() => {});
+      try {
+        void this.invoke("threads:predict-next", { threadId, turnId })
+          .then((res) => {
+            const pred =
+              typeof res === "object" && res !== null
+                ? (res as { prediction?: unknown }).prediction
+                : undefined;
+            if (typeof pred !== "string" || !pred) return;
+            if ((this.predictionSeq.get(threadId) ?? 0) !== seq) return;
+            if (!this.canShowPrediction(threadId, turnId)) return;
+            this.predictions.set(threadId, pred);
+            this.notify();
+          })
+          .catch(() => {});
+      } catch {
+        /* ignore synchronous invoke faults */
+      }
     });
   }
 

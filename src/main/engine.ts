@@ -4773,7 +4773,7 @@ export class Engine {
     threadId: string,
     turnId?: string,
   ): Promise<{ prediction: string | null }> {
-    if (this.isTextGenerationOff()) {
+    if (this.workGate !== "open" || this.isTextGenerationOff()) {
       return { prediction: null };
     }
     const thread = this.store.state.threads.find((t) => t.id === threadId);
@@ -4803,7 +4803,7 @@ export class Engine {
     const seq = this.bumpPredictionGen(threadId);
     try {
       const raw = await gen(context);
-      if (this.isTextGenerationOff()) return { prediction: null };
+      if (this.workGate !== "open" || this.isTextGenerationOff()) return { prediction: null };
       if (this.predictionGen.get(threadId) !== seq) return { prediction: null };
       const cur = this.store.state.threads.find((t) => t.id === threadId);
       if (!cur || cur.isArchived || cur.hydraHead) return { prediction: null };

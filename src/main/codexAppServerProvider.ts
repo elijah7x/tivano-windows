@@ -30,7 +30,9 @@
 //     still-living child so provider.dispose can retry it honestly.
 
 import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { buildNextPromptRequest } from "../shared/textGen";
 import type {
   ApprovalRequest,
   CodexModelOption,
@@ -3208,7 +3210,11 @@ export class CodexAppServerProvider implements ProviderAdapter {
    */
   async runOneShot<T>(
     workspaceDir: string,
-    fn: (rpc: CodexRpc, initResult: Record<string, unknown>) => Promise<T>,
+    fn: (rpc: CodexRpc, initResult: Record<string, unknown>, cwd: string) => Promise<T>,
+    opts?: {
+      onNotification?: (method: string, params: unknown) => void;
+      onClosed?: (reason: string) => void;
+    },
   ): Promise<T> {
     this.assertCanLaunch();
     if (
@@ -3236,6 +3242,9 @@ export class CodexAppServerProvider implements ProviderAdapter {
     const spec = this.buildSpec(cwd, { lightweight: true });
     let rpc: CodexRpc | null = null;
     let alive = true;
+    const notifyClosed = (reason: string) => {
+      opts?.onClosed?.(reason);
+    };
     const transport = new StdioTransport<CodexMessage>(
       spec,
       { ...DEFAULT_TRANSPORT_LIMITS, ...this.transportLimits },
@@ -3246,6 +3255,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
         onProtocolError: (err) => {
           alive = false;
           rpc?.failAllPending(err.message);
+          notifyClosed(err.message);
           void transport.dispose();
         },
         onExit: () => {},
@@ -3254,14 +3264,17 @@ export class CodexAppServerProvider implements ProviderAdapter {
           this.oneShotTransports.delete(transport);
           this.recordOneShotCleanupFailure(transport, code, signal);
           const tail = transport.stderrTail().trim();
-          rpc?.failAllPending(
+          const msg =
             `CODEX_CONNECTION_CLOSED: one-shot connection closed (code ${code ?? "?"}, signal ${signal ?? "?"})` +
-              (tail ? ` — stderr tail: ${bounded(tail, 400)}` : ""),
-          );
+            (tail ? ` — stderr tail: ${bounded(tail, 400)}` : "");
+          rpc?.failAllPending(msg);
+          notifyClosed(msg);
         },
         onSpawnError: (err) => {
           alive = false;
-          rpc?.failAllPending(`CODEX_PROTOCOL_ERROR: spawn failed: ${err.message}`);
+          const msg = `CODEX_PROTOCOL_ERROR: spawn failed: ${err.message}`;
+          rpc?.failAllPending(msg);
+          notifyClosed(msg);
           void transport.dispose();
         },
       },
@@ -3274,11 +3287,14 @@ export class CodexAppServerProvider implements ProviderAdapter {
         onServerRequest: (id, method) => {
           rpc?.respondError(id, -32601, `unsupported server request in one-shot session: ${method}`);
         },
-        onNotification: () => {},
+        onNotification: (method, params) => {
+          if (alive) opts?.onNotification?.(method, params);
+        },
         onClosed: () => {},
         onFatal: (err) => {
           alive = false;
           rpc?.failAllPending(err.message);
+          notifyClosed(err.message);
           void transport.dispose();
         },
       },
@@ -3286,9 +3302,9 @@ export class CodexAppServerProvider implements ProviderAdapter {
         requestTimeoutMs: this.limits.requestTimeoutMs,
         onMutatingTimeout: (method) => {
           alive = false;
-          rpc?.failAllPending(
-            `CODEX_REQUEST_TIMEOUT: mutating request ${method} timed out — wire state unknown`,
-          );
+          const msg = `CODEX_REQUEST_TIMEOUT: mutating request ${method} timed out — wire state unknown`;
+          rpc?.failAllPending(msg);
+          notifyClosed(msg);
           void transport.dispose();
         },
       },
@@ -3318,14 +3334,99 @@ export class CodexAppServerProvider implements ProviderAdapter {
         );
       }
       rpc.notify("initialized");
-      return await fn(rpc, init);
+      return await fn(rpc, init, cwd);
     } finally {
       alive = false;
       this.oneShotRpcs.delete(rpc);
       rpc.failAllPending("CODEX_CONNECTION_CLOSED: one-shot connection closed");
+      notifyClosed("CODEX_CONNECTION_CLOSED: one-shot connection closed");
       const res = await transport.dispose();
       this.recordOneShotCleanupFailure(transport, res.exitCode, res.signal);
       if (res.confirmed || !transport.hasChild) this.oneShotTransports.delete(transport);
+    }
+  }
+
+  /**
+   * P2-01 / P2-57: one-shot composer next-prompt prediction over a lightweight
+   * ephemeral `app-server` turn (read-only, approvalPolicy `"never"`).
+   */
+  async generateNextPrompt(context: string): Promise<string | null> {
+    let targetThreadId: string | null = null;
+    let targetTurnId: string | null = null;
+    let deltas = "";
+    let completedText: string | null = null;
+    let settleTurn: ((value: string | null) => void) | null = null;
+    const turnDone = new Promise<string | null>((resolve) => {
+      settleTurn = resolve;
+    });
+    const finish = (value: string | null) => {
+      if (settleTurn) {
+        const fn = settleTurn;
+        settleTurn = null;
+        fn(value);
+      }
+    };
+    const timer = setTimeout(() => finish(null), Math.min(this.limits.requestTimeoutMs, 30_000));
+    try {
+      return await this.runOneShot(
+        tmpdir(),
+        async (rpc, _init, cwd) => {
+          const started = await rpc.request(
+            "thread/start",
+            {
+              cwd,
+              approvalPolicy: "never",
+              sandbox: "read-only",
+              ephemeral: true,
+              experimentalRawEvents: false,
+              persistExtendedHistory: false,
+            },
+            { timeoutMs: this.limits.requestTimeoutMs, mutating: true },
+          );
+          const tid = isObj(started) && isObj(started.thread) ? s(started.thread.id) : null;
+          if (!tid) return null;
+          targetThreadId = tid;
+          const turnRes = await rpc.request(
+            "turn/start",
+            {
+              threadId: tid,
+              input: [{ type: "text", text: buildNextPromptRequest(context) }],
+              approvalPolicy: "never",
+              sandboxPolicy: { type: "readOnly" },
+            },
+            { timeoutMs: this.limits.requestTimeoutMs, mutating: true },
+          );
+          targetTurnId = isObj(turnRes) && isObj(turnRes.turn) ? s(turnRes.turn.id) : null;
+          return await turnDone;
+        },
+        {
+          onClosed: () => finish(null),
+          onNotification: (method, params) => {
+            if (!isObj(params) || !targetThreadId || s(params.threadId) !== targetThreadId) return;
+            const nTurnId = s(params.turnId) ?? (isObj(params.turn) ? s(params.turn.id) : null);
+            if (targetTurnId && nTurnId && nTurnId !== targetTurnId) return;
+            if (method === "item/agentMessage/delta" && typeof params.delta === "string") {
+              deltas += params.delta;
+            } else if (
+              method === "item/completed" &&
+              isObj(params.item) &&
+              params.item.type === "agentMessage" &&
+              typeof params.item.text === "string"
+            ) {
+              completedText = params.item.text;
+            } else if (method === "turn/completed" && isObj(params.turn)) {
+              const status = s(params.turn.status);
+              if (status === "completed") finish(completedText ?? (deltas || null));
+              else finish(null);
+            }
+          },
+        },
+      );
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+      finish(null);
     }
   }
 

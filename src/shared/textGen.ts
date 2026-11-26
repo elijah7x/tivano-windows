@@ -72,10 +72,25 @@ export function extractNextPrompt(raw: string): string | null {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
   const suggestion = (parsed as Record<string, unknown>).suggestion;
   if (typeof suggestion !== "string") return null;
-  if (/[\r\n]/.test(suggestion)) return null;
-  const cleaned = suggestion.replace(/[\u0000-\u001F\u007F-\u009F]/g, "").trim();
-  if (!cleaned || cleaned.length > 240) return null;
+  if (/[\r\n\u2028\u2029]/.test(suggestion)) return null;
+  const cleaned = suggestion
+    .replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, "")
+    .trim();
+  if (!cleaned || Array.from(cleaned).length > 240) return null;
   return cleaned;
+}
+
+export const NEXT_PROMPT_HEADER =
+  "Predict this user's next message from the whole conversation below.";
+
+/** P2-01 (frozen TextGeneration.nextPrompt): prompt template sent to one-shot text engines. */
+export function buildNextPromptRequest(context: string): string {
+  return [
+    `${NEXT_PROMPT_HEADER} Write it as the user would, in the user's language and voice, as one short single-line message, ideally under 120 characters and never over 240. Say only the next request itself; do not add process steps the user has not asked for, such as reviewing or confirming first. First consider whether the user would want to adjust, verify or reuse what was just produced; do not invent unrelated tasks. If no next message is reasonably likely, the suggestion is null. Reply with JSON only: {"suggestion": string or null}.`,
+    "",
+    "Conversation:",
+    Array.from(context).slice(0, 8000).join(""),
+  ].join("\n");
 }
 
 /**
@@ -122,7 +137,9 @@ export function buildPredictionContext(
     const u = singleLine(t.user, 600);
     if (u) lines.push(`User: ${u}`);
     const isLast = i === tail.length - 1;
-    const a = isLast ? t.assistant.slice(0, 3000).trim() : singleLine(t.assistant, 600);
+    const a = isLast
+      ? Array.from(t.assistant).slice(0, 3000).join("").trim()
+      : singleLine(t.assistant, 600);
     if (a) lines.push(`Assistant: ${a}`);
     if (lines.length > 0) recent.push(lines.join("\n"));
   }

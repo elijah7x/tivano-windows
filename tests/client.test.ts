@@ -544,4 +544,36 @@ describe("P2-01 ClientStore composer predictions", () => {
     expect(invoke).toHaveBeenCalledWith("turns:send", { threadId: "t1", text: "next message" });
     expect(store.lastError).toBeNull();
   });
+
+  it("suppresses prediction when readOnly, survives synchronous invoke throws, and supports dismissPrediction", async () => {
+    const syncThrowInvoke = vi.fn(() => {
+      throw new Error("bridge missing");
+    });
+    const store1 = new ClientStore(syncThrowInvoke);
+    store1.hydrate(snap(1, [streamingThread("t1", "u1", "m1")]), store1.beginHydration());
+    store1.apply({ type: "turn-status", threadId: "t1", turnId: "u1", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(store1.prediction("t1")).toBeUndefined();
+    expect(store1.lastError).toBeNull();
+
+    const roInvoke = vi.fn(async () => ({ prediction: "Should not run" }));
+    const store2 = new ClientStore(roInvoke);
+    const roSnap = snap(1, [streamingThread("t1", "u1", "m1")]);
+    roSnap.readOnly = true;
+    store2.hydrate(roSnap, store2.beginHydration());
+    store2.apply({ type: "turn-status", threadId: "t1", turnId: "u1", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(roInvoke).not.toHaveBeenCalled();
+
+    const okStore = new ClientStore(async () => ({ prediction: "Dismiss me" }));
+    okStore.hydrate(snap(1, [streamingThread("t1", "u1", "m1")]), okStore.beginHydration());
+    okStore.apply({ type: "turn-status", threadId: "t1", turnId: "u1", status: "done" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(okStore.prediction("t1")).toBe("Dismiss me");
+    okStore.dismissPrediction("t1");
+    expect(okStore.prediction("t1")).toBeUndefined();
+  });
 });
