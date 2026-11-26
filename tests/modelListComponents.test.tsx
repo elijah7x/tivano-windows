@@ -844,4 +844,35 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
       "codex/gpt-u": { effort: "low" },
     });
   });
+
+  it("carries one in-flight rename through a section move into a single pin-remove write", () => {
+    const rig = setupControllerRig();
+    const secA = clientStore.snapshot!.settings.modelSections![0]!;
+    rig.ctrl.startRename(secA);
+    rig.setDraftVal("Reasoning Live");
+
+    rig.ctrl.moveSection("sec-b", -1);
+    expect(rig.writes).toHaveLength(1);
+    const moveWrite = rig.writes[0] as {
+      modelList: ModelPin[];
+      modelSections: ModelSection[];
+    };
+    expect(moveWrite.modelSections[0]?.id).toBe("sec-b");
+    expect(moveWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe(
+      "Reasoning Live",
+    );
+
+    rig.echoSnapshot({ modelList: moveWrite.modelList, modelSections: moveWrite.modelSections });
+    rig.ctrl.removePin({ provider: "codex", modelID: "gpt-a1" });
+    expect(rig.writes).toHaveLength(2);
+    const removeWrite = rig.writes[1] as {
+      modelList: ModelPin[];
+      modelSections: ModelSection[];
+    };
+    expect(removeWrite.modelList.map((p) => p.modelID)).toEqual(["gpt-u", "gpt-b1"]);
+    expect(removeWrite.modelSections.find((s) => s.id === "sec-a")?.name).toBe(
+      "Reasoning Live",
+    );
+    expect(removeWrite.modelSections[0]?.id).toBe("sec-b");
+  });
 });
