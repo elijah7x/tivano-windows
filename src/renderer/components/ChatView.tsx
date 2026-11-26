@@ -34,7 +34,7 @@ import { TimelineMinimap } from "./TimelineMinimap";
 import { ThreadChangesTab } from "./ThreadChangesTab";
 import { HydraBriefPill } from "./HydraBriefPill";
 import { HydraStaveBar } from "./HydraStaveBar";
-import { WorkingSpinner } from "./SpinnerCells";
+import { MiniSpinner, WorkingSpinner } from "./SpinnerCells";
 import { HydraDelegationCard } from "./HydraDelegationCard";
 import { HydraReportRow } from "./HydraReportRow";
 import { watchSelectionResidue } from "../selectionRepaint";
@@ -478,6 +478,12 @@ export function ChatView(props: {
         .sort((a, b) => b.createdAt - a.createdAt),
     [props.threads, threadId, hydraPanelHidden],
   );
+  // Frozen agentControls: under Off a plain helper working outside its
+  // panel also gets a small top-bar capsule that re-opens the panel.
+  const offTopHelper =
+    hydraPanelLayout(props.settings ?? {}) === "off"
+      ? hiddenWorking.find((h) => !h.hydraHead)
+      : undefined;
   // A84 (frozen StreamVeil): per-message veil bookkeeping — how much text
   // the latest flush added and the EMA of flush gaps that paces the fade.
   const veilRef = useRef(
@@ -724,6 +730,25 @@ export function ChatView(props: {
             onTogglePanel={() => setHydraPanelHidden((h) => !h)}
             {...(props.onOpenSettings ? { onOpenSettings: props.onOpenSettings } : {})}
           />
+          {offTopHelper && (
+            <div className="chrome-capsule helper-working-top">
+              <button
+                type="button"
+                className="helper-working-btn"
+                title={t("Show the sub-agent panel")}
+                aria-label={t("Show the sub-agent panel")}
+                onClick={() =>
+                  void callApi("threads:show-helper", { id: offTopHelper.id }).catch(() => {})
+                }
+              >
+                <span className="helper-working-glyph" aria-hidden="true">
+                  <span />
+                  <span />
+                </span>
+                <MiniSpinner />
+              </button>
+            </div>
+          )}
           {hasDirectory && (
             <BranchMenu
               threadId={thread.id}
@@ -818,7 +843,13 @@ export function ChatView(props: {
           thread={thread}
           threads={props.threads}
           readOnly={props.readOnly === true}
-          onDismiss={() => setHydraPanelHidden(true)}
+          onDismiss={() => {
+            // Frozen dismissHydraHeads: dismissing the team panel releases
+            // every automatic-pop hold, so the held heads pop again when
+            // the team panel returns.
+            setPopHeld(new Set());
+            setHydraPanelHidden(true);
+          }}
         />
       )}
       {thread && !thread.hydraHead && popsOn && !hydraPanelHidden && (
