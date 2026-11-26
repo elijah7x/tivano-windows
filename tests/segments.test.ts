@@ -18,7 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Store } from "../src/main/store";
 import { SCHEMA_VERSION } from "../src/shared/types";
 
@@ -293,7 +293,7 @@ describe("segmented turn storage (F30)", () => {
     expect(existsSync(join(root, "turns", `${newTid}.json`))).toBe(true);
   });
 
-  it("preserves turn segments across CorruptStoreError recovery and handles backup name collisions", () => {
+  it("preserves turn segments across CorruptStoreError recovery, flushes, and restarts", () => {
     const root = freshRoot();
     const tid = randomUUID();
     {
@@ -311,13 +311,81 @@ describe("segmented turn storage (F30)", () => {
     head.settings.bogusUnknownKey = true;
     writeFileSync(join(root, "store.json"), JSON.stringify(head));
 
-    const { store, result } = openStore(root);
-    expect(result.recoveredFrom).toBeTruthy();
-    store.flushNow();
-    store.close();
+    const { store: s1, result: r1 } = openStore(root);
+    expect(r1.recoveredFrom).toBeTruthy();
+    expect(existsSync(r1.recoveredFrom!)).toBe(true);
+    const newTid = randomUUID();
+    s1.update((d) => {
+      d.threads.push(baseThread(newTid, [msg("n1", "user", "after corrupt key")]) as never);
+    });
+    s1.flushNow();
+    s1.close();
+
+    // Reopen and flush again as a normal post-recovery launch: preserved segments must stay intact.
+    const { store: s2, result: r2 } = openStore(root);
+    expect(r2.recoveredFrom).toBeUndefined();
+    expect(r2.data.threads.map((t) => t.id)).toEqual([newTid]);
+    s2.flushNow();
+    s2.close();
 
     const backupDirs = readdirSync(root).filter((f) => f.startsWith("turns.corrupt-"));
     expect(backupDirs.length).toBe(1);
     expect(readFileSync(join(root, backupDirs[0]!, `${tid}.json`), "utf8")).toBe(segBytes);
+    expect(existsSync(join(root, "turns", `${newTid}.json`))).toBe(true);
+  });
+
+  it("handles turns.corrupt-* backup name collisions across flushes and restarts", () => {
+    const root = freshRoot();
+    const tid = randomUUID();
+    {
+      const { store } = openStore(root);
+      store.update((d) => {
+        d.threads.push(baseThread(tid, [msg("u1", "user", "collision turn")]) as never);
+      });
+      store.flushNow();
+      store.close();
+    }
+    const segBytes = readFileSync(join(root, "turns", `${tid}.json`), "utf8");
+    const fixedIso = "2026-11-26T00:00:00.000Z";
+    const stamp = fixedIso.replace(/[:.]/g, "-");
+    const existingBackupDir = join(root, `turns.corrupt-${stamp}`);
+    mkdirSync(existingBackupDir, { recursive: true });
+    writeFileSync(join(existingBackupDir, "sentinel.txt"), "existing-backup");
+
+    const head = JSON.parse(readFileSync(join(root, "store.json"), "utf8")) as {
+      settings: Record<string, unknown>;
+    };
+    head.settings.bogusUnknownKey = true;
+    writeFileSync(join(root, "store.json"), JSON.stringify(head));
+
+    const isoSpy = vi.spyOn(Date.prototype, "toISOString").mockReturnValue(fixedIso);
+    let r1: ReturnType<Store["open"]>;
+    let s1: Store;
+    try {
+      ({ store: s1, result: r1 } = openStore(root));
+    } finally {
+      isoSpy.mockRestore();
+    }
+    expect(r1.recoveredFrom).toBeTruthy();
+    const newTid = randomUUID();
+    s1.update((d) => {
+      d.threads.push(baseThread(newTid, [msg("n1", "user", "post collision")]) as never);
+    });
+    s1.flushNow();
+    s1.close();
+
+    const { store: s2, result: r2 } = openStore(root);
+    expect(r2.recoveredFrom).toBeUndefined();
+    expect(r2.data.threads.map((t) => t.id)).toEqual([newTid]);
+    s2.flushNow();
+    s2.close();
+
+    const backupDirs = readdirSync(root).filter((f) => f.startsWith(`turns.corrupt-${stamp}`));
+    expect(backupDirs.length).toBe(2);
+    const suffixedDir = backupDirs.find((d) => d !== `turns.corrupt-${stamp}`);
+    expect(suffixedDir).toMatch(new RegExp(`^turns\\.corrupt-${stamp}-[0-9a-f]{8}$`));
+    expect(readFileSync(join(existingBackupDir, "sentinel.txt"), "utf8")).toBe("existing-backup");
+    expect(readFileSync(join(root, suffixedDir!, `${tid}.json`), "utf8")).toBe(segBytes);
+    expect(existsSync(join(root, "turns", `${newTid}.json`))).toBe(true);
   });
 });
