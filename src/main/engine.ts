@@ -1739,6 +1739,11 @@ export class Engine {
       thread.updatedAt = now;
       if (needsTitle) thread.title = text.slice(0, 60) || attached[0]?.name || "New thread";
     });
+    // Frozen AutoContinue.turnOpened: whatever opened this turn, the
+    // limit stop is behind it now. A user who picks the chat up (or any
+    // continuation that really starts) never leaves a superseded wait
+    // pinning the checkout until the old reset timer fires.
+    this.clearLimitWait(threadId);
     this.emit({ type: "thread-updated", thread });
     this.emit({ type: "turn-status", threadId, turnId: turn.id, status: "running" });
     this.updateSleepGuard();
@@ -3252,6 +3257,12 @@ export class Engine {
       }
     });
     this.emit({ type: "settings-changed", settings: this.store.state.settings });
+    // Frozen switch-to-Manual parity: turning automatic continue off
+    // ends every parked wait immediately; the old reset timer must not
+    // keep a now-idle checkout busy or fire into a later turn.
+    if (patch.autoContinueAfterLimit === false) {
+      for (const threadId of [...this.limitWaits.keys()]) this.clearLimitWait(threadId);
+    }
     if (patch.hydraEnabled === false) {
       for (const leadId of [...this.hydraWaiting.keys()]) {
         this.hydraWaiting.delete(leadId);

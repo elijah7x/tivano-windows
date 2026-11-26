@@ -287,6 +287,49 @@ describe("P1-39 workspace auto mode", () => {
     expect(seen[0]!.workspace?.directory).toBe(r.repoDir);
   });
 
+  it("a user send ends the limit wait and frees the checkout", async () => {
+    const seen: TurnContext[] = [];
+    const r = rig("eligible", seen, {
+      errorOnce: `usage limit reached|${Math.floor(Date.now() / 1000) + 600}`,
+    });
+    r.engine.setSettings({ autoContinueAfterLimit: true });
+    const a = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(a.id, "hit the usage limit");
+    await waitFor(() => turnStatus(r.engine, a.id) === "error");
+    expect((r.engine.snapshot().limitResumesAt ?? {})[a.id]).not.toBeUndefined();
+
+    // Frozen AutoContinue.turnOpened: the user's own send supersedes
+    // the wait at once, so after that turn finishes the checkout is idle.
+    r.engine.sendTurn(a.id, "never mind, continue now");
+    expect(r.engine.snapshot().limitResumesAt ?? {}).toEqual({});
+    await waitFor(() => turnStatus(r.engine, a.id) === "done");
+    const b = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(b.id, "second chat, same repo");
+    await waitFor(() => seen.length === 3);
+    expect(thread(r.engine, b.id).worktreeDir).toBeUndefined();
+    expect(seen[2]!.workspace?.directory).toBe(r.repoDir);
+  });
+
+  it("turning auto-continue off ends the limit wait and frees the checkout", async () => {
+    const seen: TurnContext[] = [];
+    const r = rig("eligible", seen, {
+      errorOnce: `usage limit reached|${Math.floor(Date.now() / 1000) + 600}`,
+    });
+    r.engine.setSettings({ autoContinueAfterLimit: true });
+    const a = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(a.id, "hit the usage limit");
+    await waitFor(() => turnStatus(r.engine, a.id) === "error");
+    expect((r.engine.snapshot().limitResumesAt ?? {})[a.id]).not.toBeUndefined();
+
+    r.engine.setSettings({ autoContinueAfterLimit: false });
+    expect(r.engine.snapshot().limitResumesAt ?? {}).toEqual({});
+    const b = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(b.id, "second chat, same repo");
+    await waitFor(() => seen.length === 2);
+    expect(thread(r.engine, b.id).worktreeDir).toBeUndefined();
+    expect(seen[1]!.workspace?.directory).toBe(r.repoDir);
+  });
+
   it("a queued follow-up still holds the checkout", async () => {
     const seen: TurnContext[] = [];
     const r = rig("eligible", seen, { hold: true });
