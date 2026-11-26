@@ -715,7 +715,7 @@ describe("P2-01 composer next-prompt predictions", () => {
 
   it("skips prediction for external local-control turns, running turns, hydra heads, and queued follow-ups", async () => {
     const root = freshRoot();
-    const { engine } = makeEngine(root);
+    const { engine, store } = makeEngine(root);
     const ext = engine.createThread(null, "External");
     engine.sendTurn(ext.id, "from local control", { external: true });
     pump();
@@ -724,10 +724,18 @@ describe("P2-01 composer next-prompt predictions", () => {
     const active = engine.createThread(null, "Running");
     engine.sendTurn(active.id, "still running");
     expect(await engine.predictNextPrompt(active.id)).toEqual({ prediction: null });
-    // Enqueue a follow-up while the turn is running so followUps stays populated after done.
+    // Enqueue a follow-up while the turn is running, then verify the followUps
+    // guard directly on a done turn without the running-turn check short-circuiting.
     engine.enqueueFollowUp(active.id, "queued next");
     expect(await engine.predictNextPrompt(active.id)).toEqual({ prediction: null });
     pump();
+
+    const queuedDone = engine.createThread(null, "QueuedDone");
+    engine.sendTurn(queuedDone.id, "first [mock:predict:Should not run]");
+    pump();
+    const queuedRow = store.state.threads.find((x) => x.id === queuedDone.id)!;
+    queuedRow.followUps = [{ id: "fu-1", text: "queued follow-up", createdAt: Date.now() }];
+    expect(await engine.predictNextPrompt(queuedDone.id)).toEqual({ prediction: null });
 
     const head = engine.createThread(null, "Head");
     head.hydraHead = {

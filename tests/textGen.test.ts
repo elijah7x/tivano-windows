@@ -80,6 +80,9 @@ describe("extractNextPrompt (P2-01 frozen nextPrompt)", () => {
     expect(extractNextPrompt('{"other":"x"}')).toBeNull();
     expect(extractNextPrompt("plain text")).toBeNull();
     expect(extractNextPrompt('{"suggestion":"line 1\\nline 2"}')).toBeNull();
+    expect(extractNextPrompt('{"suggestion":"line 1\\u000Bline 2"}')).toBeNull();
+    expect(extractNextPrompt('{"suggestion":"line 1\\u000Cline 2"}')).toBeNull();
+    expect(extractNextPrompt('{"suggestion":"line 1\\u0085line 2"}')).toBeNull();
     expect(extractNextPrompt('{"suggestion":"line 1\\u2028line 2"}')).toBeNull();
     expect(extractNextPrompt('{"suggestion":"line 1\\u2029line 2"}')).toBeNull();
     expect(extractNextPrompt('{"suggestion":"   "}')).toBeNull();

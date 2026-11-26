@@ -72,7 +72,7 @@ export function extractNextPrompt(raw: string): string | null {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
   const suggestion = (parsed as Record<string, unknown>).suggestion;
   if (typeof suggestion !== "string") return null;
-  if (/[\r\n\u2028\u2029]/.test(suggestion)) return null;
+  if (/[\r\n\u000B\u000C\u0085\u2028\u2029]/.test(suggestion)) return null;
   const cleaned = suggestion
     .replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, "")
     .trim();

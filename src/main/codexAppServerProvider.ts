@@ -166,6 +166,8 @@ export interface CodexProviderLimits {
   interruptTimeoutMs: number;
   disposeInterruptMs: number;
   rollbackTimeoutMs: number;
+  /** P2-01/F31 one-shot text generation turn completion cap (180s matching macOS TextGeneration.swift). */
+  predictionTimeoutMs: number;
 }
 
 export const DEFAULT_CODEX_LIMITS: CodexProviderLimits = {
@@ -200,6 +202,7 @@ export const DEFAULT_CODEX_LIMITS: CodexProviderLimits = {
   interruptTimeoutMs: 10_000,
   disposeInterruptMs: 5_000,
   rollbackTimeoutMs: 30_000,
+  predictionTimeoutMs: 180_000,
 };
 
 export interface CodexProviderOptions {
@@ -539,6 +542,24 @@ async function fetchModelList(
     cursor = next;
   }
   return models;
+}
+
+/**
+ * Frozen AppModel.fastTextModel(for: .codex) + lowEffort: match "terra" in
+ * model id or name (case-insensitive) and prefer "low" effort (falling back
+ * to defaultEffort). Returns null when absent so background every-reply
+ * callers (P2-01) never fall back to the costly default Codex model.
+ */
+export function selectFastCodexTextModel(
+  catalog: readonly CodexModelOption[],
+): { model: string; effort?: string } | null {
+  const match = catalog.find(
+    (m) =>
+      m.id.toLowerCase().includes("terra") || m.name.toLowerCase().includes("terra"),
+  );
+  if (!match) return null;
+  const effort = match.efforts.includes("low") ? "low" : match.defaultEffort;
+  return effort ? { model: match.id, effort } : { model: match.id };
 }
 
 class CodexSession {
@@ -1540,10 +1561,12 @@ class CodexSession {
     if (this.phase !== "ready" || !rpc)
       throw new CodexProtocolError("session is not bound", "CODEX_CONNECTION_CLOSED");
     const gen = this.gen;
-    return fetchModelList(rpc, this.limits.requestTimeoutMs, () => {
+    const models = await fetchModelList(rpc, this.limits.requestTimeoutMs, () => {
       if (gen !== this.gen || this.rpc !== rpc)
         throw new CodexProtocolError("connection recycled", "CODEX_CONNECTION_CLOSED");
     });
+    this.provider.noteModelCatalog(models);
+    return models;
   }
 
   /**
@@ -2950,7 +2973,12 @@ export class CodexAppServerProvider implements ProviderAdapter {
   private oneShotTransports = new Set<StdioTransport<CodexMessage>>();
   private oneShotRpcs = new Set<CodexRpc>();
   private oneShotCleanupFailures = new Map<StdioTransport<CodexMessage>, ChildCleanupResult>();
+  private cachedCatalog: CodexModelOption[] | null = null;
   private disposed = false;
+
+  noteModelCatalog(models: CodexModelOption[]): void {
+    if (models.length > 0) this.cachedCatalog = models;
+  }
 
   constructor(opts: CodexProviderOptions) {
     this.opts = opts;
@@ -3349,13 +3377,21 @@ export class CodexAppServerProvider implements ProviderAdapter {
   /**
    * P2-01 / P2-57: one-shot composer next-prompt prediction over a lightweight
    * ephemeral `app-server` turn (read-only, approvalPolicy `"never"`).
+   * Matches macOS `ThreadRuntime.predictNextPromptIfDue` (`allowsDefaultModel: false`):
+   * resolves the fast Codex model (`terra`) at `low` effort (falling back to
+   * `defaultEffort` when `low` is unavailable) from the Codex catalog and skips
+   * (`null`) without starting a turn when no fast model is present.
    */
   async generateNextPrompt(context: string): Promise<string | null> {
+    if (this.cachedCatalog !== null && !selectFastCodexTextModel(this.cachedCatalog)) {
+      return null;
+    }
     let targetThreadId: string | null = null;
     let targetTurnId: string | null = null;
     let deltas = "";
     let completedText: string | null = null;
     let settleTurn: ((value: string | null) => void) | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const turnDone = new Promise<string | null>((resolve) => {
       settleTurn = resolve;
     });
@@ -3366,15 +3402,22 @@ export class CodexAppServerProvider implements ProviderAdapter {
         fn(value);
       }
     };
-    const timer = setTimeout(() => finish(null), Math.min(this.limits.requestTimeoutMs, 30_000));
     try {
       return await this.runOneShot(
         tmpdir(),
         async (rpc, _init, cwd) => {
+          let fast = this.cachedCatalog ? selectFastCodexTextModel(this.cachedCatalog) : null;
+          if (this.cachedCatalog === null) {
+            const catalog = await fetchModelList(rpc, this.limits.requestTimeoutMs);
+            this.cachedCatalog = catalog;
+            fast = selectFastCodexTextModel(catalog);
+          }
+          if (!fast) return null;
           const started = await rpc.request(
             "thread/start",
             {
               cwd,
+              model: fast.model,
               approvalPolicy: "never",
               sandbox: "read-only",
               ephemeral: true,
@@ -3386,15 +3429,18 @@ export class CodexAppServerProvider implements ProviderAdapter {
           const tid = isObj(started) && isObj(started.thread) ? s(started.thread.id) : null;
           if (!tid) return null;
           targetThreadId = tid;
+          timer = setTimeout(() => finish(null), this.limits.predictionTimeoutMs);
           const turnRes = await rpc.request(
             "turn/start",
             {
               threadId: tid,
-              input: [{ type: "text", text: buildNextPromptRequest(context) }],
+              input: [{ type: "text", text: buildNextPromptRequest(context), text_elements: [] }],
+              model: fast.model,
+              ...(fast.effort ? { effort: fast.effort } : {}),
               approvalPolicy: "never",
               sandboxPolicy: { type: "readOnly" },
             },
-            { timeoutMs: this.limits.requestTimeoutMs, mutating: true },
+            { timeoutMs: this.limits.turnStartTimeoutMs, mutating: true },
           );
           targetTurnId = isObj(turnRes) && isObj(turnRes.turn) ? s(turnRes.turn.id) : null;
           return await turnDone;
@@ -3425,7 +3471,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
     } catch {
       return null;
     } finally {
-      clearTimeout(timer);
+      if (timer !== null) clearTimeout(timer);
       finish(null);
     }
   }
@@ -3435,9 +3481,11 @@ export class CodexAppServerProvider implements ProviderAdapter {
    * one-shot `app-server` process (no plugins, apps, or telemetry).
    */
   async fetchModelCatalogOneShot(workspaceDir: string): Promise<CodexModelOption[]> {
-    return this.runOneShot(workspaceDir, (rpc) =>
+    const models = await this.runOneShot(workspaceDir, (rpc) =>
       fetchModelList(rpc, this.limits.requestTimeoutMs),
     );
+    this.noteModelCatalog(models);
+    return models;
   }
 
   async modelCatalog(): Promise<CodexModelOption[] | null> {

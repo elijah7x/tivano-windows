@@ -952,6 +952,23 @@ rl.on("line", (line) => {
           { id: "fixture-v4", displayName: "Fixture 4.0", hidden: false, supportedReasoningEfforts: [], isDefault: false },
           { id: "fixture-v5", displayName: "Fixture 5.0", hidden: false, supportedReasoningEfforts: [], isDefault: false },
           { id: "fixture-v5-high", displayName: "Fixture 5.0 High", hidden: false, supportedReasoningEfforts: [], isDefault: false },
+          ...(process.env.TIVANO_CODEX_FIXTURE_FAST_MODEL === "1"
+            ? [
+                {
+                  id: "fixture-terra",
+                  displayName: "Fixture Terra",
+                  description: "the synthetic fast model",
+                  hidden: false,
+                  supportedReasoningEfforts: [
+                    { reasoningEffort: "low" },
+                    { reasoningEffort: "medium" },
+                  ],
+                  defaultReasoningEffort: "medium",
+                  isDefault: false,
+                  serviceTiers: [],
+                },
+              ]
+            : []),
         ],
         nextCursor: null,
       });
