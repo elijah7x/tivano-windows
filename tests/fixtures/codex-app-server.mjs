@@ -193,6 +193,46 @@ function runTurn(threadId, turnId, prompt, model, effort, serviceTier, policy, c
   const turn = fakeTurn(turnId);
   notify("turn/started", { threadId, turn });
   const agentItemId = `item-agent-${turnId}`;
+  // P2-01 one-shot composer prediction fixture: inspects ONLY the latest
+  // `User:` line inside the prediction prompt before keyword triggers run.
+  if (prompt.startsWith("Predict this user's next message from the whole conversation below.")) {
+    const userLines = prompt.split(/\r?\n/).filter((l) => l.startsWith("User: "));
+    const latestUser = userLines[userLines.length - 1] ?? "";
+    const out = latestUser.includes("[mock:predict-empty]")
+      ? JSON.stringify({ suggestion: null })
+      : latestUser.includes("[mock:predict-invalid]")
+        ? "not valid json"
+        : (() => {
+            const custom = /\[mock:predict:([^\]\r\n]*)\]/.exec(latestUser);
+            return JSON.stringify({
+              suggestion: custom ? custom[1] : "Run the tests to verify the changes.",
+            });
+          })();
+    const failPred = latestUser.includes("[mock:predict-fail]");
+    schedule(() => {
+      if (activeTurn !== t) return;
+      if (failPred) {
+        completeTurn("failed", "fixture prediction failure");
+        return;
+      }
+      notify("item/started", {
+        threadId,
+        turnId,
+        startedAtMs: Date.now(),
+        item: { type: "agentMessage", id: agentItemId, text: "", phase: null, memoryCitation: null, delivery: null, questions: null },
+      });
+      notify("item/agentMessage/delta", { threadId, turnId, itemId: agentItemId, delta: out });
+      notify("item/completed", {
+        threadId,
+        turnId,
+        completedAtMs: Date.now(),
+        item: { type: "agentMessage", id: agentItemId, text: out, phase: null, memoryCitation: null, delivery: null, questions: null },
+      });
+      completeTurn("completed");
+    }, 10);
+    return;
+  }
+
   // App-injected guidance (anti-slop, the F22 Hydra policy) rides ahead
   // of the user's text and always ends with a "---" rule — keyword
   // fixtures key off the user's words only, or the policy's own prose
@@ -912,6 +952,23 @@ rl.on("line", (line) => {
           { id: "fixture-v4", displayName: "Fixture 4.0", hidden: false, supportedReasoningEfforts: [], isDefault: false },
           { id: "fixture-v5", displayName: "Fixture 5.0", hidden: false, supportedReasoningEfforts: [], isDefault: false },
           { id: "fixture-v5-high", displayName: "Fixture 5.0 High", hidden: false, supportedReasoningEfforts: [], isDefault: false },
+          ...(process.env.TIVANO_CODEX_FIXTURE_FAST_MODEL === "1"
+            ? [
+                {
+                  id: "gpt-5.1-codex-mini",
+                  displayName: "GPT-5.1 Codex Mini",
+                  description: "the synthetic fast mini model",
+                  hidden: false,
+                  supportedReasoningEfforts: [
+                    { reasoningEffort: "low" },
+                    { reasoningEffort: "medium" },
+                  ],
+                  defaultReasoningEffort: "medium",
+                  isDefault: false,
+                  serviceTiers: [],
+                },
+              ]
+            : []),
         ],
         nextCursor: null,
       });

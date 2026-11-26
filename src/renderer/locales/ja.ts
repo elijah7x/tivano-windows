@@ -2085,6 +2085,8 @@ export const ja: Record<string, string> = {
   "No pairs match": "一致するペアはありません",
   "Pairs & models": "ペアとモデル",
   "Browse models": "モデルを参照",
+  // P2-01
+  "Press Tab to accept": "Tab キーで確定",
   // P2-18
   "Specific model": "指定モデル",
   "Choose a model": "モデルを選択",

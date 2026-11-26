@@ -695,7 +695,7 @@ export class LocalControlService {
     const { op, fresh } = this.acceptWrite(ticket, { method: "submit", params });
     if (!fresh) return { operation: outcomeOf(op) };
     try {
-      const turn = this.engine.sendTurn(threadId, text);
+      const turn = this.engine.sendTurn(threadId, text, { external: true });
       op.threadId = threadId;
       op.turnId = turn.id;
       op.state = "started";

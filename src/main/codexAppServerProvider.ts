@@ -85,6 +85,7 @@ import type {
 } from "./provider";
 import {
   buildCommitMessagePrompt,
+  buildNextPromptRequest,
   buildRefreshedTitlePrompt,
   buildThreadTitlePrompt,
   extractRefreshedTitle,
@@ -173,6 +174,8 @@ export interface CodexProviderLimits {
   interruptTimeoutMs: number;
   disposeInterruptMs: number;
   rollbackTimeoutMs: number;
+  /** P2-01/F31 one-shot text generation turn completion cap (180s matching macOS TextGeneration.swift). */
+  predictionTimeoutMs: number;
 }
 
 export const DEFAULT_CODEX_LIMITS: CodexProviderLimits = {
@@ -207,6 +210,7 @@ export const DEFAULT_CODEX_LIMITS: CodexProviderLimits = {
   interruptTimeoutMs: 10_000,
   disposeInterruptMs: 5_000,
   rollbackTimeoutMs: 30_000,
+  predictionTimeoutMs: 180_000,
 };
 
 export interface CodexProviderOptions {
@@ -3126,9 +3130,9 @@ export class CodexAppServerProvider implements ProviderAdapter {
     });
   }
 
-  /** Cache a model catalog fetched by a bound session or one-shot probe. */
+  /** Cache a non-empty model catalog fetched by a bound session or one-shot probe. */
   cacheCatalog(models: CodexModelOption[]): void {
-    this.cachedCatalog = models;
+    if (models.length > 0) this.cachedCatalog = models;
   }
 
   /** Session visibility for tests/diagnostics. */
@@ -3300,7 +3304,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
           rpc?.respondError(id, -32601, `unsupported server request in one-shot session: ${method}`);
         },
         onNotification: (method, params) => {
-          opts?.onNotification?.(method, params);
+          if (alive) opts?.onNotification?.(method, params);
         },
         onClosed: () => {},
         onFatal: (err) => {
@@ -3351,6 +3355,12 @@ export class CodexAppServerProvider implements ProviderAdapter {
       alive = false;
       this.oneShotRpcs.delete(rpc);
       rpc.failAllPending("CODEX_CONNECTION_CLOSED: one-shot connection closed");
+      opts?.onClose?.(
+        new CodexProtocolError(
+          "CODEX_CONNECTION_CLOSED: one-shot connection closed",
+          "CODEX_CONNECTION_CLOSED",
+        ),
+      );
       const res = await transport.dispose();
       this.recordOneShotCleanupFailure(transport, res.exitCode, res.signal);
       if (res.confirmed || !transport.hasChild) this.oneShotTransports.delete(transport);
@@ -3365,7 +3375,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
     const models = await this.runOneShot(workspaceDir, (rpc) =>
       fetchModelList(rpc, this.limits.requestTimeoutMs),
     );
-    this.cachedCatalog = models;
+    this.cacheCatalog(models);
     return models;
   }
 
@@ -3453,8 +3463,10 @@ export class CodexAppServerProvider implements ProviderAdapter {
           chosenEffort = options?.effort?.trim() || undefined;
         } else {
           const models =
-            this.cachedCatalog ?? (await fetchModelList(rpc, this.limits.requestTimeoutMs));
-          this.cachedCatalog = models;
+            this.cachedCatalog && this.cachedCatalog.length > 0
+              ? this.cachedCatalog
+              : await fetchModelList(rpc, this.limits.requestTimeoutMs);
+          this.cacheCatalog(models);
           const plan = resolveTextGenerationPlan(
             {
               textGeneration: options?.mode ?? "automatic",
@@ -3496,7 +3508,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
           rejectTurn = rejectP;
         });
         void completion.catch(() => {});
-        const turnTimeoutMs = this.limits.turnStartTimeoutMs;
+        const turnTimeoutMs = options?.timeoutMs ?? this.limits.turnStartTimeoutMs;
         const timer = setTimeout(() => {
           if (!finished) {
             finished = true;
@@ -3598,6 +3610,38 @@ export class CodexAppServerProvider implements ProviderAdapter {
     if (!raw) return null;
     const cleaned = raw.replace(/```/g, "").trim();
     return cleaned || null;
+  }
+
+  /**
+   * P2-01 / P2-18: one-shot composer next-prompt prediction over a lightweight
+   * ephemeral `app-server` turn (`allowsDefaultModel: false`, `predictionTimeoutMs`).
+   */
+  async generateNextPrompt(
+    context: string,
+    options?: TextGenerationOptions,
+  ): Promise<string | null> {
+    const effectiveOpts: TextGenerationOptions = {
+      ...options,
+      allowsDefaultModel: false,
+      timeoutMs: options?.timeoutMs ?? this.limits.predictionTimeoutMs,
+    };
+    if (this.cachedCatalog && this.cachedCatalog.length > 0 && effectiveOpts.mode !== "codex") {
+      const plan = resolveTextGenerationPlan(
+        {
+          textGeneration: effectiveOpts.mode ?? "automatic",
+          textGenerationModelID: effectiveOpts.model,
+          textGenerationEffort: effectiveOpts.effort,
+        },
+        this.cachedCatalog,
+        { allowsDefaultModel: false },
+      );
+      if (!plan.enabled || !plan.model) return null;
+    }
+    try {
+      return await this.runOneShotTextTurn(buildNextPromptRequest(context), effectiveOpts);
+    } catch {
+      return null;
+    }
   }
 
   async modelCatalog(): Promise<CodexModelOption[] | null> {

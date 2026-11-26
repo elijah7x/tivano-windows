@@ -227,6 +227,7 @@ export const REQUEST_CHANNELS = [
   "turns:send",
   "turns:cancel",
   "turns:continue",
+  "threads:predict-next",
   "approvals:resolve",
   "settings:set",
   "links:open-external",
@@ -466,6 +467,9 @@ export const requestValidators = {
   // P1-35: continue a failed or stopped turn — opaque id only (frozen
   // sendContinuation; the engine picks the canned resume prompt).
   "turns:continue": vObject({ threadId: vId }),
+  // P2-01: composer next-prompt prediction — opaque thread id + optional
+  // completed turnId so stale or mid-turn requests return null cleanly.
+  "threads:predict-next": vObject({ threadId: vId, turnId: vOptional(vId) }),
   "approvals:resolve": vObject({ threadId: vId, approvalId: vId, optionId: vString }),
   "settings:set": vObject({
     theme: vOptional(vTheme),

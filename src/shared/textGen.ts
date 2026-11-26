@@ -1,11 +1,10 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-26.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-// F31 / P2-18 text generation — frozen `TextCleanup.singleLine` +
-// `TextGeneration` prompts, title validation, and Codex background-model
-// resolution ported verbatim. A generated reply only becomes a thread
-// title when it reads like one; chatty model output is rejected.
+// F31 / P2-18 / P2-01 text generation — frozen `TextCleanup.singleLine` +
+// `TextGeneration` prompts, title/next-prompt validation, and Codex
+// background-model resolution ported verbatim.
 
-import type { CodexModelOption, Settings } from "./types";
+import type { CodexModelOption, Message, Settings } from "./types";
 
 /**
  * Maintainer decision (P2-18): Automatic Codex text generation uses the
@@ -253,4 +252,99 @@ export function extractTitle(text: string): string | null {
     .map((l) => l.trim())
     .find((l) => l.length > 0);
   return firstLine ? usableTitle(firstLine.replace(TITLE_TRIM, "")) : null;
+}
+
+/**
+ * P2-01 (frozen TextGeneration.nextPrompt): parse JSON `{"suggestion": string | null}`,
+ * reject newlines, strip control characters, trim, and enforce the 240-char cap.
+ */
+export function extractNextPrompt(raw: string): string | null {
+  const stripped = raw.replaceAll("```json", "").replaceAll("```", "");
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
+  if (start === -1 || end < start) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripped.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  const suggestion = (parsed as Record<string, unknown>).suggestion;
+  if (typeof suggestion !== "string") return null;
+  if (/[\r\n\u000B\u000C\u0085\u2028\u2029]/.test(suggestion)) return null;
+  const cleaned = suggestion
+    .replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u202A-\u202E\u2066-\u2069]/g, "")
+    .trim();
+  if (!cleaned || Array.from(cleaned).length > 240) return null;
+  return cleaned;
+}
+
+export const NEXT_PROMPT_HEADER =
+  "Predict this user's next message from the whole conversation below.";
+
+/** P2-01 (frozen TextGeneration.nextPrompt): prompt template sent to one-shot text engines. */
+export function buildNextPromptRequest(context: string): string {
+  return [
+    `${NEXT_PROMPT_HEADER} Write it as the user would, in the user's language and voice, as one short single-line message, ideally under 120 characters and never over 240. Say only the next request itself; do not add process steps the user has not asked for, such as reviewing or confirming first. First consider whether the user would want to adjust, verify or reuse what was just produced; do not invent unrelated tasks. If no next message is reasonably likely, the suggestion is null. Reply with JSON only: {"suggestion": string or null}.`,
+    "",
+    "Conversation:",
+    Array.from(context).slice(0, 8000).join(""),
+  ].join("\n");
+}
+
+/**
+ * P2-01 (frozen ThreadRuntime.promptPredictionContext): build an <=8000-char
+ * conversation transcript starting with the first user request and up to the
+ * 6 most recent user/assistant turns (full last assistant prefix up to 3000 chars).
+ */
+export function buildPredictionContext(
+  messages: readonly Pick<Message, "role" | "content" | "turnId">[],
+): string {
+  const turns: { user: string; assistant: string }[] = [];
+  const byTurnId = new Map<string, number>();
+  for (const m of messages) {
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    if (m.turnId) {
+      let idx = byTurnId.get(m.turnId);
+      if (idx === undefined) {
+        idx = turns.length;
+        turns.push({ user: "", assistant: "" });
+        byTurnId.set(m.turnId, idx);
+      }
+      if (m.role === "user") {
+        turns[idx]!.user = turns[idx]!.user ? `${turns[idx]!.user}\n${m.content}` : m.content;
+      } else {
+        turns[idx]!.assistant = turns[idx]!.assistant
+          ? `${turns[idx]!.assistant}\n${m.content}`
+          : m.content;
+      }
+    } else if (m.role === "user") {
+      turns.push({ user: m.content, assistant: "" });
+    } else if (turns.length > 0 && !turns[turns.length - 1]!.assistant) {
+      turns[turns.length - 1]!.assistant = m.content;
+    } else {
+      turns.push({ user: "", assistant: m.content });
+    }
+  }
+  const firstUser = turns[0]?.user ? singleLine(turns[0].user, 600) : "";
+  const firstSection = firstUser ? [`First request: ${firstUser}`] : [];
+  const tail = turns.slice(-6);
+  const recent: string[] = [];
+  for (let i = 0; i < tail.length; i++) {
+    const t = tail[i]!;
+    const lines: string[] = [];
+    const u = singleLine(t.user, 600);
+    if (u) lines.push(`User: ${u}`);
+    const isLast = i === tail.length - 1;
+    const a = isLast
+      ? Array.from(t.assistant).slice(0, 3000).join("").trim()
+      : singleLine(t.assistant, 600);
+    if (a) lines.push(`Assistant: ${a}`);
+    if (lines.length > 0) recent.push(lines.join("\n"));
+  }
+  while ([...firstSection, ...recent].join("\n").length > 8000 && recent.length > 0) {
+    recent.shift();
+  }
+  return [...firstSection, ...recent].join("\n");
 }
