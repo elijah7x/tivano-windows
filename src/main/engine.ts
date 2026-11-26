@@ -3265,7 +3265,7 @@ export class Engine {
     }
     if (patch.hydraEnabled === false) {
       for (const leadId of [...this.hydraWaiting.keys()]) {
-        this.hydraWaiting.delete(leadId);
+        this.clearQueuedHydraHeads(leadId);
         this.flushHydraReports(leadId);
       }
     }
@@ -3899,7 +3899,7 @@ export class Engine {
     this.emit({ type: "thread-updated", thread });
     this.emit({ type: "settings-changed", settings: this.store.state.settings });
     if (!enabled) {
-      this.hydraWaiting.delete(threadId);
+      this.clearQueuedHydraHeads(threadId);
       this.flushHydraReports(threadId);
     }
   }
@@ -5315,7 +5315,7 @@ export class Engine {
     if (!queue?.length) return;
     const launch = this.hydraLaunchFor(lead);
     if (!launch) {
-      this.hydraWaiting.delete(leadId);
+      this.clearQueuedHydraHeads(leadId);
       return;
     }
     while (queue.length) {
@@ -6737,6 +6737,43 @@ export class Engine {
     );
   }
 
+  /** Frozen ThreadRuntime.clearQueuedHydraHeads: dropping unspawned
+   *  cap-held entries is batch bookkeeping too, not just a queue delete.
+   *  A batch with a head still out (or a report already waiting) keeps
+   *  its bookkeeping until that real work settles; a batch whose only
+   *  work was queued is settled here so it cannot hold an open job or
+   *  poison a later adaptive-mode switch. */
+  private clearQueuedHydraHeads(leadId: string): void {
+    const queued = this.hydraWaiting.get(leadId) ?? [];
+    if (!queued.length) return;
+    this.hydraWaiting.delete(leadId);
+    const batchIds = [...new Set(queued.map((q) => q.batchId))];
+    const pendingReports = this.hydraPendingReports.get(leadId) ?? [];
+    let jobsChanged = false;
+    for (const batchId of batchIds) {
+      const hasActiveHead = this.store.state.threads.some(
+        (t) =>
+          t.hydraHead?.leadId === leadId &&
+          t.hydraHead.batchId === batchId &&
+          (t.hydraHead.status === "running" || t.hydraHead.landingPending === true),
+      );
+      const hasPendingReport = pendingReports.some((r) => r.batchId === batchId);
+      if (hasActiveHead || hasPendingReport) continue;
+      this.hydraBatchRequest.delete(batchId);
+      this.hydraBatchGen.delete(batchId);
+      this.hydraBatchJob.delete(batchId);
+      const lead = this.store.state.threads.find((t) => t.id === leadId);
+      const job = lead?.hydraJobs?.find((j) => j.id === batchId && j.isOpen);
+      if (job) {
+        job.isOpen = false;
+        job.ending = "stopped";
+        job.merge = "nothing";
+        jobsChanged = true;
+      }
+    }
+    if (jobsChanged) this.store.update(() => {});
+  }
+
   /** Frozen pendingReports: a batch's reports flush together once every
    *  head in the batch is back AND the lead is idle. Reports whose
    *  batch still has running heads keep waiting; unrelated batches
@@ -6763,7 +6800,7 @@ export class Engine {
         .map((t) => t.hydraHead!.batchId),
     );
     if (this.hydraWaiting.has(leadId) && this.hydraLaunchFor(lead) === undefined) {
-      this.hydraWaiting.delete(leadId);
+      this.clearQueuedHydraHeads(leadId);
     }
     for (const w of this.hydraWaiting.get(leadId) ?? [])
       runningBatches.add(w.batchId);
