@@ -4,7 +4,7 @@
 // in Chromium (through the Electron already used by this repository's e2e)
 // and driven through real DOM events rather than asserted as SSR strings.
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildSync } from "esbuild";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
@@ -92,9 +92,9 @@ window.matchMedia=window.matchMedia||(()=>({matches:false,media:'',addEventListe
     writeFileSync(
       mainPath,
       `const {app,BrowserWindow}=require('electron');
-app.setPath('userData',${JSON.stringify(join(scratch, "user-data"))});
+const userData=${JSON.stringify(join(scratch, "user-data"))};const sessionData=${JSON.stringify(join(scratch, "session-data"))};require('fs').mkdirSync(userData,{recursive:true});require('fs').mkdirSync(sessionData,{recursive:true});app.setPath('userData',userData);app.setPath('sessionData',sessionData);
 app.whenReady().then(()=>{
-  const win=new BrowserWindow({width:1280,height:820,show:false,webPreferences:{backgroundThrottling:false}});
+  const win=new BrowserWindow({width:960,height:640,show:false,webPreferences:{backgroundThrottling:false}});
   win.loadFile(${JSON.stringify(htmlPath)});
 });
 app.on('window-all-closed',()=>app.quit());
@@ -120,7 +120,7 @@ app.on('window-all-closed',()=>app.quit());
 
   afterAll(async () => {
     if (app) await app.close().catch(() => {});
-    if (scratch) rmSync(scratch, { recursive: true, force: true });
+    if (scratch) rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   });
 
   it("flipping the layout Off folds the docked team panel into the working pill", async () => {
