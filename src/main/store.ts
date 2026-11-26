@@ -58,7 +58,7 @@ export function emptyStore(): StoreFile {
 }
 
 export function defaultSettings(): Settings {
-  return { theme: "breeze", language: "en", alwaysAllow: [] };
+  return { theme: "breeze", language: "en", alwaysAllow: [], controlLeftAlpha: true };
 }
 
 /** Canonicalize the data root and refuse anything that is not a real directory. */

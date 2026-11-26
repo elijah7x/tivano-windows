@@ -276,13 +276,15 @@ export interface Settings {
    */
   shortcuts?: Record<string, KeyChord | null>;
   /**
-   * F33: the frozen double gate — alpha master switch AND the separate
-   * local-control switch must both be on before the control socket
-   * listens (frozen `isExternalControlEnabled = alpha && external`).
-   * Absent on old stores = both off (secure default).
+   * P2-23: local control now follows `externalControlEnabled` alone (absent =
+   * off). `alphaEnabled` is retained for older stores and callers, and
+   * `controlLeftAlpha` marks that the one-time conjunction migration
+   * (`externalControlEnabled = alphaEnabled && externalControlEnabled`) has
+   * already run on load.
    */
   alphaEnabled?: boolean;
   externalControlEnabled?: boolean;
+  controlLeftAlpha?: boolean;
   /** P2-25: Remote MCP (outside Alpha, under Settings > Connections). */
   remoteMCPEnabled?: boolean;
   remoteMCPFullAccess?: boolean;

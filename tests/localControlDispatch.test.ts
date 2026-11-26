@@ -4,12 +4,12 @@
 // sandboxes that deny filesystem/named-pipe listeners (the socket layer
 // itself is covered by tests/localControl.test.ts where binding works).
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { Store } from "../src/main/store";
+import { Store, emptyStore } from "../src/main/store";
 import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
 import { LocalControlService } from "../src/main/localControl";
@@ -202,5 +202,71 @@ describe("local control dispatch (F34)", () => {
     await expect(call(svc, "thread", { id: randomUUID() }))
       .rejects.toMatchObject({ code: "notFound" });
     engine.setSettings({ language: "en" });
+  });
+
+  it("P2-23: gates local control on externalControlEnabled alone and migrates older stores", async () => {
+    // Default and alpha-only settings stay disabled/closed without Alpha gating.
+    const { engine, store, svc } = rig();
+    await expect(svc.handleExternal("info", {}, "local")).rejects.toMatchObject({ code: "disabled" });
+    engine.setSettings({ alphaEnabled: true });
+    svc.refreshListening();
+    expect(svc.listening).toBe(false);
+    await expect(svc.handleExternal("info", {}, "local")).rejects.toMatchObject({ code: "disabled" });
+
+    engine.setSettings({ alphaEnabled: false, externalControlEnabled: true });
+    svc.refreshListening();
+    expect(svc.listening).toBe(true);
+    const infoRes = await svc.handleExternal("info", {}, "local");
+    expect((infoRes.info as { version: number }).version).toBe(1);
+    expect("alphaEnabled" in (infoRes.info as Record<string, unknown>)).toBe(false);
+    svc.dispose();
+    store.close();
+
+    // Migration combinations on older stores (without controlLeftAlpha).
+    const cases: Array<{
+      name: string;
+      alphaEnabled?: boolean;
+      externalControlEnabled?: boolean;
+      expected: boolean;
+    }> = [
+      { name: "alpha off + control on -> off", alphaEnabled: false, externalControlEnabled: true, expected: false },
+      { name: "alpha absent + control on -> off", externalControlEnabled: true, expected: false },
+      { name: "alpha on + control on -> on", alphaEnabled: true, externalControlEnabled: true, expected: true },
+      { name: "alpha on + control off -> off", alphaEnabled: true, externalControlEnabled: false, expected: false },
+      { name: "alpha off + control off -> off", alphaEnabled: false, externalControlEnabled: false, expected: false },
+      { name: "both absent -> off", expected: false },
+    ];
+    for (const c of cases) {
+      const root = mkdtempSync(join(tmpdir(), "tivano-lcd-mig-"));
+      dirs.push(root);
+      const doc = emptyStore() as unknown as {
+        schemaVersion: number;
+        projects: unknown[];
+        threads: unknown[];
+        settings: Record<string, unknown>;
+        ui: { selectedThreadId: null };
+      };
+      delete doc.settings.controlLeftAlpha;
+      if (c.alphaEnabled !== undefined) doc.settings.alphaEnabled = c.alphaEnabled;
+      if (c.externalControlEnabled !== undefined)
+        doc.settings.externalControlEnabled = c.externalControlEnabled;
+      writeFileSync(join(root, "store.json"), JSON.stringify(doc));
+
+      const s = new Store(root);
+      s.open();
+      const e = new Engine(s, new MockProvider({ tickMs: 1 }), root, "t");
+      const lc = new LocalControlService(e, root, "dev");
+      services.push(lc);
+      lc.refreshListening();
+      expect(s.state.settings.externalControlEnabled, c.name).toBe(c.expected);
+      expect(s.state.settings.controlLeftAlpha, c.name).toBe(true);
+      expect(lc.listening, c.name).toBe(c.expected);
+      if (!c.expected) {
+        expect(existsSync(join(root, "control", "control.sock")), c.name).toBe(false);
+        await expect(lc.handleExternal("info", {}, "local")).rejects.toMatchObject({ code: "disabled" });
+      }
+      lc.dispose();
+      s.close();
+    }
   });
 });

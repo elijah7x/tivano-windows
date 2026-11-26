@@ -393,7 +393,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   // reports the real socket state — never an optimistic flag.
   handle("control:status", () => {
     const s = engine.snapshot().settings;
-    const enabled = s.alphaEnabled === true && s.externalControlEnabled === true;
+    const enabled = s.externalControlEnabled === true;
     return {
       enabled,
       listening: opts.localControl?.listening === true,
@@ -403,7 +403,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("control:retry", () => {
     opts.localControl?.refreshListening();
     const s = engine.snapshot().settings;
-    const enabled = s.alphaEnabled === true && s.externalControlEnabled === true;
+    const enabled = s.externalControlEnabled === true;
     return {
       enabled,
       listening: opts.localControl?.listening === true,

@@ -3110,8 +3110,10 @@ export class Engine {
         else d.settings.shortcuts = patch.shortcuts;
       }
       if (patch.alphaEnabled !== undefined) d.settings.alphaEnabled = patch.alphaEnabled;
-      if (patch.externalControlEnabled !== undefined)
+      if (patch.externalControlEnabled !== undefined) {
         d.settings.externalControlEnabled = patch.externalControlEnabled;
+        d.settings.controlLeftAlpha = true;
+      }
       if (patch.remoteMCPEnabled !== undefined)
         d.settings.remoteMCPEnabled = patch.remoteMCPEnabled;
       if (patch.remoteMCPFullAccess !== undefined)
