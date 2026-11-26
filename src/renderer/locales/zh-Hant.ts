@@ -2103,4 +2103,16 @@ export const zhHant: Record<string, string> = {
   // P1-33
   "Invalid null byte in command or arguments.": "指令或參數中包含無效的空位元組。",
   "Invalid newline in command or arguments.": "指令或參數中包含無效的換行符號。",
+  // P1-11
+  "Credits": "致謝",
+  "Where Tivano began": "Tivano 的起點",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano 是 Droppy Code 的衍生分支，依 AGPL-3.0 並附帶姓名標示條款授權。",
+  "Working indicators": "工作狀態指示器",
+  "Built-in terminal": "內建終端機",
+  "Terminal PTY layer": "終端機 PTY 層",
+  "Windows job-helper JSON parser": "Windows 作業輔助程式 JSON 解析器",
+  "Where Droppy Code began": "Droppy Code 的起源",
+  "Responsive chat architecture": "流暢對話架構參考",
+  "Streaming text fade": "串流文字漸顯",
 };

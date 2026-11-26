@@ -2291,6 +2291,18 @@ const zhHans: Record<string, string> = {
   // P1-33: MCP command validation probe reasons.
   "Invalid null byte in command or arguments.": "命令或参数中包含无效的空字节。",
   "Invalid newline in command or arguments.": "命令或参数中包含无效的换行符。",
+  // P1-11: Credits card (v3.0.0 CreditsSettingsPage.swift).
+  "Credits": "致谢",
+  "Where Tivano began": "Tivano 的起点",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano 是 Droppy Code 的分支，沿用 AGPL-3.0 及署名条款。",
+  "Working indicators": "工作状态指示器",
+  "Built-in terminal": "内置终端",
+  "Terminal PTY layer": "终端 PTY 层",
+  "Windows job-helper JSON parser": "Windows 作业辅助进程 JSON 解析器",
+  "Where Droppy Code began": "Droppy Code 的起源",
+  "Responsive chat architecture": "对话流畅度架构参考",
+  "Streaming text fade": "流式文字渐显",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {

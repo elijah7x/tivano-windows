@@ -2103,4 +2103,16 @@ export const ko: Record<string, string> = {
   // P1-33
   "Invalid null byte in command or arguments.": "명령 또는 인수에 잘못된 널 바이트가 포함되어 있습니다.",
   "Invalid newline in command or arguments.": "명령 또는 인수에 잘못된 줄 바꿈이 포함되어 있습니다.",
+  // P1-11
+  "Credits": "크레딧",
+  "Where Tivano began": "Tivano의 시작",
+  "Tivano is a fork of Droppy Code, under AGPL-3.0 with attribution terms.":
+    "Tivano는 Droppy Code의 포크이며, 저작자 표시 조항이 포함된 AGPL-3.0 라이선스를 따릅니다.",
+  "Working indicators": "작업 상태 표시기",
+  "Built-in terminal": "내장 터미널",
+  "Terminal PTY layer": "터미널 PTY 계층",
+  "Windows job-helper JSON parser": "Windows 작업 도우미 JSON 파서",
+  "Where Droppy Code began": "Droppy Code의 시작",
+  "Responsive chat architecture": "반응형 대화 아키텍처",
+  "Streaming text fade": "스트리밍 텍스트 페이드 효과",
 };
