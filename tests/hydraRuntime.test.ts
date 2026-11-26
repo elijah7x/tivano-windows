@@ -458,26 +458,41 @@ describe("A58 pair binding (frozen hydraLaunch slice)", () => {
   });
 
   // The queued-cap scenario above always has the held head busy too, so
-  // it cannot prove the queue term alone refuses. Isolate it: a stranded
-  // hydraWaiting entry with no running heads and no pending reports —
+  // it cannot prove the queue term alone refuses. A public flow can still
+  // strand the queue: deleting the occupying head removes the head thread
+  // without synthesizing a finish report, while the later turn's cap-held
+  // delegation remains queued. With no head or pending report left,
   // hydraLeadBusy is false, so only the waiting-queue clause can throw.
-  // (Same-turn queued entries share their head's batch, which keeps
-  // that head's report pending. Seed the queue directly here to isolate
-  // the clause; the later-turn Hydra-off shape is covered publicly by the
-  // next two regression tests.)
   it("the waiting queue alone locks the adaptive switch", async () => {
     const { engine, store } = make();
+    engine.setSettings({ hydraMaxHeads: 1 });
     const lead = engine.createThread(null, "lead");
-    const waiting = (
-      engine as unknown as {
-        hydraWaiting: Map<string, { d: { task: string }; batchId: string; queuedAt: number }[]>;
-      }
-    ).hydraWaiting;
-    waiting.set(lead.id, [
-      { d: { task: "stranded" }, batchId: "stranded-batch", queuedAt: 1 },
-    ]);
-    // Control: nothing is at work — no heads, no reports.
+    const internal = engine as unknown as {
+      hydraWaiting: Map<string, unknown[]>;
+      hydraPendingReports: Map<string, unknown[]>;
+    };
+
+    engine.sendTurn(lead.id, "go [mock:hydra-wait]");
+    await waitFor(
+      () =>
+        thread(engine, lead.id).turn?.status === "done" &&
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+    engine.sendTurn(lead.id, "again [mock:hydra-waitq]");
+    await waitFor(
+      () =>
+        thread(engine, lead.id).turn?.status === "done" &&
+        (internal.hydraWaiting.get(lead.id)?.length ?? 0) === 1,
+    );
+
+    engine.deleteThread(heads(engine, lead.id)[0]!.id);
+
+    // Controls: the queue was reached publicly and nothing else is at
+    // work — no head remains and no finish report was synthesized.
     expect(heads(engine, lead.id)).toHaveLength(0);
+    expect(internal.hydraWaiting.get(lead.id) ?? []).toHaveLength(1);
+    expect(internal.hydraPendingReports.get(lead.id) ?? []).toHaveLength(0);
     expect(() => engine.setSubagentMode(lead.id, "adaptive")).toThrow(
       /switch modes/,
     );
