@@ -22,6 +22,7 @@ import { translateNotice } from "../i18n";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
 import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
+import { hydraPanelDragBegun } from "./HydraPanel";
 import {
   HELPER_PANEL_GAP,
   HELPER_PANEL_INSET,
@@ -68,6 +69,9 @@ export function HelperPanel(props: {
   /** Pure auto-pop placement for this panel while it has not been
    *  dragged manually. Coordinates share this panel's offsetParent. */
   placement?: HelperPopPlacement | undefined;
+  /** Overlay-safe vertical chrome measurements in the layer's coordinates. */
+  chromeTop?: number | undefined;
+  composerBottom?: number | undefined;
   /** Auto-popped panels overlay the pane like the frozen floats: they
    *  never reserve chat-column width. */
   overlay?: boolean;
@@ -126,13 +130,15 @@ export function HelperPanel(props: {
 
   // Docked origins: beside the chat column at pane corners when wide;
   // too narrow → the frozen "corner above the box" (top of its side).
+  const safeTop = props.overlay === true ? (props.chromeTop ?? 0) + INSET : INSET;
+  const safeBottom = props.overlay === true ? (props.composerBottom ?? 0) + INSET : INSET;
   const docked = (c: Corner): { x: number; y: number } => ({
     x: sideOf(c) === "left" ? SIDE_MARGIN : pane.w - SIDE_MARGIN - w,
-    y: !beside || isTop(c) ? INSET : pane.h - INSET - h,
+    y: !beside || isTop(c) ? safeTop : pane.h - safeBottom - h,
   });
   const clamped = (o: { x: number; y: number }) => ({
     x: Math.min(Math.max(o.x, INSET), Math.max(INSET, pane.w - w - INSET)),
-    y: Math.min(Math.max(o.y, INSET), Math.max(INSET, pane.h - h - INSET)),
+    y: Math.min(Math.max(o.y, safeTop), Math.max(safeTop, pane.h - safeBottom - h)),
   });
   /** Nearest dock corner with the frozen slack hysteresis. */
   const dockCorner = (origin: { x: number; y: number }): Corner => {
@@ -184,14 +190,18 @@ export function HelperPanel(props: {
     const rect = paneEl.getBoundingClientRect();
     const dx = e.clientX - rect.left - pos.x;
     const dy = e.clientY - rect.top - pos.y;
+    let moved = false;
     const move = (ev: PointerEvent) => {
-      setHeld({ x: ev.clientX - rect.left - dx, y: ev.clientY - rect.top - dy });
+      if (hydraPanelDragBegun(ev.clientX - e.clientX, ev.clientY - e.clientY)) moved = true;
+      if (moved) setHeld({ x: ev.clientX - rect.left - dx, y: ev.clientY - rect.top - dy });
     };
     const up = (ev: PointerEvent) => {
       const o = { x: ev.clientX - rect.left - dx, y: ev.clientY - rect.top - dy };
       setHeld(null);
-      setCorner(dockCorner(clamped(o)));
-      setUserDocked(true);
+      if (moved) {
+        setCorner(dockCorner(clamped(o)));
+        setUserDocked(true);
+      }
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
     };

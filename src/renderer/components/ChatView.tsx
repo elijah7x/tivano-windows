@@ -245,6 +245,8 @@ function AutoPopPanels(props: {
             initialCorner={placement?.corner ?? "tr"}
             cascadeIndex={placement?.cascadeIndex ?? i}
             placement={metrics.width > 0 ? placement : undefined}
+            chromeTop={metrics.chromeTop}
+            composerBottom={metrics.composerBottom}
             overlay
             onDock={() => {}}
             onClose={() => props.onHold(h.id)}
