@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-29.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F27 command palette (bounded): Ctrl+K opens an overlay that searches
 // threads, projects and local actions — arrow keys navigate, Enter runs,
@@ -26,6 +26,7 @@ export function CommandPalette(props: {
   selectedThreadId: string | null;
   onClose: () => void;
   onToggleDock: (name: "terminal" | "git") => void;
+  onToggleChanges?: () => void;
   onOpenSettings: () => void;
 }): React.JSX.Element {
   const t = useT();
@@ -88,7 +89,7 @@ export function CommandPalette(props: {
           id: "changes",
           kind: "action",
           title: t("Toggle changes"),
-          run: () => props.onToggleDock("git"),
+          run: () => (props.onToggleChanges ? props.onToggleChanges() : props.onToggleDock("git")),
         },
         {
           id: "plan-mode",

@@ -13,12 +13,14 @@ import { makeQuote, serializeOutgoing } from "../shared/replyQuote";
 import type { ReplyQuote } from "../shared/replyQuote";
 import { translate } from "./i18n";
 import { playFinishChime } from "./finishChime";
+import { emitMemoryPressure, setWindowActive } from "./appActivity";
+import { clearMarkdownCache } from "./markdown";
 
 /** F28: OS notification on a turn's completion — only for an UNSEEN
  *  result: the finished thread isn't the one on screen, or the window
- *  isn't focused. Opt-in via settings; never fires while the user is
- *  watching the thread complete. `silent` when the finish chime already
- *  sounded (frozen: the chime replaces the notification's own sound). */
+ *  isn't focused. Never fires while the user is watching the thread
+ *  complete. `silent` when the finish chime already sounded (frozen: the
+ *  chime replaces the notification's own sound). */
 const NOTIFY_BODY = {
   done: "Turn finished",
   stopped: "Stopped.",
@@ -31,9 +33,17 @@ function maybeNotifyDone(
   kind: keyof typeof NOTIFY_BODY,
   silent: boolean,
 ): void {
+  if (thread.hydraHead) return;
   const s = store.snapshot;
-  if (!s || s.settings.notifyOnDone !== true) return;
-  const unseen = s.selectedThreadId !== thread.id || !document.hasFocus();
+  if (!s) return;
+  const isOpenPanel =
+    thread.isInPanel === true && thread.parentThreadId === s.selectedThreadId;
+  const isOnScreen = s.selectedThreadId === thread.id || isOpenPanel;
+  const focused =
+    typeof document !== "undefined" && typeof document.hasFocus === "function"
+      ? document.hasFocus()
+      : false;
+  const unseen = !isOnScreen || !focused;
   if (!unseen) return;
   if (typeof Notification === "undefined") return;
   const fire = () => {
@@ -53,9 +63,11 @@ function maybeNotifyDone(
   };
   if (Notification.permission === "granted") fire();
   else if (Notification.permission === "default") {
-    void Notification.requestPermission().then((p) => {
-      if (p === "granted") fire();
-    });
+    void Notification.requestPermission()
+      .then((p) => {
+        if (p === "granted") fire();
+      })
+      .catch(() => {});
   }
 }
 
@@ -72,10 +84,18 @@ declare global {
   }
 }
 
+export type WeatherFlashStatus = "done" | "error" | "interrupted";
+
+/** How long a finish-signal weather flash stays visible in the live snapshot
+ *  so Porthole (8s hold) and Full window (7.3s pulse) catch on-screen turns. */
+export const WEATHER_FLASH_MS = 1000;
+
 export interface ClientView {
   snapshot: Snapshot | null;
   /** Last surfaced invoke/apply error; shown in the global error banner. */
   lastError: string | null;
+  /** Transient finish flashes for threads whose turn ended on screen. */
+  weatherFlashes?: Readonly<Record<string, WeatherFlashStatus>>;
 }
 
 interface Draft {
@@ -99,7 +119,7 @@ export class ClientStore {
   snapshot: Snapshot | null = null;
   lastError: string | null = null;
   /** Cached subscription view — useSyncExternalStore re-reads by reference. */
-  view: ClientView = { snapshot: null, lastError: null };
+  view: ClientView = { snapshot: null, lastError: null, weatherFlashes: {} };
   private listeners = new Set<() => void>();
   /** Events received before the snapshot lands — filtered by rev at hydrate. */
   private buffered: AppEvent[] = [];
@@ -118,6 +138,13 @@ export class ClientStore {
   private sentVersions = new Map<string, number>();
   /** F20: threads waiting for a usage-limit reset (ephemeral mirror). */
   limitResumes: Record<string, number> = {};
+  /** P2-63: paced notification timers for non-visible streaming panels/threads. */
+  private pacedNotifyTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** P2-47: transient weather flashes for on-screen turn completions. */
+  private flashTimers = new Map<string, { status: WeatherFlashStatus; timer: ReturnType<typeof setTimeout> }>();
+  private cachedWeatherFlashes: Readonly<Record<string, WeatherFlashStatus>> = {};
+  /** P2-51: latest OS system-accent update observed before/after hydrate. */
+  private pendingSystemAccentColor: string | null | undefined = undefined;
   private readonly invoke: InvokeFn;
 
   constructor(invoke?: InvokeFn) {
@@ -130,7 +157,11 @@ export class ClientStore {
   }
 
   private publish(): void {
-    this.view = { snapshot: this.snapshot, lastError: this.lastError };
+    this.view = {
+      snapshot: this.snapshot,
+      lastError: this.lastError,
+      weatherFlashes: this.cachedWeatherFlashes,
+    };
   }
 
   private notify(): void {
@@ -142,11 +173,34 @@ export class ClientStore {
   beginHydration(): number {
     this.buffered = [];
     this.snapshotRev = -1;
+    this.pendingSystemAccentColor = undefined;
     return ++this.hydrateGen;
   }
 
   /** Entry point for the preload event subscription. */
   onBridgeEvent(e: AppEvent): void {
+    // P2-63: main-originated window/memory signals do not carry a store rev.
+    if (e.type === "window-activity") {
+      setWindowActive(e.active);
+      if (e.active) this.flushStreamPacing();
+      return;
+    }
+    if (e.type === "memory-pressure") {
+      clearMarkdownCache();
+      emitMemoryPressure(e.critical);
+      return;
+    }
+    if (e.type === "system-accent-changed") {
+      this.pendingSystemAccentColor = e.accentColor;
+      if (this.snapshot) {
+        this.snapshot = {
+          ...this.snapshot,
+          info: { ...this.snapshot.info, systemAccentColor: e.accentColor },
+        };
+        this.notify();
+      }
+      return;
+    }
     if (this.snapshotRev < 0) {
       this.buffered.push(e);
       return;
@@ -157,7 +211,13 @@ export class ClientStore {
   /** Land the snapshot for cycle `gen`, then replay only newer events. */
   hydrate(s: Snapshot, gen: number): void {
     if (gen !== this.hydrateGen) return; // superseded cycle (StrictMode replay)
-    this.snapshot = s;
+    for (const id of this.pacedNotifyTimers.values()) clearTimeout(id);
+    this.pacedNotifyTimers.clear();
+    this.clearAllWeatherFlashes();
+    this.snapshot =
+      this.pendingSystemAccentColor !== undefined
+        ? { ...s, info: { ...s.info, systemAccentColor: this.pendingSystemAccentColor } }
+        : s;
     this.snapshotRev = s.rev;
     this.limitResumes = { ...(s.limitResumesAt ?? {}) };
     for (const e of this.buffered) {
@@ -488,9 +548,43 @@ export class ClientStore {
   }
 
   private dropThreadState(threadId: string): void {
+    this.clearPacedTimer(threadId);
+    this.clearWeatherFlash(threadId, false);
     this.drafts.delete(threadId);
     this.editTargets.delete(threadId);
     this.pendingSends.delete(threadId);
+  }
+
+  private rebuildWeatherFlashes(): void {
+    const next: Record<string, WeatherFlashStatus> = {};
+    for (const [id, entry] of this.flashTimers) next[id] = entry.status;
+    this.cachedWeatherFlashes = next;
+  }
+
+  private setWeatherFlash(threadId: string, status: WeatherFlashStatus): void {
+    const prev = this.flashTimers.get(threadId);
+    if (prev) clearTimeout(prev.timer);
+    const timer = setTimeout(() => {
+      this.clearWeatherFlash(threadId, true);
+    }, WEATHER_FLASH_MS);
+    this.flashTimers.set(threadId, { status, timer });
+    this.rebuildWeatherFlashes();
+  }
+
+  private clearWeatherFlash(threadId: string, notifyAfter: boolean): void {
+    const prev = this.flashTimers.get(threadId);
+    if (!prev) return;
+    clearTimeout(prev.timer);
+    this.flashTimers.delete(threadId);
+    this.rebuildWeatherFlashes();
+    if (notifyAfter) this.notify();
+  }
+
+  private clearAllWeatherFlashes(): void {
+    if (this.flashTimers.size === 0) return;
+    for (const entry of this.flashTimers.values()) clearTimeout(entry.timer);
+    this.flashTimers.clear();
+    this.cachedWeatherFlashes = {};
   }
 
   // ---- event application ------------------------------------------------
@@ -504,6 +598,7 @@ export class ClientStore {
     }
     switch (event.type) {
       case "snapshot":
+        this.clearAllWeatherFlashes();
         this.snapshot = event.snapshot;
         this.snapshotRev = event.snapshot.rev;
         this.notify();
@@ -527,6 +622,14 @@ export class ClientStore {
         s.threads = [...s.threads.filter((t) => t.id !== event.thread.id), event.thread];
         break;
       case "thread-updated":
+        if (
+          event.thread.hasUnread ||
+          event.thread.isArchived ||
+          event.thread.turn?.status === "running" ||
+          event.thread.turn?.status === "waiting-approval"
+        ) {
+          this.clearWeatherFlash(event.thread.id, false);
+        }
         s.threads = s.threads.map((t) => (t.id === event.thread.id ? event.thread : t));
         break;
       case "thread-removed":
@@ -535,6 +638,10 @@ export class ClientStore {
         break;
       case "thread-selected":
         s.selectedThreadId = event.threadId;
+        if (event.threadId) {
+          this.clearPacedTimer(event.threadId);
+          this.clearWeatherFlash(event.threadId, false);
+        }
         break;
       case "settings-changed":
         s.settings = event.settings;
@@ -557,9 +664,30 @@ export class ClientStore {
           if (event.content !== undefined) m.content = event.content;
           else if (event.delta !== undefined) m.content += event.delta;
         }
+        // P2-63: non-visible panels/threads coalesce renderer notifications
+        // (90ms for an open panel beside the chat, 1000ms for offscreen threads).
+        if (s.selectedThreadId !== t.id) {
+          const isOpenPanel =
+            (t.isInPanel === true && t.parentThreadId === s.selectedThreadId) ||
+            (t.hydraHead !== undefined && t.hydraHead.leadId === s.selectedThreadId);
+          const delayMs = isOpenPanel ? 90 : 1000;
+          this.snapshot = { ...s, rev: this.snapshotRev };
+          if (!this.pacedNotifyTimers.has(t.id)) {
+            const id = setTimeout(() => {
+              this.pacedNotifyTimers.delete(t.id);
+              this.notify();
+            }, delayMs);
+            this.pacedNotifyTimers.set(t.id, id);
+          }
+          return;
+        }
         break;
       }
       case "turn-status": {
+        this.clearPacedTimer(event.threadId);
+        if (event.status === "running" || event.status === "waiting-approval") {
+          this.clearWeatherFlash(event.threadId, false);
+        }
         const t = this.thread(event.threadId);
         const turn = t?.turn;
         if (!t || !turn || turn.id !== event.turnId) return;
@@ -571,11 +699,22 @@ export class ClientStore {
         break;
       }
       case "finish-signal": {
-        // F28 frozen turnFinished — the engine applied the setting and
+        // F28 frozen turnFinished — the engine applied the
         // stillWorking/userStopped gates; here remains the on-screen check.
+        // P2-47: also pulse a transient finish flash so the currently viewed
+        // thread brings sun on finish / rain on failure without persisting unread.
         if (event.chime) playFinishChime();
         const t = this.thread(event.threadId);
         if (event.notify && t) maybeNotifyDone(this, t, event.notify, event.silent);
+        if (event.notify && t && !t.hydraHead && !t.hasUnread) {
+          const flashStatus: WeatherFlashStatus =
+            event.notify === "failed"
+              ? "error"
+              : event.notify === "stopped"
+                ? "interrupted"
+                : "done";
+          this.setWeatherFlash(t.id, flashStatus);
+        }
         break;
       }
       case "quick-draft": {
@@ -675,6 +814,21 @@ export class ClientStore {
       }
     }
     this.snapshot = { ...s, rev: this.snapshotRev };
+    this.notify();
+  }
+
+  private clearPacedTimer(threadId: string): void {
+    const id = this.pacedNotifyTimers.get(threadId);
+    if (id !== undefined) {
+      clearTimeout(id);
+      this.pacedNotifyTimers.delete(threadId);
+    }
+  }
+
+  flushStreamPacing(): void {
+    if (this.pacedNotifyTimers.size === 0) return;
+    for (const id of this.pacedNotifyTimers.values()) clearTimeout(id);
+    this.pacedNotifyTimers.clear();
     this.notify();
   }
 

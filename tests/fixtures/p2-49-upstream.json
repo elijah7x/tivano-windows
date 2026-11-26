@@ -1,0 +1,201 @@
+{
+  "_meta": {
+    "provenance": "Values extracted verbatim from the v3.0.0 baseline catalog Tivano/Resources/Localizable.xcstrings",
+    "baselineTag": "v3.0.0",
+    "baselineCommit": "15e03374f077343e500e8e5e3574c8c598162171"
+  },
+  "values": {
+    "Thread list": {
+      "zh-Hant": "對話列表",
+      "ja": "スレッド一覧",
+      "ko": "스레드 목록",
+      "fr": "Liste des conversations"
+    },
+    "New thread": {
+      "zh-Hant": "新對話",
+      "ja": "新規スレッド",
+      "ko": "새 스레드",
+      "fr": "Nouvelle conversation"
+    },
+    "Search threads": {
+      "zh-Hant": "搜尋對話",
+      "ja": "スレッドを検索",
+      "ko": "스레드 검색",
+      "fr": "Rechercher des conversations"
+    },
+    "Projects": {
+      "zh-Hant": "專案",
+      "ja": "プロジェクト",
+      "ko": "프로젝트",
+      "fr": "Projets"
+    },
+    "Settings": {
+      "zh-Hant": "設定",
+      "ja": "設定",
+      "ko": "설정",
+      "fr": "Réglages"
+    },
+    "About": {
+      "zh-Hant": "關於",
+      "ja": "情報",
+      "ko": "정보",
+      "fr": "À propos"
+    },
+    "Allow": {
+      "zh-Hant": "允許",
+      "ja": "許可",
+      "ko": "허용",
+      "fr": "Autoriser"
+    },
+    "Allow once": {
+      "zh-Hant": "僅允許這一次",
+      "ja": "1 回だけ許可",
+      "ko": "한 번만 허용",
+      "fr": "Autoriser une fois"
+    },
+    "Deny": {
+      "zh-Hant": "拒絕",
+      "ja": "拒否",
+      "ko": "거부",
+      "fr": "Refuser"
+    },
+    "Cancel": {
+      "zh-Hant": "取消",
+      "ja": "キャンセル",
+      "ko": "취소",
+      "fr": "Annuler"
+    },
+    "Approve": {
+      "zh-Hant": "核准",
+      "ja": "承認",
+      "ko": "승인",
+      "fr": "Approuver"
+    },
+    "Send": {
+      "zh-Hant": "傳送",
+      "ja": "送信",
+      "ko": "전송",
+      "fr": "Envoyer"
+    },
+    "Stop": {
+      "zh-Hant": "停止",
+      "ja": "停止",
+      "ko": "중지",
+      "fr": "Arrêter"
+    },
+    "Retry": {
+      "zh-Hant": "重試",
+      "ja": "再試行",
+      "ko": "다시 시도",
+      "fr": "Réessayer"
+    },
+    "Error": {
+      "zh-Hant": "錯誤",
+      "ja": "エラー",
+      "ko": "오류",
+      "fr": "Erreur"
+    },
+    "Today": {
+      "zh-Hant": "今天",
+      "ja": "今日",
+      "ko": "오늘",
+      "fr": "Aujourd’hui"
+    },
+    "Yesterday": {
+      "zh-Hant": "昨天",
+      "ja": "昨日",
+      "ko": "어제",
+      "fr": "Hier"
+    },
+    "Archive": {
+      "zh-Hant": "封存",
+      "ja": "アーカイブ",
+      "ko": "보관",
+      "fr": "Archiver"
+    },
+    "Delete": {
+      "zh-Hant": "刪除",
+      "ja": "削除",
+      "ko": "삭제",
+      "fr": "Supprimer"
+    },
+    "Rename": {
+      "zh-Hant": "重新命名",
+      "ja": "名前を変更",
+      "ko": "이름 변경",
+      "fr": "Renommer"
+    },
+    "Sub-agents": {
+      "zh-Hant": "子代理",
+      "ja": "サブエージェント",
+      "ko": "하위 에이전트",
+      "fr": "Sous-agents"
+    },
+    "Working": {
+      "zh-Hant": "工作中",
+      "ja": "作業中",
+      "ko": "작업 중",
+      "fr": "En cours"
+    },
+    "Thinking": {
+      "zh-Hant": "思考中",
+      "ja": "思考中",
+      "ko": "생각 중",
+      "fr": "Réflexion"
+    },
+    "Each head gets one brief and a panel of its own beside the chat, all working at the same time. Heads use the selected models to do their tasks, then return their reports to the lead chat.": {
+      "zh-Hant": "每個子代理都會領取一份任務簡報，並在對話旁擁有獨立面板，同時展開工作。子代理會使用所選模型執行任務，再將報告回傳給主對話。",
+      "ja": "各サブエージェントに 1 つの指示書とチャット横の専用パネルが割り当てられ、すべて同時に作業を進めます。サブエージェントは選択されたモデルでタスクを実行し、リードチャットにレポートを返します。",
+      "ko": "각 서브에이전트는 하나의 브리핑과 채팅 옆 전용 패널을 받아 모두 동시에 작업합니다. 서브에이전트는 선택된 모델로 작업을 수행한 뒤 결과를 리드 채팅에 보고합니다.",
+      "fr": "Chaque sous-agent reçoit une note de mission et son propre panneau à côté de la discussion, et tous travaillent simultanément. Les sous-agents utilisent les modèles sélectionnés pour accomplir leurs tâches, puis renvoient leurs rapports à la discussion principale."
+    },
+    "failed": {
+      "zh-Hant": "失敗",
+      "ja": "失敗",
+      "ko": "실패",
+      "fr": "échoué"
+    },
+    "Ask %@ to build, fix or explain. @ for files, / for commands": {
+      "zh-Hant": "讓 %@ 建置、修正或說明。@ 引用檔案，/ 呼叫指令",
+      "ja": "%@ に構築、修正、解説を依頼できます。@ でファイルを指定、/ でコマンドを実行",
+      "ko": "%@에게 구현, 수정 또는 설명을 요청하세요. @로 파일 지정, /로 명령 실행",
+      "fr": "Demandez à %@ de créer, corriger ou expliquer. @ pour les fichiers, / pour les commandes"
+    },
+    "Delete \"%@\"?": {
+      "zh-Hant": "要刪除「%@」嗎？",
+      "ja": "「%@」を削除しますか？",
+      "ko": "\"%@\" 항목을 삭제하시겠습니까?",
+      "fr": "Supprimer « %@ » ?"
+    },
+    "No response for %@ min…": {
+      "zh-Hant": "已 %@ 分鐘無回應…",
+      "ja": "%@ 分間応答がありません…",
+      "ko": "%@분 동안 응답 없음…",
+      "fr": "Aucune réponse depuis %@ min…"
+    },
+    "Thought %@ times": {
+      "zh-Hant": "思考了 %@ 次",
+      "ja": "%@ 回思考しました",
+      "ko": "%@회 생각함",
+      "fr": "A réfléchi %@ fois"
+    },
+    "Show %@ earlier steps": {
+      "zh-Hant": "顯示 %@ 個較早的步驟",
+      "ja": "以前のステップ %@ 件を表示",
+      "ko": "이전 단계 %@개 표시",
+      "fr": "Afficher %@ étapes précédentes"
+    },
+    "Connected · %d tools": {
+      "zh-Hant": "已連線 · %d 個工具",
+      "ja": "接続済み · %d 個のツール",
+      "ko": "연결됨 · 도구 %d개",
+      "fr": "Connecté · %d outils"
+    },
+    "Up to %d": {
+      "zh-Hant": "最多 %d 個",
+      "ja": "最大 %d",
+      "ko": "최대 %d개",
+      "fr": "Jusqu’à %d"
+    }
+  }
+}

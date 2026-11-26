@@ -23,52 +23,133 @@ export const SCHEMA_VERSION = 1;
  *  renderer localizes it for display; stored content stays stable. */
 export const INTERRUPTED_MARKER = "[interrupted by restart — not resumed]";
 
-/** F26: the full frozen AppTheme catalog (raw case values, allCases order). */
+/** P2-51: the 12 named v3.0.0 accent families (AppTheme.swift raw case values, allCases order). */
 export const THEME_IDS = [
-  "breeze",
-  "breezeLight",
-  "breezeDark",
   "system",
+  "breeze",
+  "everforest",
+  "matrix",
+  "nord",
+  "github",
+  "nightOwl",
+  "catppuccin",
+  "rosePine",
+  "monokai",
+  "claude",
+  "ayu",
+] as const;
+export type ThemeId = (typeof THEME_IDS)[number];
+
+/** P2-51: appearance mode (AppearanceMode.swift), paired with the 12 named accent colors. */
+export const APPEARANCE_MODES = ["system", "light", "dark"] as const;
+export type AppearanceMode = (typeof APPEARANCE_MODES)[number];
+
+/** P2-47: v3.0.0 Weather window mode (AppSettings.swift WeatherWindowMode). */
+export const WEATHER_WINDOW_MODES = ["porthole", "full", "off"] as const;
+export type WeatherWindowMode = (typeof WEATHER_WINDOW_MODES)[number];
+
+const LEGACY_THEME_MAP: Record<string, ThemeId> = {
+  breezeLight: "breeze",
+  breezeDark: "breeze",
+  light: "system",
+  dark: "system",
+  catppuccinMocha: "catppuccin",
+  catppuccinLatte: "catppuccin",
+  dracula: "catppuccin",
+  codex: "catppuccin",
+  tokyoNight: "nightOwl",
+  kanagawa: "nightOwl",
+  cursor: "nord",
+  oneDark: "github",
+  githubDark: "github",
+  githubLight: "github",
+  solarized: "github",
+  solarizedDark: "github",
+  solarizedLight: "github",
+  claudeLight: "claude",
+  gruvbox: "claude",
+  gruvboxLight: "claude",
+  creation: "claude",
+};
+
+const LEGACY_LIGHT_THEMES = new Set([
+  "breezeLight",
   "light",
+  "catppuccinLatte",
+  "gruvboxLight",
+  "solarizedLight",
+  "githubLight",
+  "claudeLight",
+]);
+
+const LEGACY_DARK_THEMES = new Set([
+  "breezeDark",
   "dark",
   "catppuccinMocha",
-  "catppuccinLatte",
   "dracula",
   "tokyoNight",
   "nord",
   "gruvbox",
-  "gruvboxLight",
   "oneDark",
   "everforest",
   "kanagawa",
   "rosePine",
   "solarizedDark",
-  "solarizedLight",
   "githubDark",
-  "githubLight",
   "ayu",
   "nightOwl",
   "monokai",
   "claude",
-  "claudeLight",
   "codex",
   "cursor",
   "matrix",
-] as const;
-export type ThemeId = (typeof THEME_IDS)[number];
-export type LanguageId = "en" | "zh-Hans";
+]);
+
+/** Map current and retired v2.x theme ids onto the 12 v3.0.0 accent families. */
+export function migrateLegacyTheme(raw: string): ThemeId | null {
+  if ((THEME_IDS as readonly string[]).includes(raw)) return raw as ThemeId;
+  return LEGACY_THEME_MAP[raw] ?? null;
+}
+
+/** Return the fixed appearance a retired v2.x theme implied, or null for follow-OS / unknown. */
+export function legacyAppearanceOfTheme(raw: string): AppearanceMode | null {
+  if (LEGACY_LIGHT_THEMES.has(raw)) return "light";
+  if (LEGACY_DARK_THEMES.has(raw)) return "dark";
+  return null;
+}
+
+/** P2-51: normalize an OS accent color string (Electron `systemPreferences.getAccentColor()`
+ *  8-char RGBA hex like `"0078d4ff"`, or 6-char RGB hex) into a 6-char uppercase RGB hex,
+ *  returning null when absent, malformed, or fully transparent (`alpha === "00"`). */
+export function normalizeOsAccentHex(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().replace(/^#/, "");
+  if (/^[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed.toUpperCase();
+  if (/^[0-9a-fA-F]{8}$/.test(trimmed)) {
+    if (trimmed.slice(6, 8) === "00") return null;
+    return trimmed.slice(0, 6).toUpperCase();
+  }
+  return null;
+}
+export const LANGUAGE_IDS = ["en", "zh-Hans", "zh-Hant", "ja", "ko", "fr"] as const;
+export type LanguageId = (typeof LANGUAGE_IDS)[number];
+
+export const LANGUAGE_LABELS: Record<LanguageId, string> = {
+  en: "English",
+  "zh-Hans": "简体中文",
+  "zh-Hant": "繁體中文",
+  ja: "日本語",
+  ko: "한국어",
+  fr: "Français",
+};
 
 export interface Settings {
   theme: ThemeId;
+  /** P2-51: light / dark / match-system appearance mode (absent = "system"). */
+  appearanceMode?: AppearanceMode;
   language: LanguageId;
   /** Mock-scope "always allow" grants, keyed by synthetic action kind. */
   alwaysAllow: string[];
-  /**
-   * F28: system-notification opt-in — a completed turn posts an OS
-   * notification ONLY for an unseen result (different thread on screen
-   * or unfocused window). Absent on old stores = off.
-   */
-  notifyOnDone?: boolean;
   /** F28: frozen chimeWhenFinished (default TRUE) — a soft chime when a
    *  turn finishes, whether or not the thread is in view. Optional so
    *  pre-A49 stores load verbatim; absent means the frozen default. */
@@ -121,19 +202,11 @@ export interface Settings {
    */
   showsWorkingCard?: boolean;
   /**
-   * F26: frozen performanceMode (default false) — disables window
-   * transparency, blurs, glows and background effects for lowest GPU
-   * usage. This build's window is already opaque: the honest port
-   * strips the effects it actually renders (drop shadows, glows,
-   * transitions, animations, filters). Optional so pre-A48 stores
-   * load verbatim.
+   * P2-47: v3.0.0 Weather window mode (default "porthole").
+   * Legacy showsSkylight is kept for pre-P2-47 stores and localControl bool alias.
    */
-  performanceMode?: boolean;
-  /**
-   * F26: frozen showsSkylight (default true) — the sidebar's weather hero.
-   * Effective only when performanceMode is off (frozen showsSkylightNow).
-   * Absent on old stores = on.
-   */
+  weatherWindowMode?: WeatherWindowMode;
+  lastWeatherWindowMode?: "porthole" | "full";
   showsSkylight?: boolean;
   /**
    * F33: receipt for the CLI command shim installed on request — the
@@ -203,20 +276,6 @@ export interface Settings {
    */
   shortcuts?: Record<string, KeyChord | null>;
   /**
-   * F13: frozen commitInstructions — free-form guidance appended to the
-   * generated-commit-message prompt ("use conventional prefixes"). Empty
-   * string = no extra instructions (frozen default).
-   */
-  commitInstructions?: string;
-  /**
-   * F31: frozen antiSlopEnabled — "Concise AI replies". The built-in
-   * guidance block rides the first ordinary message of each provider
-   * session once; "off" delivers the disregard notice instead (a
-   * resumed conversation may still hold the enabled guidance). Absent
-   * on old stores = enabled (frozen default true).
-   */
-  antiSlopEnabled?: boolean;
-  /**
    * F33: the frozen double gate — alpha master switch AND the separate
    * local-control switch must both be on before the control socket
    * listens (frozen `isExternalControlEnabled = alpha && external`).
@@ -224,6 +283,11 @@ export interface Settings {
    */
   alphaEnabled?: boolean;
   externalControlEnabled?: boolean;
+  /** P2-25: Remote MCP (outside Alpha, under Settings > Connections). */
+  remoteMCPEnabled?: boolean;
+  remoteMCPFullAccess?: boolean;
+  remoteMCPPublicURL?: string;
+  remoteMCPPort?: number;
   /**
    * F26: frozen uiFontSize/contentFontSize/codeFontSize — absolute point
    * sizes per category (ui 12–18, content 12–18, code 11–17). The offset
@@ -264,6 +328,11 @@ export interface Settings {
   /** A head's panel shows its whole conversation instead of the progress
    *  bar (frozen default false). */
   hydraShowsHeadDetails?: boolean;
+  /** Floating panels open automatically when heads run (frozen
+   *  settings.hydraAutoOpensPanels, default true). Off keeps heads
+   *  running with a top-bar indicator + a working pill that opens the
+   *  panel on demand. */
+  hydraAutoOpensPanels?: boolean;
   /** Each head after the first gets a panel of its own (frozen default
    *  false — one panel lists every head). */
   hydraAutoPopsHeads?: boolean;
@@ -350,6 +419,27 @@ export interface Settings {
   /** A81: top-edge-dragged terminal drawer height — absent = the
    *  frozen 260; bounds 140–760. */
   terminalHeight?: number;
+  /** P2-55: version tracking for Settings > Version "What's new" (mirrors
+   *  upstream WhatsNew Keys: installedVersion / previousVersion / seenVersion). */
+  whatsNewInstalledVersion?: string;
+  whatsNewPreviousVersion?: string;
+  whatsNewSeenVersion?: string;
+}
+
+export interface WhatsNewDigest {
+  displayVersion: string;
+  versionCount: number;
+  oldestIncludedVersion?: string;
+  categories: {
+    newFeatures: string[];
+    bugFixes: string[];
+    refinements: string[];
+  };
+}
+
+export interface WhatsNewInfo {
+  en: WhatsNewDigest;
+  "zh-Hans": WhatsNewDigest;
 }
 
 export type TaskSleepMode = "off" | "system" | "display";
@@ -475,6 +565,8 @@ export interface Message {
   ts: number;
   /** Turn that produced this message (assistant/system). */
   turnId?: string;
+  /** Codex provider turn ID recorded at turn admission for conversation rewind. */
+  providerTurnId?: string;
   /** F03: system-role message rendered as a dedicated block
    *  (Codex reasoning/plan/tool items, turn todos, provider notices)
    *  instead of a plain note. */
@@ -589,6 +681,8 @@ export interface Turn {
   approval?: ApprovalRequest;
   question?: CodexQuestionRequest;
   assistantMessageId: string;
+  /** Codex provider turn ID recorded at turn admission for conversation rewind. */
+  providerTurnId?: string;
   /**
    * F03 quiet-watchdog readout (volatile): whole minutes since the last
    * provider event once silence passes the 5-minute label threshold —
@@ -617,6 +711,13 @@ export interface ProviderThreadBinding {
   /** "unknown" until a real CLI is probed. */
   cliVersion: string;
   savedAt: number;
+}
+
+export interface HydraJobSummary {
+  id: string;
+  isOpen: boolean;
+  ending?: "completed" | "stopped" | "failed";
+  merge?: "merged" | "nothing" | "failed" | "skipped";
 }
 
 export interface ChatThread {
@@ -774,9 +875,13 @@ export interface ChatThread {
      *  flight — its report queues only after it resolves (a persisted
      *  true on boot means the landing was lost to a restart). */
     landingPending?: boolean | undefined;
+    /** P2-63: when an auto-merge took this head's landed work. */
+    mergedAt?: number | undefined;
     spawnedAt: number;
     finishedAt?: number | undefined;
   };
+  /** P2-63: settled Hydra jobs ledger so recovery skips all-merged chats. */
+  hydraJobs?: HydraJobSummary[];
   /** P1-38: this lead's independent-review cards, newest last (frozen
    *  job.reviewEngine/reviewFindings + verdict counts). */
   hydraReviews?: import("./hydraReview").HydraReview[];
@@ -1074,6 +1179,12 @@ export interface AppInfo {
    *  (and revealed) by the Source-control settings rows. Main-computed;
    *  the renderer can display it but never writes to it directly. */
   worktreesDir: string;
+  /** P2-55: release notes since the previous installed version, read from
+   *  CHANGELOG.md in main for en + zh-Hans. */
+  whatsNew?: WhatsNewInfo;
+  /** P2-51: current OS system accent color as 6-char uppercase RGB hex,
+   *  or null when unavailable on the host platform. */
+  systemAccentColor?: string | null;
 }
 
 /** Per-turn checkpoint record as the renderer may see it — ledger
@@ -1330,4 +1441,37 @@ export interface GitDiffResult {
   kind: "text" | "binary" | "oversized" | "empty" | "unavailable";
   patch?: string;
   reason?: string;
+}
+
+export type RemoteMcpScope = "tivano.read" | "tivano.write";
+
+export interface RemoteMcpGrantView {
+  id: string;
+  clientId: string;
+  clientName: string;
+  scopes: RemoteMcpScope[];
+  createdAt: number;
+  lastUsedAt?: number;
+}
+
+export interface RemoteMcpApprovalRequest {
+  id: string;
+  clientName: string;
+  clientId: string;
+  redirectHost: string;
+  requestedScopes: RemoteMcpScope[];
+  code: string;
+  createdAt: number;
+}
+
+export interface RemoteMcpStatus {
+  enabled: boolean;
+  listening: boolean;
+  port: number;
+  mcpUrl: string;
+  publicUrl: string;
+  publicUrlValid: boolean;
+  failure: string | null;
+  pendingApprovals: RemoteMcpApprovalRequest[];
+  grants: RemoteMcpGrantView[];
 }

@@ -32,11 +32,24 @@ describe("IPC request validators", () => {
     expect(
       requestValidators["approvals:resolve"]({ threadId: uuid, approvalId: uuid, optionId: "once" }),
     ).toBeTruthy();
-    expect(requestValidators["settings:set"]({ theme: "dark" }).theme).toBe("dark");
-    expect(
-      requestValidators["settings:set"]({ notifyOnDone: true }).notifyOnDone,
-    ).toBe(true);
-    expect(() => requestValidators["settings:set"]({ notifyOnDone: "yes" })).toThrow(
+    expect(requestValidators["settings:set"]({ theme: "nord" }).theme).toBe("nord");
+    expect(requestValidators["settings:set"]({ appearanceMode: "dark" }).appearanceMode).toBe("dark");
+    expect(() => requestValidators["settings:set"]({ theme: "dark" })).toThrow(ValidationError);
+    expect(() => requestValidators["settings:set"]({ appearanceMode: "sepia" })).toThrow(ValidationError);
+    for (const lang of ["en", "zh-Hans", "zh-Hant", "ja", "ko", "fr"] as const) {
+      expect(requestValidators["settings:set"]({ language: lang }).language).toBe(lang);
+    }
+    expect(() => requestValidators["settings:set"]({ language: "de" })).toThrow(ValidationError);
+    expect(() => requestValidators["settings:set"]({ notifyOnDone: true })).toThrow(
+      ValidationError,
+    );
+    expect(() => requestValidators["settings:set"]({ performanceMode: true })).toThrow(
+      ValidationError,
+    );
+    expect(() => requestValidators["settings:set"]({ commitInstructions: "x" })).toThrow(
+      ValidationError,
+    );
+    expect(() => requestValidators["settings:set"]({ antiSlopEnabled: false })).toThrow(
       ValidationError,
     );
     expect(

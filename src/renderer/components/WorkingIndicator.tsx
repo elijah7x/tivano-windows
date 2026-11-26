@@ -7,13 +7,15 @@
 // steps. Shared by ChatView and HelperPanel, both being the same
 // timeline in the frozen layout.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatThread, Message, Turn } from "../../shared/types";
 import {
   WORKING_WORDS,
+  WORKING_WORD_ROTATE_SECONDS,
   formatElapsed,
   workingWordIndex,
 } from "../../shared/workingWords";
+import { useAppPaused, useInView } from "../appActivity";
 import { useT } from "../locale";
 import { renderMarkdown } from "../markdown";
 import { HydraStaveBar } from "./HydraStaveBar";
@@ -63,37 +65,135 @@ export function workGroupLabel(msgs: Message[], t: (k: string, ...v: string[]) =
 }
 
 /**
+ * P2-63 (frozen ThreadTimeline.WorkingTitleLabel): isolated rotating-word
+ * leaf so neither elapsed ticks nor word flips re-evaluate `WorkingIndicator`
+ * or `HydraStaveBar`. Rotates only at the 7-second word boundary and pauses
+ * while inactive, minimized or out of view.
+ */
+export function WorkingTitleLeaf({
+  threadId,
+  startedAt,
+  quietMinutes,
+  workSummary,
+  paused,
+}: {
+  threadId: string;
+  startedAt: number;
+  quietMinutes: number | undefined;
+  workSummary: string | null;
+  paused: boolean;
+}): React.JSX.Element {
+  const t = useT();
+  const [step, setStep] = useState(() =>
+    Math.floor(Math.max(0, (Date.now() - startedAt) / 1000) / WORKING_WORD_ROTATE_SECONDS),
+  );
+  const fixed =
+    quietMinutes !== undefined
+      ? t("No response for %@ min…", String(quietMinutes))
+      : workSummary;
+  useEffect(() => {
+    if (fixed !== null || paused) return;
+    const stepMs = WORKING_WORD_ROTATE_SECONDS * 1000;
+    const sync = () => {
+      const elapsed = Math.max(0, Date.now() - startedAt);
+      setStep(Math.floor(elapsed / stepMs));
+    };
+    sync();
+    let timeoutId: number | undefined;
+    let intervalId: number | undefined;
+    const elapsed = Math.max(0, Date.now() - startedAt);
+    const delay = stepMs - (elapsed % stepMs);
+    timeoutId = window.setTimeout(() => {
+      sync();
+      intervalId = window.setInterval(sync, stepMs);
+    }, delay);
+    return () => {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      if (intervalId !== undefined) window.clearInterval(intervalId);
+    };
+  }, [fixed, paused, startedAt]);
+
+  const label =
+    fixed ??
+    `${t(WORKING_WORDS[workingWordIndex(threadId, step * WORKING_WORD_ROTATE_SECONDS)]!)}…`;
+  return <span className={`work-label${paused ? " paused" : ""}`}>{label}</span>;
+}
+
+/**
+ * P2-63 (frozen HydraElapsedTime): isolated 1-second leaf for the narrow
+ * duration text. Pauses when inactive, minimized or out of view, and
+ * catches up immediately upon return.
+ */
+export function WorkingElapsedTime({
+  startedAt,
+  paused,
+}: {
+  startedAt: number;
+  paused: boolean;
+}): React.JSX.Element {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (paused) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [paused, startedAt]);
+  return <span className="work-elapsed">{formatElapsed(now - startedAt)}</span>;
+}
+
+/**
  * F03 frozen WorkingIndicator label: quiet → "No response for N min…";
  * else tools → the group summary; else the seeded word rotating every 7
- * seconds of turn life. The right side is the narrow-format elapsed time,
- * both ticking once a second while the turn runs.
+ * seconds of turn life.
  */
-export function WorkingLabel({ thread, turn }: { thread: ChatThread; turn: Turn }): React.JSX.Element {
+export function WorkingLabel({
+  thread,
+  turn,
+  paused = false,
+  liveWork,
+}: {
+  thread: ChatThread;
+  turn: Turn;
+  paused?: boolean;
+  liveWork?: Message[];
+}): React.JSX.Element {
   const t = useT();
-  const [, forceTick] = useState(0);
-  useEffect(() => {
-    const id = window.setInterval(() => forceTick((x) => x + 1), 1000);
-    return () => window.clearInterval(id);
-  }, []);
-  const now = Date.now();
-  const elapsedSec = Math.max(0, (now - turn.startedAt) / 1000);
-  const liveWork = thread.messages.filter(
-    (m) => m.turnId === turn.id && m.kind === "tool",
+  const tools = useMemo(
+    () =>
+      liveWork ??
+      thread.messages.filter((m) => m.turnId === turn.id && m.kind === "tool"),
+    [liveWork, thread.messages, turn.id],
   );
-  const quiet =
-    turn.quietMinutes !== undefined ? t("No response for %@ min…", String(turn.quietMinutes)) : undefined;
-  const label =
-    quiet ??
-    (liveWork.length > 0
-      ? workGroupLabel(liveWork, t)
-      : `${t(WORKING_WORDS[workingWordIndex(thread.id, elapsedSec)]!)}…`);
+  const workSummary = useMemo(
+    () => (tools.length > 0 ? workGroupLabel(tools, t) : null),
+    [tools, t],
+  );
   return (
     <>
-      <span className="work-label">{label}</span>
-      <span className="work-elapsed">{formatElapsed(now - turn.startedAt)}</span>
+      <WorkingTitleLeaf
+        threadId={thread.id}
+        startedAt={turn.startedAt}
+        quietMinutes={turn.quietMinutes}
+        workSummary={workSummary}
+        paused={paused}
+      />
+      <WorkingElapsedTime startedAt={turn.startedAt} paused={paused} />
     </>
   );
 }
+
+const FIXED_TOOL_LABELS = new Set([
+  "Tool",
+  "Web search",
+  "Image",
+  "Send out a head",
+  "Brief a head",
+  "Wait for heads",
+  "Recall a head",
+  "Resume a head",
+  "List heads",
+  "Agent",
+]);
 
 /** One tool step — the same row in the timeline and inside the running
  *  indicator's WorkSteps disclosure (frozen WorkSteps entries). */
@@ -103,7 +203,13 @@ export function ToolMsgRow({ m }: { m: Message }): React.JSX.Element | null {
   if (!note) return null;
   const title = note.titleKey
     ? t(note.titleKey, ...(note.titleParams ?? []).map(String))
-    : (note.title ?? "");
+    : note.title && FIXED_TOOL_LABELS.has(note.title)
+      ? t(note.title)
+      : (note.title ?? "");
+  const detail =
+    note.detail && FIXED_TOOL_LABELS.has(note.detail)
+      ? t(note.detail)
+      : note.detail;
   const stateLabel =
     note.state === "running" ? t("Running")
     : note.state === "completed" ? t("Completed")
@@ -128,7 +234,7 @@ export function ToolMsgRow({ m }: { m: Message }): React.JSX.Element | null {
         <span className="tool-title">{title}</span>
         <span className="tool-state">{stateLabel}</span>
       </summary>
-      {note.detail && <pre className="tool-detail">{note.detail}</pre>}
+      {detail && <pre className="tool-detail">{detail}</pre>}
     </details>
   );
 }
@@ -151,14 +257,24 @@ export function WorkingIndicator({
   showReasoning: boolean;
 }): React.JSX.Element {
   const t = useT();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const appPaused = useAppPaused();
+  const inView = useInView(rootRef);
+  const paused = appPaused || !inView;
   const [expanded, setExpanded] = useState(false);
   const [stepLimit, setStepLimit] = useState(60);
+  const turnMessages = useMemo(
+    () => thread.messages.filter((m) => m.turnId === turn.id),
+    [thread.messages, turn.id],
+  );
   // Frozen: thinking joins the disclosure only while showReasoning is on.
-  const thinkingSteps = showReasoning
-    ? thread.messages.filter((m) => m.turnId === turn.id && m.kind === "reasoning")
-    : [];
-  const liveWork = thread.messages.filter(
-    (m) => m.turnId === turn.id && m.kind === "tool",
+  const thinkingSteps = useMemo(
+    () => (showReasoning ? turnMessages.filter((m) => m.kind === "reasoning") : []),
+    [showReasoning, turnMessages],
+  );
+  const liveWork = useMemo(
+    () => turnMessages.filter((m) => m.kind === "tool"),
+    [turnMessages],
   );
   const canExpand = thinkingSteps.length > 0 || liveWork.length > 0;
   const hiddenSteps = Math.max(0, thinkingSteps.length + liveWork.length - stepLimit);
@@ -172,7 +288,7 @@ export function WorkingIndicator({
       : t("Show %@ earlier steps (%@ hidden)", String(nextPage), String(hiddenSteps));
   const mdLabels = { copy: t("Copy"), copied: t("Copied") };
   return (
-    <div className={showsCard ? "work-card" : "work-line"}>
+    <div ref={rootRef} className={showsCard ? "work-card" : "work-line"}>
       <button
         type="button"
         className="work-head"
@@ -181,7 +297,7 @@ export function WorkingIndicator({
         title={canExpand ? t(expanded ? "Hide these steps" : "Show these steps") : undefined}
         onClick={() => canExpand && setExpanded((x) => !x)}
       >
-        <WorkingLabel thread={thread} turn={turn} />
+        <WorkingLabel thread={thread} turn={turn} paused={paused} liveWork={liveWork} />
         {canExpand && (
           <span className={`work-chev${expanded ? " open" : ""}`} aria-hidden="true">
             ›
@@ -190,7 +306,7 @@ export function WorkingIndicator({
       </button>
       {showsCard && (
         <HydraStaveBar
-          messages={thread.messages.filter((m) => m.turnId === turn.id)}
+          messages={turnMessages}
           tint="var(--accent)"
           status="running"
         />

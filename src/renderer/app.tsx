@@ -1,11 +1,12 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Shell: hydrates the snapshot, subscribes to the event channel, applies
 // theme + language, and delegates link clicks to the http/https gate.
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { api, clientStore, tryCall } from "./client";
-import type { Snapshot } from "../shared/types";
+import { setModalCovered } from "./appActivity";
+import type { RemoteMcpApprovalRequest, RemoteMcpStatus, Snapshot } from "../shared/types";
 import {
   SHORTCUT_COMMANDS,
   chordFromEvent,
@@ -20,7 +21,7 @@ import { applyTheme } from "./theme";
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { CommandPalette } from "./components/CommandPalette";
-import { SettingsModal } from "./components/SettingsModal";
+import { SettingsModal, type SettingsPageId } from "./components/SettingsModal";
 import { LinkPopover, type LinkPopoverState } from "./components/LinkPopover";
 import { HelperPanel } from "./components/HelperPanel";
 import { ensureTerminalBridge, setCodeFontOffset } from "./terminalRegistry";
@@ -28,6 +29,8 @@ import { fontSizeOffsets, resolveFontSizes, TYPE_DEFAULT } from "../shared/typeS
 import { wallpaperBlurPx, wallpaperOpacity } from "../shared/wallpaper";
 import { TerminalPanel } from "./components/TerminalPanel";
 import { GitPanel } from "./components/GitPanel";
+import { WeatherWindowLayer } from "./components/Skylight";
+import { resolveWeatherWindowMode } from "../shared/skylight";
 
 const store = clientStore;
 
@@ -74,6 +77,61 @@ function ArchivePrompt(props: {
   );
 }
 
+/** P2-25: Remote MCP OAuth approval prompt (frozen RootView alert). */
+function RemoteMcpApprovalPrompt(props: {
+  request: RemoteMcpApprovalRequest;
+  onDecide: (decision: "full" | "read" | "deny") => void;
+}): React.JSX.Element {
+  const t = useT();
+  const r = props.request;
+  const offersWrite = r.requestedScopes.includes("tivano.write");
+  return (
+    <div
+      className="modal-veil"
+      role="presentation"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") props.onDecide("deny");
+      }}
+    >
+      <div
+        className="modal"
+        role="alertdialog"
+        aria-modal="true"
+        data-testid="remote-mcp-approval"
+        aria-label={t("Allow %@ to control Tivano?", r.clientName)}
+      >
+        <h2>{t("Allow %@ to control Tivano?", r.clientName)}</h2>
+        <p className="ckpt-note mono">
+          {t("Code: %@ · Redirects to %@", r.code, r.redirectHost || r.clientId)}
+        </p>
+        <div className="modal-actions">
+          {offersWrite && (
+            <button
+              className="primary"
+              data-testid="remote-mcp-allow-full"
+              autoFocus
+              onClick={() => props.onDecide("full")}
+            >
+              {t("Allow full control")}
+            </button>
+          )}
+          <button
+            className={offersWrite ? undefined : "primary"}
+            autoFocus={!offersWrite}
+            data-testid="remote-mcp-allow-read"
+            onClick={() => props.onDecide("read")}
+          >
+            {t("Allow read only")}
+          </button>
+          <button data-testid="remote-mcp-deny" onClick={() => props.onDecide("deny")}>
+            {t("Deny")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Sits inside LanguageContext so the dismiss label localizes correctly. */
 function ErrorBanner(props: { text: string; onDismiss: () => void }): React.JSX.Element {
   const t = useT();
@@ -93,10 +151,12 @@ function SidebarEdge(props: {
   onBegin: (e: React.MouseEvent) => void;
 }): React.JSX.Element {
   const t = useT();
+  const isOpen = props.live > 0;
   return (
     <div
       className="sidebar-edge"
-      style={{ left: `${Math.max(0, props.live - 3)}px` }}
+      data-open={isOpen ? "true" : "false"}
+      style={{ left: `${isOpen ? props.live + 5 : 0}px` }}
       onMouseDown={props.onBegin}
       role="separator"
       aria-orientation="vertical"
@@ -108,10 +168,13 @@ function SidebarEdge(props: {
 export function App(): React.JSX.Element {
   const [ready, setReady] = useState(false);
   const [fatal, setFatal] = useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPage, setSettingsPage] = useState<SettingsPageId | null>(null);
+  const settingsOpen = settingsPage !== null;
+  const openSettings = (page: SettingsPageId = "appearance") => setSettingsPage(page);
   /** One dock slot shared by the terminal and Git panels — hiding the
    *  terminal never stops its sessions (they live in the registry pool). */
   const [dock, setDock] = useState<"terminal" | "git" | null>(null);
+  const [changesToggleSeq, setChangesToggleSeq] = useState(0);
   const [paletteOpen, setPaletteOpen] = useState(false);
   /** F27: sidebar visibility is a window-level toggle (frozen
    *  toggleSidebar, ⌘B) — collapsing never touches thread state. */
@@ -122,6 +185,9 @@ export function App(): React.JSX.Element {
   /** F27 archiveThread (⌘W): frozen "asks to archive; Delete is a click
    *  away" prompt for the SELECTED thread. */
   const [archivePrompt, setArchivePrompt] = useState(false);
+  /** P2-51: chat header More controls (…) expanded state shared across chats. */
+  const [topControlsExpanded, setTopControlsExpanded] = useState(false);
+  const [remoteApproval, setRemoteApproval] = useState<RemoteMcpApprovalRequest | null>(null);
   /** F04 link popover — frozen LinkPopover: one transient menu anchored
    *  under the right-clicked chat link; null = closed. */
   const [linkPop, setLinkPop] = useState<LinkPopoverState | null>(null);
@@ -135,10 +201,15 @@ export function App(): React.JSX.Element {
     side: "left" | "right";
     px: number;
   } | null>(null);
-  const { snapshot, lastError } = useSyncExternalStore(
+  const { snapshot, lastError, weatherFlashes } = useSyncExternalStore(
     (fn) => store.subscribe(fn),
     () => store.view,
   );
+
+  useEffect(() => {
+    setModalCovered(settingsOpen || paletteOpen);
+    return () => setModalCovered(false);
+  }, [settingsOpen, paletteOpen]);
 
   useEffect(() => {
     // Subscribe FIRST (events buffer), then fetch the snapshot: its rev
@@ -147,13 +218,26 @@ export function App(): React.JSX.Element {
     ensureTerminalBridge();
     let disposed = false;
     const gen = store.beginHydration();
-    const detach = api().onEvent((e) => store.onBridgeEvent(e));
+    const detach = api().onEvent((e) => {
+      if (e.type === "remote-mcp-changed") {
+        if (!disposed) setRemoteApproval(e.status.pendingApprovals[0] ?? null);
+        return;
+      }
+      store.onBridgeEvent(e);
+    });
     api()
       .invoke("state:get", {})
       .then((s) => {
         if (disposed) return;
         store.hydrate(s as Snapshot, gen);
         setReady(true);
+        void api()
+          .invoke("remoteMcp:status", {})
+          .then((rm) => {
+            if (!disposed && rm)
+              setRemoteApproval((rm as RemoteMcpStatus).pendingApprovals[0] ?? null);
+          })
+          .catch(() => {});
       })
       .catch((e: Error) => {
         if (!disposed) setFatal(e.message);
@@ -180,7 +264,7 @@ export function App(): React.JSX.Element {
           setPaletteOpen((v) => !v);
           return;
         case "openSettings":
-          setSettingsOpen(true);
+          openSettings();
           return;
         case "toggleSidebar":
           setSidebarCollapsed((v) => !v);
@@ -189,7 +273,7 @@ export function App(): React.JSX.Element {
           setDock((d) => (d === "terminal" ? null : "terminal"));
           return;
         case "toggleChanges":
-          setDock((d) => (d === "git" ? null : "git"));
+          if (sel) setChangesToggleSeq((n) => n + 1);
           return;
         case "showMainWindow":
           tryCall("window:focus", {});
@@ -345,30 +429,24 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     if (snapshot) {
-      document.documentElement.lang = snapshot.settings.language === "zh-Hans" ? "zh-Hans" : "en";
+      document.documentElement.lang = snapshot.settings.language;
     }
   }, [snapshot?.settings.language]);
 
-  // F26: frozen AppTheme — resolve the palette onto :root; themes with no
-  // fixed scheme (Breeze, System) follow the OS and re-resolve live.
+  // P2-51 / F26: resolve the 12 accent families + appearanceMode onto :root;
+  // "system" follows the OS prefers-color-scheme and OS accent color live.
   useEffect(() => {
     if (!snapshot) return;
     const theme = snapshot.settings.theme;
+    const appearanceMode = snapshot.settings.appearanceMode ?? "system";
+    const systemAccentHex = snapshot.info.systemAccentColor ?? null;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => applyTheme(document.documentElement, theme, mq.matches);
+    const apply = () =>
+      applyTheme(document.documentElement, theme, mq.matches, appearanceMode, systemAccentHex);
     apply();
     mq.addEventListener("change", apply);
     return () => mq.removeEventListener("change", apply);
-  }, [snapshot?.settings.theme]);
-
-  // F26: frozen performanceMode — the flag lives on <html> so one CSS
-  // block can strip every rendered effect the build actually has.
-  useEffect(() => {
-    if (!snapshot) return;
-    if (snapshot.settings.performanceMode === true)
-      document.documentElement.dataset.performance = "1";
-    else delete document.documentElement.dataset.performance;
-  }, [snapshot?.settings.performanceMode]);
+  }, [snapshot?.settings.theme, snapshot?.settings.appearanceMode, snapshot?.info.systemAccentColor]);
 
   // F26: push the frozen TypeScale offsets into the three CSS vars; the
   // code offset also reaches live xterm instances (terminals scale with
@@ -384,8 +462,7 @@ export function App(): React.JSX.Element {
   }, [snapshot?.settings.fontSizes]);
 
   // F26 wallpaper layer: refetch the picture whenever the installed
-  // basename changes. Performance Mode keeps the setting but the frozen
-  // solid fallback means nothing is painted (see .has-wp below).
+  // basename changes.
   useEffect(() => {
     const file = snapshot?.settings.wallpaper?.file;
     if (!file) {
@@ -483,11 +560,10 @@ export function App(): React.JSX.Element {
 
   // F26: the frozen window paints the picture at backdropOpacity under
   // glass on a TRANSPARENT window. Ours is opaque — honest mapping: the
-  // picture fills the app at that opacity over the solid base, softness
-  // becomes a CSS blur, and Performance Mode falls back to solid.
+  // picture fills the app at that opacity over the solid base and softness
+  // becomes a CSS blur.
   const wp = snapshot.settings.wallpaper;
-  const wpOn =
-    !!wp && !!wpUrl && snapshot.settings.performanceMode !== true;
+  const wpOn = !!wp && !!wpUrl;
 
   // A81 frozen SidebarLayout: default 268, bounds 210–440, drag past
   // 110 collapses (session-only, like ⌘B); a collapsed edge drags back
@@ -536,10 +612,18 @@ export function App(): React.JSX.Element {
             }}
           />
         )}
+        {resolveWeatherWindowMode(snapshot.settings) === "full" && (
+          <WeatherWindowLayer
+            threads={snapshot.threads}
+            projects={snapshot.projects}
+            finishFlashes={weatherFlashes}
+          />
+        )}
         {sidebarLive > 0 && (
           <Sidebar
             snapshot={snapshot}
-            onOpenSettings={() => setSettingsOpen(true)}
+            finishFlashes={weatherFlashes}
+            onOpenSettings={() => openSettings()}
             onOpenPalette={() => setPaletteOpen(true)}
           />
         )}
@@ -573,15 +657,22 @@ export function App(): React.JSX.Element {
             providerLabel={snapshot.info.providerLabel}
             mode={snapshot.info.mode}
             {...(snapshot.info.codex ? { codex: snapshot.info.codex } : {})}
+            info={snapshot.info}
+            settingsOpen={settingsOpen}
             readOnly={!!snapshot.readOnly}
             projects={snapshot.projects}
             dock={dock}
             onToggleDock={(name) => setDock((cur) => (cur === name ? null : name))}
+            changesToggleSeq={changesToggleSeq}
+            sidebarCollapsed={sidebarLive === 0}
+            onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
             {...(selected && store.limitResumes[selected.id]
               ? { limitResumeAt: store.limitResumes[selected.id] }
               : {})}
             settings={snapshot.settings}
-            onOpenSettings={() => setSettingsOpen(true)}
+            topControlsExpanded={topControlsExpanded}
+            onSetTopControlsExpanded={setTopControlsExpanded}
+            onOpenSettings={(page) => openSettings(page)}
           />
           </div>
           {helper && (
@@ -606,14 +697,15 @@ export function App(): React.JSX.Element {
             <GitPanel key={selected.id} thread={selected} readOnly={!!snapshot.readOnly} />
           )}
         </div>
-        {settingsOpen && (
+        {settingsPage && (
           <SettingsModal
             settings={snapshot.settings}
             info={snapshot.info}
             threads={snapshot.threads}
             projects={snapshot.projects}
             tokenActivity={snapshot.tokenActivity}
-            onClose={() => setSettingsOpen(false)}
+            initialPage={settingsPage}
+            onClose={() => setSettingsPage(null)}
           />
         )}
         {paletteOpen && (
@@ -622,9 +714,10 @@ export function App(): React.JSX.Element {
             selectedThreadId={snapshot.selectedThreadId}
             onClose={() => setPaletteOpen(false)}
             onToggleDock={(name) => setDock((cur) => (cur === name ? null : name))}
+            onToggleChanges={() => setChangesToggleSeq((n) => n + 1)}
             onOpenSettings={() => {
               setPaletteOpen(false);
-              setSettingsOpen(true);
+              openSettings();
             }}
           />
         )}
@@ -643,6 +736,21 @@ export function App(): React.JSX.Element {
               tryCall("threads:delete", { id: selected.id });
             }}
             onClose={() => setArchivePrompt(false)}
+          />
+        )}
+        {remoteApproval && (
+          <RemoteMcpApprovalPrompt
+            request={remoteApproval}
+            onDecide={(decision) => {
+              const id = remoteApproval.id;
+              setRemoteApproval(null);
+              void api()
+                .invoke("remoteMcp:decide", { id, decision })
+                .then((rm) => {
+                  if (rm) setRemoteApproval((rm as RemoteMcpStatus).pendingApprovals[0] ?? null);
+                })
+                .catch(() => {});
+            }}
           />
         )}
         {lastError && <ErrorBanner text={lastError} onDismiss={() => store.clearError()} />}

@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-02.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F18 bounded slice: MCP settings — stdio + streamable-HTTP servers. A
 // server here is a saved configuration plus an on-demand real probe
@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, tryCall } from "../client";
 import { useT } from "../locale";
+import { translateNotice } from "../i18n";
 import type { McpProbeResult, McpServerConfig } from "../../shared/mcp";
 import {
   MCP_CATEGORY_ORDER,
@@ -213,7 +214,7 @@ export function McpSection(props: { settings: Settings; home: string }): React.J
         return {
           text:
             s.transport === "http"
-              ? (r.reason ?? t("The endpoint isn't reachable."))
+              ? (r.reason ? translateNotice(t, r.reason) : t("The endpoint isn't reachable."))
               : t("%@ isn't installed.", s.command),
           cls: "mcp-st mcp-st-bad",
         };
@@ -231,11 +232,11 @@ export function McpSection(props: { settings: Settings; home: string }): React.J
           text:
             r.reason === "invalid tool list"
               ? t("The server sent an invalid tool list.")
-              : t("The server sent something unexpected: %@", r.reason ?? "invalid reply"),
+              : t("The server sent something unexpected: %@", r.reason ? translateNotice(t, r.reason) : t("invalid reply")),
           cls: "mcp-st mcp-st-bad",
         };
       default:
-        return { text: r.reason ?? t("Check failed"), cls: "mcp-st mcp-st-bad" };
+        return { text: r.reason ? translateNotice(t, r.reason) : t("Check failed"), cls: "mcp-st mcp-st-bad" };
     }
   };
 
@@ -285,7 +286,7 @@ export function McpSection(props: { settings: Settings; home: string }): React.J
               </div>
               {tools.length > 0 && (
                 <button
-                  className="mcp-tools-toggle"
+                  className="mcp-tools-toggle settings-btn-compact"
                   onClick={() => setRow(s.id, { showTools: !rows[s.id]?.showTools })}
                 >
                   {rows[s.id]?.showTools ? t("Hide tools") : t("Show tools")}
@@ -361,7 +362,7 @@ export function McpSection(props: { settings: Settings; home: string }): React.J
                         {e.name}
                         <span className="mcp-cat-vendor">{e.vendor}</span>
                       </span>
-                      <span className="mcp-cat-summary">{e.summary}</span>
+                      <span className="mcp-cat-summary">{t(e.summary)}</span>
                       <span className="mcp-cat-tools">
                         {e.sampleTools.slice(0, 3).join(" · ")}
                       </span>
@@ -396,7 +397,7 @@ export function McpSection(props: { settings: Settings; home: string }): React.J
               </button>
             )}
           </div>
-          <p className="codex-note">{picked.summary}</p>
+          <p className="codex-note">{t(picked.summary)}</p>
           <div className="mcp-cat-steps">
             {picked.keysURL ? (
               <>
@@ -418,7 +419,7 @@ export function McpSection(props: { settings: Settings; home: string }): React.J
                 <div className="mcp-step">
                   <span className="mcp-step-n">2</span>
                   <span>
-                    {t("Copy the %@", picked.fields?.[0]?.label ?? t("key"))}
+                    {t("Copy the %@", picked.fields?.[0]?.label ? t(picked.fields[0].label) : t("key"))}
                   </span>
                 </div>
                 <div className="mcp-step">
@@ -431,7 +432,7 @@ export function McpSection(props: { settings: Settings; home: string }): React.J
                 <div className="mcp-step">
                   <span className="mcp-step-n">1</span>
                   <span>
-                    {t("Enter the %@", picked.fields?.[0]?.label ?? t("value"))}
+                    {t("Enter the %@", picked.fields?.[0]?.label ? t(picked.fields[0].label) : t("value"))}
                   </span>
                 </div>
                 <div className="mcp-step">
@@ -444,7 +445,7 @@ export function McpSection(props: { settings: Settings; home: string }): React.J
           {(picked.fields ?? []).map((f) => (
             <label className="wt-field" key={f.key}>
               <span>
-                {f.label}
+                {t(f.label)}
                 {f.isRequired === false && <em className="mcp-cat-opt">{t("optional")}</em>}
               </span>
               <span className="mcp-cat-fieldrow">
@@ -473,7 +474,7 @@ export function McpSection(props: { settings: Settings; home: string }): React.J
                   </button>
                 )}
               </span>
-              {f.help && <span className="mcp-cat-help">{f.help}</span>}
+              {f.help && <span className="mcp-cat-help">{t(f.help)}</span>}
             </label>
           ))}
           <p className="codex-note">

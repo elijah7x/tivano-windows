@@ -10,7 +10,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, utimesSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { mentionQueryAt, scoreMentionPaths } from "../src/shared/fileMention";
+import {
+  compileMentionIndex,
+  containsBytes,
+  mentionQueryAt,
+  scoreMentionIndex,
+  scoreMentionPaths,
+} from "../src/shared/fileMention";
 import { FileIndexService } from "../src/main/fileIndex";
 import { DownloadsService } from "../src/main/downloadsService";
 
@@ -88,6 +94,50 @@ describe("scoreMentionPaths (frozen FileIndex.search)", () => {
   it("limit keeps the best-N insertion order, never more", () => {
     const many = Array.from({ length: 40 }, (_, i) => `d${i}/note.md`);
     expect(scoreMentionPaths(many, "note", 8)).toHaveLength(8);
+  });
+
+  it("compiled MentionIndex matches scoreMentionPaths across ASCII, non-ASCII, and 60k synthetic paths", () => {
+    const mixed = [
+      "src/Main/Engine.TS",
+      "src/文档/笔记.md",
+      "src/文档/设计-笔记.md",
+      "src/main/store.ts",
+      "README.md",
+    ];
+    for (const q of ["", "engine.ts", "srore", "笔记", "文记", "zz-missing"]) {
+      const idx = compileMentionIndex(mixed);
+      expect(scoreMentionIndex(idx, q, 8)).toEqual(
+        scoreMentionPaths(mixed, q, 8),
+      );
+    }
+
+    // 60k cap (frozen FileIndex GIT_CAP) synthetic replay
+    const sixtyK = Array.from(
+      { length: 60_000 },
+      (_, i) => `packages/mod-${Math.floor(i / 100)}/src/file-${i}.ts`,
+    );
+    sixtyK[42_123] = "packages/core/src/targetNeedle.ts";
+    const compiled = compileMentionIndex(sixtyK);
+    expect(scoreMentionIndex(compiled, "targetneedle.ts", 8)[0]).toBe(
+      "packages/core/src/targetNeedle.ts",
+    );
+    expect(scoreMentionIndex(compiled, "tndle", 8)).toContain(
+      "packages/core/src/targetNeedle.ts",
+    );
+    expect(scoreMentionPaths(sixtyK, "targetneedle", 8)[0]).toBe(
+      "packages/core/src/targetNeedle.ts",
+    );
+  });
+});
+
+describe("containsBytes (frozen String.containsBytes)", () => {
+  it("matches ASCII and UTF-8 byte sequences accurately", () => {
+    expect(containsBytes("src/main/engine.ts", "")).toBe(true);
+    expect(containsBytes("src/main/engine.ts", "engine")).toBe(true);
+    expect(containsBytes("src/main/engine.ts", "xyz")).toBe(false);
+    expect(containsBytes("short", "much-longer-needle")).toBe(false);
+    expect(containsBytes("src/文档/笔记.md", "笔记")).toBe(true);
+    expect(containsBytes("src/文档/笔记.md", "不存在")).toBe(false);
   });
 });
 
@@ -241,6 +291,29 @@ describe("FileIndexService (frozen listing + cache)", () => {
     // a was evicted → list() rebuilds it.
     expect(await svc.list(a)).toEqual([`${a}/v4`]);
     expect(calls2.n).toBe(4);
+  });
+
+  it("search() reuses the cached compiled index across queries and refreshes after expiry", async () => {
+    const dir = root();
+    let now = 1_000_000;
+    let builds = 0;
+    const svc = new FileIndexService({
+      isRepo: async () => true,
+      gitFiles: async () => {
+        builds += 1;
+        return builds === 1
+          ? ["src/alpha.ts", "src/beta.ts"]
+          : ["src/alpha.ts", "src/gamma.ts"];
+      },
+      now: () => now,
+    });
+    expect(await svc.search(dir, "alp")).toEqual(["src/alpha.ts"]);
+    expect(await svc.search(dir, "bt")).toEqual(["src/beta.ts"]);
+    expect(builds).toBe(1);
+    now += 61_000;
+    expect(await svc.search(dir, "gamma")).toEqual(["src/gamma.ts"]);
+    expect(await svc.search(dir, "beta")).toEqual([]);
+    expect(builds).toBe(2);
   });
 });
 

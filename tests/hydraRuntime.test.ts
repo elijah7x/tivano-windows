@@ -368,6 +368,74 @@ describe("A58 pair binding (frozen hydraLaunch slice)", () => {
     store.close();
   });
 
+  // #102 (audit follow-up on #95): the adaptive lock also counts the
+  // cap-held waiting queue — frozen canSwitchChimeraMode requires
+  // hydraWaitingCount == 0, not just no running/pending heads.
+  it("the adaptive mode switch refuses while delegations wait under the cap", async () => {
+    const { engine, store } = make();
+    engine.setSettings({ hydraMaxHeads: 1 });
+    const lead = engine.createThread(null, "lead");
+    engine.sendTurn(lead.id, "go [mock:hydra-waitmany]");
+    await waitFor(
+      () =>
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+    // Two delegations sit in hydraWaiting AND the held head keeps the
+    // lead busy — the combined guard refuses either way.
+    expect(() => engine.setSubagentMode(lead.id, "adaptive")).toThrow(
+      /switch modes/,
+    );
+    // Non-adaptive switches stay free (frozen: only the adaptive edge
+    // is locked).
+    expect(() => engine.setSubagentMode(lead.id, "same")).not.toThrow();
+    store.close();
+  });
+
+  // The queued-cap scenario above always has the held head busy too, so
+  // it cannot prove the queue term alone refuses. Isolate it: a stranded
+  // hydraWaiting entry with no running heads and no pending reports —
+  // hydraLeadBusy is false, so only the waiting-queue clause can throw.
+  // (Queued entries share their head's batch, which keeps that head's
+  // report pending — no public flow reaches queue>0 && !busy, so the
+  // queue is seeded directly; reverting the clause fails this test.)
+  it("the waiting queue alone locks the adaptive switch", async () => {
+    const { engine, store } = make();
+    const lead = engine.createThread(null, "lead");
+    const waiting = (
+      engine as unknown as {
+        hydraWaiting: Map<string, { d: { task: string }; batchId: string; queuedAt: number }[]>;
+      }
+    ).hydraWaiting;
+    waiting.set(lead.id, [
+      { d: { task: "stranded" }, batchId: "stranded-batch", queuedAt: 1 },
+    ]);
+    // Control: nothing is at work — no heads, no reports.
+    expect(heads(engine, lead.id)).toHaveLength(0);
+    expect(() => engine.setSubagentMode(lead.id, "adaptive")).toThrow(
+      /switch modes/,
+    );
+    expect(() => engine.setSubagentMode(lead.id, "same")).not.toThrow();
+    store.close();
+  });
+
+  it("leaving adaptive also refuses while delegations wait", async () => {
+    const { engine, store } = make();
+    engine.setSettings({ hydraMaxHeads: 1 });
+    const lead = engine.createThread(null, "lead");
+    engine.setSubagentMode(lead.id, "adaptive");
+    engine.sendTurn(lead.id, "go [mock:hydra-waitmany]");
+    await waitFor(
+      () =>
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+    expect(() => engine.setSubagentMode(lead.id, "same")).toThrow(
+      /switch modes/,
+    );
+    store.close();
+  });
+
   it("a profile-routed head wears the profile name and its model fields", async () => {
     const { engine, store } = make();
     const profile = {
@@ -799,8 +867,17 @@ describe("P1-36 sub-agent modes and the delegation budget", () => {
         heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
     );
     await waitFor(() => thread(engine, lead.id).turn?.status === "done");
-    // Two delegations wait under cap 1 — the next lead prompt opens
-    // with the frozen queued-heads note.
+    // Two delegations wait under cap 1 — the chat receives one in-timeline
+    // limit notice announcing the queued tasks, and the next lead prompt
+    // opens with the frozen queued-heads note.
+    const notices = thread(engine, lead.id).messages.filter(
+      (m) =>
+        m.kind === "notice" &&
+        m.content.includes("Sub-agent limit reached (1)"),
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.content).toContain("2 tasks are queued");
+    expect(notices[0]!.content).toContain("at most 1 sub-agents run at once (Settings › Hydra)");
     engine.sendTurn(lead.id, "keep going");
     await waitFor(() =>
       thread(engine, lead.id).messages.some(
@@ -814,6 +891,53 @@ describe("P1-36 sub-agent modes and the delegation budget", () => {
     )!;
     expect(reply.content).toContain("2 of your tasks are queued");
     expect(reply.content).toContain("the cap allows 1 head at once");
+    store.close();
+  });
+
+  it("Same-model default skips lastHydraPairId on new chats and deleteThread/mismatch clean budget maps", async () => {
+    const { engine, store } = make();
+    const pair = { ...newHydraPair("mock"), maxHeads: 1 };
+    engine.setSettings({
+      hydraPairs: [pair],
+      lastHydraPairId: pair.id,
+      subagentModeDefault: "same",
+    });
+    const lead = engine.createThread(null, "lead");
+    expect(lead.subagentMode).toBe("same");
+    expect(lead.hydraPairId).toBeUndefined();
+    // Switching a Same-model chat to Preset later does not resurrect the old pair.
+    engine.setSubagentMode(lead.id, "preset");
+    expect(thread(engine, lead.id).hydraPairId).toBeUndefined();
+
+    // Stale-generation batch entries are deleted on flush, and deleteThread
+    // drops all per-thread budget maps.
+    const e = engine as any;
+    budget(engine).hydraRounds.set(lead.id, 2);
+    budget(engine).hydraRounds.set(`${lead.id}:turn-1`, 1);
+    budget(engine).hydraRefunds.set(lead.id, 1);
+    budget(engine).hydraBudgetGen.set(lead.id, 2);
+    e.hydraBatchGen.set("stale-batch", 1);
+    e.hydraPendingReports.set(lead.id, [
+      {
+        headIndex: 0,
+        task: "probe",
+        status: "failed",
+        text: "boom",
+        batchId: "stale-batch",
+        copyPath: join(tmp(), "stale"),
+      },
+    ]);
+    e.flushHydraReports(lead.id);
+    expect(e.hydraBatchGen.has("stale-batch")).toBe(false);
+    expect(budget(engine).hydraRounds.get(lead.id)).toBe(2);
+
+    e.hydraQueueNoted.add(`${lead.id}:b-q`);
+    engine.deleteThread(lead.id);
+    expect(budget(engine).hydraRounds.has(lead.id)).toBe(false);
+    expect(budget(engine).hydraRounds.has(`${lead.id}:turn-1`)).toBe(false);
+    expect(budget(engine).hydraRefunds.has(lead.id)).toBe(false);
+    expect(budget(engine).hydraBudgetGen.has(lead.id)).toBe(false);
+    expect(e.hydraQueueNoted.has(`${lead.id}:b-q`)).toBe(false);
     store.close();
   });
 
@@ -937,5 +1061,257 @@ describe("P1-37 adaptive sub-agent identities", () => {
     expect(brief).toContain("You implement a clearly specified feature");
     expect(brief).not.toContain("You explore the codebase fast");
     store.close();
+  });
+});
+
+describe("P2-62 Hydra finish-signal & unread suppression (frozen AppModel.turnFinished)", () => {
+  it("suppresses chime, notify, and unread on Hydra heads and on the lead until all heads finish", async () => {
+    const { engine, store } = make();
+    const signals: {
+      threadId: string;
+      status: string;
+      chime: boolean;
+      notify: string | null;
+      silent: boolean;
+    }[] = [];
+    engine.onEvent((e) => {
+      if (e.type === "finish-signal") signals.push(e);
+    });
+    engine.setSettings({ hydraMaxHeads: 1 });
+    const watcher = engine.createThread(null, "watcher");
+    const lead = engine.createThread(null, "lead");
+    engine.selectThread(watcher.id);
+
+    engine.sendTurn(lead.id, "go [mock:hydra-waitmany]");
+    await waitFor(
+      () =>
+        thread(engine, lead.id).turn?.status === "done" &&
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+
+    // Lead finished dispatching while a head is running + two are queued:
+    // no chime, no notification, and no unread mark yet.
+    const leadDispatchSignals = signals.filter((s) => s.threadId === lead.id);
+    expect(leadDispatchSignals.length).toBeGreaterThanOrEqual(1);
+    expect(leadDispatchSignals[0]).toMatchObject({
+      status: "done",
+      chime: false,
+      notify: null,
+      silent: false,
+    });
+    expect(thread(engine, lead.id).hasUnread).toBeFalsy();
+
+    // Stop the held head so the queued heads run and finish, flushing the report turn.
+    engine.stopHydraHead(heads(engine, lead.id)[0]!.id);
+    await waitFor(() => heads(engine, lead.id).length === 3);
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some((m) =>
+        m.content.includes("Hydra reports:"),
+      ),
+    );
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+
+    // None of the Hydra head threads ever emitted a finish-signal or marked unread.
+    const headIds = new Set(heads(engine, lead.id).map((h) => h.id));
+    expect(signals.filter((s) => headIds.has(s.threadId))).toEqual([]);
+    for (const h of heads(engine, lead.id)) {
+      expect(h.hasUnread).toBeFalsy();
+    }
+
+    // Once the report turn completes with no heads left out, the lead chimes,
+    // notifies, and marks unread (since watcher is selected).
+    const leadFinalSignal = signals.filter((s) => s.threadId === lead.id).at(-1);
+    expect(leadFinalSignal).toMatchObject({
+      status: "done",
+      chime: true,
+      notify: "done",
+      silent: true,
+    });
+    expect(thread(engine, lead.id).hasUnread).toBe(true);
+    store.close();
+  });
+
+  it("drops unlaunchable hydraWaiting entries when Hydra is turned off so future lead turns still signal", async () => {
+    const { engine, store } = make();
+    const signals: {
+      threadId: string;
+      status: string;
+      chime: boolean;
+      notify: string | null;
+      silent: boolean;
+    }[] = [];
+    engine.onEvent((e) => {
+      if (e.type === "finish-signal") signals.push(e);
+    });
+    engine.setSettings({ hydraMaxHeads: 1 });
+    const watcher = engine.createThread(null, "watcher");
+    const lead = engine.createThread(null, "lead");
+    engine.selectThread(watcher.id);
+
+    engine.sendTurn(lead.id, "go [mock:hydra-waitmany]");
+    await waitFor(
+      () =>
+        thread(engine, lead.id).turn?.status === "done" &&
+        heads(engine, lead.id).length === 1 &&
+        heads(engine, lead.id)[0]!.turn?.status === "waiting-approval",
+    );
+
+    // Disable Hydra globally while two delegations sit in hydraWaiting.
+    engine.setSettings({ hydraEnabled: false });
+    engine.stopHydraHead(heads(engine, lead.id)[0]!.id);
+
+    await waitFor(() =>
+      thread(engine, lead.id).messages.some((m) =>
+        m.content.includes("Hydra reports:"),
+      ),
+    );
+    await waitFor(() => thread(engine, lead.id).turn?.status === "done");
+    expect(heads(engine, lead.id)).toHaveLength(1);
+
+    const afterReport = signals.filter((s) => s.threadId === lead.id).at(-1);
+    expect(afterReport).toMatchObject({
+      status: "done",
+      chime: true,
+      notify: "done",
+      silent: true,
+    });
+    expect(thread(engine, lead.id).hasUnread).toBe(true);
+
+    // A later turn on the lead also signals normally instead of remaining wedged.
+    const countBefore = signals.filter((s) => s.threadId === lead.id).length;
+    engine.sendTurn(lead.id, "ordinary follow-up");
+    await waitFor(
+      () => signals.filter((s) => s.threadId === lead.id).length > countBefore,
+    );
+    expect(signals.filter((s) => s.threadId === lead.id).at(-1)).toMatchObject({
+      status: "done",
+      chime: true,
+      notify: "done",
+      silent: true,
+    });
+    store.close();
+  });
+
+  it("clears persisted landingPending and stale running heads on startup recovery so future lead turns signal", async () => {
+    const { engine, store, root } = make();
+    const watcher = engine.createThread(null, "watcher");
+    const lead = engine.createThread(null, "lead");
+    const head = engine.createThread(null, "head-mid-landing");
+    const runningHead = engine.createThread(null, "head-mid-run");
+    const now = Date.now();
+    store.update((d) => {
+      const landingThread = d.threads.find((t) => t.id === head.id)!;
+      landingThread.worktreeDir = join(root, "head-copy");
+      landingThread.messages = [
+        {
+          id: "m-done",
+          role: "assistant",
+          content: "Landed work",
+          ts: now - 500,
+          turnId: "t-done",
+          status: "done",
+        },
+      ];
+      landingThread.turn = {
+        id: "t-done",
+        threadId: head.id,
+        seq: 1,
+        assistantMessageId: "m-done",
+        status: "done",
+        startedAt: now - 500,
+        endedAt: now - 100,
+      };
+      landingThread.hydraHead = {
+        leadId: lead.id,
+        headIndex: 1,
+        name: "Hank",
+        task: "land changes",
+        batchId: "b-recover",
+        status: "completed",
+        spawnedAt: now - 500,
+        finishedAt: now - 100,
+        landingPending: true,
+      };
+      const interruptedThread = d.threads.find((t) => t.id === runningHead.id)!;
+      interruptedThread.messages = [
+        {
+          id: "m-run",
+          role: "assistant",
+          content: "Working",
+          ts: now - 400,
+          turnId: "t-run",
+          status: "streaming",
+        },
+      ];
+      interruptedThread.turn = {
+        id: "t-run",
+        threadId: runningHead.id,
+        seq: 1,
+        assistantMessageId: "m-run",
+        status: "running",
+        startedAt: now - 400,
+      };
+      interruptedThread.hydraHead = {
+        leadId: lead.id,
+        headIndex: 2,
+        name: "Walter",
+        task: "still running",
+        batchId: "b-recover",
+        status: "running",
+        spawnedAt: now - 400,
+      };
+    });
+    store.close();
+
+    const store2 = new Store(root);
+    store2.open();
+    const engine2 = new Engine(store2, new MockProvider({ tickMs: 1 }), root, "0.0.0-test");
+    expect(engine2.hydraLeadBusy(lead.id)).toBe(true);
+
+    const recovered = engine2.recoverInFlight();
+    expect(recovered).toContain(head.id);
+    expect(recovered).toContain(runningHead.id);
+
+    const recoveredLandingHead = thread(engine2, head.id);
+    expect(recoveredLandingHead.turn?.status).toBe("done");
+    expect(recoveredLandingHead.hasUnread).toBeFalsy();
+    expect(recoveredLandingHead.hydraHead?.landingPending).toBeUndefined();
+    expect(recoveredLandingHead.hydraHead?.landing).toEqual({
+      files: [],
+      conflicts: [],
+      error: "the app closed before the landing finished",
+    });
+    expect(recoveredLandingHead.hydraHead?.copyKept).toBe(true);
+
+    const recoveredRunningHead = thread(engine2, runningHead.id);
+    expect(recoveredRunningHead.turn?.status).toBe("interrupted");
+    expect(recoveredRunningHead.hydraHead?.status).toBe("stopped");
+    expect(recoveredRunningHead.hasUnread).toBeFalsy();
+
+    expect(engine2.hydraLeadBusy(lead.id)).toBe(false);
+
+    const signals: {
+      threadId: string;
+      status: string;
+      chime: boolean;
+      notify: string | null;
+      silent: boolean;
+    }[] = [];
+    engine2.onEvent((e) => {
+      if (e.type === "finish-signal") signals.push(e);
+    });
+    engine2.selectThread(watcher.id);
+    engine2.sendTurn(lead.id, "after restart");
+    await waitFor(() => signals.some((s) => s.threadId === lead.id));
+
+    expect(signals.filter((s) => s.threadId === lead.id).at(-1)).toMatchObject({
+      status: "done",
+      chime: true,
+      notify: "done",
+      silent: true,
+    });
+    expect(thread(engine2, lead.id).hasUnread).toBe(true);
+    store2.close();
   });
 });

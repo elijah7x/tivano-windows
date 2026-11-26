@@ -55,7 +55,6 @@ import { runFolderChecks } from "./folderChecks.mjs";
 import { runUnreadChecks } from "./unreadChecks.mjs";
 import { runPaletteChecks } from "./paletteChecks.mjs";
 import { runSleepChecks } from "./sleepChecks.mjs";
-import { runAntiSlopChecks } from "./antiSlopChecks.mjs";
 import { runFontSizeChecks } from "./fontSizeChecks.mjs";
 import { runLocalControlChecks } from "./localControlChecks.mjs";
 import { runHydraChecks } from "./hydraChecks.mjs";
@@ -84,6 +83,9 @@ import { runNewThreadPromptChecks } from "./newThreadPromptChecks.mjs";
 import { runGeneralSettingsChecks } from "./generalSettingsChecks.mjs";
 import { runWorkingIndicatorChecks } from "./workingIndicatorChecks.mjs";
 import { runLayoutChecks, runShelfChecks, runQuickChecks } from "./layoutChecks.mjs";
+import { runRemoteMcpChecks } from "./remoteMcpChecks.mjs";
+import { runWelcomeChecks } from "./welcomeChecks.mjs";
+import { runP253ChromeChecks } from "./p253ChromeChecks.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "package.json"));
@@ -132,6 +134,29 @@ async function launch(envOverrides = {}, label = "instance") {
   app.on("window", attach);
   for (const page of app.windows()) attach(page);
   return { app, proc, ledger: entry };
+}
+
+/** Launch with a fresh isolated empty dataRoot (cleaned by caller after exit). */
+async function launchFresh(envOverrides = {}, label = "instance") {
+  const freshDataRoot = mkdtempSync(join(tmpdir(), "tivano-e2e-fresh-"));
+  const app = await electron.launch({
+    executablePath: electronBin,
+    args: [root, `--data-root=${freshDataRoot}`],
+    env: { ...env, ...envOverrides },
+    timeout: 30000,
+  });
+  let proc = null;
+  try {
+    proc = app.process();
+  } catch {
+    proc = null;
+  }
+  const entry = { label, pid: proc?.pid ?? null, exited: false, outcome: "pending" };
+  instanceLedger.push(entry);
+  const attach = (page) => page.on("pageerror", (e) => pageErrors.push(String(e)));
+  app.on("window", attach);
+  for (const page of app.windows()) attach(page);
+  return { app, proc, ledger: entry, freshDataRoot };
 }
 
 /** state:get via the page bridge — real ids and states, not DOM guesses. */
@@ -268,6 +293,7 @@ try {
   // settings: theme + About attribution
   await page.getByRole("button", { name: "Settings" }).click();
   await page.waitForSelector(".modal");
+  await page.locator('[data-settings-page="about"]').click();
   const about = await page.locator(".modal .about").last().innerText();
   check(
     "About carries upstream attribution",
@@ -282,6 +308,7 @@ try {
   await page.screenshot({ path: join(outDir, "04-settings-about.png") });
 
   // switch to zh-Hans and confirm localization lands
+  await page.locator('[data-settings-page="appearance"]').click();
   await page.getByRole("radio", { name: "简体中文" }).click();
   await page.waitForFunction(() => document.body.innerText.includes("对话列表"), null, {
     timeout: 5000,
@@ -1691,15 +1718,6 @@ try {
     boundedClose,
   });
 
-  // ---- session 24+: F31 anti-slop guidance (frozen AntiSlopPolicy) ----
-  await runAntiSlopChecks({
-    launch,
-    instances,
-    snap,
-    check,
-    boundedClose,
-  });
-
   // ---- session 25+: F26 font-size stepping (frozen TypeScale) ---------
   await runFontSizeChecks({
     launch,
@@ -1890,7 +1908,7 @@ try {
     dataRoot,
   });
 
-  // ---- A48: F04 link popover + F26 performanceMode (local state) --------
+  // ---- A48: F04 link popover + P2-62 retired Performance Mode -----------
   await runAppearanceChecks({
     launch,
     instances,
@@ -2068,6 +2086,39 @@ try {
     launch,
     instances,
     snap,
+    outDir,
+    check,
+    boundedClose,
+  });
+
+  // ---- session 32: P2-25 Remote MCP — Connections, OAuth, full-access gate --
+  await runRemoteMcpChecks({
+    launch,
+    instances,
+    snap,
+    check,
+    boundedClose,
+  });
+
+  // ---- session 33: P2-50 First-launch WelcomeView + NoThreadView ----------
+  await runWelcomeChecks({
+    launchFresh,
+    instances,
+    snap,
+    codexFixture,
+    outDir,
+    check,
+    boundedClose,
+  });
+
+  // ---- session 34: P2-53 Window chrome simplification ---------------------
+  await runP253ChromeChecks({
+    launch,
+    instances,
+    snap,
+    dataRoot,
+    workspaceRoot,
+    codexFixture,
     outDir,
     check,
     boundedClose,

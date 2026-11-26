@@ -1,11 +1,14 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-21.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-23.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Invoke-Audit.ps1 [-ConfigPath <path>] [-PrNumber <n>] [-DryRun]
+# Usage: .\Invoke-Audit.ps1 [-ConfigPath <path>] [-PrNumber <n>] [-SinglePr <n>] [-MaxParallel <n>] [-DryRun]
 # Independent PR auditor for nyx/* PRs targeting main. Acts solely via GitHub App token through AuditChecks.psm1 (never gh CLI).
 
 param(
   [string]$ConfigPath = 'C:\tivano\audit\config.json',
   [int]$PrNumber = 0,
+  [int]$SinglePr = 0,
+  [int]$MaxParallel = 2,
+  [string]$BaseMainSha = '',
   [switch]$DryRun
 )
 
@@ -15,9 +18,18 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'AuditChecks.psm1') -Force
 
 $script:CmdExe = Join-Path ([Environment]::GetFolderPath('System')) 'cmd.exe'
+$script:PowerShellExe = Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell\v1.0\powershell.exe'
+if (-not (Test-Path -LiteralPath $script:PowerShellExe -PathType Leaf)) {
+  $script:PowerShellExe = 'powershell.exe'
+}
+$script:ScriptPath = $PSCommandPath
 $script:GitPath = $null
 $script:WorkRoot = $null
 $script:LogPath = $null
+$script:LogPrefix = ''
+$script:AuditStateMutexName = 'Global\TivanoAuditState'
+$script:AuditRepoMutexName = 'Global\TivanoAuditRepo'
+$script:AuditMutexTimeoutMs = 120000
 $script:Redactions = @()
 
 $script:GuardedPrefixes = @(
@@ -105,7 +117,7 @@ function Write-Log {
   param([string]$Message)
   if (-not $script:LogPath) { return }
   $safe = Protect-LogText $Message
-  $line = [DateTime]::Now.ToString('yyyy-MM-ddTHH:mm:ss') + ' ' + $safe + "`r`n"
+  $line = [DateTime]::Now.ToString('yyyy-MM-ddTHH:mm:ss') + ' ' + $script:LogPrefix + $safe + "`r`n"
   try {
     [IO.File]::AppendAllText($script:LogPath, $line, (New-Object Text.UTF8Encoding($false)))
   } catch { }
@@ -204,28 +216,35 @@ function Invoke-Git {
     $AuthConfig = $null,
     [string]$TempBase = ''
   )
-  $baseDir = if (-not [string]::IsNullOrWhiteSpace($TempBase)) { $TempBase } else { $script:WorkRoot }
-  $out = Join-Path $baseDir '.git.out.tmp'
-  $err = Join-Path $baseDir '.git.err.tmp'
-  for ($try = 1; ; $try++) {
-    $prefix = ''
-    if (-not [string]::IsNullOrWhiteSpace($Directory)) {
-      $prefix = '-C ' + (Quote-Arg $Directory) + ' '
+  $baseDir = $script:WorkRoot
+  if (-not [string]::IsNullOrWhiteSpace($TempBase)) { $baseDir = $TempBase }
+  $tag = $PID.ToString() + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
+  $out = Join-Path $baseDir ('.git-' + $tag + '.out.tmp')
+  $err = Join-Path $baseDir ('.git-' + $tag + '.err.tmp')
+  try {
+    for ($try = 1; ; $try++) {
+      $prefix = ''
+      if (-not [string]::IsNullOrWhiteSpace($Directory)) {
+        $prefix = '-C ' + (Quote-Arg $Directory) + ' '
+      }
+      if ($null -ne $AuthConfig) {
+        $prefix += (Get-GitAuthArgs $AuthConfig) + ' '
+      }
+      $code = Invoke-Tool $script:GitPath ($prefix + $Arguments) $out $err $script:WorkRoot
+      $result = [pscustomobject]@{
+        exitCode = $code
+        text = (Read-Text $out)
+        error = (Protect-LogText ([string](Read-Text $err)))
+      }
+      if ($code -eq 0 -or $try -ge 3 -or -not (Test-NetworkFailure $result.error)) {
+        return $result
+      }
+      Write-Log ('git network failure, retry ' + $try + '/2: ' + (ConvertTo-SingleLine $result.error 160))
+      Start-Sleep -Seconds (10 * $try)
     }
-    if ($null -ne $AuthConfig) {
-      $prefix += (Get-GitAuthArgs $AuthConfig) + ' '
-    }
-    $code = Invoke-Tool $script:GitPath ($prefix + $Arguments) $out $err $script:WorkRoot
-    $result = [pscustomobject]@{
-      exitCode = $code
-      text = (Read-Text $out)
-      error = (Protect-LogText ([string](Read-Text $err)))
-    }
-    if ($code -eq 0 -or $try -ge 3 -or -not (Test-NetworkFailure $result.error)) {
-      return $result
-    }
-    Write-Log ('git network failure, retry ' + $try + '/2: ' + (ConvertTo-SingleLine $result.error 160))
-    Start-Sleep -Seconds (10 * $try)
+  } finally {
+    try { if (Test-Path -LiteralPath $out -PathType Leaf) { [IO.File]::Delete($out) } } catch { }
+    try { if (Test-Path -LiteralPath $err -PathType Leaf) { [IO.File]::Delete($err) } } catch { }
   }
 }
 
@@ -387,7 +406,7 @@ function Save-PrState {
     $State
   )
   $State.updatedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
-  $tmp = $Path + '.tmp'
+  $tmp = $Path + '.' + $PID + '.' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.tmp'
   Write-Text $tmp ((ConvertTo-Json -InputObject $State -Depth 8) + "`n")
   Move-TempFileAtomic -TempPath $tmp -DestinationPath $Path
 }
@@ -428,9 +447,288 @@ function Save-ArbiterDailyState {
     [string]$Path,
     $DailyState
   )
-  $tmp = $Path + '.tmp'
+  $tmp = $Path + '.' + $PID + '.' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.tmp'
   Write-Text $tmp ((ConvertTo-Json -InputObject $DailyState -Depth 6) + "`n")
   Move-TempFileAtomic -TempPath $tmp -DestinationPath $Path
+}
+
+function Invoke-WithNamedMutex {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$MutexName,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$Action,
+    [int]$TimeoutMs = 120000
+  )
+  $mutex = New-Object Threading.Mutex($false, $MutexName)
+  $acquired = $false
+  try {
+    try {
+      $acquired = $mutex.WaitOne($TimeoutMs)
+    } catch [Threading.AbandonedMutexException] {
+      # A previous holder exited without releasing the mutex; this thread now owns it.
+      $acquired = $true
+    }
+    if (-not $acquired) {
+      throw ('Timed out after ' + [int]($TimeoutMs / 1000) + 's waiting for mutex ' + $MutexName)
+    }
+    $result = & $Action
+    return $result
+  } finally {
+    if ($acquired) {
+      try { $mutex.ReleaseMutex() } catch { }
+    }
+    $mutex.Dispose()
+  }
+}
+
+function Invoke-WithAuditStateLock {
+  param(
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$Action,
+    [int]$TimeoutMs = 120000
+  )
+  return (Invoke-WithNamedMutex -MutexName $script:AuditStateMutexName -TimeoutMs $TimeoutMs -Action $Action)
+}
+
+function Set-PrStateFields {
+  param(
+    $Target,
+    $Source
+  )
+  $Target.headSha = [string](Get-JsonProp $Source 'headSha')
+  $att = Get-JsonProp $Source 'attempts'
+  $Target.attempts = 0
+  if ($null -ne $att) { $Target.attempts = [int]$att }
+  $lat = Get-JsonProp $Source 'lastAttemptAt'
+  $Target.lastAttemptAt = ''
+  if ($null -ne $lat) { $Target.lastAttemptAt = [string]$lat }
+  $lek = Get-JsonProp $Source 'lastErrorKind'
+  $Target.lastErrorKind = ''
+  if ($null -ne $lek) { $Target.lastErrorKind = [string]$lek }
+  $rnd = Get-JsonProp $Source 'round'
+  $Target.round = 0
+  if ($null -ne $rnd) { $Target.round = [int]$rnd }
+  $cid = Get-JsonProp $Source 'lastCommentId'
+  $Target.lastCommentId = [long]0
+  if ($null -ne $cid) { $Target.lastCommentId = [long]$cid }
+  $cat = Get-JsonProp $Source 'lastCommentCreatedAt'
+  $Target.lastCommentCreatedAt = ''
+  if ($null -ne $cat) { $Target.lastCommentCreatedAt = [string]$cat }
+  $rid = Get-JsonProp $Source 'lastRebuttalCommentId'
+  $Target.lastRebuttalCommentId = [long]0
+  if ($null -ne $rid) { $Target.lastRebuttalCommentId = [long]$rid }
+  $prid = Get-JsonProp $Source 'pendingRebuttalCommentId'
+  $Target.pendingRebuttalCommentId = [long]0
+  if ($null -ne $prid) { $Target.pendingRebuttalCommentId = [long]$prid }
+  $v = Get-JsonProp $Source 'verdict'
+  $Target.verdict = ''
+  if ($null -ne $v) { $Target.verdict = [string]$v }
+  $bs = Get-JsonProp $Source 'baseSha'
+  $Target.baseSha = ''
+  if ($null -ne $bs) { $Target.baseSha = [string]$bs }
+  $pf = Get-JsonProp $Source 'priorFindings'
+  $Target.priorFindings = @()
+  if ($null -ne $pf) { $Target.priorFindings = @($pf | ForEach-Object { $_ }) }
+  $as = Get-JsonProp $Source 'arbiterState'
+  $Target.arbiterState = ''
+  if ($null -ne $as) { $Target.arbiterState = [string]$as }
+  $ad = Get-JsonProp $Source 'arbiterDone'
+  $Target.arbiterDone = $false
+  if ($null -ne $ad) { $Target.arbiterDone = [bool]$ad }
+  $Target.arbiterPending = Get-JsonProp $Source 'arbiterPending'
+}
+
+function Read-PrStateLocked {
+  param(
+    [string]$Path,
+    [int]$Number
+  )
+  return (Invoke-WithAuditStateLock -TimeoutMs $script:AuditMutexTimeoutMs -Action {
+    return (Read-PrState -Path $Path -Number $Number)
+  })
+}
+
+function Update-PrStateLocked {
+  param(
+    [string]$Path,
+    [int]$Number,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$Mutate
+  )
+  return (Invoke-WithAuditStateLock -TimeoutMs $script:AuditMutexTimeoutMs -Action {
+    $fresh = Read-PrState -Path $Path -Number $Number
+    & $Mutate $fresh
+    Save-PrState -Path $Path -State $fresh
+    return $fresh
+  })
+}
+
+function Read-ArbiterDailyStateLocked {
+  param([string]$Path)
+  return (Invoke-WithAuditStateLock -TimeoutMs $script:AuditMutexTimeoutMs -Action {
+    return (Read-ArbiterDailyState -Path $Path)
+  })
+}
+
+function Get-CurrentProcessStartUtc {
+  try {
+    $cur = [Diagnostics.Process]::GetCurrentProcess()
+    return $cur.StartTime.ToUniversalTime().ToString('o')
+  } catch {
+    return ''
+  }
+}
+
+function Test-ClaimOwnerAlive {
+  param(
+    [int]$OwnerPid,
+    [string]$RecordedStartUtc = ''
+  )
+  if ($OwnerPid -le 0) { return $false }
+  $proc = $null
+  try {
+    $proc = [Diagnostics.Process]::GetProcessById($OwnerPid)
+  } catch {
+    return $false
+  }
+  try {
+    if ($proc.HasExited) { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($RecordedStartUtc)) {
+      try {
+        $actualStart = $proc.StartTime.ToUniversalTime()
+        $expectedStart = [DateTimeOffset]::Parse($RecordedStartUtc).UtcDateTime
+        if ([Math]::Abs(($actualStart - $expectedStart).TotalSeconds) -gt 5) {
+          return $false
+        }
+      } catch {
+        # Access denied on StartTime means the PID belongs to another user or system process.
+        return $false
+      }
+    }
+    return $true
+  } catch {
+    return $false
+  } finally {
+    if ($null -ne $proc) {
+      try { $proc.Dispose() } catch { }
+    }
+  }
+}
+
+function Read-PrClaimFile {
+  param([string]$LockPath)
+  if (-not (Test-Path -LiteralPath $LockPath -PathType Leaf)) { return $null }
+  $text = Read-Text $LockPath
+  if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+  try {
+    $data = $text.TrimStart([char]0xFEFF) | ConvertFrom-Json
+    if ($data -is [pscustomobject]) { return $data }
+  } catch { }
+  return $null
+}
+
+function Get-LivePrClaim {
+  param(
+    [string]$ClaimsDir,
+    [int]$PrNumber
+  )
+  $lockPath = Join-Path $ClaimsDir ('pr-' + $PrNumber + '.lock')
+  return (Invoke-WithAuditStateLock -TimeoutMs $script:AuditMutexTimeoutMs -Action {
+    if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { return $null }
+    $existing = Read-PrClaimFile -LockPath $lockPath
+    if ($null -eq $existing) { return $null }
+    $ownerPid = 0
+    $rawPid = Get-JsonProp $existing 'pid'
+    if ($null -ne $rawPid) {
+      $parsedPid = 0
+      if ([int]::TryParse([string]$rawPid, [ref]$parsedPid)) { $ownerPid = $parsedPid }
+    }
+    $startUtc = [string](Get-JsonProp $existing 'processStartUtc')
+    if (Test-ClaimOwnerAlive -OwnerPid $ownerPid -RecordedStartUtc $startUtc) {
+      return [pscustomobject]@{
+        prNumber = $PrNumber
+        pid = $ownerPid
+        lockPath = $lockPath
+        claimedAt = [string](Get-JsonProp $existing 'claimedAt')
+      }
+    }
+    return $null
+  })
+}
+
+function Try-AcquirePrClaim {
+  param(
+    [string]$ClaimsDir,
+    [int]$PrNumber
+  )
+  $lockPath = Join-Path $ClaimsDir ('pr-' + $PrNumber + '.lock')
+  $myStartUtc = Get-CurrentProcessStartUtc
+  return (Invoke-WithAuditStateLock -TimeoutMs $script:AuditMutexTimeoutMs -Action {
+    [IO.Directory]::CreateDirectory($ClaimsDir) | Out-Null
+    $staleClearedPid = 0
+    if (Test-Path -LiteralPath $lockPath -PathType Leaf) {
+      $existing = Read-PrClaimFile -LockPath $lockPath
+      $ownerPid = 0
+      $startUtc = ''
+      if ($null -ne $existing) {
+        $rawPid = Get-JsonProp $existing 'pid'
+        if ($null -ne $rawPid) {
+          $parsedPid = 0
+          if ([int]::TryParse([string]$rawPid, [ref]$parsedPid)) { $ownerPid = $parsedPid }
+        }
+        $startUtc = [string](Get-JsonProp $existing 'processStartUtc')
+      }
+      if ($ownerPid -gt 0 -and $ownerPid -ne $PID -and (Test-ClaimOwnerAlive -OwnerPid $ownerPid -RecordedStartUtc $startUtc)) {
+        return [pscustomobject]@{
+          acquired = $false
+          lockPath = $lockPath
+          ownerPid = $ownerPid
+          staleClearedPid = 0
+          reason = ('already claimed by live audit process PID ' + $ownerPid)
+        }
+      }
+      $staleClearedPid = $ownerPid
+    }
+    $claimPayload = [ordered]@{
+      prNumber = $PrNumber
+      pid = $PID
+      processStartUtc = $myStartUtc
+      claimedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+    }
+    $tmp = $lockPath + '.' + $PID + '.' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.tmp'
+    Write-Text $tmp ((ConvertTo-Json -InputObject $claimPayload -Depth 4 -Compress) + "`n")
+    Move-TempFileAtomic -TempPath $tmp -DestinationPath $lockPath
+    return [pscustomobject]@{
+      acquired = $true
+      lockPath = $lockPath
+      ownerPid = $PID
+      staleClearedPid = $staleClearedPid
+      reason = ''
+    }
+  })
+}
+
+function Release-PrClaim {
+  param(
+    [string]$LockPath,
+    [int]$OwnerPid
+  )
+  if ([string]::IsNullOrWhiteSpace($LockPath)) { return }
+  $null = Invoke-WithAuditStateLock -TimeoutMs $script:AuditMutexTimeoutMs -Action {
+    if (-not (Test-Path -LiteralPath $LockPath -PathType Leaf)) { return }
+    $existing = Read-PrClaimFile -LockPath $LockPath
+    if ($null -ne $existing) {
+      $rawPid = Get-JsonProp $existing 'pid'
+      $filePid = 0
+      if ($null -ne $rawPid) {
+        $parsedPid = 0
+        if ([int]::TryParse([string]$rawPid, [ref]$parsedPid)) { $filePid = $parsedPid }
+      }
+      if ($filePid -gt 0 -and $filePid -ne $OwnerPid) { return }
+    }
+    [IO.File]::Delete($LockPath)
+  }
 }
 
 function Test-RetryBackoffActive {
@@ -955,7 +1253,8 @@ function Get-DeterministicFindings {
     [string]$PrBody = '',
     $PrCommits = @(),
     $MainCompare = $null,
-    $MainCommits = @()
+    $MainCommits = @(),
+    [string]$BaseRef = 'origin/main'
   )
   $findings = New-Object Collections.Generic.List[object]
   $seq = 1
@@ -1203,8 +1502,9 @@ function Get-DeterministicFindings {
   }
 
   if ($hasPackageJson) {
-    $beforeRes = Invoke-Git -Directory $Worktree -Arguments 'show origin/main:package.json' -TempBase $TempBase
-    $beforeSig = if ($beforeRes.exitCode -eq 0) { Get-DependencySignature ([string]$beforeRes.text) } else { $null }
+    $beforeRes = Invoke-Git -Directory $Worktree -Arguments ('show ' + $BaseRef + ':package.json') -TempBase $TempBase
+    $beforeSig = $null
+    if ($beforeRes.exitCode -eq 0) { $beforeSig = Get-DependencySignature ([string]$beforeRes.text) }
     $afterSig = Get-DependencySignature (Read-Text (Join-Path $Worktree 'package.json'))
     if ($null -eq $beforeSig -or $null -eq $afterSig -or $beforeSig -ne $afterSig) {
       $null = $findings.Add([pscustomobject]@{
@@ -1219,8 +1519,9 @@ function Get-DeterministicFindings {
   }
 
   if ($hasParityMd -and -not $isRebaselinePr) {
-    $beforeRes = Invoke-Git -Directory $Worktree -Arguments 'show origin/main:docs/parity.md' -TempBase $TempBase
-    $beforeMap = if ($beforeRes.exitCode -eq 0) { Get-ParityStatus ([string]$beforeRes.text) } else { @{} }
+    $beforeRes = Invoke-Git -Directory $Worktree -Arguments ('show ' + $BaseRef + ':docs/parity.md') -TempBase $TempBase
+    $beforeMap = @{}
+    if ($beforeRes.exitCode -eq 0) { $beforeMap = Get-ParityStatus ([string]$beforeRes.text) }
     $afterMap = Get-ParityStatus (Read-Text (Join-Path $Worktree 'docs\parity.md'))
     $promoted = @()
     foreach ($id in @($afterMap.Keys | Sort-Object)) {
@@ -1242,7 +1543,7 @@ function Get-DeterministicFindings {
   }
 
   $testsDiffFailed = $false
-  $testsDiffRes = Invoke-Git -Directory $Worktree -Arguments '-c core.quotepath=false diff --cached --no-renames -U0 origin/main -- tests' -TempBase $TempBase
+  $testsDiffRes = Invoke-Git -Directory $Worktree -Arguments ('-c core.quotepath=false diff --cached --no-renames -U0 ' + $BaseRef + ' -- tests') -TempBase $TempBase
   if ($testsDiffRes.exitCode -ne 0) {
     $testsDiffFailed = $true
     $null = $findings.Add([pscustomobject]@{
@@ -1356,7 +1657,7 @@ function Get-DeterministicFindings {
     }
   }
 
-  $fullDiffRes = Invoke-Git -Directory $Worktree -Arguments '-c core.quotepath=false diff --cached --no-renames -U0 origin/main' -TempBase $TempBase
+  $fullDiffRes = Invoke-Git -Directory $Worktree -Arguments ('-c core.quotepath=false diff --cached --no-renames -U0 ' + $BaseRef) -TempBase $TempBase
   if ($fullDiffRes.exitCode -ne 0) {
     if (-not $testsDiffFailed) {
       $null = $findings.Add([pscustomobject]@{
@@ -1480,7 +1781,8 @@ function Build-AuditCommentBody {
     $Findings,
     $Claims,
     $Withdrawn,
-    [bool]$ArbiterFollows = $false
+    [bool]$ArbiterFollows = $false,
+    [string]$ModelName = ''
   )
   $sha7 = if ($HeadSha.Length -ge 7) { $HeadSha.Substring(0, 7) } else { $HeadSha }
   $verdictLabel = if ($Verdict -eq 'pass') { 'PASS' } else { 'BLOCK' }
@@ -1489,7 +1791,11 @@ function Build-AuditCommentBody {
   $null = $lines.Add('## Nyx audit - ' + $sha7 + ' - ' + $verdictLabel)
   $null = $lines.Add('')
   $issueLabel = if ($IssueNumber -gt 0) { '#' + $IssueNumber } else { 'none' }
-  $null = $lines.Add('Round: ' + $Round + ' | Linked issue: ' + $issueLabel)
+  $metaLine = 'Round: ' + $Round + ' | Linked issue: ' + $issueLabel
+  if (-not [string]::IsNullOrWhiteSpace($ModelName)) {
+    $metaLine += ' | Model: ' + (Protect-PublicText $ModelName)
+  }
+  $null = $lines.Add($metaLine)
   if ($ArbiterFollows) {
     $null = $lines.Add('')
     $null = $lines.Add('> Still blocking after rebuttal round ' + $Round + '; invoking automatic arbitration.')
@@ -1907,15 +2213,48 @@ function Invoke-ArbiterPass {
   }
 
   $dailyPath = Get-ArbiterDailyPath -StateDir $StateDir
-  $dailyState = Read-ArbiterDailyState -Path $dailyPath
-  if ([int]$dailyState.count -ge $dailyCap) {
-    Write-Log ('PR #' + $PrNumber + ' head ' + $sha7 + ': arbiter daily cap reached (' + $dailyState.count + '/' + $dailyCap + '); leaving status failure (arbitration pending)')
+  $dailyReservation = Invoke-WithAuditStateLock -TimeoutMs $script:AuditMutexTimeoutMs -Action {
+    $ds = Read-ArbiterDailyState -Path $dailyPath
+    $curCount = [int]$ds.count
+    if ($curCount -ge $dailyCap) {
+      return [pscustomobject]@{
+        allowed = $false
+        count = $curCount
+      }
+    }
+    $newCount = $curCount
+    if (-not $IsDryRun) {
+      $newCount = $curCount + 1
+      $ds.count = $newCount
+      $runsList = New-Object Collections.Generic.List[object]
+      foreach ($r in @($ds.runs)) {
+        if ($null -ne $r) { $null = $runsList.Add($r) }
+      }
+      $null = $runsList.Add([pscustomobject]@{
+        pr = $PrNumber
+        headSha = $HeadSha
+        at = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+      })
+      $ds.runs = $runsList.ToArray()
+      Save-ArbiterDailyState -Path $dailyPath -DailyState $ds
+    }
+    return [pscustomobject]@{
+      allowed = $true
+      count = $newCount
+    }
+  }
+  $dailyCount = [int]$dailyReservation.count
+  if (-not $dailyReservation.allowed) {
+    Write-Log ('PR #' + $PrNumber + ' head ' + $sha7 + ': arbiter daily cap reached (' + $dailyCount + '/' + $dailyCap + '); leaving status failure (arbitration pending)')
     if (-not $IsDryRun) {
       Set-AuditCommitStatus -Config $Config -Sha $HeadSha -State 'failure' -Description 'arbitration pending' -TargetUrl $PriorCommentUrl
-      $State.arbiterState = 'pending'
-      $State.arbiterDone = $false
-      $State.arbiterPending = $pendingPayload
-      Save-PrState -Path $StatePath -State $State
+      $updated = Update-PrStateLocked -Path $StatePath -Number $PrNumber -Mutate {
+        param($st)
+        $st.arbiterState = 'pending'
+        $st.arbiterDone = $false
+        $st.arbiterPending = $pendingPayload
+      }
+      Set-PrStateFields -Target $State -Source $updated
     }
     $capRecord = [ordered]@{
       pr = $PrNumber
@@ -1924,26 +2263,11 @@ function Invoke-ArbiterPass {
       verdict = 'block'
       commitStatus = 'failure'
       description = 'arbitration pending'
-      reason = ('daily arbiter cap reached (' + $dailyState.count + '/' + $dailyCap + ')')
+      reason = ('daily arbiter cap reached (' + $dailyCount + '/' + $dailyCap + ')')
       runDir = $RunDir
     }
     Write-Text (Join-Path $RunDir 'result.json') ((ConvertTo-Json -InputObject $capRecord -Depth 6) + "`n")
     return $capRecord
-  }
-
-  if (-not $IsDryRun) {
-    $dailyState.count = [int]$dailyState.count + 1
-    $runsList = New-Object Collections.Generic.List[object]
-    foreach ($r in @($dailyState.runs)) {
-      if ($null -ne $r) { $null = $runsList.Add($r) }
-    }
-    $null = $runsList.Add([pscustomobject]@{
-      pr = $PrNumber
-      headSha = $HeadSha
-      at = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
-    })
-    $dailyState.runs = $runsList.ToArray()
-    Save-ArbiterDailyState -Path $dailyPath -DailyState $dailyState
   }
 
   $blockingText = Format-BlockingItemsForArbiter -BlockingFindings $bfArr -FailedAcceptance $faArr -FalseClaims $fcArr
@@ -1961,18 +2285,24 @@ function Invoke-ArbiterPass {
     [Text.RegularExpressions.MatchEvaluator]{ param($m) [string]$arbValues[$m.Groups[1].Value] }
   )
 
-  Write-Log ('PR #' + $PrNumber + ' head ' + $sha7 + ': invoking automatic arbiter (daily count ' + $dailyState.count + '/' + $dailyCap + ')')
+  Write-Log ('PR #' + $PrNumber + ' head ' + $sha7 + ': invoking automatic arbiter (daily count ' + $dailyCount + '/' + $dailyCap + ')')
   $arbRes = Invoke-ArbiterModel -Config $Config -PromptText $filledArbiterPrompt -WorkDir $WorktreeDir -RunDir $RunDir
 
   if ($null -eq $arbRes -or ([string]$arbRes.status) -ne 'ok' -or $null -eq $arbRes.result) {
-    $arbErr = if ($null -ne $arbRes -and -not [string]::IsNullOrWhiteSpace([string]$arbRes.error)) { [string]$arbRes.error } else { 'arbiter unavailable' }
+    $arbErr = 'arbiter unavailable'
+    if ($null -ne $arbRes -and -not [string]::IsNullOrWhiteSpace([string]$arbRes.error)) {
+      $arbErr = [string]$arbRes.error
+    }
     Write-Log ('PR #' + $PrNumber + ' head ' + $sha7 + ': arbiter unavailable (' + $arbErr + '); leaving status failure (arbitration pending)')
     if (-not $IsDryRun) {
       Set-AuditCommitStatus -Config $Config -Sha $HeadSha -State 'failure' -Description 'arbitration pending' -TargetUrl $PriorCommentUrl
-      $State.arbiterState = 'pending'
-      $State.arbiterDone = $false
-      $State.arbiterPending = $pendingPayload
-      Save-PrState -Path $StatePath -State $State
+      $updated = Update-PrStateLocked -Path $StatePath -Number $PrNumber -Mutate {
+        param($st)
+        $st.arbiterState = 'pending'
+        $st.arbiterDone = $false
+        $st.arbiterPending = $pendingPayload
+      }
+      Set-PrStateFields -Target $State -Source $updated
     }
     $unavailArbRecord = [ordered]@{
       pr = $PrNumber
@@ -2004,18 +2334,21 @@ function Invoke-ArbiterPass {
 
       Set-AuditCommitStatus -Config $Config -Sha $HeadSha -State 'success' -Description $statusDesc -TargetUrl $arbCommentUrl
 
-      $State.headSha = $HeadSha
-      $State.verdict = 'pass'
-      $State.baseSha = $MainSha
-      $State.arbiterState = 'passed'
-      $State.arbiterDone = $true
-      $State.arbiterPending = $null
-      $State.lastCommentId = $arbCommentId
-      $State.lastCommentCreatedAt = $arbCommentCreated
-      $State.attempts = 0
-      $State.lastAttemptAt = ''
-      $State.lastErrorKind = ''
-      Save-PrState -Path $StatePath -State $State
+      $updated = Update-PrStateLocked -Path $StatePath -Number $PrNumber -Mutate {
+        param($st)
+        $st.headSha = $HeadSha
+        $st.verdict = 'pass'
+        $st.baseSha = $MainSha
+        $st.arbiterState = 'passed'
+        $st.arbiterDone = $true
+        $st.arbiterPending = $null
+        $st.lastCommentId = $arbCommentId
+        $st.lastCommentCreatedAt = $arbCommentCreated
+        $st.attempts = 0
+        $st.lastAttemptAt = ''
+        $st.lastErrorKind = ''
+      }
+      Set-PrStateFields -Target $State -Source $updated
     }
 
     $passRecord = [ordered]@{
@@ -2048,18 +2381,21 @@ function Invoke-ArbiterPass {
       Set-AuditCommitStatus -Config $Config -Sha $HeadSha -State 'failure' -Description $statusDesc -TargetUrl $arbCommentUrl
       Add-AuditParkedLabel -Config $Config -Number $PrNumber
 
-      $State.headSha = $HeadSha
-      $State.verdict = 'parked'
-      $State.baseSha = $MainSha
-      $State.arbiterState = 'parked'
-      $State.arbiterDone = $true
-      $State.arbiterPending = $null
-      $State.lastCommentId = $arbCommentId
-      $State.lastCommentCreatedAt = $arbCommentCreated
-      $State.attempts = 0
-      $State.lastAttemptAt = ''
-      $State.lastErrorKind = ''
-      Save-PrState -Path $StatePath -State $State
+      $updated = Update-PrStateLocked -Path $StatePath -Number $PrNumber -Mutate {
+        param($st)
+        $st.headSha = $HeadSha
+        $st.verdict = 'parked'
+        $st.baseSha = $MainSha
+        $st.arbiterState = 'parked'
+        $st.arbiterDone = $true
+        $st.arbiterPending = $null
+        $st.lastCommentId = $arbCommentId
+        $st.lastCommentCreatedAt = $arbCommentCreated
+        $st.attempts = 0
+        $st.lastAttemptAt = ''
+        $st.lastErrorKind = ''
+      }
+      Set-PrStateFields -Target $State -Source $updated
     }
 
     $parkedRecord = [ordered]@{
@@ -2098,6 +2434,1042 @@ function Remove-ExcessRuns {
   }
 }
 
+function Get-PrAuditDecision {
+  param(
+    $Config,
+    $Pr,
+    [string]$StateDir,
+    [string]$MainSha,
+    [int]$ArbiterDailyCap
+  )
+  $num = [int]$Pr.number
+  $headObj = Get-JsonProp $Pr 'head'
+  $headSha = [string](Get-JsonProp $headObj 'sha')
+  $headRef = [string](Get-JsonProp $headObj 'ref')
+  $prTitle = [string](Get-JsonProp $Pr 'title')
+  $prBody = [string](Get-JsonProp $Pr 'body')
+  if ([string]::IsNullOrWhiteSpace($headSha) -or $headSha.Length -lt 7) {
+    return [pscustomobject]@{
+      action = 'skip'
+      skipRecord = [ordered]@{ pr = $num; reason = 'missing head SHA' }
+    }
+  }
+  $sha7 = $headSha.Substring(0, 7)
+  $statePath = Join-Path $StateDir ('pr-' + $num + '.json')
+  $state = Read-PrStateLocked -Path $statePath -Number $num
+
+  $isNewHead = ($state.headSha -ne $headSha)
+  if ($isNewHead) {
+    $state.headSha = $headSha
+    $state.attempts = 0
+    $state.lastAttemptAt = ''
+    $state.lastErrorKind = ''
+    $state.round = 0
+    $state.lastCommentId = [long]0
+    $state.lastCommentCreatedAt = ''
+    $state.lastRebuttalCommentId = [long]0
+    $state.pendingRebuttalCommentId = [long]0
+    $state.verdict = ''
+    $state.baseSha = ''
+    $state.priorFindings = @()
+    $state.arbiterState = ''
+    $state.arbiterDone = $false
+    $state.arbiterPending = $null
+  }
+
+  $rebuttalText = 'none'
+  $priorFindingsText = 'none'
+  $rebuttalCommentId = [long]0
+  $arbiterRetryOnly = $false
+  $logMessage = ''
+
+  if (-not $isNewHead) {
+    # A pass holds only for the main it was trial-merged onto; re-audit when main moves.
+    if ($state.verdict -eq 'pass') {
+      # A body edit does not move the head, so recheck the body for agent attribution before reusing a pass.
+      if (-not [string]::IsNullOrWhiteSpace($MainSha) -and $state.baseSha -eq $MainSha -and -not (Test-DevinAttribution $prBody)) {
+        return [pscustomobject]@{
+          action = 'skip'
+          skipRecord = [ordered]@{ pr = $num; sha = $sha7; reason = 'already passed for head ' + $sha7 }
+        }
+      }
+      # main moved since pass: start a fresh audit against new main while preserving arbiterDone for this head SHA.
+      $state.round = 0
+      $state.attempts = 0
+      $state.lastAttemptAt = ''
+      $state.lastErrorKind = ''
+      $state.verdict = ''
+      $state.priorFindings = @()
+    } elseif ($state.verdict -eq 'parked') {
+      return [pscustomobject]@{
+        action = 'skip'
+        skipRecord = [ordered]@{ pr = $num; sha = $sha7; reason = 'already parked by arbiter for head ' + $sha7 }
+      }
+    } elseif ($state.verdict -eq 'block') {
+      if ([int]$state.round -ge 2) {
+        if ($state.arbiterState -eq 'pending' -and -not [string]::IsNullOrWhiteSpace($MainSha) -and $state.baseSha -ne $MainSha) {
+          # main moved while arbitration waited: the pending findings came from a stale trial merge, so audit afresh.
+          $logMessage = 'PR #' + $num + ' head ' + $sha7 + ': main moved during pending arbitration; restarting the audit'
+          $state.round = 0
+          $state.attempts = 0
+          $state.lastAttemptAt = ''
+          $state.lastErrorKind = ''
+          $state.verdict = ''
+          $state.priorFindings = @()
+          $state.arbiterState = ''
+          $state.arbiterPending = $null
+        } elseif ($state.arbiterState -eq 'pending' -and -not [bool]$state.arbiterDone -and $null -ne $state.arbiterPending) {
+          $dailyCheck = Read-ArbiterDailyStateLocked -Path (Get-ArbiterDailyPath -StateDir $StateDir)
+          if ([int]$dailyCheck.count -ge $ArbiterDailyCap) {
+            return [pscustomobject]@{
+              action = 'skip'
+              skipRecord = [ordered]@{ pr = $num; sha = $sha7; reason = 'arbitration pending for head ' + $sha7 + ' (daily cap reached)' }
+            }
+          }
+          $arbiterRetryOnly = $true
+          $logMessage = 'PR #' + $num + ' head ' + $sha7 + ': retrying pending arbitration'
+        } else {
+          return [pscustomobject]@{
+            action = 'skip'
+            skipRecord = [ordered]@{ pr = $num; sha = $sha7; reason = 'already completed rebuttal round for head ' + $sha7 }
+          }
+        }
+      } else {
+        $comments = @(Get-PrComments -Config $Config -Number $num)
+        $rebuttal = Find-NewRebuttal -Comments $comments -State $state -Config $Config -HeadSha $headSha
+        if ($null -eq $rebuttal) {
+          return [pscustomobject]@{
+            action = 'skip'
+            skipRecord = [ordered]@{ pr = $num; sha = $sha7; reason = 'already blocked for head ' + $sha7 + ' with no new rebuttal' }
+          }
+        }
+        $rebuttalText = $rebuttal.text
+        $rebuttalCommentId = [long]$rebuttal.commentId
+        $priorFindingsText = Format-FindingsForPrompt $state.priorFindings
+        if ($priorFindingsText -eq 'none' -and -not [string]::IsNullOrWhiteSpace($rebuttal.lastAuditBody)) {
+          $priorFindingsText = $rebuttal.lastAuditBody
+        }
+        if ([long]$state.pendingRebuttalCommentId -ne $rebuttalCommentId) {
+          $state.pendingRebuttalCommentId = $rebuttalCommentId
+          $state.attempts = 0
+          $state.lastAttemptAt = ''
+          $state.lastErrorKind = ''
+        }
+        if (Test-RetryBackoffActive -State $state -BackoffMinutes 60) {
+          return [pscustomobject]@{
+            action = 'skip'
+            skipRecord = [ordered]@{ pr = $num; sha = $sha7; reason = 'backing off after ' + $state.attempts + ' failed audit attempts for head ' + $sha7 + ' (retry after 60m)' }
+          }
+        }
+        $logMessage = 'PR #' + $num + ' head ' + $sha7 + ': detected new rebuttal comment ' + $rebuttalCommentId + ', starting round ' + ([int]$state.round + 1)
+      }
+    } else {
+      if (Test-RetryBackoffActive -State $state -BackoffMinutes 60) {
+        return [pscustomobject]@{
+          action = 'skip'
+          skipRecord = [ordered]@{ pr = $num; sha = $sha7; reason = 'backing off after ' + $state.attempts + ' failed audit attempts for head ' + $sha7 + ' (retry after 60m)' }
+        }
+      }
+    }
+  }
+
+  $nextRound = [int]$state.round + 1
+  if ($arbiterRetryOnly) { $nextRound = [int]$state.round }
+
+  return [pscustomobject]@{
+    action = 'audit'
+    skipRecord = $null
+    prNumber = $num
+    headSha = $headSha
+    sha7 = $sha7
+    headRef = $headRef
+    prTitle = $prTitle
+    prBody = $prBody
+    statePath = $statePath
+    state = $state
+    rebuttalText = $rebuttalText
+    priorFindingsText = $priorFindingsText
+    rebuttalCommentId = $rebuttalCommentId
+    arbiterRetryOnly = $arbiterRetryOnly
+    nextRound = $nextRound
+    logMessage = $logMessage
+  }
+}
+
+function Invoke-SinglePrAudit {
+  param(
+    $Decision,
+    $Config,
+    [string]$StateDir,
+    [string]$RunsDir,
+    [string]$ClaimsDir,
+    [string]$RepoDir,
+    [string]$MainSha,
+    [string]$PromptTemplate,
+    [string]$ArbiterTemplate,
+    $MainCommitsCache,
+    $ResultsOut,
+    $SkippedOut,
+    $ErrorsOut,
+    $Pr = $null,
+    [int]$ArbiterDailyCap = 0,
+    [switch]$IsDryRun
+  )
+  $num = [int]$Decision.prNumber
+  $headSha = [string]$Decision.headSha
+  $sha7 = [string]$Decision.sha7
+  $headRef = [string]$Decision.headRef
+  $prTitle = [string]$Decision.prTitle
+  $prBody = [string]$Decision.prBody
+  $statePath = [string]$Decision.statePath
+  $state = $Decision.state
+  $rebuttalText = [string]$Decision.rebuttalText
+  $priorFindingsText = [string]$Decision.priorFindingsText
+  $rebuttalCommentId = [long]$Decision.rebuttalCommentId
+  $arbiterRetryOnly = [bool]$Decision.arbiterRetryOnly
+  $nextRound = [int]$Decision.nextRound
+
+  $claim = Try-AcquirePrClaim -ClaimsDir $ClaimsDir -PrNumber $num
+  if ($claim.staleClearedPid -gt 0) {
+    Write-Log ('PR #' + $num + ' head ' + $sha7 + ': cleared stale claim lock from dead PID ' + $claim.staleClearedPid)
+  }
+  if (-not $claim.acquired) {
+    Write-Log ('PR #' + $num + ' head ' + $sha7 + ': ' + $claim.reason + '; skipping')
+    $null = $SkippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = $claim.reason })
+    return
+  }
+
+  # The decision was computed before the claim; another audit may have finished in between, so recompute it under the claim.
+  if ($null -ne $Pr) {
+    $fresh = $null
+    try {
+      $fresh = Get-PrAuditDecision -Config $Config -Pr $Pr -StateDir $StateDir -MainSha $MainSha -ArbiterDailyCap $ArbiterDailyCap
+    } catch {
+      Release-PrClaim -LockPath $claim.lockPath -OwnerPid $PID
+      throw
+    }
+    if ($fresh.action -eq 'skip' -or [string]$fresh.headSha -ne $headSha -or [int]$fresh.nextRound -ne $nextRound -or [bool]$fresh.arbiterRetryOnly -ne $arbiterRetryOnly) {
+      Release-PrClaim -LockPath $claim.lockPath -OwnerPid $PID
+      Write-Log ('PR #' + $num + ' head ' + $sha7 + ': decision changed while waiting for the claim; skipping this stale run')
+      if ($fresh.action -eq 'skip') { $null = $SkippedOut.Add($fresh.skipRecord) } else { $null = $SkippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'decision changed before the claim' }) }
+      return
+    }
+    $state = $fresh.state
+    $statePath = [string]$fresh.statePath
+    $rebuttalText = [string]$fresh.rebuttalText
+    $priorFindingsText = [string]$fresh.priorFindingsText
+    $rebuttalCommentId = [long]$fresh.rebuttalCommentId
+  }
+
+  try {
+    $runDirName = 'pr-' + $num + '-' + $sha7
+    if ($arbiterRetryOnly) { $runDirName = 'pr-' + $num + '-' + $sha7 + '-arbiter' }
+    $runDir = Join-Path $RunsDir $runDirName
+    if (Test-Path -LiteralPath $runDir) {
+      $runDir = Join-Path $RunsDir ($runDirName + '-r' + $nextRound + '-' + [DateTime]::Now.ToString('yyyyMMddTHHmmss'))
+    }
+    if (Test-Path -LiteralPath $runDir) {
+      $runDir = Join-Path $RunsDir ($runDirName + '-r' + $nextRound + '-p' + $PID + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 4))
+    }
+    [IO.Directory]::CreateDirectory($runDir) | Out-Null
+
+    $worktreeDir = Join-Path $runDir ('worktree-pr-' + $num + '-' + $PID)
+    $worktreeCreated = $false
+    $pendingSet = $false
+    $arbiterStateSaved = $false
+    $finalStateSaved = $false
+    $preRunState = @{
+      headSha = [string]$state.headSha
+      attempts = [int]$state.attempts
+      lastAttemptAt = [string]$state.lastAttemptAt
+      lastErrorKind = [string]$state.lastErrorKind
+      round = [int]$state.round
+      lastCommentId = [long]$state.lastCommentId
+      lastCommentCreatedAt = [string]$state.lastCommentCreatedAt
+      lastRebuttalCommentId = [long]$state.lastRebuttalCommentId
+      pendingRebuttalCommentId = [long]$state.pendingRebuttalCommentId
+      verdict = [string]$state.verdict
+      baseSha = [string]$state.baseSha
+      priorFindings = @($state.priorFindings)
+      arbiterState = [string]$state.arbiterState
+      arbiterDone = [bool]$state.arbiterDone
+      arbiterPending = $state.arbiterPending
+    }
+
+    $baseRef = 'origin/main'
+    if (-not [string]::IsNullOrWhiteSpace($MainSha)) { $baseRef = $MainSha }
+
+    try {
+    if ($arbiterRetryOnly) {
+      Write-Log ('arbitrating PR #' + $num + ' head ' + $sha7)
+      if (-not $IsDryRun) {
+        Set-AuditCommitStatus -Config $Config -Sha $headSha -State 'pending' -Description 'Nyx audit arbitration running'
+        $pendingSet = $true
+      }
+    } else {
+      Write-Log ('auditing PR #' + $num + ' head ' + $sha7 + ' round ' + $nextRound)
+      if (-not $IsDryRun) {
+        Set-AuditCommitStatus -Config $Config -Sha $headSha -State 'pending' -Description ('Nyx audit running (round ' + $nextRound + ')')
+        $pendingSet = $true
+      }
+    }
+
+    $prepRes = Invoke-WithNamedMutex -MutexName $script:AuditRepoMutexName -TimeoutMs $script:AuditMutexTimeoutMs -Action {
+      $fetchPr = Invoke-Git -Directory $RepoDir -Arguments ('fetch --no-tags origin +refs/pull/' + $num + '/head:refs/audit/pr-' + $num) -AuthConfig $Config -TempBase $runDir
+      if ($fetchPr.exitCode -ne 0) {
+        throw ('git fetch PR #' + $num + ' failed: ' + (ConvertTo-SingleLine $fetchPr.error 240))
+      }
+      $revCheck = Invoke-Git -Directory $RepoDir -Arguments ('rev-parse --verify refs/audit/pr-' + $num) -TempBase $runDir
+      $fetchedShaLocal = ''
+      if ($revCheck.exitCode -eq 0 -and $revCheck.text) { $fetchedShaLocal = $revCheck.text.Trim() }
+      if ($fetchedShaLocal -ne $headSha) {
+        return [pscustomobject]@{
+          headMoved = $true
+          fetchedSha = $fetchedShaLocal
+        }
+      }
+      $wtAdd = Invoke-Git -Directory $RepoDir -Arguments ('worktree add --detach ' + (Quote-Arg $worktreeDir) + ' ' + $baseRef) -TempBase $runDir
+      if ($wtAdd.exitCode -ne 0) {
+        throw ('git worktree add failed: ' + (ConvertTo-SingleLine $wtAdd.error 240))
+      }
+      return [pscustomobject]@{
+        headMoved = $false
+        fetchedSha = $fetchedShaLocal
+      }
+    }
+    if ($prepRes.headMoved) {
+      Write-Log ('PR #' + $num + ' head moved during fetch (expected ' + $sha7 + ', got ' + $prepRes.fetchedSha + '); skipping')
+      $null = $SkippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'head moved during fetch' })
+      return
+    }
+    $worktreeCreated = $true
+
+    $mergeRes = Invoke-Git -Directory $worktreeDir -Arguments ('-c user.name=nyx-audit -c user.email=nyx-audit@localhost merge --no-commit --no-ff ' + $headSha) -TempBase $runDir
+    $hasMergeConflict = $false
+    if ($mergeRes.exitCode -ne 0) {
+      $combinedMergeOut = ([string]$mergeRes.text) + "`n" + ([string]$mergeRes.error)
+      $porcelain = Invoke-Git -Directory $worktreeDir -Arguments 'status --porcelain' -TempBase $runDir
+      $hasUnmerged = ($porcelain.exitCode -eq 0 -and ([string]$porcelain.text) -match '(?m)^(?:UU|AA|DD|AU|UA|DU|UD)\s')
+      if ($hasUnmerged -or $combinedMergeOut -match '(?i)CONFLICT|Automatic merge failed') {
+        $hasMergeConflict = $true
+        $null = Invoke-Git -Directory $worktreeDir -Arguments 'merge --abort' -TempBase $runDir
+      } else {
+        throw ('git trial merge failed: ' + (ConvertTo-SingleLine $combinedMergeOut 240))
+      }
+    }
+
+    $issueNumber = Get-LinkedIssueNumber -PrBody $prBody -HeadRef $headRef
+    if ($arbiterRetryOnly -and $issueNumber -le 0 -and $null -ne $state.arbiterPending) {
+      $savedIssue = Get-JsonProp $state.arbiterPending 'issueNumber'
+      if ($null -ne $savedIssue) { $issueNumber = [int]$savedIssue }
+    }
+    $issueBody = 'No linked issue found.'
+    $issueError = ''
+    if ($issueNumber -gt 0) {
+      try {
+        $issueBody = Get-IssueMarkdown -Config $Config -IssueNumber $issueNumber
+      } catch {
+        $issueError = ConvertTo-SingleLine $_.Exception.Message 240
+        $issueBody = 'Failed to fetch linked issue #' + $issueNumber + ': ' + $issueError
+      }
+    }
+
+    if ($arbiterRetryOnly) {
+      $diffStat = '(merge conflict with origin/main)'
+      if (-not $hasMergeConflict) {
+        $statRes = Invoke-Git -Directory $worktreeDir -Arguments ('diff --cached --stat ' + $baseRef) -TempBase $runDir
+        $diffStat = '(empty diff against origin/main)'
+        if ($statRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($statRes.text)) {
+          $diffStat = $statRes.text.TrimEnd()
+        }
+      }
+      $ap = $state.arbiterPending
+      $arbRecord = Invoke-ArbiterPass `
+        -Config $Config `
+        -StateDir $StateDir `
+        -StatePath $statePath `
+        -State $state `
+        -PrNumber $num `
+        -HeadSha $headSha `
+        -MainSha $MainSha `
+        -IssueNumber $issueNumber `
+        -IssueBody $issueBody `
+        -DiffStat $diffStat `
+        -RebuttalText ([string](Get-JsonProp $ap 'rebuttal')) `
+        -BlockingFindings @(Get-JsonProp $ap 'blockingFindings' | Where-Object { $null -ne $_ }) `
+        -FailedAcceptance @(Get-JsonProp $ap 'failedAcceptance' | Where-Object { $null -ne $_ }) `
+        -FalseClaims @(Get-JsonProp $ap 'falseClaims' | Where-Object { $null -ne $_ }) `
+        -PriorCommentUrl ([string](Get-JsonProp $ap 'commentUrl')) `
+        -WorktreeDir $worktreeDir `
+        -RunDir $runDir `
+        -ArbiterTemplate $ArbiterTemplate `
+        -IsDryRun:$IsDryRun
+      $null = $ResultsOut.Add($arbRecord)
+      return
+    }
+
+    $acceptance = @()
+    $claims = @()
+    $withdrawn = @()
+    $allFindings = New-Object Collections.Generic.List[object]
+    $modelVerdict = ''
+    $auditModel = ''
+    $auditFallbackReason = ''
+    $finalVerdict = 'block'
+    $diffStat = '(merge conflict with origin/main)'
+
+    if ($hasMergeConflict) {
+      $null = $allFindings.Add([pscustomobject]@{
+        id = 'D1'
+        severity = 'blocking'
+        title = 'conflicts with current main'
+        evidence = ('merge origin/main + ' + $sha7)
+        why = 'Trial merge of PR head onto origin/main produced merge conflicts.'
+      })
+      if ($issueNumber -le 0) {
+        $null = $allFindings.Add([pscustomobject]@{
+          id = 'D2'
+          severity = 'blocking'
+          title = 'no linked issue'
+          evidence = ('branch ' + $headRef)
+          why = 'PR body has no Closes/Fixes/Resolves #N reference and branch name does not start with nyx/<N>-.'
+        })
+      }
+      $finalVerdict = 'block'
+    } else {
+      $namesRes = Invoke-Git -Directory $worktreeDir -Arguments ('-c core.quotepath=false diff --cached --no-renames --name-only -z ' + $baseRef) -TempBase $runDir
+      if ($namesRes.exitCode -ne 0) {
+        throw ('git diff --name-only failed: ' + (ConvertTo-SingleLine $namesRes.error 240))
+      }
+      $changedFiles = @(([string]$namesRes.text) -split "`0" | Where-Object { $_ })
+
+      $statRes = Invoke-Git -Directory $worktreeDir -Arguments ('diff --cached --stat ' + $baseRef) -TempBase $runDir
+      $diffStat = '(empty diff against origin/main)'
+      if ($statRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($statRes.text)) {
+        $diffStat = $statRes.text.TrimEnd()
+      }
+      Write-Text (Join-Path $runDir 'diff.stat.txt') ($diffStat + "`n")
+
+      $diffOutPath = Join-Path $runDir 'diff.patch'
+      $diffErrPath = Join-Path $runDir 'diff.err.log'
+      $null = Invoke-Tool $script:GitPath ('-C ' + (Quote-Arg $worktreeDir) + ' diff --cached ' + $baseRef) $diffOutPath $diffErrPath $script:WorkRoot
+
+      $prCommits = @(Get-PrCommits -Config $Config -Number $num)
+      $mainCompare = Get-MainCompare -Config $Config -HeadSha $headSha
+      if (-not $MainCommitsCache['loaded']) {
+        $MainCommitsCache['commits'] = @(Get-MainRecentCommits -Config $Config -Limit 50)
+        $MainCommitsCache['loaded'] = $true
+      }
+      $detFindings = @(Get-DeterministicFindings -Worktree $worktreeDir -HeadRef $headRef -ChangedFiles $changedFiles -IssueNumber $issueNumber -IssueError $issueError -TempBase $runDir -PrBody $prBody -PrCommits $prCommits -MainCompare $mainCompare -MainCommits $MainCommitsCache['commits'] -BaseRef $baseRef)
+      foreach ($df in $detFindings) { $null = $allFindings.Add($df) }
+
+      $values = @{
+        PR_NUMBER = [string]$num
+        PR_TITLE = $prTitle
+        PR_BODY = $(if ([string]::IsNullOrWhiteSpace($prBody)) { '(empty)' } else { $prBody })
+        ISSUE_NUMBER = $(if ($issueNumber -gt 0) { '#' + $issueNumber } else { 'none' })
+        ISSUE_BODY = $issueBody
+        DIFF_STAT = $diffStat
+        DETERMINISTIC_FINDINGS = (Format-FindingsForPrompt $detFindings)
+        REFERENCE_ROOT = [string]$Config.referenceRoot
+        PRIOR_FINDINGS = $priorFindingsText
+        REBUTTAL = $rebuttalText
+      }
+      $filledPrompt = [regex]::Replace(
+        $PromptTemplate,
+        '\{\{(PR_NUMBER|PR_TITLE|PR_BODY|ISSUE_NUMBER|ISSUE_BODY|DIFF_STAT|DETERMINISTIC_FINDINGS|REFERENCE_ROOT|PRIOR_FINDINGS|REBUTTAL)\}\}',
+        [Text.RegularExpressions.MatchEvaluator]{ param($m) [string]$values[$m.Groups[1].Value] }
+      )
+
+      $extraReadDirs = @()
+      if (-not [string]::IsNullOrWhiteSpace([string]$Config.referenceRoot)) {
+        $extraReadDirs = @([string]$Config.referenceRoot)
+      }
+
+      $modelRes = $null
+      for ($modelTry = 1; $modelTry -le 2; $modelTry++) {
+        $modelRes = Invoke-AuditModel -Config $Config -PromptText $filledPrompt -WorkDir $worktreeDir -ExtraReadDirs $extraReadDirs -RunDir $runDir
+        $tryFallbackReason = [string](Get-JsonProp $modelRes 'fallbackReason')
+        if (-not [string]::IsNullOrWhiteSpace($tryFallbackReason)) {
+          Write-Log ('PR #' + $num + ' head ' + $sha7 + ' model fallback: ' + $tryFallbackReason)
+        }
+        if ($modelRes.status -eq 'ok') {
+          $mv = ([string](Get-JsonProp $modelRes.result 'verdict')).Trim().ToLowerInvariant()
+          if ($mv -ne 'pass' -and $mv -ne 'block') {
+            $modelRes = @{
+              status = 'unavailable'
+              result = $null
+              raw = $modelRes.raw
+              error = ('Unexpected PR audit verdict from model: ' + $mv)
+              model = [string](Get-JsonProp $modelRes 'model')
+              fallbackReason = $tryFallbackReason
+            }
+          }
+        }
+        if ($modelRes.status -eq 'ok') { break }
+        Write-Log ('PR #' + $num + ' head ' + $sha7 + ' model attempt ' + $modelTry + '/2 unavailable: ' + [string]$modelRes.error)
+        if ($modelTry -lt 2) { Start-Sleep -Seconds 5 }
+      }
+
+      if ($null -eq $modelRes -or $modelRes.status -ne 'ok') {
+        $errReason = 'audit model unavailable'
+        $unavailFallbackReason = ''
+        if ($null -ne $modelRes) {
+          if (-not [string]::IsNullOrWhiteSpace([string]$modelRes.error)) {
+            $errReason = [string]$modelRes.error
+          }
+          $unavailFallbackReason = [string](Get-JsonProp $modelRes 'fallbackReason')
+        }
+        $newAttempts = [int]$state.attempts + 1
+        $attemptAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $state.attempts = $newAttempts
+        $state.lastAttemptAt = $attemptAt
+        $state.lastErrorKind = 'outage'
+        if ($state.verdict -eq 'unavailable-failed') { $state.verdict = '' }
+        $inBackoff = ($newAttempts -ge 3)
+        $unavailCommitStatus = 'error'
+        $unavailDesc = 'audit unavailable, will retry'
+        if ($inBackoff) {
+          $unavailCommitStatus = 'failure'
+          $unavailDesc = 'audit unavailable (backoff 60m), will retry'
+        }
+        if (-not $IsDryRun) {
+          $updated = Update-PrStateLocked -Path $statePath -Number $num -Mutate {
+            param($st)
+            Set-PrStateFields -Target $st -Source $state
+            $st.attempts = $newAttempts
+            $st.lastAttemptAt = $attemptAt
+            $st.lastErrorKind = 'outage'
+            if ($st.verdict -eq 'unavailable-failed') { $st.verdict = '' }
+          }
+          Set-PrStateFields -Target $state -Source $updated
+          Set-AuditCommitStatus -Config $Config -Sha $headSha -State $unavailCommitStatus -Description $unavailDesc
+        }
+        $unavailRecord = [ordered]@{
+          pr = $num
+          headSha = $headSha
+          round = $nextRound
+          status = 'unavailable'
+          attempts = $newAttempts
+          lastAttemptAt = $attemptAt
+          backoffMinutes = $(if ($inBackoff) { 60 } else { 0 })
+          commitStatus = $unavailCommitStatus
+          fallbackReason = $unavailFallbackReason
+          error = $errReason
+          runDir = $runDir
+        }
+        Write-Text (Join-Path $runDir 'result.json') ((ConvertTo-Json -InputObject $unavailRecord -Depth 6) + "`n")
+        $null = $ResultsOut.Add($unavailRecord)
+        Write-Log ('PR #' + $num + ' head ' + $sha7 + ' failed closed (attempts=' + $newAttempts + ', backoff=' + $inBackoff + '): ' + $errReason)
+        return
+      }
+
+      $auditModel = [string](Get-JsonProp $modelRes 'model')
+      $auditFallbackReason = [string](Get-JsonProp $modelRes 'fallbackReason')
+      $parsed = $modelRes.result
+      $modelVerdict = ([string](Get-JsonProp $parsed 'verdict')).Trim().ToLowerInvariant()
+      $accRaw = Get-JsonProp $parsed 'acceptance'
+      if ($null -ne $accRaw) { $acceptance = @($accRaw | ForEach-Object { $_ }) }
+      $claimsRaw = Get-JsonProp $parsed 'claims'
+      if ($null -ne $claimsRaw) { $claims = @($claimsRaw | ForEach-Object { $_ }) }
+      $wdRaw = Get-JsonProp $parsed 'withdrawn'
+      if ($null -ne $wdRaw) { $withdrawn = @($wdRaw | ForEach-Object { $_ }) }
+      $modelFindingsRaw = Get-JsonProp $parsed 'findings'
+      if ($null -ne $modelFindingsRaw) {
+        foreach ($mf in @($modelFindingsRaw)) { $null = $allFindings.Add($mf) }
+      }
+
+      $hasBlocking = ($modelVerdict -eq 'block')
+      foreach ($f in $allFindings.ToArray()) {
+        if (([string](Get-JsonProp $f 'severity')).Trim().ToLowerInvariant() -eq 'blocking') { $hasBlocking = $true }
+      }
+      foreach ($a in $acceptance) {
+        $ast = ([string](Get-JsonProp $a 'status')).Trim().ToLowerInvariant()
+        if ($ast -eq 'missing' -or $ast -eq 'substituted') { $hasBlocking = $true }
+      }
+      foreach ($cl in $claims) {
+        $hv = Get-JsonProp $cl 'holds'
+        if ($hv -is [bool] -and -not $hv) { $hasBlocking = $true }
+      }
+
+      if ($hasBlocking) {
+        $finalVerdict = 'block'
+      } else {
+        $finalVerdict = 'pass'
+      }
+    }
+
+    $findingsArray = @($allFindings.ToArray())
+    $blockingFindings = @($findingsArray | Where-Object { ([string](Get-JsonProp $_ 'severity')).Trim().ToLowerInvariant() -eq 'blocking' })
+    $failedAcceptance = @($acceptance | Where-Object {
+      $ast = ([string](Get-JsonProp $_ 'status')).Trim().ToLowerInvariant()
+      $ast -eq 'missing' -or $ast -eq 'substituted'
+    })
+    $falseClaims = @($claims | Where-Object {
+      $hv = Get-JsonProp $_ 'holds'
+      ($hv -is [bool]) -and (-not $hv)
+    })
+
+    $needsArbitration = ($finalVerdict -eq 'block' -and $nextRound -ge 2)
+    $commentBody = Build-AuditCommentBody `
+      -HeadSha $headSha `
+      -Round $nextRound `
+      -Verdict $finalVerdict `
+      -IssueNumber $issueNumber `
+      -Acceptance $acceptance `
+      -Findings $findingsArray `
+      -Claims $claims `
+      -Withdrawn $withdrawn `
+      -ArbiterFollows ($needsArbitration -and -not [bool]$state.arbiterDone) `
+      -ModelName $auditModel
+    Write-Text (Join-Path $runDir 'comment.md') $commentBody
+
+    $blockingCount = $blockingFindings.Count
+    $advisoryCount = $findingsArray.Count - $blockingCount
+    $failingAccCount = $failedAcceptance.Count
+    $failingClaimsCount = $falseClaims.Count
+
+    $commentUrl = ''
+    $commentId = [long]0
+    $commentCreated = ''
+    if (-not $IsDryRun) {
+      $posted = Invoke-AuditApi -Config $Config -Method 'POST' -Path ('/repos/' + $Config.repo + '/issues/' + $num + '/comments') -Body @{ body = $commentBody }
+      $commentId = [long](Get-JsonProp $posted 'id')
+      $commentUrl = [string](Get-JsonProp $posted 'html_url')
+      $commentCreated = [string](Get-JsonProp $posted 'created_at')
+    }
+
+    if ($needsArbitration) {
+      if ([bool]$state.arbiterDone) {
+        # Enforce at most one arbitration per head SHA: park directly without re-invoking the arbiter.
+        $emptyEval = Evaluate-ArbiterRulings -BlockingFindings $blockingFindings -FailedAcceptance $failedAcceptance -FalseClaims $falseClaims -ArbiterResult ([pscustomobject]@{ rulings = @(); acceptance = @(); claims = @() })
+        $parkBody = Build-ArbiterParkedCommentBody -HeadSha $headSha -IssueNumber $issueNumber -Evaluation $emptyEval -Note 'Arbitration was already used once for this head SHA; parking PR.'
+        Write-Text (Join-Path $runDir 'arbiter-comment.md') $parkBody
+        $parkDesc = 'Nyx audit parked (arbiter already ran for this head)'
+        $parkCommentId = [long]0
+        $parkCommentUrl = ''
+        if (-not $IsDryRun) {
+          $pPost = Invoke-AuditApi -Config $Config -Method 'POST' -Path ('/repos/' + $Config.repo + '/issues/' + $num + '/comments') -Body @{ body = $parkBody }
+          $parkCommentId = [long](Get-JsonProp $pPost 'id')
+          $parkCommentUrl = [string](Get-JsonProp $pPost 'html_url')
+          $parkCommentCreated = [string](Get-JsonProp $pPost 'created_at')
+          Set-AuditCommitStatus -Config $Config -Sha $headSha -State 'failure' -Description $parkDesc -TargetUrl $parkCommentUrl
+          Add-AuditParkedLabel -Config $Config -Number $num
+          $updated = Update-PrStateLocked -Path $statePath -Number $num -Mutate {
+            param($st)
+            $st.headSha = $headSha
+            $st.round = $nextRound
+            $st.lastCommentId = $parkCommentId
+            $st.lastCommentCreatedAt = $parkCommentCreated
+            $st.lastRebuttalCommentId = [long]$state.lastRebuttalCommentId
+            if ($rebuttalCommentId -gt 0) { $st.lastRebuttalCommentId = $rebuttalCommentId }
+            $st.pendingRebuttalCommentId = [long]0
+            $st.verdict = 'parked'
+            $st.baseSha = $MainSha
+            $st.priorFindings = $findingsArray
+            $st.attempts = 0
+            $st.lastAttemptAt = ''
+            $st.lastErrorKind = ''
+            $st.arbiterState = 'parked'
+            $st.arbiterDone = $true
+            $st.arbiterPending = $null
+          }
+          Set-PrStateFields -Target $state -Source $updated
+          $finalStateSaved = $true
+        }
+        $parkRecord = [ordered]@{
+          pr = $num
+          headSha = $headSha
+          round = $nextRound
+          status = 'ok'
+          verdict = 'parked'
+          arbiter = 'skipped-already-ran'
+          commitStatus = 'failure'
+          description = $parkDesc
+          commentId = $parkCommentId
+          commentUrl = $parkCommentUrl
+          runDir = $runDir
+        }
+        Write-Text (Join-Path $runDir 'result.json') ((ConvertTo-Json -InputObject $parkRecord -Depth 6) + "`n")
+        $null = $ResultsOut.Add($parkRecord)
+        Write-Log ('PR #' + $num + ' head ' + $sha7 + ' round ' + $nextRound + ' parked (arbiter already ran for this head)')
+        return
+      }
+
+      if (-not $IsDryRun) {
+        $pendingObj = [pscustomobject]@{
+          issueNumber = $issueNumber
+          commentUrl = $commentUrl
+          rebuttal = $rebuttalText
+          blockingFindings = $blockingFindings
+          failedAcceptance = $failedAcceptance
+          falseClaims = $falseClaims
+        }
+        $updated = Update-PrStateLocked -Path $statePath -Number $num -Mutate {
+          param($st)
+          $st.headSha = $headSha
+          $st.round = $nextRound
+          $st.lastCommentId = $commentId
+          $st.lastCommentCreatedAt = $commentCreated
+          $st.lastRebuttalCommentId = [long]$state.lastRebuttalCommentId
+          if ($rebuttalCommentId -gt 0) { $st.lastRebuttalCommentId = $rebuttalCommentId }
+          $st.pendingRebuttalCommentId = [long]0
+          $st.verdict = 'block'
+          $st.baseSha = $MainSha
+          $st.priorFindings = $findingsArray
+          $st.attempts = 0
+          $st.lastAttemptAt = ''
+          $st.lastErrorKind = ''
+          $st.arbiterState = 'pending'
+          $st.arbiterDone = [bool]$state.arbiterDone
+          $st.arbiterPending = $pendingObj
+        }
+        Set-PrStateFields -Target $state -Source $updated
+        $arbiterStateSaved = $true
+      }
+
+      $arbRecord = Invoke-ArbiterPass `
+        -Config $Config `
+        -StateDir $StateDir `
+        -StatePath $statePath `
+        -State $state `
+        -PrNumber $num `
+        -HeadSha $headSha `
+        -MainSha $MainSha `
+        -IssueNumber $issueNumber `
+        -IssueBody $issueBody `
+        -DiffStat $diffStat `
+        -RebuttalText $rebuttalText `
+        -BlockingFindings $blockingFindings `
+        -FailedAcceptance $failedAcceptance `
+        -FalseClaims $falseClaims `
+        -PriorCommentUrl $commentUrl `
+        -WorktreeDir $worktreeDir `
+        -RunDir $runDir `
+        -ArbiterTemplate $ArbiterTemplate `
+        -IsDryRun:$IsDryRun
+      $null = $ResultsOut.Add($arbRecord)
+      return
+    }
+
+    $ghStatus = 'failure'
+    if ($finalVerdict -eq 'pass') { $ghStatus = 'success' }
+    if ($finalVerdict -eq 'pass') {
+      $statusDesc = 'Nyx audit passed (round ' + $nextRound + ', ' + $advisoryCount + ' advisory)'
+    } else {
+      $parts = @()
+      if ($blockingCount -gt 0) { $parts += ($blockingCount.ToString() + ' blocking') }
+      if ($failingAccCount -gt 0) { $parts += ($failingAccCount.ToString() + ' missing/substituted') }
+      if ($failingClaimsCount -gt 0) { $parts += ($failingClaimsCount.ToString() + ' false claim(s)') }
+      $detail = 'blocked'
+      if ($parts.Count -gt 0) { $detail = ($parts -join ', ') }
+      $statusDesc = 'Nyx audit blocked (round ' + $nextRound + '): ' + $detail
+    }
+    $statusDesc = ConvertTo-SingleLine $statusDesc 140
+
+    if (-not $IsDryRun) {
+      Set-AuditCommitStatus -Config $Config -Sha $headSha -State $ghStatus -Description $statusDesc -TargetUrl $commentUrl
+
+      $updated = Update-PrStateLocked -Path $statePath -Number $num -Mutate {
+        param($st)
+        $st.headSha = $headSha
+        $st.round = $nextRound
+        $st.lastCommentId = $commentId
+        $st.lastCommentCreatedAt = $commentCreated
+        $st.lastRebuttalCommentId = [long]$state.lastRebuttalCommentId
+        if ($rebuttalCommentId -gt 0) { $st.lastRebuttalCommentId = $rebuttalCommentId }
+        $st.pendingRebuttalCommentId = [long]0
+        $st.verdict = $finalVerdict
+        $st.baseSha = $MainSha
+        $st.priorFindings = $findingsArray
+        $st.attempts = 0
+        $st.lastAttemptAt = ''
+        $st.lastErrorKind = ''
+        $st.arbiterState = ''
+        $st.arbiterDone = [bool]$state.arbiterDone
+        $st.arbiterPending = $null
+      }
+      Set-PrStateFields -Target $state -Source $updated
+      $finalStateSaved = $true
+    }
+
+    $prRecord = [ordered]@{
+      pr = $num
+      headSha = $headSha
+      round = $nextRound
+      status = 'ok'
+      verdict = $finalVerdict
+      model = $auditModel
+      fallbackReason = $auditFallbackReason
+      commitStatus = $ghStatus
+      description = $statusDesc
+      commentId = $commentId
+      commentUrl = $commentUrl
+      issueNumber = $issueNumber
+      acceptance = @($acceptance)
+      findings = @($findingsArray)
+      claims = @($claims)
+      withdrawn = @($withdrawn)
+      runDir = $runDir
+    }
+    Write-Text (Join-Path $runDir 'result.json') ((ConvertTo-Json -InputObject $prRecord -Depth 8) + "`n")
+    $null = $ResultsOut.Add($prRecord)
+    $modelLogPart = ''
+    if (-not [string]::IsNullOrWhiteSpace($auditModel)) {
+      $modelLogPart = ' model=' + $auditModel
+    }
+    Write-Log ('PR #' + $num + ' head ' + $sha7 + ' round ' + $nextRound + ' verdict=' + $finalVerdict + ' status=' + $ghStatus + $modelLogPart)
+  } catch {
+    $caughtException = $_.Exception
+    $errMsg = ConvertTo-SingleLine (Protect-LogText $caughtException.Message) 300
+    Write-Log ('PR #' + $num + ' head ' + $sha7 + ' error: ' + $errMsg)
+    if ($finalStateSaved) {
+      # The verdict, its status and the state are already committed; a later reporting
+      # failure (result.json, logs) must not revert them or rewrite the published status.
+      Write-Log ('PR #' + $num + ' head ' + $sha7 + ' verdict already committed; keeping it despite the reporting error')
+    } elseif ($arbiterRetryOnly -or $arbiterStateSaved) {
+      if ($pendingSet -and -not $IsDryRun) {
+        try { Set-AuditCommitStatus -Config $Config -Sha $headSha -State 'failure' -Description 'arbitration pending' } catch { }
+      }
+    } else {
+      $restoredAttempts = [int]$preRunState['attempts']
+      $restoredLastAttemptAt = [string]$preRunState['lastAttemptAt']
+      $restoredLastErrorKind = [string]$preRunState['lastErrorKind']
+
+      $isRemoteOutage = Test-RemoteOutageException -Exception $caughtException -Message $errMsg
+      if ($isRemoteOutage) {
+        $restoredAttempts = $restoredAttempts + 1
+        $restoredLastAttemptAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $restoredLastErrorKind = 'outage'
+      } else {
+        if ($restoredLastErrorKind -eq 'local') {
+          $restoredAttempts = $restoredAttempts + 1
+        } else {
+          $restoredAttempts = 1
+        }
+        $restoredLastErrorKind = 'local'
+        if ($restoredAttempts -lt 3) {
+          $restoredLastAttemptAt = ''
+        } else {
+          $restoredLastAttemptAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        }
+      }
+
+      Set-PrStateFields -Target $state -Source $preRunState
+      $state.attempts = $restoredAttempts
+      $state.lastAttemptAt = $restoredLastAttemptAt
+      $state.lastErrorKind = $restoredLastErrorKind
+
+      if (-not $IsDryRun) {
+        try {
+          $updated = Update-PrStateLocked -Path $statePath -Number $num -Mutate {
+            param($st)
+            Set-PrStateFields -Target $st -Source $preRunState
+            $st.attempts = $restoredAttempts
+            $st.lastAttemptAt = $restoredLastAttemptAt
+            $st.lastErrorKind = $restoredLastErrorKind
+          }
+          Set-PrStateFields -Target $state -Source $updated
+        } catch {
+          Write-Log ('PR #' + $num + ' head ' + $sha7 + ' failed to save error state: ' + (ConvertTo-SingleLine (Protect-LogText $_.Exception.Message) 200))
+        }
+        if ($pendingSet) {
+          $inBackoff = ([int]$state.attempts -ge 3 -and -not [string]::IsNullOrWhiteSpace([string]$state.lastAttemptAt))
+          $errStatus = 'error'
+          $errDesc = 'audit unavailable, will retry'
+          if ($inBackoff) {
+            $errStatus = 'failure'
+            $errDesc = 'audit unavailable (backoff 60m), will retry'
+          }
+          try { Set-AuditCommitStatus -Config $Config -Sha $headSha -State $errStatus -Description $errDesc } catch { }
+        }
+      }
+    }
+    $null = $ErrorsOut.Add([ordered]@{ pr = $num; headSha = $headSha; error = $errMsg; runDir = $runDir })
+    } finally {
+      if (($worktreeCreated -or (Test-Path -LiteralPath $worktreeDir)) -and -not [string]::IsNullOrWhiteSpace($worktreeDir)) {
+        Stop-WorktreeProcesses $worktreeDir
+        if ($script:GitPath -and (Test-Path -LiteralPath (Join-Path $RepoDir '.git'))) {
+          try {
+            $null = Invoke-WithNamedMutex -MutexName $script:AuditRepoMutexName -TimeoutMs $script:AuditMutexTimeoutMs -Action {
+              if (Test-Path -LiteralPath $worktreeDir) {
+                $null = Invoke-Git -Directory $RepoDir -Arguments ('worktree remove --force ' + (Quote-Arg $worktreeDir)) -TempBase $runDir
+              }
+              if (Test-Path -LiteralPath $worktreeDir) {
+                $null = Invoke-Tool $script:CmdExe ('/d /c rmdir /s /q ' + (Quote-Arg $worktreeDir)) (Join-Path $runDir '.rmdir.out.tmp') (Join-Path $runDir '.rmdir.err.tmp') $script:WorkRoot
+              }
+              $null = Invoke-Git -Directory $RepoDir -Arguments 'worktree prune' -TempBase $runDir
+            }
+          } catch {
+            Write-Log ('PR #' + $num + ' worktree cleanup error: ' + (ConvertTo-SingleLine (Protect-LogText $_.Exception.Message) 200))
+          }
+        }
+      }
+    }
+  } finally {
+    if ($null -ne $claim -and $claim.acquired) {
+      try {
+        Release-PrClaim -LockPath $claim.lockPath -OwnerPid $PID
+      } catch {
+        Write-Log ('PR #' + $num + ' failed to release claim lock: ' + (ConvertTo-SingleLine (Protect-LogText $_.Exception.Message) 200))
+      }
+    }
+  }
+}
+
+function ConvertFrom-ChildSummaryJson {
+  param([AllowEmptyString()][string]$Text)
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+  $trimmed = $Text.TrimStart([char]0xFEFF).Trim()
+  if ($trimmed.StartsWith('{')) {
+    try {
+      $parsed = $trimmed | ConvertFrom-Json
+      if ($parsed -is [pscustomobject]) { return $parsed }
+    } catch { }
+  }
+  $lines = @($trimmed -split "`r?`n")
+  for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+    $line = $lines[$i].Trim()
+    if ($line.StartsWith('{')) {
+      try {
+        $parsed = $line | ConvertFrom-Json
+        if ($parsed -is [pscustomobject]) { return $parsed }
+      } catch { }
+    }
+  }
+  $braceIdx = $trimmed.IndexOf('{')
+  if ($braceIdx -ge 0) {
+    try {
+      $parsed = $trimmed.Substring($braceIdx) | ConvertFrom-Json
+      if ($parsed -is [pscustomobject]) { return $parsed }
+    } catch { }
+  }
+  return $null
+}
+
+function Start-AuditChildProcess {
+  param(
+    [int]$PrNumber,
+    [string]$HeadSha,
+    [string]$Sha7,
+    [string]$ConfigFullPath,
+    [string]$BaseMainSha,
+    [string]$LogsDir,
+    [switch]$IsDryRun
+  )
+  $tag = [Guid]::NewGuid().ToString('N').Substring(0, 8)
+  $stdoutPath = Join-Path $LogsDir ('.child-pr-' + $PrNumber + '-' + $tag + '.out.tmp')
+  $stderrPath = Join-Path $LogsDir ('.child-pr-' + $PrNumber + '-' + $tag + '.err.tmp')
+
+  $childArgs = New-Object Collections.Generic.List[string]
+  $null = $childArgs.Add('-NoProfile')
+  $null = $childArgs.Add('-NonInteractive')
+  $null = $childArgs.Add('-ExecutionPolicy')
+  $null = $childArgs.Add('Bypass')
+  $null = $childArgs.Add('-File')
+  $null = $childArgs.Add((Quote-Arg $script:ScriptPath))
+  $null = $childArgs.Add('-ConfigPath')
+  $null = $childArgs.Add((Quote-Arg $ConfigFullPath))
+  $null = $childArgs.Add('-SinglePr')
+  $null = $childArgs.Add([string]$PrNumber)
+  if (-not [string]::IsNullOrWhiteSpace($BaseMainSha)) {
+    $null = $childArgs.Add('-BaseMainSha')
+    $null = $childArgs.Add((Quote-Arg $BaseMainSha))
+  }
+  if ($IsDryRun) {
+    $null = $childArgs.Add('-DryRun')
+  }
+  $argString = ($childArgs.ToArray() -join ' ')
+
+  $proc = Start-Process -FilePath $script:PowerShellExe `
+    -ArgumentList $argString `
+    -RedirectStandardOutput $stdoutPath `
+    -RedirectStandardError $stderrPath `
+    -WorkingDirectory $script:WorkRoot `
+    -WindowStyle Hidden `
+    -PassThru
+  if (-not $proc) {
+    throw ('Failed to start child PowerShell process for PR #' + $PrNumber)
+  }
+  # Windows PowerShell 5.1 only fills ExitCode for a -PassThru process whose handle was opened before it exited.
+  $null = $proc.Handle
+
+  return [pscustomobject]@{
+    pr = $PrNumber
+    headSha = $HeadSha
+    sha7 = $Sha7
+    pid = [int]$proc.Id
+    process = $proc
+    stdoutPath = $stdoutPath
+    stderrPath = $stderrPath
+    startedAt = [DateTime]::UtcNow
+  }
+}
+
+function Complete-AuditChildProcess {
+  param(
+    $Job,
+    $ResultsOut,
+    $SkippedOut,
+    $ErrorsOut
+  )
+  $childExit = -1
+  try {
+    $Job.process.WaitForExit()
+    if ($null -ne $Job.process.ExitCode) { $childExit = [int]$Job.process.ExitCode }
+  } finally {
+    try { $Job.process.Dispose() } catch { }
+  }
+
+  $elapsedSec = [int][Math]::Round(([DateTime]::UtcNow - $Job.startedAt).TotalSeconds)
+  $stdoutText = Read-Text $Job.stdoutPath
+  $stderrText = Read-Text $Job.stderrPath
+  $summaryObj = ConvertFrom-ChildSummaryJson -Text $stdoutText
+
+  $auditedCount = 0
+  $skippedCount = 0
+  $errorCount = 0
+
+  if ($null -ne $summaryObj) {
+    $childAudited = @(Get-JsonProp $summaryObj 'audited' | Where-Object { $null -ne $_ })
+    $childSkipped = @(Get-JsonProp $summaryObj 'skipped' | Where-Object { $null -ne $_ })
+    $childErrors = @(Get-JsonProp $summaryObj 'errors' | Where-Object { $null -ne $_ })
+    foreach ($item in $childAudited) {
+      $null = $ResultsOut.Add($item)
+      $auditedCount++
+    }
+    foreach ($item in $childSkipped) {
+      $null = $SkippedOut.Add($item)
+      $skippedCount++
+    }
+    foreach ($item in $childErrors) {
+      $null = $ErrorsOut.Add($item)
+      $errorCount++
+    }
+    if ($childExit -ne 0 -and $errorCount -eq 0) {
+      $errTail = ConvertTo-SingleLine (Protect-LogText ([string]$stderrText)) 240
+      $msg = 'child audit process exited with code ' + $childExit
+      if (-not [string]::IsNullOrWhiteSpace($errTail)) { $msg = $msg + ': ' + $errTail }
+      $null = $ErrorsOut.Add([ordered]@{ pr = $Job.pr; headSha = $Job.headSha; error = $msg })
+      $errorCount++
+    }
+  } else {
+    $errTail = ConvertTo-SingleLine (Protect-LogText ([string]$stderrText)) 240
+    if ([string]::IsNullOrWhiteSpace($errTail)) {
+      $errTail = ConvertTo-SingleLine (Protect-LogText ([string]$stdoutText)) 240
+    }
+    $msg = 'child audit process produced no parseable summary (exitCode=' + $childExit + ')'
+    if (-not [string]::IsNullOrWhiteSpace($errTail)) { $msg = $msg + ': ' + $errTail }
+    $null = $ErrorsOut.Add([ordered]@{ pr = $Job.pr; headSha = $Job.headSha; error = $msg })
+    $errorCount++
+  }
+
+  try { if (Test-Path -LiteralPath $Job.stdoutPath -PathType Leaf) { [IO.File]::Delete($Job.stdoutPath) } } catch { }
+  try { if (Test-Path -LiteralPath $Job.stderrPath -PathType Leaf) { [IO.File]::Delete($Job.stderrPath) } } catch { }
+
+  Write-Log ('child finished for PR #' + $Job.pr + ' head ' + $Job.sha7 + ' pid=' + $Job.pid + ' exitCode=' + $childExit + ' elapsed=' + $elapsedSec + 's audited=' + $auditedCount + ' skipped=' + $skippedCount + ' errors=' + $errorCount)
+}
+
 $lock = $null
 $resultsOut = New-Object Collections.Generic.List[object]
 $skippedOut = New-Object Collections.Generic.List[object]
@@ -2105,33 +3477,51 @@ $errorsOut = New-Object Collections.Generic.List[object]
 $exitCode = 0
 
 try {
-  $config = Get-AuditConfig -Path $ConfigPath
+  if ($SinglePr -lt 0) { throw '-SinglePr must be a non-negative integer.' }
+  if ($PrNumber -lt 0) { throw '-PrNumber must be a non-negative integer.' }
+  if ($MaxParallel -lt 1) { throw '-MaxParallel must be at least 1.' }
+
+  $isChildMode = ($SinglePr -gt 0)
+  $resolvedConfigPath = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ConfigPath))
+  $config = Get-AuditConfig -Path $resolvedConfigPath
   $script:WorkRoot = [IO.Path]::GetFullPath([string]$config.workRoot).TrimEnd('\')
   Assert-OutsideGitCheckout $script:WorkRoot
 
   $stateDir = Join-Path $script:WorkRoot 'state'
   $runsDir = Join-Path $script:WorkRoot 'runs'
   $logsDir = Join-Path $script:WorkRoot 'logs'
+  $claimsDir = Join-Path $script:WorkRoot 'claims'
   $repoDir = Join-Path $script:WorkRoot 'repo'
 
   [IO.Directory]::CreateDirectory($script:WorkRoot) | Out-Null
   [IO.Directory]::CreateDirectory($stateDir) | Out-Null
   [IO.Directory]::CreateDirectory($runsDir) | Out-Null
   [IO.Directory]::CreateDirectory($logsDir) | Out-Null
+  [IO.Directory]::CreateDirectory($claimsDir) | Out-Null
 
-  $script:LogPath = Join-Path $logsDir ('audit-' + [DateTime]::Now.ToString('yyyyMMdd') + '.log')
-  Initialize-Redactions @($script:WorkRoot, [string]$config.referenceRoot, [string]$config.keyPath, [string](Get-JsonProp $config 'devinCli'))
+  if ($isChildMode) {
+    $script:LogPath = Join-Path $logsDir ('audit-' + [DateTime]::Now.ToString('yyyyMMdd') + '-pr-' + $SinglePr + '-pid-' + $PID + '.log')
+    $script:LogPrefix = '[pr#' + $SinglePr + ' pid=' + $PID + '] '
+  } else {
+    $script:LogPath = Join-Path $logsDir ('audit-' + [DateTime]::Now.ToString('yyyyMMdd') + '.log')
+    $script:LogPrefix = ''
+  }
+  Initialize-Redactions @($script:WorkRoot, [string]$config.referenceRoot, [string]$config.keyPath, [string](Get-JsonProp $config 'devinCli'), [string](Get-JsonProp $config 'agyPath'))
 
-  $lockPath = Join-Path $script:WorkRoot 'audit.lock'
-  try {
-    $lock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-  } catch {
-    Write-Log 'another audit run holds audit.lock; exiting'
-    $null = $skippedOut.Add([ordered]@{ pr = $null; reason = 'another audit run holds the lock' })
-    $lock = $null
+  $canRun = $true
+  if (-not $isChildMode) {
+    $lockPath = Join-Path $script:WorkRoot 'audit.lock'
+    try {
+      $lock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch {
+      Write-Log 'another audit run holds audit.lock; exiting'
+      $null = $skippedOut.Add([ordered]@{ pr = $null; reason = 'another audit run holds the lock' })
+      $lock = $null
+      $canRun = $false
+    }
   }
 
-  if ($null -ne $lock) {
+  if ($canRun) {
     $env:GIT_TERMINAL_PROMPT = '0'
     $env:GCM_INTERACTIVE = 'never'
 
@@ -2160,693 +3550,191 @@ try {
       }
     }
 
-    $pulls = @(Get-OpenNyxPulls -Config $config -OnlyPrNumber $PrNumber)
-    Write-Log ('audit pass started: repo=' + $config.repo + ' openNyxPrs=' + $pulls.Count + ' dryRun=' + [bool]$DryRun)
-
-    $mainSha = ''
-    $mainRecentCommits = @()
-    $mainRecentCommitsLoaded = $false
-    if ($pulls.Count -gt 0) {
-      Ensure-AuditRepo -Config $config -RepoDir $repoDir
-      $mainShaRes = Invoke-Git -Directory $repoDir -Arguments 'rev-parse origin/main'
-      $mainSha = if ($mainShaRes.exitCode -eq 0) { ([string]$mainShaRes.text).Trim() } else { '' }
+    $mainCommitsCache = @{
+      loaded = $false
+      commits = @()
     }
 
-    foreach ($pr in $pulls) {
-      $num = [int]$pr.number
-      $headObj = Get-JsonProp $pr 'head'
-      $headSha = [string](Get-JsonProp $headObj 'sha')
-      $headRef = [string](Get-JsonProp $headObj 'ref')
-      $prTitle = [string](Get-JsonProp $pr 'title')
-      $prBody = [string](Get-JsonProp $pr 'body')
-      if ([string]::IsNullOrWhiteSpace($headSha) -or $headSha.Length -lt 7) {
-        $null = $skippedOut.Add([ordered]@{ pr = $num; reason = 'missing head SHA' })
-        continue
-      }
-      $sha7 = $headSha.Substring(0, 7)
-      $statePath = Join-Path $stateDir ('pr-' + $num + '.json')
-      $state = Read-PrState -Path $statePath -Number $num
-
-      $isNewHead = ($state.headSha -ne $headSha)
-      if ($isNewHead) {
-        $state.headSha = $headSha
-        $state.attempts = 0
-        $state.lastAttemptAt = ''
-        $state.lastErrorKind = ''
-        $state.round = 0
-        $state.lastCommentId = [long]0
-        $state.lastCommentCreatedAt = ''
-        $state.lastRebuttalCommentId = [long]0
-        $state.pendingRebuttalCommentId = [long]0
-        $state.verdict = ''
-        $state.baseSha = ''
-        $state.priorFindings = @()
-        $state.arbiterState = ''
-        $state.arbiterDone = $false
-        $state.arbiterPending = $null
-      }
-
-      $rebuttalText = 'none'
-      $priorFindingsText = 'none'
-      $rebuttalCommentId = [long]0
-      $arbiterRetryOnly = $false
-
-      if (-not $isNewHead) {
-        # A pass holds only for the main it was trial-merged onto; re-audit when main moves.
-        if ($state.verdict -eq 'pass') {
-          # A body edit does not move the head, so recheck the body for agent attribution before reusing a pass.
-          if (-not [string]::IsNullOrWhiteSpace($mainSha) -and $state.baseSha -eq $mainSha -and -not (Test-DevinAttribution $prBody)) {
-            $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already passed for head ' + $sha7 })
-            continue
+    if ($isChildMode) {
+      Write-Log ('child audit started: repo=' + $config.repo + ' pr=' + $SinglePr + ' dryRun=' + [bool]$DryRun)
+      $pulls = @(Get-OpenNyxPulls -Config $config -OnlyPrNumber $SinglePr)
+      if ($pulls.Count -gt 0) {
+        $mainSha = Invoke-WithNamedMutex -MutexName $script:AuditRepoMutexName -TimeoutMs $script:AuditMutexTimeoutMs -Action {
+          if (-not [string]::IsNullOrWhiteSpace($BaseMainSha) -and (Test-Path -LiteralPath (Join-Path $repoDir '.git'))) {
+            $verifyRes = Invoke-Git -Directory $repoDir -Arguments ('rev-parse --verify ' + $BaseMainSha + '^{commit}')
+            if ($verifyRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$verifyRes.text)) {
+              return ([string]$verifyRes.text).Trim()
+            }
           }
-          # main moved since pass: start a fresh audit against new main while preserving arbiterDone for this head SHA.
-          $state.round = 0
-          $state.attempts = 0
-          $state.lastAttemptAt = ''
-          $state.lastErrorKind = ''
-          $state.verdict = ''
-          $state.priorFindings = @()
-        } elseif ($state.verdict -eq 'parked') {
-          $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already parked by arbiter for head ' + $sha7 })
-          continue
-        } elseif ($state.verdict -eq 'block') {
-          if ([int]$state.round -ge 2) {
-            if ($state.arbiterState -eq 'pending' -and -not [string]::IsNullOrWhiteSpace($mainSha) -and $state.baseSha -ne $mainSha) {
-              # main moved while arbitration waited: the pending findings came from a stale trial merge, so audit afresh.
-              Write-Log ('PR #' + $num + ' head ' + $sha7 + ': main moved during pending arbitration; restarting the audit')
-              $state.round = 0
-              $state.attempts = 0
-              $state.lastAttemptAt = ''
-              $state.lastErrorKind = ''
-              $state.verdict = ''
-              $state.priorFindings = @()
-              $state.arbiterState = ''
-              $state.arbiterPending = $null
-            } elseif ($state.arbiterState -eq 'pending' -and -not [bool]$state.arbiterDone -and $null -ne $state.arbiterPending) {
-              $dailyCheck = Read-ArbiterDailyState -Path (Get-ArbiterDailyPath -StateDir $stateDir)
-              if ([int]$dailyCheck.count -ge $arbiterDailyCap) {
-                $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'arbitration pending for head ' + $sha7 + ' (daily cap reached)' })
-                continue
-              }
-              $arbiterRetryOnly = $true
-              Write-Log ('PR #' + $num + ' head ' + $sha7 + ': retrying pending arbitration')
-            } else {
-              $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already completed rebuttal round for head ' + $sha7 })
-              continue
-            }
-          } else {
-            $comments = @(Get-PrComments -Config $config -Number $num)
-            $rebuttal = Find-NewRebuttal -Comments $comments -State $state -Config $config -HeadSha $headSha
-            if ($null -eq $rebuttal) {
-              $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'already blocked for head ' + $sha7 + ' with no new rebuttal' })
-              continue
-            }
-            $rebuttalText = $rebuttal.text
-            $rebuttalCommentId = [long]$rebuttal.commentId
-            $priorFindingsText = Format-FindingsForPrompt $state.priorFindings
-            if ($priorFindingsText -eq 'none' -and -not [string]::IsNullOrWhiteSpace($rebuttal.lastAuditBody)) {
-              $priorFindingsText = $rebuttal.lastAuditBody
-            }
-            if ([long]$state.pendingRebuttalCommentId -ne $rebuttalCommentId) {
-              $state.pendingRebuttalCommentId = $rebuttalCommentId
-              $state.attempts = 0
-              $state.lastAttemptAt = ''
-              $state.lastErrorKind = ''
-            }
-            if (Test-RetryBackoffActive -State $state -BackoffMinutes 60) {
-              $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'backing off after ' + $state.attempts + ' failed audit attempts for head ' + $sha7 + ' (retry after 60m)' })
-              continue
-            }
-            Write-Log ('PR #' + $num + ' head ' + $sha7 + ': detected new rebuttal comment ' + $rebuttalCommentId + ', starting round ' + ([int]$state.round + 1))
+          Ensure-AuditRepo -Config $config -RepoDir $repoDir
+          $mainShaRes = Invoke-Git -Directory $repoDir -Arguments 'rev-parse origin/main'
+          if ($mainShaRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$mainShaRes.text)) {
+            return ([string]$mainShaRes.text).Trim()
           }
+          return ''
+        }
+
+        $decision = Get-PrAuditDecision -Config $config -Pr $pulls[0] -StateDir $stateDir -MainSha $mainSha -ArbiterDailyCap $arbiterDailyCap
+        if ($decision.action -eq 'skip') {
+          $null = $skippedOut.Add($decision.skipRecord)
         } else {
-          if (Test-RetryBackoffActive -State $state -BackoffMinutes 60) {
-            $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'backing off after ' + $state.attempts + ' failed audit attempts for head ' + $sha7 + ' (retry after 60m)' })
-            continue
+          if (-not [string]::IsNullOrWhiteSpace($decision.logMessage)) {
+            Write-Log $decision.logMessage
           }
-        }
-      }
-
-      $nextRound = if ($arbiterRetryOnly) { [int]$state.round } else { [int]$state.round + 1 }
-      $runDirName = if ($arbiterRetryOnly) { 'pr-' + $num + '-' + $sha7 + '-arbiter' } else { 'pr-' + $num + '-' + $sha7 }
-      $runDir = Join-Path $runsDir $runDirName
-      if (Test-Path -LiteralPath $runDir) {
-        $runDir = Join-Path $runsDir ($runDirName + '-r' + $nextRound + '-' + [DateTime]::Now.ToString('yyyyMMddTHHmmss'))
-      }
-      [IO.Directory]::CreateDirectory($runDir) | Out-Null
-
-      $worktreeDir = Join-Path $runDir 'worktree'
-      $worktreeCreated = $false
-      $pendingSet = $false
-      $arbiterStateSaved = $false
-      $finalStateSaved = $false
-      $preRunState = @{
-        headSha = [string]$state.headSha
-        attempts = [int]$state.attempts
-        lastAttemptAt = [string]$state.lastAttemptAt
-        lastErrorKind = [string]$state.lastErrorKind
-        round = [int]$state.round
-        lastCommentId = [long]$state.lastCommentId
-        lastCommentCreatedAt = [string]$state.lastCommentCreatedAt
-        lastRebuttalCommentId = [long]$state.lastRebuttalCommentId
-        pendingRebuttalCommentId = [long]$state.pendingRebuttalCommentId
-        verdict = [string]$state.verdict
-        baseSha = [string]$state.baseSha
-        priorFindings = @($state.priorFindings)
-        arbiterState = [string]$state.arbiterState
-        arbiterDone = [bool]$state.arbiterDone
-        arbiterPending = $state.arbiterPending
-      }
-
-      try {
-        if ($arbiterRetryOnly) {
-          Write-Log ('arbitrating PR #' + $num + ' head ' + $sha7)
-          if (-not $DryRun) {
-            Set-AuditCommitStatus -Config $config -Sha $headSha -State 'pending' -Description 'Nyx audit arbitration running'
-            $pendingSet = $true
-          }
-        } else {
-          Write-Log ('auditing PR #' + $num + ' head ' + $sha7 + ' round ' + $nextRound)
-          if (-not $DryRun) {
-            Set-AuditCommitStatus -Config $config -Sha $headSha -State 'pending' -Description ('Nyx audit running (round ' + $nextRound + ')')
-            $pendingSet = $true
-          }
-        }
-
-        $fetchPr = Invoke-Git -Directory $repoDir -Arguments ('fetch --no-tags origin +refs/pull/' + $num + '/head:refs/audit/pr-' + $num) -AuthConfig $config -TempBase $runDir
-        if ($fetchPr.exitCode -ne 0) {
-          throw ('git fetch PR #' + $num + ' failed: ' + (ConvertTo-SingleLine $fetchPr.error 240))
-        }
-        $revCheck = Invoke-Git -Directory $repoDir -Arguments ('rev-parse --verify refs/audit/pr-' + $num) -TempBase $runDir
-        $fetchedSha = if ($revCheck.exitCode -eq 0 -and $revCheck.text) { $revCheck.text.Trim() } else { '' }
-        if ($fetchedSha -ne $headSha) {
-          Write-Log ('PR #' + $num + ' head moved during fetch (expected ' + $sha7 + ', got ' + $fetchedSha + '); skipping')
-          $null = $skippedOut.Add([ordered]@{ pr = $num; sha = $sha7; reason = 'head moved during fetch' })
-          continue
-        }
-
-        $wtAdd = Invoke-Git -Directory $repoDir -Arguments ('worktree add --detach ' + (Quote-Arg $worktreeDir) + ' origin/main') -TempBase $runDir
-        if ($wtAdd.exitCode -ne 0) {
-          throw ('git worktree add failed: ' + (ConvertTo-SingleLine $wtAdd.error 240))
-        }
-        $worktreeCreated = $true
-
-        $mergeRes = Invoke-Git -Directory $worktreeDir -Arguments ('-c user.name=nyx-audit -c user.email=nyx-audit@localhost merge --no-commit --no-ff ' + $headSha) -TempBase $runDir
-        $hasMergeConflict = $false
-        if ($mergeRes.exitCode -ne 0) {
-          $combinedMergeOut = ([string]$mergeRes.text) + "`n" + ([string]$mergeRes.error)
-          $porcelain = Invoke-Git -Directory $worktreeDir -Arguments 'status --porcelain' -TempBase $runDir
-          $hasUnmerged = ($porcelain.exitCode -eq 0 -and ([string]$porcelain.text) -match '(?m)^(?:UU|AA|DD|AU|UA|DU|UD)\s')
-          if ($hasUnmerged -or $combinedMergeOut -match '(?i)CONFLICT|Automatic merge failed') {
-            $hasMergeConflict = $true
-            $null = Invoke-Git -Directory $worktreeDir -Arguments 'merge --abort' -TempBase $runDir
-          } else {
-            throw ('git trial merge failed: ' + (ConvertTo-SingleLine $combinedMergeOut 240))
-          }
-        }
-
-        $issueNumber = Get-LinkedIssueNumber -PrBody $prBody -HeadRef $headRef
-        if ($arbiterRetryOnly -and $issueNumber -le 0 -and $null -ne $state.arbiterPending) {
-          $savedIssue = Get-JsonProp $state.arbiterPending 'issueNumber'
-          if ($null -ne $savedIssue) { $issueNumber = [int]$savedIssue }
-        }
-        $issueBody = 'No linked issue found.'
-        $issueError = ''
-        if ($issueNumber -gt 0) {
-          try {
-            $issueBody = Get-IssueMarkdown -Config $config -IssueNumber $issueNumber
-          } catch {
-            $issueError = ConvertTo-SingleLine $_.Exception.Message 240
-            $issueBody = 'Failed to fetch linked issue #' + $issueNumber + ': ' + $issueError
-          }
-        }
-
-        if ($arbiterRetryOnly) {
-          $diffStat = '(merge conflict with origin/main)'
-          if (-not $hasMergeConflict) {
-            $statRes = Invoke-Git -Directory $worktreeDir -Arguments 'diff --cached --stat origin/main' -TempBase $runDir
-            $diffStat = if ($statRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($statRes.text)) { $statRes.text.TrimEnd() } else { '(empty diff against origin/main)' }
-          }
-          $ap = $state.arbiterPending
-          $arbRecord = Invoke-ArbiterPass `
+          Invoke-SinglePrAudit `
+            -Decision $decision `
             -Config $config `
             -StateDir $stateDir `
-            -StatePath $statePath `
-            -State $state `
-            -PrNumber $num `
-            -HeadSha $headSha `
+            -RunsDir $runsDir `
+            -ClaimsDir $claimsDir `
+            -RepoDir $repoDir `
             -MainSha $mainSha `
-            -IssueNumber $issueNumber `
-            -IssueBody $issueBody `
-            -DiffStat $diffStat `
-            -RebuttalText ([string](Get-JsonProp $ap 'rebuttal')) `
-            -BlockingFindings @(Get-JsonProp $ap 'blockingFindings' | Where-Object { $null -ne $_ }) `
-            -FailedAcceptance @(Get-JsonProp $ap 'failedAcceptance' | Where-Object { $null -ne $_ }) `
-            -FalseClaims @(Get-JsonProp $ap 'falseClaims' | Where-Object { $null -ne $_ }) `
-            -PriorCommentUrl ([string](Get-JsonProp $ap 'commentUrl')) `
-            -WorktreeDir $worktreeDir `
-            -RunDir $runDir `
+            -PromptTemplate $promptTemplate `
             -ArbiterTemplate $arbiterTemplate `
+            -MainCommitsCache $mainCommitsCache `
+            -ResultsOut $resultsOut `
+            -SkippedOut $skippedOut `
+            -ErrorsOut $errorsOut `
+            -Pr $pulls[0] `
+            -ArbiterDailyCap $arbiterDailyCap `
             -IsDryRun:$DryRun
-          $null = $resultsOut.Add($arbRecord)
-          continue
+        }
+      } else {
+        $null = $skippedOut.Add([ordered]@{ pr = $SinglePr; reason = 'PR is not an open nyx/* pull request targeting main' })
+      }
+      Write-Log ('child audit finished: pr=' + $SinglePr + ' audited=' + $resultsOut.Count + ' skipped=' + $skippedOut.Count + ' errors=' + $errorsOut.Count)
+    } else {
+      $pulls = @(Get-OpenNyxPulls -Config $config -OnlyPrNumber $PrNumber)
+      Write-Log ('audit pass started: repo=' + $config.repo + ' openNyxPrs=' + $pulls.Count + ' maxParallel=' + $MaxParallel + ' dryRun=' + [bool]$DryRun)
+
+      $mainSha = ''
+      if ($pulls.Count -gt 0) {
+        $mainSha = Invoke-WithNamedMutex -MutexName $script:AuditRepoMutexName -TimeoutMs $script:AuditMutexTimeoutMs -Action {
+          Ensure-AuditRepo -Config $config -RepoDir $repoDir
+          $mainShaRes = Invoke-Git -Directory $repoDir -Arguments 'rev-parse origin/main'
+          if ($mainShaRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$mainShaRes.text)) {
+            return ([string]$mainShaRes.text).Trim()
+          }
+          return ''
+        }
+      }
+
+      if ($MaxParallel -eq 1) {
+        foreach ($pr in $pulls) {
+          $decision = Get-PrAuditDecision -Config $config -Pr $pr -StateDir $stateDir -MainSha $mainSha -ArbiterDailyCap $arbiterDailyCap
+          if ($decision.action -eq 'skip') {
+            $null = $skippedOut.Add($decision.skipRecord)
+            continue
+          }
+          if (-not [string]::IsNullOrWhiteSpace($decision.logMessage)) {
+            Write-Log $decision.logMessage
+          }
+          Invoke-SinglePrAudit `
+            -Decision $decision `
+            -Config $config `
+            -StateDir $stateDir `
+            -RunsDir $runsDir `
+            -ClaimsDir $claimsDir `
+            -RepoDir $repoDir `
+            -MainSha $mainSha `
+            -PromptTemplate $promptTemplate `
+            -ArbiterTemplate $arbiterTemplate `
+            -MainCommitsCache $mainCommitsCache `
+            -ResultsOut $resultsOut `
+            -SkippedOut $skippedOut `
+            -ErrorsOut $errorsOut `
+            -Pr $pr `
+            -ArbiterDailyCap $arbiterDailyCap `
+            -IsDryRun:$DryRun
+        }
+      } else {
+        $toAudit = New-Object Collections.Generic.List[object]
+        foreach ($pr in $pulls) {
+          $decision = Get-PrAuditDecision -Config $config -Pr $pr -StateDir $stateDir -MainSha $mainSha -ArbiterDailyCap $arbiterDailyCap
+          if ($decision.action -eq 'skip') {
+            $null = $skippedOut.Add($decision.skipRecord)
+            continue
+          }
+          $liveClaim = Get-LivePrClaim -ClaimsDir $claimsDir -PrNumber $decision.prNumber
+          if ($null -ne $liveClaim) {
+            $claimReason = 'already claimed by live audit process PID ' + $liveClaim.pid
+            Write-Log ('PR #' + $decision.prNumber + ' head ' + $decision.sha7 + ': ' + $claimReason + '; skipping')
+            $null = $skippedOut.Add([ordered]@{ pr = $decision.prNumber; sha = $decision.sha7; reason = $claimReason })
+            continue
+          }
+          if (-not [string]::IsNullOrWhiteSpace($decision.logMessage)) {
+            Write-Log $decision.logMessage
+          }
+          $null = $toAudit.Add($decision)
         }
 
-        $acceptance = @()
-        $claims = @()
-        $withdrawn = @()
-        $allFindings = New-Object Collections.Generic.List[object]
-        $modelVerdict = ''
-        $finalVerdict = 'block'
-        $diffStat = '(merge conflict with origin/main)'
-
-        if ($hasMergeConflict) {
-          $null = $allFindings.Add([pscustomobject]@{
-            id = 'D1'
-            severity = 'blocking'
-            title = 'conflicts with current main'
-            evidence = ('merge origin/main + ' + $sha7)
-            why = 'Trial merge of PR head onto origin/main produced merge conflicts.'
-          })
-          if ($issueNumber -le 0) {
-            $null = $allFindings.Add([pscustomobject]@{
-              id = 'D2'
-              severity = 'blocking'
-              title = 'no linked issue'
-              evidence = ('branch ' + $headRef)
-              why = 'PR body has no Closes/Fixes/Resolves #N reference and branch name does not start with nyx/<N>-.'
-            })
+        if ($toAudit.Count -gt 0) {
+          $prLabels = New-Object Collections.Generic.List[string]
+          foreach ($item in $toAudit.ToArray()) {
+            $null = $prLabels.Add(('#' + $item.prNumber))
           }
-          $finalVerdict = 'block'
-        } else {
-          $namesRes = Invoke-Git -Directory $worktreeDir -Arguments '-c core.quotepath=false diff --cached --no-renames --name-only -z origin/main' -TempBase $runDir
-          if ($namesRes.exitCode -ne 0) {
-            throw ('git diff --name-only failed: ' + (ConvertTo-SingleLine $namesRes.error 240))
-          }
-          $changedFiles = @(([string]$namesRes.text) -split "`0" | Where-Object { $_ })
+          Write-Log ('audit pass dispatching ' + $toAudit.Count + ' PR(s) with maxParallel=' + $MaxParallel + ': ' + ($prLabels.ToArray() -join ', '))
 
-          $statRes = Invoke-Git -Directory $worktreeDir -Arguments 'diff --cached --stat origin/main' -TempBase $runDir
-          $diffStat = if ($statRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($statRes.text)) { $statRes.text.TrimEnd() } else { '(empty diff against origin/main)' }
-          Write-Text (Join-Path $runDir 'diff.stat.txt') ($diffStat + "`n")
+          $activeChildren = New-Object Collections.Generic.List[object]
+          $nextIdx = 0
+          $queueItems = @($toAudit.ToArray())
+          $totalToAudit = $queueItems.Count
 
-          $diffOutPath = Join-Path $runDir 'diff.patch'
-          $diffErrPath = Join-Path $runDir 'diff.err.log'
-          $null = Invoke-Tool $script:GitPath ('-C ' + (Quote-Arg $worktreeDir) + ' diff --cached origin/main') $diffOutPath $diffErrPath $script:WorkRoot
-
-          $prCommits = @(Get-PrCommits -Config $config -Number $num)
-          $mainCompare = Get-MainCompare -Config $config -HeadSha $headSha
-          if (-not $mainRecentCommitsLoaded) {
-            $mainRecentCommits = @(Get-MainRecentCommits -Config $config -Limit 50)
-            $mainRecentCommitsLoaded = $true
-          }
-          $detFindings = @(Get-DeterministicFindings -Worktree $worktreeDir -HeadRef $headRef -ChangedFiles $changedFiles -IssueNumber $issueNumber -IssueError $issueError -TempBase $runDir -PrBody $prBody -PrCommits $prCommits -MainCompare $mainCompare -MainCommits $mainRecentCommits)
-          foreach ($df in $detFindings) { $null = $allFindings.Add($df) }
-
-          $values = @{
-            PR_NUMBER = [string]$num
-            PR_TITLE = $prTitle
-            PR_BODY = $(if ([string]::IsNullOrWhiteSpace($prBody)) { '(empty)' } else { $prBody })
-            ISSUE_NUMBER = $(if ($issueNumber -gt 0) { '#' + $issueNumber } else { 'none' })
-            ISSUE_BODY = $issueBody
-            DIFF_STAT = $diffStat
-            DETERMINISTIC_FINDINGS = (Format-FindingsForPrompt $detFindings)
-            REFERENCE_ROOT = [string]$config.referenceRoot
-            PRIOR_FINDINGS = $priorFindingsText
-            REBUTTAL = $rebuttalText
-          }
-          $filledPrompt = [regex]::Replace(
-            $promptTemplate,
-            '\{\{(PR_NUMBER|PR_TITLE|PR_BODY|ISSUE_NUMBER|ISSUE_BODY|DIFF_STAT|DETERMINISTIC_FINDINGS|REFERENCE_ROOT|PRIOR_FINDINGS|REBUTTAL)\}\}',
-            [Text.RegularExpressions.MatchEvaluator]{ param($m) [string]$values[$m.Groups[1].Value] }
-          )
-
-          $extraReadDirs = @()
-          if (-not [string]::IsNullOrWhiteSpace([string]$config.referenceRoot)) {
-            $extraReadDirs = @([string]$config.referenceRoot)
-          }
-
-          $modelRes = $null
-          for ($modelTry = 1; $modelTry -le 2; $modelTry++) {
-            $modelRes = Invoke-AuditModel -Config $config -PromptText $filledPrompt -WorkDir $worktreeDir -ExtraReadDirs $extraReadDirs -RunDir $runDir
-            if ($modelRes.status -eq 'ok') {
-              $mv = ([string](Get-JsonProp $modelRes.result 'verdict')).Trim().ToLowerInvariant()
-              if ($mv -ne 'pass' -and $mv -ne 'block') {
-                $modelRes = @{
-                  status = 'unavailable'
-                  result = $null
-                  raw = $modelRes.raw
-                  error = ('Unexpected PR audit verdict from model: ' + $mv)
+          try {
+            while ($nextIdx -lt $totalToAudit -or $activeChildren.Count -gt 0) {
+              while ($activeChildren.Count -lt $MaxParallel -and $nextIdx -lt $totalToAudit) {
+                $target = $queueItems[$nextIdx]
+                $nextIdx++
+                try {
+                  $job = Start-AuditChildProcess `
+                    -PrNumber $target.prNumber `
+                    -HeadSha $target.headSha `
+                    -Sha7 $target.sha7 `
+                    -ConfigFullPath $resolvedConfigPath `
+                    -BaseMainSha $mainSha `
+                    -LogsDir $logsDir `
+                    -IsDryRun:$DryRun
+                  $null = $activeChildren.Add($job)
+                  Write-Log ('launched child for PR #' + $job.pr + ' head ' + $job.sha7 + ' pid=' + $job.pid + ' (active=' + $activeChildren.Count + '/' + $MaxParallel + ')')
+                } catch {
+                  $launchErr = ConvertTo-SingleLine (Protect-LogText $_.Exception.Message) 300
+                  Write-Log ('failed to launch child for PR #' + $target.prNumber + ' head ' + $target.sha7 + ': ' + $launchErr)
+                  $null = $errorsOut.Add([ordered]@{ pr = $target.prNumber; headSha = $target.headSha; error = $launchErr })
                 }
               }
-            }
-            if ($modelRes.status -eq 'ok') { break }
-            Write-Log ('PR #' + $num + ' head ' + $sha7 + ' model attempt ' + $modelTry + '/2 unavailable: ' + [string]$modelRes.error)
-            if ($modelTry -lt 2) { Start-Sleep -Seconds 5 }
-          }
 
-          if ($null -eq $modelRes -or $modelRes.status -ne 'ok') {
-            $errReason = if ($null -ne $modelRes -and -not [string]::IsNullOrWhiteSpace([string]$modelRes.error)) { [string]$modelRes.error } else { 'audit model unavailable' }
-            $newAttempts = [int]$state.attempts + 1
-            $state.attempts = $newAttempts
-            $state.lastAttemptAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
-            $state.lastErrorKind = 'outage'
-            if ($state.verdict -eq 'unavailable-failed') { $state.verdict = '' }
-            $inBackoff = ($newAttempts -ge 3)
-            $unavailCommitStatus = if ($inBackoff) { 'failure' } else { 'error' }
-            $unavailDesc = if ($inBackoff) { 'audit unavailable (backoff 60m), will retry' } else { 'audit unavailable, will retry' }
-            if (-not $DryRun) {
-              Save-PrState -Path $statePath -State $state
-              Set-AuditCommitStatus -Config $config -Sha $headSha -State $unavailCommitStatus -Description $unavailDesc
-            }
-            $unavailRecord = [ordered]@{
-              pr = $num
-              headSha = $headSha
-              round = $nextRound
-              status = 'unavailable'
-              attempts = $newAttempts
-              lastAttemptAt = $state.lastAttemptAt
-              backoffMinutes = $(if ($inBackoff) { 60 } else { 0 })
-              commitStatus = $unavailCommitStatus
-              error = $errReason
-              runDir = $runDir
-            }
-            Write-Text (Join-Path $runDir 'result.json') ((ConvertTo-Json -InputObject $unavailRecord -Depth 6) + "`n")
-            $null = $resultsOut.Add($unavailRecord)
-            Write-Log ('PR #' + $num + ' head ' + $sha7 + ' failed closed (attempts=' + $newAttempts + ', backoff=' + $inBackoff + '): ' + $errReason)
-            continue
-          }
+              if ($activeChildren.Count -eq 0) { break }
 
-          $parsed = $modelRes.result
-          $modelVerdict = ([string](Get-JsonProp $parsed 'verdict')).Trim().ToLowerInvariant()
-          $accRaw = Get-JsonProp $parsed 'acceptance'
-          if ($null -ne $accRaw) { $acceptance = @($accRaw | ForEach-Object { $_ }) }
-          $claimsRaw = Get-JsonProp $parsed 'claims'
-          if ($null -ne $claimsRaw) { $claims = @($claimsRaw | ForEach-Object { $_ }) }
-          $wdRaw = Get-JsonProp $parsed 'withdrawn'
-          if ($null -ne $wdRaw) { $withdrawn = @($wdRaw | ForEach-Object { $_ }) }
-          $modelFindingsRaw = Get-JsonProp $parsed 'findings'
-          if ($null -ne $modelFindingsRaw) {
-            foreach ($mf in @($modelFindingsRaw)) { $null = $allFindings.Add($mf) }
-          }
-
-          $hasBlocking = ($modelVerdict -eq 'block')
-          foreach ($f in $allFindings.ToArray()) {
-            if (([string](Get-JsonProp $f 'severity')).Trim().ToLowerInvariant() -eq 'blocking') { $hasBlocking = $true }
-          }
-          foreach ($a in $acceptance) {
-            $ast = ([string](Get-JsonProp $a 'status')).Trim().ToLowerInvariant()
-            if ($ast -eq 'missing' -or $ast -eq 'substituted') { $hasBlocking = $true }
-          }
-          foreach ($cl in $claims) {
-            $hv = Get-JsonProp $cl 'holds'
-            if ($hv -is [bool] -and -not $hv) { $hasBlocking = $true }
-          }
-
-          if ($hasBlocking) {
-            $finalVerdict = 'block'
-          } else {
-            $finalVerdict = 'pass'
-          }
-        }
-
-        $findingsArray = @($allFindings.ToArray())
-        $blockingFindings = @($findingsArray | Where-Object { ([string](Get-JsonProp $_ 'severity')).Trim().ToLowerInvariant() -eq 'blocking' })
-        $failedAcceptance = @($acceptance | Where-Object {
-          $ast = ([string](Get-JsonProp $_ 'status')).Trim().ToLowerInvariant()
-          $ast -eq 'missing' -or $ast -eq 'substituted'
-        })
-        $falseClaims = @($claims | Where-Object {
-          $hv = Get-JsonProp $_ 'holds'
-          ($hv -is [bool]) -and (-not $hv)
-        })
-
-        $needsArbitration = ($finalVerdict -eq 'block' -and $nextRound -ge 2)
-        $commentBody = Build-AuditCommentBody `
-          -HeadSha $headSha `
-          -Round $nextRound `
-          -Verdict $finalVerdict `
-          -IssueNumber $issueNumber `
-          -Acceptance $acceptance `
-          -Findings $findingsArray `
-          -Claims $claims `
-          -Withdrawn $withdrawn `
-          -ArbiterFollows ($needsArbitration -and -not [bool]$state.arbiterDone)
-        Write-Text (Join-Path $runDir 'comment.md') $commentBody
-
-        $blockingCount = $blockingFindings.Count
-        $advisoryCount = $findingsArray.Count - $blockingCount
-        $failingAccCount = $failedAcceptance.Count
-        $failingClaimsCount = $falseClaims.Count
-
-        $commentUrl = ''
-        $commentId = [long]0
-        $commentCreated = ''
-        if (-not $DryRun) {
-          $posted = Invoke-AuditApi -Config $config -Method 'POST' -Path ('/repos/' + $config.repo + '/issues/' + $num + '/comments') -Body @{ body = $commentBody }
-          $commentId = [long](Get-JsonProp $posted 'id')
-          $commentUrl = [string](Get-JsonProp $posted 'html_url')
-          $commentCreated = [string](Get-JsonProp $posted 'created_at')
-        }
-
-        if ($needsArbitration) {
-          if ([bool]$state.arbiterDone) {
-            # Enforce at most one arbitration per head SHA: park directly without re-invoking the arbiter.
-            $emptyEval = Evaluate-ArbiterRulings -BlockingFindings $blockingFindings -FailedAcceptance $failedAcceptance -FalseClaims $falseClaims -ArbiterResult ([pscustomobject]@{ rulings = @(); acceptance = @(); claims = @() })
-            $parkBody = Build-ArbiterParkedCommentBody -HeadSha $headSha -IssueNumber $issueNumber -Evaluation $emptyEval -Note 'Arbitration was already used once for this head SHA; parking PR.'
-            Write-Text (Join-Path $runDir 'arbiter-comment.md') $parkBody
-            $parkDesc = 'Nyx audit parked (arbiter already ran for this head)'
-            $parkCommentId = [long]0
-            $parkCommentUrl = ''
-            if (-not $DryRun) {
-              $pPost = Invoke-AuditApi -Config $config -Method 'POST' -Path ('/repos/' + $config.repo + '/issues/' + $num + '/comments') -Body @{ body = $parkBody }
-              $parkCommentId = [long](Get-JsonProp $pPost 'id')
-              $parkCommentUrl = [string](Get-JsonProp $pPost 'html_url')
-              Set-AuditCommitStatus -Config $config -Sha $headSha -State 'failure' -Description $parkDesc -TargetUrl $parkCommentUrl
-              Add-AuditParkedLabel -Config $config -Number $num
-              $state.headSha = $headSha
-              $state.round = $nextRound
-              $state.lastCommentId = $parkCommentId
-              $state.lastCommentCreatedAt = [string](Get-JsonProp $pPost 'created_at')
-              if ($rebuttalCommentId -gt 0) { $state.lastRebuttalCommentId = $rebuttalCommentId }
-              $state.pendingRebuttalCommentId = [long]0
-              $state.verdict = 'parked'
-              $state.baseSha = $mainSha
-              $state.priorFindings = $findingsArray
-              $state.attempts = 0
-              $state.lastAttemptAt = ''
-              $state.lastErrorKind = ''
-              $state.arbiterState = 'parked'
-              $state.arbiterPending = $null
-              Save-PrState -Path $statePath -State $state
-              $finalStateSaved = $true
-            }
-            $parkRecord = [ordered]@{
-              pr = $num
-              headSha = $headSha
-              round = $nextRound
-              status = 'ok'
-              verdict = 'parked'
-              arbiter = 'skipped-already-ran'
-              commitStatus = 'failure'
-              description = $parkDesc
-              commentId = $parkCommentId
-              commentUrl = $parkCommentUrl
-              runDir = $runDir
-            }
-            Write-Text (Join-Path $runDir 'result.json') ((ConvertTo-Json -InputObject $parkRecord -Depth 6) + "`n")
-            $null = $resultsOut.Add($parkRecord)
-            Write-Log ('PR #' + $num + ' head ' + $sha7 + ' round ' + $nextRound + ' parked (arbiter already ran for this head)')
-            continue
-          }
-
-          if (-not $DryRun) {
-            $state.headSha = $headSha
-            $state.round = $nextRound
-            $state.lastCommentId = $commentId
-            $state.lastCommentCreatedAt = $commentCreated
-            if ($rebuttalCommentId -gt 0) { $state.lastRebuttalCommentId = $rebuttalCommentId }
-            $state.pendingRebuttalCommentId = [long]0
-            $state.verdict = 'block'
-            $state.baseSha = $mainSha
-            $state.priorFindings = $findingsArray
-            $state.attempts = 0
-            $state.lastAttemptAt = ''
-            $state.lastErrorKind = ''
-            $state.arbiterState = 'pending'
-            $state.arbiterPending = [pscustomobject]@{
-              issueNumber = $issueNumber
-              commentUrl = $commentUrl
-              rebuttal = $rebuttalText
-              blockingFindings = $blockingFindings
-              failedAcceptance = $failedAcceptance
-              falseClaims = $falseClaims
-            }
-            Save-PrState -Path $statePath -State $state
-            $arbiterStateSaved = $true
-          }
-
-          $arbRecord = Invoke-ArbiterPass `
-            -Config $config `
-            -StateDir $stateDir `
-            -StatePath $statePath `
-            -State $state `
-            -PrNumber $num `
-            -HeadSha $headSha `
-            -MainSha $mainSha `
-            -IssueNumber $issueNumber `
-            -IssueBody $issueBody `
-            -DiffStat $diffStat `
-            -RebuttalText $rebuttalText `
-            -BlockingFindings $blockingFindings `
-            -FailedAcceptance $failedAcceptance `
-            -FalseClaims $falseClaims `
-            -PriorCommentUrl $commentUrl `
-            -WorktreeDir $worktreeDir `
-            -RunDir $runDir `
-            -ArbiterTemplate $arbiterTemplate `
-            -IsDryRun:$DryRun
-          $null = $resultsOut.Add($arbRecord)
-          continue
-        }
-
-        $ghStatus = if ($finalVerdict -eq 'pass') { 'success' } else { 'failure' }
-        if ($finalVerdict -eq 'pass') {
-          $statusDesc = 'Nyx audit passed (round ' + $nextRound + ', ' + $advisoryCount + ' advisory)'
-        } else {
-          $parts = @()
-          if ($blockingCount -gt 0) { $parts += ($blockingCount.ToString() + ' blocking') }
-          if ($failingAccCount -gt 0) { $parts += ($failingAccCount.ToString() + ' missing/substituted') }
-          if ($failingClaimsCount -gt 0) { $parts += ($failingClaimsCount.ToString() + ' false claim(s)') }
-          $detail = if ($parts.Count -gt 0) { $parts -join ', ' } else { 'blocked' }
-          $statusDesc = 'Nyx audit blocked (round ' + $nextRound + '): ' + $detail
-        }
-        $statusDesc = ConvertTo-SingleLine $statusDesc 140
-
-        if (-not $DryRun) {
-          Set-AuditCommitStatus -Config $config -Sha $headSha -State $ghStatus -Description $statusDesc -TargetUrl $commentUrl
-
-          $state.headSha = $headSha
-          $state.round = $nextRound
-          $state.lastCommentId = $commentId
-          $state.lastCommentCreatedAt = $commentCreated
-          if ($rebuttalCommentId -gt 0) { $state.lastRebuttalCommentId = $rebuttalCommentId }
-          $state.pendingRebuttalCommentId = [long]0
-          $state.verdict = $finalVerdict
-          $state.baseSha = $mainSha
-          $state.priorFindings = $findingsArray
-          $state.attempts = 0
-          $state.lastAttemptAt = ''
-          $state.lastErrorKind = ''
-          $state.arbiterState = ''
-          $state.arbiterPending = $null
-          Save-PrState -Path $statePath -State $state
-          $finalStateSaved = $true
-        }
-
-        $prRecord = [ordered]@{
-          pr = $num
-          headSha = $headSha
-          round = $nextRound
-          status = 'ok'
-          verdict = $finalVerdict
-          commitStatus = $ghStatus
-          description = $statusDesc
-          commentId = $commentId
-          commentUrl = $commentUrl
-          issueNumber = $issueNumber
-          acceptance = @($acceptance)
-          findings = @($findingsArray)
-          claims = @($claims)
-          withdrawn = @($withdrawn)
-          runDir = $runDir
-        }
-        Write-Text (Join-Path $runDir 'result.json') ((ConvertTo-Json -InputObject $prRecord -Depth 8) + "`n")
-        $null = $resultsOut.Add($prRecord)
-        Write-Log ('PR #' + $num + ' head ' + $sha7 + ' round ' + $nextRound + ' verdict=' + $finalVerdict + ' status=' + $ghStatus)
-      } catch {
-        $caughtException = $_.Exception
-        $errMsg = ConvertTo-SingleLine (Protect-LogText $caughtException.Message) 300
-        Write-Log ('PR #' + $num + ' head ' + $sha7 + ' error: ' + $errMsg)
-        if ($finalStateSaved) {
-          # The verdict, its status and the state are already committed; a later reporting
-          # failure (result.json, logs) must not revert them or rewrite the published status.
-          Write-Log ('PR #' + $num + ' head ' + $sha7 + ' verdict already committed; keeping it despite the reporting error')
-        } elseif ($arbiterRetryOnly -or $arbiterStateSaved) {
-          if ($pendingSet -and -not $DryRun) {
-            try { Set-AuditCommitStatus -Config $config -Sha $headSha -State 'failure' -Description 'arbitration pending' } catch { }
-          }
-        } else {
-          $state.headSha = $preRunState['headSha']
-          $state.attempts = $preRunState['attempts']
-          $state.lastAttemptAt = $preRunState['lastAttemptAt']
-          $state.lastErrorKind = $preRunState['lastErrorKind']
-          $state.round = $preRunState['round']
-          $state.lastCommentId = $preRunState['lastCommentId']
-          $state.lastCommentCreatedAt = $preRunState['lastCommentCreatedAt']
-          $state.lastRebuttalCommentId = $preRunState['lastRebuttalCommentId']
-          $state.pendingRebuttalCommentId = $preRunState['pendingRebuttalCommentId']
-          $state.verdict = $preRunState['verdict']
-          $state.baseSha = $preRunState['baseSha']
-          $state.priorFindings = $preRunState['priorFindings']
-          $state.arbiterState = $preRunState['arbiterState']
-          $state.arbiterDone = $preRunState['arbiterDone']
-          $state.arbiterPending = $preRunState['arbiterPending']
-
-          $isRemoteOutage = Test-RemoteOutageException -Exception $caughtException -Message $errMsg
-          if ($isRemoteOutage) {
-            $state.attempts = [int]$state.attempts + 1
-            $state.lastAttemptAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
-            $state.lastErrorKind = 'outage'
-          } else {
-            if ($state.lastErrorKind -eq 'local') {
-              $state.attempts = [int]$state.attempts + 1
-            } else {
-              $state.attempts = 1
-            }
-            $state.lastErrorKind = 'local'
-            if ([int]$state.attempts -lt 3) {
-              $state.lastAttemptAt = ''
-            } else {
-              $state.lastAttemptAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
-            }
-          }
-
-          if (-not $DryRun) {
-            try {
-              Save-PrState -Path $statePath -State $state
-            } catch {
-              Write-Log ('PR #' + $num + ' head ' + $sha7 + ' failed to save error state: ' + (ConvertTo-SingleLine (Protect-LogText $_.Exception.Message) 200))
-            }
-            if ($pendingSet) {
-              $inBackoff = ([int]$state.attempts -ge 3 -and -not [string]::IsNullOrWhiteSpace([string]$state.lastAttemptAt))
-              $errStatus = 'error'
-              $errDesc = 'audit unavailable, will retry'
-              if ($inBackoff) {
-                $errStatus = 'failure'
-                $errDesc = 'audit unavailable (backoff 60m), will retry'
+              $completedJobs = New-Object Collections.Generic.List[object]
+              foreach ($job in $activeChildren.ToArray()) {
+                if ($job.process.HasExited) {
+                  $null = $completedJobs.Add($job)
+                }
               }
-              try { Set-AuditCommitStatus -Config $config -Sha $headSha -State $errStatus -Description $errDesc } catch { }
+
+              if ($completedJobs.Count -eq 0) {
+                Start-Sleep -Milliseconds 500
+                continue
+              }
+
+              foreach ($doneJob in $completedJobs.ToArray()) {
+                $null = $activeChildren.Remove($doneJob)
+                Complete-AuditChildProcess -Job $doneJob -ResultsOut $resultsOut -SkippedOut $skippedOut -ErrorsOut $errorsOut
+              }
             }
-          }
-        }
-        $null = $errorsOut.Add([ordered]@{ pr = $num; headSha = $headSha; error = $errMsg; runDir = $runDir })
-      } finally {
-        if ($worktreeCreated -and -not [string]::IsNullOrWhiteSpace($worktreeDir)) {
-          Stop-WorktreeProcesses $worktreeDir
-          if ($script:GitPath -and (Test-Path -LiteralPath (Join-Path $repoDir '.git'))) {
-            if (Test-Path -LiteralPath $worktreeDir) {
-              $null = Invoke-Git -Directory $repoDir -Arguments ('worktree remove --force ' + (Quote-Arg $worktreeDir)) -TempBase $runDir
+          } finally {
+            foreach ($remJob in $activeChildren.ToArray()) {
+              try {
+                if ($null -ne $remJob.process) { $remJob.process.Dispose() }
+              } catch { }
             }
-            if (Test-Path -LiteralPath $worktreeDir) {
-              $null = Invoke-Tool $script:CmdExe ('/d /c rmdir /s /q ' + (Quote-Arg $worktreeDir)) (Join-Path $runDir '.rmdir.out.tmp') (Join-Path $runDir '.rmdir.err.tmp') $script:WorkRoot
-            }
-            $null = Invoke-Git -Directory $repoDir -Arguments 'worktree prune' -TempBase $runDir
           }
         }
       }
-    }
 
-    Remove-ExcessRuns -RunsDir $runsDir -Keep 20
+      Remove-ExcessRuns -RunsDir $runsDir -Keep 20
+      Write-Log ('audit pass finished: audited=' + $resultsOut.Count + ' skipped=' + $skippedOut.Count + ' errors=' + $errorsOut.Count)
+    }
   }
 } catch {
   $exitCode = 1

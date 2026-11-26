@@ -25,13 +25,13 @@ describe("Store", () => {
     const s = new Store(root);
     s.open();
     s.update((d) => {
-      d.settings.theme = "dark";
+      d.settings.theme = "nord";
       d.projects.push({ id: "3f6b7c90-1a2b-4c3d-8e9f-a1b2c3d4e5f6", name: "p", createdAt: 1, expanded: true });
     });
     s.close();
     const again = new Store(root);
     again.open();
-    expect(again.state.settings.theme).toBe("dark");
+    expect(again.state.settings.theme).toBe("nord");
     expect(again.state.projects).toHaveLength(1);
     again.close();
     // No temp files leak alongside the store.
@@ -124,9 +124,9 @@ describe("Store", () => {
     expect(() => s.close()).toThrow(/guard.*busy/);
     expect(s.ownsWrites).toBe(true);
     rmSync(guard, { recursive: true });
-    s.update((d) => { d.settings.theme = "dark"; });
+    s.update((d) => { d.settings.theme = "nord"; });
     s.close();
-    expect(JSON.parse(readFileSync(join(root, "store.json"), "utf8")).settings.theme).toBe("dark");
+    expect(JSON.parse(readFileSync(join(root, "store.json"), "utf8")).settings.theme).toBe("nord");
   });
 
   it("rejects a symlinked data root", () => {
@@ -160,7 +160,7 @@ describe("write ownership & lifecycle", () => {
     const a = new Store(root);
     a.open();
     a.update((d) => {
-      d.settings.theme = "dark";
+      d.settings.theme = "nord";
     });
     a.flushNow();
     const winner = readFileSync(join(root, "store.json"), "utf8");
@@ -179,7 +179,7 @@ describe("write ownership & lifecycle", () => {
     s.close();
     const bytes = readFileSync(join(root, "store.json"), "utf8");
     s.update((d) => {
-      d.settings.theme = "dark";
+      d.settings.theme = "nord";
     });
     s.flushNow();
     expect(readFileSync(join(root, "store.json"), "utf8")).toBe(bytes);
@@ -197,6 +197,29 @@ describe("store document validation", () => {
     expect(res.recoveredFrom).toBeTruthy();
     expect(res.data.settings.language).toBe("en");
     s.close();
+  });
+
+  it("persists all supported P2-49 languages and rejects unknown language values", () => {
+    for (const lang of ["zh-Hant", "ja", "ko", "fr"] as const) {
+      const root = fresh();
+      const doc = emptyStore();
+      doc.settings.language = lang;
+      writeFileSync(join(root, "store.json"), JSON.stringify(doc));
+      const s = new Store(root);
+      const res = s.open();
+      expect(res.recoveredFrom).toBeUndefined();
+      expect(res.data.settings.language).toBe(lang);
+      s.close();
+    }
+    const badRoot = fresh();
+    const badDoc = emptyStore() as unknown as { settings: { language: string } };
+    badDoc.settings.language = "de";
+    writeFileSync(join(badRoot, "store.json"), JSON.stringify(badDoc));
+    const badStore = new Store(badRoot);
+    const badRes = badStore.open();
+    expect(badRes.recoveredFrom).toBeTruthy();
+    expect(badRes.data.settings.language).toBe("en");
+    badStore.close();
   });
 
   it("rejects a thread pointing at an unknown project", () => {

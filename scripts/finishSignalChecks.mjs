@@ -169,9 +169,6 @@ export async function runFinishSignalChecks({
   );
 
   // CH-05: notification silent flag follows the chime. Unseen thread B.
-  await page.evaluate(() =>
-    window.tivano.invoke("settings:set", { notifyOnDone: true }),
-  );
   await sleep(150);
   const n0 = (await notes(page)).length;
   await sendAndWait(page, tidB);
@@ -237,6 +234,7 @@ export async function runFinishSignalChecks({
   // CH-08: the settings switch renders ON by default, preview plays on ON.
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="conversation"]').click();
   const sw = page.getByRole("switch", { name: "Chime when a turn finishes" });
   await sw.waitFor();
   verify(
@@ -275,6 +273,7 @@ export async function runFinishSignalChecks({
   );
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="conversation"]').click();
   const zhSw = page.getByRole("switch", { name: "本轮完成时播放提示音" });
   await zhSw.waitFor();
   verify(
@@ -286,7 +285,7 @@ export async function runFinishSignalChecks({
   await page.screenshot({ path: `${outDir}/chime-setting-zh.png` });
   await page.keyboard.press("Escape");
   await page.evaluate(() =>
-    window.tivano.invoke("settings:set", { language: "en", notifyOnDone: false }),
+    window.tivano.invoke("settings:set", { language: "en" }),
   );
 
   const c = await boundedClose(app, proc);

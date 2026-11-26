@@ -397,8 +397,81 @@ export function hydraLandingIsEmpty(l: HydraLanding): boolean {
   return l.files.length === 0 && l.patchPath === undefined && l.error === undefined;
 }
 
-export function hydraLandingLanded(l: HydraLanding): boolean {
+export function hydraLandingLanded(l: {
+  files: ReadonlyArray<unknown>;
+  patchPath?: string | undefined;
+  error?: string | undefined;
+}): boolean {
   return l.files.length > 0 && l.patchPath === undefined && l.error === undefined;
+}
+
+/**
+ * P2-63 (frozen AppModel+HydraMerge hydraRecoveryCanSkipHistoryLoad):
+ * a lead whose Hydra jobs are all closed, completed and settled (merged
+ * or nothing to merge) AND whose non-archived heads carry no unmerged
+ * landed work can be skipped by startup recovery without reading history.
+ */
+export function canSkipHydraMergeRecovery(
+  lead: {
+    id: string;
+    isArchived?: boolean | undefined;
+    hydraEnabled?: boolean | undefined;
+    hydraJobs?: ReadonlyArray<{
+      id?: string | undefined;
+      isOpen: boolean;
+      ending?: "completed" | "stopped" | "failed" | undefined;
+      merge?: "merged" | "nothing" | "failed" | "skipped" | undefined;
+    }> | undefined;
+  },
+  heads: ReadonlyArray<{
+    isArchived?: boolean | undefined;
+    hydraHead?: {
+      leadId: string;
+      status?: HydraHeadStatus | undefined;
+      landingPending?: boolean | undefined;
+      mergedAt?: number | undefined;
+      landing?: {
+        files: ReadonlyArray<unknown>;
+        conflicts?: ReadonlyArray<unknown> | undefined;
+        patchPath?: string | undefined;
+        error?: string | undefined;
+      } | undefined;
+    } | undefined;
+  }>,
+): boolean {
+  if (lead.isArchived === true || lead.hydraEnabled === false) return true;
+  const jobs = lead.hydraJobs;
+  if (!jobs || jobs.length === 0) return false;
+  const allJobsSettled = jobs.every(
+    (j) =>
+      !j.isOpen &&
+      j.ending === "completed" &&
+      (j.merge === "merged" || j.merge === "nothing"),
+  );
+  if (!allJobsSettled) return false;
+  for (const h of heads) {
+    if (h.isArchived === true || h.hydraHead?.leadId !== lead.id) continue;
+    const info = h.hydraHead;
+    if (info.status !== undefined && info.status !== "completed") {
+      return false;
+    }
+    if (info.landingPending === true) {
+      return false;
+    }
+    if (info.landing) {
+      if (
+        info.landing.patchPath !== undefined ||
+        info.landing.error !== undefined ||
+        (info.landing.conflicts?.length ?? 0) > 0
+      ) {
+        return false;
+      }
+      if (info.mergedAt === undefined && hydraLandingLanded(info.landing)) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 export interface HydraHeadInfo {
@@ -839,4 +912,22 @@ export function pairEffortsPhrase(
   if (lead !== undefined) return { kind: "lead", lead: effortTitle(lead) };
   if (heads !== undefined) return { kind: "heads", heads: effortTitle(heads) };
   return { kind: "none" };
+}
+
+/** P2-40 frozen PanelLayout (HydraSettingsPage): the three-way floating
+ *  panel setting rides two booleans — autoOpens gates any automatic
+ *  panel, pops only applies once panels open at all. */
+export type HydraPanelLayout = "single" | "independent" | "off";
+export function hydraPanelLayout(s: {
+  hydraAutoOpensPanels?: boolean | undefined;
+  hydraAutoPopsHeads?: boolean | undefined;
+}): HydraPanelLayout {
+  if (s.hydraAutoOpensPanels === false) return "off";
+  return s.hydraAutoPopsHeads === true ? "independent" : "single";
+}
+export function hydraPanelLayoutPatch(l: HydraPanelLayout): {
+  hydraAutoOpensPanels: boolean;
+  hydraAutoPopsHeads: boolean;
+} {
+  return { hydraAutoOpensPanels: l !== "off", hydraAutoPopsHeads: l === "independent" };
 }

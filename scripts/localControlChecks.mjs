@@ -175,10 +175,14 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   // ---- settings via control -------------------------------------------------
   const { res: setRes } = await req("settingsSet", {
     ticket: `${instance}/${randomUUID()}/${Date.now()}`,
-    key: "antiSlopEnabled", bool: false,
+    key: "textGeneration", textGeneration: "off",
   });
-  verify("LC-19 settingsSet antiSlopEnabled", setRes.result?.operation?.state === "ended", setRes);
-  await waitSnap(page, (s) => s.settings.antiSlopEnabled === false);
+  verify("LC-19 settingsSet textGeneration", setRes.result?.operation?.state === "ended", setRes);
+  await waitSnap(page, (s) => s.settings.textGeneration === "off");
+  await req("settingsSet", {
+    ticket: `${instance}/${randomUUID()}/${Date.now()}`,
+    key: "textGeneration", textGeneration: "automatic",
+  });
   const { res: sky } = await req("settingsSet", {
     ticket: `${instance}/${randomUUID()}/${Date.now()}`,
     key: "showsSkylight", bool: false,
@@ -296,6 +300,7 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   await wait(200);
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="connections"]').click();
   await page.waitForSelector(".control-status", { timeout: 10000 });
   const alphaSwitch = page.locator('.choice-row button[role="switch"]', { hasText: "Alpha" }).first();
   verify("LC-23 Alpha switch rendered", (await alphaSwitch.count()) === 1);
@@ -351,6 +356,8 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   await page.locator(".modal-actions .primary").click();
   await page.waitForSelector(".modal", { state: "detached", timeout: 10000 });
   await page.locator(".sidebar-foot button.row").click();
+  await page.waitForSelector(".modal", { timeout: 10000 });
+  await page.locator('[data-settings-page="connections"]').click();
   await page.waitForSelector('[data-testid="cli-status"]', { timeout: 10000 });
   await waitCliText("older copy");
   verify("LC-28a stale shim reports needs-repair, reads Repair CLI",
@@ -398,7 +405,7 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   // restore the persisted gates so later suites inherit a clean default
   await page.evaluate(() =>
     window.tivano.invoke("settings:set", {
-      alphaEnabled: false, externalControlEnabled: false, antiSlopEnabled: true,
+      alphaEnabled: false, externalControlEnabled: false,
     }));
   const c = await boundedClose(inst.app, inst.proc);
   verify("LC-26 clean shutdown", c.exited === true, c);

@@ -15,19 +15,30 @@ import {
   MODEL_LIST_LIMIT,
   addPin,
   addSection,
+  applyDraftRename,
+  defaultPickerCategory,
+  dropPinOnGroupEnd,
+  dropPinOnPin,
   modelListItems,
   moveModelListItem,
   moveModelSection,
   movePinToSection,
+  moveSectionToTarget,
   modelLineageKey,
   modelNameVersion,
   parseVariantName,
+  partitionModelBlocks,
+  partitionPickerModels,
+  pickerCategoryKey,
   pinId,
   prefKey,
   protectedModelIds,
   removePin,
   removeSection,
   renameSection,
+  resolvePickerCategory,
+  sectionEditTargetAlive,
+  sectionIdOfPin,
   setModelListItems,
   simplifiedModels,
   toggleSectionCollapsed,
@@ -376,5 +387,174 @@ describe("protectedModelIds (frozen protectedModelIDs)", () => {
     expect(ids).toEqual(
       new Set(["thread-m", "pinned-m", "pin2", "lead-m", "work-m", "prof-m", "home-worker"]),
     );
+  });
+});
+
+describe("applyDraftRename (P2-33 edit-then-remove fold)", () => {
+  it("folds the in-flight rename into the written list", () => {
+    const out = applyDraftRename([S("a", "A", 0), S("b", "B", 1)], "b", "Bee");
+    expect(out.map((s) => s.name)).toEqual(["A", "Bee"]);
+    expect(out.map((s) => s.id)).toEqual(["a", "b"]);
+  });
+
+  it("leaves the list untouched with no edit or a blank draft", () => {
+    const secs = [S("a", "A", 0)];
+    expect(applyDraftRename(secs, null, "x")).toBe(secs);
+    expect(applyDraftRename(secs, "a", "   ")).toBe(secs);
+  });
+
+  it("rename-then-remove lands both changes in one write", () => {
+    const folded = applyDraftRename([S("a", "A", 0), S("b", "B", 1)], "a", "Aye");
+    const removed = removeSection(folded, ["b"], "b");
+    expect(removed.modelSections.map((s) => s.name)).toEqual(["Aye"]);
+    expect(removed.collapsedModelSections).toEqual([]);
+  });
+
+  it("a rename aimed at a gone section is a no-op (no resurrection)", () => {
+    const secs = [S("a", "A", 0)];
+    const out = applyDraftRename(secs, "ghost", "G");
+    expect(out.map((s) => s.name)).toEqual(["A"]);
+  });
+});
+
+describe("sectionEditTargetAlive (P2-33 un-echoed write grace)", () => {
+  it("keeps a just-added section alive before the store echoes it", () => {
+    const before = [S("a", "A", 0)];
+    const added = addSection(before, "New group", 3);
+    const newId = added[added.length - 1]!.id;
+    // The click sets editingId to the new id but the snapshot still
+    // holds the old list — the target must survive that gap.
+    expect(sectionEditTargetAlive(before, newId, newId)).toBe(true);
+    // Once the echo lands the pending marker is released and the
+    // echoed list alone keeps it alive.
+    expect(sectionEditTargetAlive(added, newId, null)).toBe(true);
+  });
+
+  it("clears a vanished or stale target, and never a null one", () => {
+    const secs = [S("a", "A", 0)];
+    expect(sectionEditTargetAlive(secs, "a", null)).toBe(true);
+    expect(sectionEditTargetAlive(secs, "gone", null)).toBe(false);
+    expect(sectionEditTargetAlive(secs, "other", "pending")).toBe(false);
+    expect(sectionEditTargetAlive(secs, null, "pending")).toBe(false);
+  });
+});
+
+describe("P2-56 chip drag-reorder and rail drops", () => {
+  it("partitionModelBlocks and sectionIdOfPin map pins to ungrouped and groups", () => {
+    const pins = [P("u1"), P("a1"), P("a2"), P("b1")];
+    const secs = [S("s1", "Alpha", 1), S("s2", "Beta", 3)];
+    const blocks = partitionModelBlocks(pins, secs);
+    expect(blocks.ungrouped.map((p) => p.modelID)).toEqual(["u1"]);
+    expect(blocks.groups.map((g) => [g.section.name, g.pins.map((p) => p.modelID)])).toEqual([
+      ["Alpha", ["a1", "a2"]],
+      ["Beta", ["b1"]],
+    ]);
+    expect(sectionIdOfPin(pins, secs, P("u1"))).toBeNull();
+    expect(sectionIdOfPin(pins, secs, P("a2"))).toBe("s1");
+    expect(sectionIdOfPin(pins, secs, P("b1"))).toBe("s2");
+  });
+
+  it("dropPinOnPin reorders within the same group by index direction", () => {
+    const pins = [P("a1"), P("a2"), P("a3")];
+    const secs = [S("s1", "Alpha", 0)];
+    // Dragging forward (0 -> 2) places after target.
+    const fwd = dropPinOnPin(pins, secs, P("a1"), P("a3"));
+    expect(fwd!.modelList.map((p) => p.modelID)).toEqual(["a2", "a3", "a1"]);
+    // Dragging backward (2 -> 0) places before target.
+    const back = dropPinOnPin(pins, secs, P("a3"), P("a1"));
+    expect(back!.modelList.map((p) => p.modelID)).toEqual(["a3", "a1", "a2"]);
+    // Dropping on self is a no-op.
+    expect(dropPinOnPin(pins, secs, P("a1"), P("a1"))).toBeNull();
+  });
+
+  it("dropPinOnPin moves across groups before the target chip", () => {
+    const pins = [P("u1"), P("a1"), P("a2"), P("b1")];
+    const secs = [S("s1", "Alpha", 1), S("s2", "Beta", 3)];
+    const moved = dropPinOnPin(pins, secs, P("b1"), P("a2"));
+    expect(moved!.modelList.map((p) => p.modelID)).toEqual(["u1", "a1", "b1", "a2"]);
+    expect(moved!.modelSections.map((s) => [s.id, s.position])).toEqual([
+      ["s1", 1],
+      ["s2", 4],
+    ]);
+  });
+
+  it("dropPinOnGroupEnd moves to the end of a group or Ungrouped and skips no-ops", () => {
+    const pins = [P("u1"), P("a1"), P("a2")];
+    const secs = [S("s1", "Alpha", 1), S("s2", "Empty", 3)];
+    // Move ungrouped pin into empty group s2.
+    const toEmpty = dropPinOnGroupEnd(pins, secs, P("u1"), "s2");
+    expect(toEmpty!.modelList.map((p) => p.modelID)).toEqual(["a1", "a2", "u1"]);
+    expect(toEmpty!.modelSections.map((s) => [s.id, s.position])).toEqual([
+      ["s1", 0],
+      ["s2", 2],
+    ]);
+    // Same-group empty space moves non-last pin to end of group.
+    const toEndSame = dropPinOnGroupEnd(pins, secs, P("a1"), "s1");
+    expect(toEndSame!.modelList.map((p) => p.modelID)).toEqual(["u1", "a2", "a1"]);
+    // Dropping last pin on its own group end is a no-op.
+    expect(dropPinOnGroupEnd(pins, secs, P("a2"), "s1")).toBeNull();
+    // Rail mode forbids dropping onto the pin's current group.
+    expect(
+      dropPinOnGroupEnd(pins, secs, P("a1"), "s1", { requireDifferentGroup: true }),
+    ).toBeNull();
+    // Moving back to Ungrouped puts it at end of ungrouped head.
+    const toUngrouped = dropPinOnGroupEnd(pins, secs, P("a1"), null, {
+      requireDifferentGroup: true,
+    });
+    expect(toUngrouped!.modelList.map((p) => p.modelID)).toEqual(["u1", "a1", "a2"]);
+    expect(toUngrouped!.modelSections.map((s) => [s.id, s.position])).toEqual([
+      ["s1", 2],
+      ["s2", 3],
+    ]);
+  });
+
+  it("moveSectionToTarget reorders groups across multiple slots", () => {
+    const pins = [P("u"), P("a"), P("b"), P("c")];
+    const secs = [S("s1", "One", 1), S("s2", "Two", 2), S("s3", "Three", 3)];
+    const moved = moveSectionToTarget(pins, secs, "s3", "s1");
+    expect(moved!.modelList.map((p) => p.modelID)).toEqual(["u", "c", "a", "b"]);
+    expect(moved!.modelSections.map((s) => s.id)).toEqual(["s3", "s1", "s2"]);
+    expect(moveSectionToTarget(pins, secs, "s1", "s1")).toBeNull();
+  });
+
+  it("partitionPickerModels and defaultPickerCategory follow groups", () => {
+    const opts = new Map([
+      ["u1", M("u1", "Ungrouped 1")],
+      ["a1", M("a1", "Alpha 1")],
+      ["b1", M("b1", "Beta 1")],
+    ]);
+    const part = partitionPickerModels(
+      [P("u1"), P("a1"), P("b1")],
+      [S("s1", "Alpha", 1), S("s2", "Beta", 2), S("s3", "Empty", 3)],
+      [],
+      opts,
+    );
+    expect(part.ungrouped.map((e) => e.modelId)).toEqual(["u1"]);
+    expect(part.groups.map((g) => [g.section.name, g.items.map((i) => i.modelId)])).toEqual([
+      ["Alpha", ["a1"]],
+      ["Beta", ["b1"]],
+      ["Empty", []],
+    ]);
+    expect(pickerCategoryKey(defaultPickerCategory(part, "b1"))).toBe("group/s2");
+    expect(pickerCategoryKey(defaultPickerCategory(part, "u1"))).toBe("all");
+    expect(pickerCategoryKey(defaultPickerCategory(part, ""))).toBe("all");
+    expect(
+      pickerCategoryKey(resolvePickerCategory({ kind: "group", sectionId: "missing" }, part)!),
+    ).toBe("all");
+    expect(
+      pickerCategoryKey(resolvePickerCategory({ kind: "ungrouped" }, part)!),
+    ).toBe("ungrouped");
+
+    // Unpinned catalog still keeps user sections visible with empty counts.
+    const unpinnedPart = partitionPickerModels(
+      [],
+      [S("s1", "Alpha", 0)],
+      [M("u1", "Ungrouped 1")],
+      opts,
+    );
+    expect(unpinnedPart.groups.map((g) => [g.section.name, g.items.length])).toEqual([
+      ["Alpha", 0],
+    ]);
+    expect(unpinnedPart.ungrouped.map((e) => e.modelId)).toEqual(["u1"]);
   });
 });

@@ -464,16 +464,34 @@ export async function runCheckpointChecks({
   await page.locator(".thread-changes-tab").waitFor({ timeout: 10000 });
   const tabText = await page.locator(".thread-changes-tab").innerText();
   verify(
-    "changes tab shows file count and +/- totals",
-    tabText.includes("2") && tabText.includes("+") && tabText.includes("−"),
+    "changes tab in top bar shows +/- totals",
+    tabText.includes("+") && tabText.includes("−"),
     tabText,
   );
+  const tabBox = await page.locator(".thread-changes-tab").boundingBox();
+  const compBox = await page.locator(".composer").boundingBox();
   await page.locator(".thread-changes-tab").click();
-  await page.locator(".thread-changes-pop").waitFor({ timeout: 10000 });
+  await page.locator('.thread-changes-pop[data-anchor="topbar"]').waitFor({ timeout: 10000 });
+  const popBox = await page.locator('.thread-changes-pop[data-anchor="topbar"]').boundingBox();
+  verify(
+    "changes popover opens directly below top-bar +/- numbers",
+    Boolean(
+      tabBox &&
+        popBox &&
+        compBox &&
+        popBox.y >= tabBox.y + tabBox.height - 2 &&
+        popBox.y <= tabBox.y + tabBox.height + 20 &&
+        Math.abs(popBox.x + popBox.width - (tabBox.x + tabBox.width)) <= 40 &&
+        popBox.y < compBox.y,
+    ),
+    { tabBox, popBox, compBox },
+  );
   const popText = await page.locator(".thread-changes-pop").innerText();
   verify(
-    "changes popover lists both touched files",
-    popText.includes("tracked.txt") && popText.includes("fixture-checkpoint.txt"),
+    "changes popover header lists file count and both touched files",
+    popText.includes("2") &&
+      popText.includes("tracked.txt") &&
+      popText.includes("fixture-checkpoint.txt"),
     popText.slice(0, 160),
   );
   await page

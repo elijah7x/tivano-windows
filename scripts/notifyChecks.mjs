@@ -1,7 +1,8 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-29.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-// F28 completion notifications e2e — opt-in setting, an UNSEEN result
-// posts a notification, a watched completion stays silent, zh-Hans body.
+// F28 / P2-62 completion notifications e2e — always notifies on an
+// UNSEEN result, a watched completion stays silent, zh-Hans body, and
+// retired Settings switches are gone.
 // The Notification API is stubbed in the page — no real OS interaction.
 
 export async function runNotifyChecks({
@@ -71,26 +72,19 @@ export async function runNotifyChecks({
   const tidA = await mkThread("Watch thread");
   const tidB = await mkThread("Background thread");
 
-  // Setting OFF: an unseen completion still posts nothing.
+  // B finishing while A is on screen notifies automatically (switch retired in v3.0.0).
   await select(tidA);
-  await sendAndWait(page, tidB);
-  verify("NOTIFY-01 setting off — unseen completion stays silent", (await notes(page)).length === 0);
-
-  // Enable the setting, then B finishing while A is on screen notifies.
-  await page.evaluate(() =>
-    window.tivano.invoke("settings:set", { notifyOnDone: true }),
-  );
   await sendAndWait(page, tidB);
   const n1 = await notes(page);
   verify(
-    "NOTIFY-02 unseen completion posts one notification",
+    "NOTIFY-01 unseen completion posts one notification by default",
     n1.length === 1 && n1[0].title === "Background thread" && n1[0].body === "Turn finished",
     n1,
   );
 
   // A watched completion stays silent.
   await sendAndWait(page, tidA);
-  verify("NOTIFY-03 watched completion posts nothing", (await notes(page)).length === 1);
+  verify("NOTIFY-02 watched completion posts nothing", (await notes(page)).length === 1);
 
   // zh-Hans localizes the body.
   await page.evaluate(() =>
@@ -99,29 +93,37 @@ export async function runNotifyChecks({
   await sendAndWait(page, tidB);
   const n3 = await notes(page);
   verify(
-    "NOTIFY-04 zh-Hans notification body",
+    "NOTIFY-03 zh-Hans notification body",
     n3.length === 2 && n3[1].body === "轮次完成",
     n3[1],
   );
 
-  // Setting persists for the snapshot consumers.
-  const snapNow = await snap(page);
-  verify("NOTIFY-05 setting persisted in the snapshot", snapNow.settings.notifyOnDone === true);
-
-  // The settings switch renders checked under zh-Hans (still set above).
+  // Retired switches and commit-message instructions are absent under en
+  // (using canonical English keys with a live switch anchor so the check
+  // cannot pass vacuously), then capture the Settings modal under zh-Hans.
   const { join } = await import("node:path");
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { language: "en" }),
+  );
   await page.locator(".sidebar-foot button.row").click();
   await page.waitForSelector(".modal", { timeout: 10000 });
-  const sw = page.getByRole("switch", { name: "轮次完成时通知我" });
+  await page.locator('[data-settings-page="conversation"]').click();
   verify(
-    "NOTIFY-06 settings switch renders checked",
-    (await sw.getAttribute("aria-checked")) === "true" &&
-      (await sw.textContent())?.includes("轮次完成时通知我"),
-    await sw.textContent(),
+    "NOTIFY-04 retired switches absent in Settings",
+    (await page.getByRole("switch", { name: "Chime when a turn finishes" }).count()) === 1 &&
+      (await page.getByRole("switch", { name: "Notify when a turn finishes" }).count()) === 0 &&
+      (await page.getByRole("switch", { name: "Concise AI replies" }).count()) === 0 &&
+      (await page.locator(".modal", { hasText: "Commit message instructions" }).count()) === 0,
+  );
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { language: "zh-Hans" }),
   );
   await page.screenshot({ path: join(outDir, "63-notify-setting-zh.png") });
   await page.locator(".modal-actions .primary").click();
   await page.waitForSelector(".modal", { state: "detached", timeout: 10000 });
+  await page.evaluate(() =>
+    window.tivano.invoke("settings:set", { language: "en" }),
+  );
 
   const c = await boundedClose(app, proc);
   ledger.exited = c.exited;

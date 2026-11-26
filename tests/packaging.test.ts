@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   PackagingError,
+  REQUIRED_ASAR_ENTRIES,
   REQUIRED_DIST_FILES,
   REQUIRED_WIN_PTY_FILES,
   assertWindowsX64Host,
@@ -153,7 +154,7 @@ describe("required runtime content", () => {
 
   it("every required path is covered by the committed allowlist", () => {
     const cfg = loadBuilderConfig(CONFIG);
-    for (const rel of [...REQUIRED_DIST_FILES, ...REQUIRED_WIN_PTY_FILES])
+    for (const rel of [...REQUIRED_ASAR_ENTRIES, ...REQUIRED_WIN_PTY_FILES])
       expect(coveredByAllowlist(rel, cfg.files), rel).toBe(true);
   });
 
@@ -270,6 +271,7 @@ describe("hashing & source binding", () => {
     expect(input.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(input.fileCount).toBeGreaterThan(30);
     expect(input.files.some((f: { path: string }) => f.path === "package.json")).toBe(true);
+    expect(input.files.some((f: { path: string }) => f.path === "CHANGELOG.md")).toBe(true);
     expect(input.files.some((f: { path: string }) => f.path === "node_modules/x")).toBe(false);
     // re-enumerating an unchanged tree verifies
     expect(() => verifySourceUnchanged(ROOT, input)).not.toThrow();

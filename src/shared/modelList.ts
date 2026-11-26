@@ -588,6 +588,35 @@ export function renameSection(sections: ModelSection[], id: string, name: string
   return sections.map((s) => (s.id === id ? { ...s, name } : s));
 }
 
+/** P2-33 (frozen commitRename-on-mutation): fold an in-flight rename
+ *  into the list a mutation is about to write — the edit lands in the
+ *  same write instead of racing two whole-array updates from different
+ *  bases. A missing/blank edit leaves the list untouched. */
+export function applyDraftRename(
+  sections: ModelSection[],
+  editingId: string | null,
+  draft: string,
+): ModelSection[] {
+  const name = draft.trim();
+  if (editingId === null || name === "") return sections;
+  return renameSection(sections, editingId, name);
+}
+
+/** P2-33: an edit target is alive while the section list echoes it, or
+ *  while it is a just-written row whose echo has not landed yet — the
+ *  settings write is fire-and-forget, so checking only the echoed list
+ *  clears the inline editor the click just opened (the "New group"
+ *  regression). Once the echo lands, `pendingId` must be released. */
+export function sectionEditTargetAlive(
+  sections: readonly ModelSection[],
+  editingId: string | null,
+  pendingId: string | null,
+): boolean {
+  if (editingId === null) return false;
+  if (sections.some((s) => s.id === editingId)) return true;
+  return editingId === pendingId;
+}
+
 /** Frozen removeModelSection — the heading goes away; its models join the
  *  heading above, or the top of the list. */
 export function removeSection(sections: ModelSection[], collapsed: string[], id: string) {
@@ -599,6 +628,252 @@ export function removeSection(sections: ModelSection[], collapsed: string[], id:
 
 export function toggleSectionCollapsed(collapsed: string[], id: string): string[] {
   return collapsed.includes(id) ? collapsed.filter((c) => c !== id) : [...collapsed, id];
+}
+
+// ── P2-56 / P2-20: model groups, chip drag-reorder, and group-aware picker ──
+
+export interface ModelGroupBlock {
+  section: ModelSection;
+  pins: ModelPin[];
+}
+
+/** Splits `modelListItems` into the ungrouped head and ordered group blocks. */
+export function partitionModelBlocks(
+  pins: ModelPin[],
+  sections: ModelSection[],
+): { ungrouped: ModelPin[]; groups: ModelGroupBlock[] } {
+  const ungrouped: ModelPin[] = [];
+  const groups: ModelGroupBlock[] = [];
+  for (const item of modelListItems(pins, sections)) {
+    if (item.kind === "pin") {
+      if (groups.length === 0) ungrouped.push(item.pin);
+      else groups[groups.length - 1]!.pins.push(item.pin);
+    } else {
+      groups.push({ section: item.section, pins: [] });
+    }
+  }
+  return { ungrouped, groups };
+}
+
+/** Returns the section id containing `pin`, or `null` when ungrouped / absent. */
+export function sectionIdOfPin(
+  pins: ModelPin[],
+  sections: ModelSection[],
+  pin: ModelPin,
+): string | null {
+  const target = pinId(pin);
+  let current: string | null = null;
+  for (const item of modelListItems(pins, sections)) {
+    if (item.kind === "section") current = item.section.id;
+    else if (pinId(item.pin) === target) return current;
+  }
+  return null;
+}
+
+function sameModelLayout(
+  aPins: ModelPin[],
+  aSections: ModelSection[],
+  bPins: ModelPin[],
+  bSections: ModelSection[],
+): boolean {
+  if (aPins.length !== bPins.length || aSections.length !== bSections.length) return false;
+  for (let i = 0; i < aPins.length; i++) {
+    if (pinId(aPins[i]!) !== pinId(bPins[i]!)) return false;
+  }
+  for (let i = 0; i < aSections.length; i++) {
+    if (
+      aSections[i]!.id !== bSections[i]!.id ||
+      aSections[i]!.position !== bSections[i]!.position
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Frozen AvatarChipDropDelegate / ModelCardReorderDropDelegate:
+ *  - Same group: reorder `dragged` before or after `target` based on index order.
+ *  - Different group: move `dragged` into `target`'s group right before `target`.
+ *  Returns `null` when nothing changed. */
+export function dropPinOnPin(
+  pins: ModelPin[],
+  sections: ModelSection[],
+  dragged: ModelPin,
+  target: ModelPin,
+): { modelList: ModelPin[]; modelSections: ModelSection[] } | null {
+  if (pinId(dragged) === pinId(target)) return null;
+  if (
+    !pins.some((p) => pinId(p) === pinId(dragged)) ||
+    !pins.some((p) => pinId(p) === pinId(target))
+  ) {
+    return null;
+  }
+  const fromSection = sectionIdOfPin(pins, sections, dragged);
+  const toSection = sectionIdOfPin(pins, sections, target);
+  if (fromSection === toSection) {
+    const blocks = partitionModelBlocks(pins, sections);
+    const groupPins =
+      toSection === null
+        ? blocks.ungrouped
+        : (blocks.groups.find((g) => g.section.id === toSection)?.pins ?? []);
+    const fromIdx = groupPins.findIndex((p) => pinId(p) === pinId(dragged));
+    const toIdx = groupPins.findIndex((p) => pinId(p) === pinId(target));
+    if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return null;
+    return moveModelListItem(
+      pins,
+      sections,
+      { kind: "pin", pin: dragged },
+      { kind: "pin", pin: target },
+      fromIdx < toIdx,
+    );
+  }
+  const next = movePinToSection(pins, sections, dragged, toSection, target);
+  if (!next || sameModelLayout(pins, sections, next.modelList, next.modelSections)) {
+    return null;
+  }
+  return next;
+}
+
+/** Moves `dragged` to the end of `sectionId` (`null` = Ungrouped), returning
+ *  `null` when nothing changed or when `requireDifferentGroup` forbids a
+ *  same-group drop (e.g. dropping onto the model's current left-rail card). */
+export function dropPinOnGroupEnd(
+  pins: ModelPin[],
+  sections: ModelSection[],
+  dragged: ModelPin,
+  sectionId: string | null,
+  options?: { requireDifferentGroup?: boolean },
+): { modelList: ModelPin[]; modelSections: ModelSection[] } | null {
+  if (!pins.some((p) => pinId(p) === pinId(dragged))) return null;
+  if (sectionId !== null && !sections.some((s) => s.id === sectionId)) return null;
+  if (
+    options?.requireDifferentGroup &&
+    sectionIdOfPin(pins, sections, dragged) === sectionId
+  ) {
+    return null;
+  }
+  const next = movePinToSection(pins, sections, dragged, sectionId);
+  if (!next || sameModelLayout(pins, sections, next.modelList, next.modelSections)) {
+    return null;
+  }
+  return next;
+}
+
+/** Frozen RailCardDropDelegate (.group on .group): moves `draggedId` directly
+ *  to `targetId`'s slot, carrying its models; ungrouped models stay on top. */
+export function moveSectionToTarget(
+  pins: ModelPin[],
+  sections: ModelSection[],
+  draggedId: string,
+  targetId: string,
+): { modelList: ModelPin[]; modelSections: ModelSection[] } | null {
+  if (draggedId === targetId) return null;
+  const items = modelListItems(pins, sections);
+  const head: ModelListItem[] = [];
+  const blocks: ModelListItem[][] = [];
+  for (const item of items) {
+    if (item.kind === "section") blocks.push([item]);
+    else if (blocks.length === 0) head.push(item);
+    else blocks[blocks.length - 1]!.push(item);
+  }
+  const from = blocks.findIndex(
+    (b) => b[0]!.kind === "section" && (b[0] as { section: ModelSection }).section.id === draggedId,
+  );
+  const to = blocks.findIndex(
+    (b) => b[0]!.kind === "section" && (b[0] as { section: ModelSection }).section.id === targetId,
+  );
+  if (from < 0 || to < 0 || from === to) return null;
+  const [moved] = blocks.splice(from, 1);
+  blocks.splice(to, 0, moved!);
+  return setModelListItems([...head, ...blocks.flat()]);
+}
+
+export type PickerCategory =
+  | { kind: "all" }
+  | { kind: "ungrouped" }
+  | { kind: "group"; sectionId: string };
+
+export function pickerCategoryKey(cat: PickerCategory): string {
+  if (cat.kind === "all") return "all";
+  if (cat.kind === "ungrouped") return "ungrouped";
+  return `group/${cat.sectionId}`;
+}
+
+export interface PickerEntry<T extends ModelRowLike> {
+  modelId: string;
+  pin?: ModelPin | undefined;
+  option?: T | undefined;
+}
+
+export interface PickerPartition<T extends ModelRowLike> {
+  groups: { section: ModelSection; items: PickerEntry<T>[] }[];
+  ungrouped: PickerEntry<T>[];
+}
+
+/** Partitions models for the group-aware picker (frozen partitionedGroups).
+ *  When pins exist, only pinned models appear in their group / ungrouped order;
+ *  otherwise `visibleModels` sit under ungrouped while sections stay visible. */
+export function partitionPickerModels<T extends ModelRowLike>(
+  pins: ModelPin[],
+  sections: ModelSection[],
+  visibleModels: T[],
+  optionById: ReadonlyMap<string, T>,
+): PickerPartition<T> {
+  if (pins.length === 0) {
+    const orderedSections = [...sections]
+      .map((s, i) => ({ s, i }))
+      .sort((a, b) => a.s.position - b.s.position || a.i - b.i)
+      .map((x) => x.s);
+    return {
+      groups: orderedSections.map((section) => ({ section, items: [] })),
+      ungrouped: visibleModels.map((option) => ({ modelId: option.id, option })),
+    };
+  }
+  const blocks = partitionModelBlocks(pins, sections);
+  return {
+    groups: blocks.groups.map((g) => ({
+      section: g.section,
+      items: g.pins.map((pin) => ({
+        modelId: pin.modelID,
+        pin,
+        option: optionById.get(pin.modelID),
+      })),
+    })),
+    ungrouped: blocks.ungrouped.map((pin) => ({
+      modelId: pin.modelID,
+      pin,
+      option: optionById.get(pin.modelID),
+    })),
+  };
+}
+
+/** Frozen defaultCategory: opens on the group holding `currentModelId`, else All. */
+export function defaultPickerCategory<T extends ModelRowLike>(
+  partition: PickerPartition<T>,
+  currentModelId: string,
+): PickerCategory {
+  if (currentModelId !== "") {
+    const match = partition.groups.find((g) =>
+      g.items.some((entry) => entry.modelId === currentModelId),
+    );
+    if (match) return { kind: "group", sectionId: match.section.id };
+  }
+  return { kind: "all" };
+}
+
+/** Validates a selected category against live groups/ungrouped items. */
+export function resolvePickerCategory<T extends ModelRowLike>(
+  candidate: PickerCategory | null,
+  partition: PickerPartition<T>,
+): PickerCategory | null {
+  if (candidate === null) return null;
+  if (candidate.kind === "all") return candidate;
+  if (candidate.kind === "ungrouped") {
+    return partition.ungrouped.length > 0 ? candidate : { kind: "all" };
+  }
+  return partition.groups.some((g) => g.section.id === candidate.sectionId)
+    ? candidate
+    : { kind: "all" };
 }
 
 /** Section id — UUID shape so stored sections stay frozen-compatible. */

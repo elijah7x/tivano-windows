@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-31.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Shortcuts settings section (F27): one row per command, the frozen
 // section grouping, a per-row recorder that captures the next physical
@@ -168,7 +168,7 @@ export function ShortcutsSection(props: {
                       </button>
                       {chord && (
                         <button
-                          className="shortcut-mini"
+                          className="shortcut-mini settings-btn-compact"
                           title={t("Remove shortcut")}
                           onClick={() => clear(id)}
                         >
@@ -177,7 +177,7 @@ export function ShortcutsSection(props: {
                       )}
                       {customizedOne && (
                         <button
-                          className="shortcut-mini"
+                          className="shortcut-mini settings-btn-compact"
                           title={t("Reset to default")}
                           onClick={() => resetOne(id)}
                         >

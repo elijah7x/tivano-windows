@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-29.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Project scripts dialog (F12): frozen ScriptsMenu + ScriptsEditor.
 // The list runs a persisted script — main resolves the command from the
@@ -7,28 +7,81 @@
 // like the frozen editor, Save stays disabled while any row lacks a
 // command.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ChatThread, Project, ProjectScript } from "../../shared/types";
 import { callApi } from "../client";
 import { useT } from "../locale";
-
-interface Draft {
-  id?: string;
-  name: string;
-  command: string;
-  icon: string;
-  runOnWorktreeCreate: boolean;
-}
-
-const toDraft = (s: ProjectScript): Draft => ({
-  id: s.id,
-  name: s.name,
-  command: s.command,
-  icon: s.icon,
-  runOnWorktreeCreate: s.runOnWorktreeCreate,
-});
+import {
+  createScriptDraft,
+  makeScriptDraftKeyGen,
+  patchScriptDraft,
+  removeScriptDraft,
+  serializeScriptDrafts,
+  toScriptDraft,
+  type ScriptDraft as Draft,
+} from "../scriptDrafts";
 
 const incomplete = (s: Draft): boolean => s.command.trim().length === 0;
+
+export function ScriptDraftList(props: {
+  drafts: readonly Draft[];
+  busy: boolean;
+  t: (key: string) => string;
+  onPatch: (key: string, patch: Partial<Draft>) => void;
+  onDelete: (key: string) => void;
+  onAdd: () => void;
+}): React.JSX.Element {
+  const { drafts, busy, t, onPatch, onDelete, onAdd } = props;
+  return (
+    <div className="scripts-list">
+      {drafts.map((d) => (
+        <div key={d.key} data-script-key={d.key} className="script-card">
+          <div className="script-card-head">
+            <input
+              className="wt-input"
+              value={d.name}
+              placeholder={t("Name")}
+              onChange={(e) => onPatch(d.key, { name: e.target.value })}
+              disabled={busy}
+              spellCheck={false}
+            />
+            <button
+              className="icon-btn"
+              aria-label={t("Delete script")}
+              title={t("Delete script")}
+              disabled={busy}
+              onClick={() => onDelete(d.key)}
+            >
+              ×
+            </button>
+          </div>
+          <input
+            className={`wt-input mono ${incomplete(d) ? "invalid" : ""}`}
+            value={d.command}
+            placeholder={t("Command")}
+            onChange={(e) => onPatch(d.key, { command: e.target.value })}
+            disabled={busy}
+            spellCheck={false}
+          />
+          <label className="script-check">
+            <input
+              type="checkbox"
+              checked={d.runOnWorktreeCreate}
+              disabled={busy}
+              onChange={(e) =>
+                onPatch(d.key, { runOnWorktreeCreate: e.target.checked })
+              }
+            />
+            {t("Run when a worktree is created")}
+          </label>
+        </div>
+      ))}
+      <button className="term-btn" disabled={busy} onClick={onAdd}>
+        + {t("Add script")}
+      </button>
+    </div>
+  );
+}
 
 export function ScriptsDialog(props: {
   thread: ChatThread;
@@ -36,14 +89,17 @@ export function ScriptsDialog(props: {
   onClose: () => void;
   /** A script terminal was created — surface the terminal dock. */
   onRan: () => void;
+  /** Test seam: render the dialog initially in edit mode for saved scripts. */
+  initialEditing?: boolean;
 }): React.JSX.Element {
   const t = useT();
   const { thread, project } = props;
   const scripts = project.scripts ?? [];
-  const [editing, setEditing] = useState(scripts.length === 0);
-  const [drafts, setDrafts] = useState<Draft[]>(scripts.map(toDraft));
+  const [editing, setEditing] = useState(props.initialEditing ?? scripts.length === 0);
+  const [drafts, setDrafts] = useState<Draft[]>(scripts.map(toScriptDraft));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const keyGen = useRef(makeScriptDraftKeyGen());
 
   const run = (script: ProjectScript) => {
     setBusy(true);
@@ -66,13 +122,7 @@ export function ScriptsDialog(props: {
     setError(null);
     callApi("projects:scripts:set", {
       projectId: project.id,
-      scripts: drafts.map((d) => ({
-        ...(d.id ? { id: d.id } : {}),
-        name: d.name,
-        command: d.command,
-        icon: d.icon || "play",
-        runOnWorktreeCreate: d.runOnWorktreeCreate,
-      })),
+      scripts: serializeScriptDrafts(drafts),
     })
       .then(() => {
         setDrafts([]);
@@ -82,8 +132,14 @@ export function ScriptsDialog(props: {
       .finally(() => setBusy(false));
   };
 
-  const patch = (i: number, p: Partial<Draft>) =>
-    setDrafts((cur) => cur.map((d, j) => (j === i ? { ...d, ...p } : d)));
+  const patch = (key: string, p: Partial<Draft>) =>
+    setDrafts((cur) => patchScriptDraft(cur, key, p));
+
+  const remove = (key: string) =>
+    setDrafts((cur) => removeScriptDraft(cur, key));
+
+  const add = () =>
+    setDrafts((cur) => [...cur, createScriptDraft(keyGen.current, t("New script"))]);
 
   return (
     <div
@@ -128,60 +184,14 @@ export function ScriptsDialog(props: {
             ))}
           </div>
         ) : (
-          <div className="scripts-list">
-            {drafts.map((d, i) => (
-              <div key={d.id ?? `new-${i}`} className="script-card">
-                <div className="script-card-head">
-                  <input
-                    className="wt-input"
-                    value={d.name}
-                    placeholder={t("Name")}
-                    onChange={(e) => patch(i, { name: e.target.value })}
-                    disabled={busy}
-                    spellCheck={false}
-                  />
-                  <button
-                    className="icon-btn"
-                    aria-label={t("Delete script")}
-                    title={t("Delete script")}
-                    disabled={busy}
-                    onClick={() => setDrafts((cur) => cur.filter((_, j) => j !== i))}
-                  >
-                    ×
-                  </button>
-                </div>
-                <input
-                  className={`wt-input mono ${incomplete(d) ? "invalid" : ""}`}
-                  value={d.command}
-                  placeholder={t("Command")}
-                  onChange={(e) => patch(i, { command: e.target.value })}
-                  disabled={busy}
-                  spellCheck={false}
-                />
-                <label className="script-check">
-                  <input
-                    type="checkbox"
-                    checked={d.runOnWorktreeCreate}
-                    disabled={busy}
-                    onChange={(e) => patch(i, { runOnWorktreeCreate: e.target.checked })}
-                  />
-                  {t("Run when a worktree is created")}
-                </label>
-              </div>
-            ))}
-            <button
-              className="term-btn"
-              disabled={busy}
-              onClick={() =>
-                setDrafts((cur) => [
-                  ...cur,
-                  { name: t("New script"), command: "", icon: "play", runOnWorktreeCreate: false },
-                ])
-              }
-            >
-              + {t("Add script")}
-            </button>
-          </div>
+          <ScriptDraftList
+            drafts={drafts}
+            busy={busy}
+            t={t}
+            onPatch={patch}
+            onDelete={remove}
+            onAdd={add}
+          />
         )}
         {error && (
           <p className="ckpt-note error" role="alert">
@@ -194,7 +204,7 @@ export function ScriptsDialog(props: {
               className="primary"
               disabled={busy}
               onClick={() => {
-                setDrafts(scripts.map(toDraft));
+                setDrafts(scripts.map(toScriptDraft));
                 setEditing(true);
               }}
             >

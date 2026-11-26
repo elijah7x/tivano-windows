@@ -1,17 +1,48 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Sidebar: project groups, thread rows with status marks, search, Settings.
 // Electron has no window.prompt/confirm, so rename/create use inline fields
 // and delete uses a two-tap armed confirmation on the row itself.
 
-import { useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ChatThread, OpenDirectoryResult, Snapshot } from "../../shared/types";
 import { compareThreads } from "../../shared/threadOrder";
 import { useT } from "../locale";
-import { api, callApi, clientStore, tryCall } from "../client";
+import { api, callApi, clientStore, tryCall, type WeatherFlashStatus } from "../client";
 import { ProjectIconPicker } from "./ProjectIconPicker";
 import { MiniSpinner } from "./SpinnerCells";
 import { Skylight } from "./Skylight";
+import { resolveWeatherWindowMode } from "../../shared/skylight";
+
+/** P2-34 (frozen SidebarView RowActionsButton): a thread row's hover strip
+ *  keeps the immediate affordances but never a bare archive button — archive
+ *  and delete live in the row menu so a stray click cannot archive. */
+export type ThreadRowHoverAction = "reveal" | "pin" | "rename" | "menu" | "delete";
+export const THREAD_ROW_HOVER_ACTIONS: readonly ThreadRowHoverAction[] = [
+  "reveal",
+  "pin",
+  "rename",
+  "menu",
+  "delete",
+];
+
+export type ThreadRowMenuAction = "rename" | "pin" | "forward" | "reveal" | "archive" | "delete";
+
+/** Frozen ThreadActions.make/makeContextMenu order: Rename, Pin (a helper
+ *  keeps its place under its parent, so no pin item), Forward, Reveal
+ *  worktree when one exists, then the destructive pair. */
+export function threadRowMenuItems(opts: {
+  isHelper: boolean;
+  hasWorktree: boolean;
+}): ThreadRowMenuAction[] {
+  const items: ThreadRowMenuAction[] = ["rename"];
+  if (!opts.isHelper) items.push("pin");
+  items.push("forward");
+  if (opts.hasWorktree) items.push("reveal");
+  items.push("archive", "delete");
+  return items;
+}
 
 function statusDot(t: ChatThread): string {
   const s = t.turn?.status;
@@ -29,6 +60,7 @@ function statusMark(t: ChatThread): React.JSX.Element {
 
 export function Sidebar(props: {
   snapshot: Snapshot;
+  finishFlashes?: Readonly<Record<string, WeatherFlashStatus>> | undefined;
   onOpenSettings: () => void;
   onOpenPalette: () => void;
 }): React.JSX.Element {
@@ -54,6 +86,41 @@ export function Sidebar(props: {
   const [shelfRename, setShelfRename] = useState<string | null>(null);
   const { snapshot } = props;
   const q = search.trim().toLowerCase();
+  // P2-34: the thread-row ⋯/context menu (frozen RowActionsButton +
+  // contextMenu). Stores the thread snapshot; handlers run against its id.
+  const [threadMenu, setThreadMenu] = useState<{
+    th: ChatThread;
+    x: number;
+    y: number;
+    alignEnd: boolean;
+  } | null>(null);
+  const threadMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!threadMenu) return;
+    const down = (e: MouseEvent): void => {
+      if (!threadMenuRef.current?.contains(e.target as Node)) setThreadMenu(null);
+    };
+    const key = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") setThreadMenu(null);
+    };
+    window.addEventListener("mousedown", down);
+    window.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("mousedown", down);
+      window.removeEventListener("keydown", key);
+    };
+  }, [threadMenu]);
+  // The align-end transform can push the painted left edge off-screen on
+  // a narrow sidebar or a wide menu — clamp after mount using the real
+  // rect, like HydraPanel's menu does.
+  useLayoutEffect(() => {
+    const el = threadMenuRef.current;
+    if (!threadMenu || !el) return;
+    const r = el.getBoundingClientRect();
+    if (r.left < 8) el.style.left = `${parseFloat(el.style.left) + (8 - r.left)}px`;
+    const overY = r.bottom - window.innerHeight;
+    if (overY > 0) el.style.top = `${Math.max(8, threadMenu.y - overY - 8)}px`;
+  }, [threadMenu]);
   // F15: frozen "Reveal in Finder" — the platform's file manager name.
   const fileManagerReveal =
     api().platform === "win32" ? t("Reveal in File Explorer") : t("Reveal in Finder");
@@ -67,6 +134,129 @@ export function Sidebar(props: {
   const requestDelete = (id: string) => {
     if (confirmDelete) setArmedDeleteId(id);
     else tryCall("threads:delete", { id });
+  };
+
+  const rowMenuLabel = (a: ThreadRowMenuAction, th: ChatThread): string => {
+    switch (a) {
+      case "rename":
+        return t("Rename");
+      case "pin":
+        return th.isPinned ? t("Unpin") : t("Pin");
+      case "forward":
+        return t("Forward to new thread");
+      case "reveal":
+        return worktreeReveal;
+      case "archive":
+        return t("Archive");
+      case "delete":
+        return `${t("Delete")}…`;
+    }
+  };
+  const runRowMenuAction = (a: ThreadRowMenuAction, th: ChatThread): void => {
+    switch (a) {
+      case "rename":
+        setRenameText(th.title);
+        setRenamingId(th.id);
+        break;
+      case "pin":
+        tryCall("threads:set-pinned", { threadId: th.id, pinned: !th.isPinned });
+        break;
+      case "forward":
+        tryCall("threads:forward", { threadId: th.id });
+        break;
+      case "reveal":
+        tryCall("openin:reveal", { threadId: th.id });
+        break;
+      case "archive":
+        tryCall("threads:archive", { id: th.id });
+        break;
+      case "delete":
+        requestDelete(th.id);
+        break;
+    }
+  };
+
+  const rowActionButton = (a: ThreadRowHoverAction, th: ChatThread): React.JSX.Element | null => {
+    switch (a) {
+      case "reveal":
+        if (!th.worktreeDir) return null;
+        return (
+          <button
+            key={a}
+            className="icon-btn"
+            title={worktreeReveal}
+            aria-label={`${worktreeReveal}: ${th.title}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              tryCall("openin:reveal", { threadId: th.id });
+            }}
+          >
+            ⎇
+          </button>
+        );
+      case "pin":
+        return (
+          <button
+            key={a}
+            className="icon-btn"
+            title={th.isPinned ? t("Unpin thread") : t("Pin thread")}
+            aria-label={`${th.isPinned ? t("Unpin thread") : t("Pin thread")}: ${th.title}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              tryCall("threads:set-pinned", { threadId: th.id, pinned: !th.isPinned });
+            }}
+          >
+            📌
+          </button>
+        );
+      case "rename":
+        return (
+          <button
+            key={a}
+            className="icon-btn"
+            title={t("Rename thread")}
+            aria-label={`${t("Rename thread")}: ${th.title}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setRenameText(th.title);
+              setRenamingId(th.id);
+            }}
+          >
+            ✎
+          </button>
+        );
+      case "menu":
+        return (
+          <button
+            key={a}
+            className="icon-btn"
+            title={t("Thread actions")}
+            aria-label={`${t("Thread actions")}: ${th.title}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              const r = e.currentTarget.getBoundingClientRect();
+              setThreadMenu({ th, x: r.right, y: r.bottom + 4, alignEnd: true });
+            }}
+          >
+            ⋯
+          </button>
+        );
+      case "delete":
+        return (
+          <button
+            key={a}
+            className="icon-btn"
+            title={t("Delete thread")}
+            aria-label={`${t("Delete thread")}: ${th.title}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              requestDelete(th.id);
+            }}
+          >
+            ×
+          </button>
+        );
+    }
   };
 
   const groups = useMemo(() => {
@@ -282,6 +472,11 @@ export function Sidebar(props: {
         setProjectHint(null);
       }}
       onDrop={(e) => dropOnThread(e, th)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setThreadMenu({ th, x: e.clientX, y: e.clientY, alignEnd: false });
+      }}
     >
       {statusMark(th)}
       {th.hasUnread && (
@@ -336,71 +531,14 @@ export function Sidebar(props: {
         </button>
       ) : (
         <span className="row-actions">
-          {th.worktreeDir && (
-            <button
-              className="icon-btn"
-              title={worktreeReveal}
-              aria-label={`${worktreeReveal}: ${th.title}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                tryCall("openin:reveal", { threadId: th.id });
-              }}
-            >
-              ⎇
-            </button>
-          )}
-          <button
-            className="icon-btn"
-            title={th.isPinned ? t("Unpin thread") : t("Pin thread")}
-            aria-label={`${th.isPinned ? t("Unpin thread") : t("Pin thread")}: ${th.title}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              tryCall("threads:set-pinned", { threadId: th.id, pinned: !th.isPinned });
-            }}
-          >
-            📌
-          </button>
-          <button
-            className="icon-btn"
-            title={t("Rename thread")}
-            aria-label={`${t("Rename thread")}: ${th.title}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              setRenameText(th.title);
-              setRenamingId(th.id);
-            }}
-          >
-            ✎
-          </button>
-          <button
-            className="icon-btn"
-            title={t("Archive thread")}
-            aria-label={`${t("Archive thread")}: ${th.title}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              tryCall("threads:archive", { id: th.id });
-            }}
-          >
-            ⤓
-          </button>
-          <button
-            className="icon-btn"
-            title={t("Delete thread")}
-            aria-label={`${t("Delete thread")}: ${th.title}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              requestDelete(th.id);
-            }}
-          >
-            ×
-          </button>
+          {THREAD_ROW_HOVER_ACTIONS.map((a) => rowActionButton(a, th))}
         </span>
       )}
     </div>
   );
 
   return (
-    <nav className="sidebar" aria-label={t("Thread list")}>
+    <nav className="sidebar sidebar-tray" aria-label={t("Thread list")}>
       <div className="sidebar-head">
         <span className="grow">
           {t("Thread list")}
@@ -476,16 +614,15 @@ export function Sidebar(props: {
           </svg>
         </button>
       </div>
-      {/* F26 (frozen SidebarHero): the skylight hero folds every visible
-          thread into one weather and creates a thread on tap. Off under
-          Performance Mode (frozen showsSkylightNow). */}
-      {snapshot.settings.showsSkylight !== false &&
-        snapshot.settings.performanceMode !== true && (
-          <Skylight
-            threads={snapshot.threads}
-            onNewThread={() => tryCall("threads:create", { projectId: null })}
-          />
-        )}
+      {/* P2-47 (frozen SidebarPorthole): non-interactive weather porthole
+          above the thread list when Weather window is set to Porthole. */}
+      {resolveWeatherWindowMode(snapshot.settings) === "porthole" && (
+        <Skylight
+          threads={snapshot.threads}
+          projects={snapshot.projects}
+          finishFlashes={props.finishFlashes}
+        />
+      )}
       {creatingProject && (
         <div className="search">
           <input
@@ -831,6 +968,43 @@ export function Sidebar(props: {
             />
           );
         })()}
+      {threadMenu &&
+        // The sidebar and chat stack share z-index 1, so a fixed menu inside
+        // nav paints under the chat pane on right-click; portal it to the
+        // app root like the frozen native context menu (always on top).
+        createPortal(
+        <div
+          ref={threadMenuRef}
+          className={`row-menu${threadMenu.alignEnd ? " align-end" : ""}`}
+          role="menu"
+          // Keep every item reachable: bottom rows' menus would run off
+          // the viewport edge otherwise (same clamp as MessagePopover).
+          style={{
+            left: Math.min(threadMenu.x, Math.max(8, window.innerWidth - 190)),
+            top: Math.min(threadMenu.y, Math.max(8, window.innerHeight - 210)),
+          }}
+        >
+          {threadRowMenuItems({
+            isHelper: !!threadMenu.th.parentThreadId,
+            hasWorktree: !!threadMenu.th.worktreeDir,
+          }).map((a) => (
+            <button
+              key={a}
+              type="button"
+              role="menuitem"
+              className={a === "delete" ? "danger" : ""}
+              onClick={() => {
+                const th = threadMenu.th;
+                setThreadMenu(null);
+                runRowMenuAction(a, th);
+              }}
+            >
+              {rowMenuLabel(a, threadMenu.th)}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
     </nav>
   );
 }

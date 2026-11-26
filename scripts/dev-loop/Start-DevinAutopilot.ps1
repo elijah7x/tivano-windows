@@ -1,6 +1,6 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-22.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-25.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
+# Usage: .\Start-DevinAutopilot.ps1 (-Kickoff | -Watch | -Register | -Unregister) [-Root <state root>] [-Workspace <repo checkout>] [-Repo <owner/name>] [-Label <label>] [-IdleMinutes <min>] [-ApprovalMinutes <min>] [-ApprovalRecoveryAttempts <n>] [-StalePrHours <h>] [-StalePrGateRuns <n>] [-AutoParkStale <0|1>] [-HydrogenLaneRoot <dir>] [-UserIdleSeconds <sec>] [-IntervalMinutes <min>] [-SessionIdleRotateMinutes <min>] [-SessionMaxMinutes <min>] [-StrayApps <names>] [-OrphanMinutes <min>] [-ReapOrphanedTestApps <0|1>] [-SyncSource <audit tool clone>] [-SyncTarget <pr-bot scripts dir>]
 # Launches and watches a single Devin Desktop autopilot chat following autopilot.md.
 
 param(
@@ -14,8 +14,18 @@ param(
   [ValidatePattern('^[A-Za-z0-9_.-]+$')][string]$Label = 'nyx-auto',
   [ValidateRange(5, 240)][int]$IdleMinutes = 25,
   [ValidateRange(1, 240)][int]$ApprovalMinutes = 3,
+  [ValidateRange(1, 20)][int]$ApprovalRecoveryAttempts = 3,
+  [ValidateRange(1, 720)][int]$StalePrHours = 48,
+  [ValidateRange(1, 100)][int]$StalePrGateRuns = 3,
+  [ValidateSet(0, 1)][int]$AutoParkStale = 1,
+  [string]$HydrogenLaneRoot = '',
   [ValidateRange(0, 3600)][int]$UserIdleSeconds = 120,
   [ValidateRange(1, 1440)][int]$IntervalMinutes = 15,
+  [ValidateRange(5, 1440)][int]$SessionIdleRotateMinutes = 45,
+  [ValidateRange(15, 2880)][int]$SessionMaxMinutes = 180,
+  [string[]]$StrayApps = @('ZCode', 'msedge'),
+  [ValidateRange(1, 10080)][int]$OrphanMinutes = 120,
+  [ValidateSet(0, 1)][int]$ReapOrphanedTestApps = 1,
   [string]$SyncSource = 'C:\tivano\audit\tool',
   [string]$SyncTarget = 'C:\tivano\pr-bot\tool\scripts'
 )
@@ -44,7 +54,9 @@ $script:RobocopyPath = $null
 $script:DevinPath = $null
 $script:Redactions = @()
 $script:GuiTypesLoaded = $false
-$script:AutoMergeDailyCap = 20
+$script:LastFreshSessionDeferred = $false
+$script:AutoMergeDailyCap = 40
+$script:IdentifiedTaskPattern = 'Invoke-AutopilotGate|Invoke-PrReview|Invoke-GlmReview|package-windows|packaged-smoke'
 $script:AttributionLinePattern = '(?i)co-authored-by|generated (with|by) \[?devin|devin\.ai'
 
 function Write-Text {
@@ -150,6 +162,10 @@ function Read-JsonFile {
 function Get-JsonProp {
   param($Object, [string]$Name)
   if ($null -eq $Object) { return $null }
+  if ($Object -is [Collections.IDictionary]) {
+    if ($Object.Contains($Name)) { return $Object[$Name] }
+    return $null
+  }
   if ($Object.PSObject.Properties[$Name]) { return $Object.$Name }
   return $null
 }
@@ -306,7 +322,8 @@ function Invoke-SelfSync {
 function Initialize-GuiTypes {
   if ($script:GuiTypesLoaded) { return }
   Add-Type -AssemblyName System.Windows.Forms
-  Add-Type -TypeDefinition @'
+  if ($null -eq ('DevLoopWindows' -as [type])) {
+    Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -323,6 +340,10 @@ public static class DevLoopWindows {
     public string ClassName { get; set; }
     public string ProcessName { get; set; }
     public bool HasShellFlyoutOpen { get; set; }
+  }
+  public sealed class HealthWindowCounts {
+    public int HungWindows { get; set; }
+    public int NotRespondingDialogs { get; set; }
   }
   delegate bool EnumProc(IntPtr h, IntPtr p);
   [StructLayout(LayoutKind.Sequential)]
@@ -342,6 +363,7 @@ public static class DevLoopWindows {
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsHungAppWindow(IntPtr h);
   [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
@@ -422,17 +444,32 @@ public static class DevLoopWindows {
       return false;
     }
   }
-  static bool MatchesBare(string title, string bare) {
+  // Returns 2 for a clean Agents/workspace title (no open editor prefix/suffix or dirty marker),
+  // 1 when an open editor file is indicated in the title, and 0 when the title does not match.
+  static int GetBareMatchQuality(string title, string bare) {
+    bool isDirty = title.IndexOf('\u25CF') >= 0;
     string tail = " " + bare;
-    return title.Equals(bare, StringComparison.OrdinalIgnoreCase) ||
-      title.EndsWith(tail, StringComparison.OrdinalIgnoreCase) ||
-      title.StartsWith(bare + " - ", StringComparison.OrdinalIgnoreCase) ||
-      title.IndexOf(tail + " - ", StringComparison.OrdinalIgnoreCase) >= 0;
+    if (title.Equals(bare, StringComparison.OrdinalIgnoreCase)) {
+      return isDirty ? 1 : 2;
+    }
+    if (title.EndsWith(tail, StringComparison.OrdinalIgnoreCase)) {
+      bool hasEditorPrefix = title.EndsWith(" - " + bare, StringComparison.OrdinalIgnoreCase);
+      return (isDirty || hasEditorPrefix) ? 1 : 2;
+    }
+    if (title.StartsWith(bare + " - ", StringComparison.OrdinalIgnoreCase) ||
+        title.IndexOf(tail + " - ", StringComparison.OrdinalIgnoreCase) >= 0) {
+      return 1;
+    }
+    return 0;
   }
   static int GetWindowRank(string title, string folder) {
     if (string.IsNullOrEmpty(folder) || string.IsNullOrEmpty(title)) return 0;
-    if (MatchesBare(title, folder + " (Workspace) - Devin")) return 2;
-    if (MatchesBare(title, folder + " - Devin")) return 1;
+    int wsQuality = GetBareMatchQuality(title, folder + " (Workspace) - Devin");
+    if (wsQuality == 2) return 4;
+    int plainQuality = GetBareMatchQuality(title, folder + " - Devin");
+    if (plainQuality == 2) return 3;
+    if (wsQuality == 1) return 2;
+    if (plainQuality == 1) return 1;
     return 0;
   }
   static bool HasVisibleShellFlyout() {
@@ -507,6 +544,25 @@ public static class DevLoopWindows {
     if (all.Length > 0 && all[0].Rank > 0) return all[0].Handle;
     return IntPtr.Zero;
   }
+  public static HealthWindowCounts GetHealthWindowCounts(int[] pids) {
+    var counts = new HealthWindowCounts { HungWindows = 0, NotRespondingDialogs = 0 };
+    if (pids == null || pids.Length == 0) return counts;
+    var pidSet = new Dictionary<uint, bool>();
+    for (int i = 0; i < pids.Length; i++) {
+      if (pids[i] > 0) pidSet[(uint)pids[i]] = true;
+    }
+    if (pidSet.Count == 0) return counts;
+    EnumWindows((h, p) => {
+      if (!IsWindowVisible(h)) return true;
+      uint pid = 0;
+      GetWindowThreadProcessId(h, out pid);
+      if (pid == 0 || !pidSet.ContainsKey(pid)) return true;
+      if (IsHungAppWindow(h)) counts.HungWindows++;
+      if (GetWindowClass(h) == "#32770" && GetWindowTitle(h) == "Devin") counts.NotRespondingDialogs++;
+      return true;
+    }, IntPtr.Zero);
+    return counts;
+  }
   public static double GetUserIdleSeconds() {
     var info = new LASTINPUTINFO();
     info.cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO));
@@ -517,6 +573,7 @@ public static class DevLoopWindows {
   }
 }
 '@
+  }
   $script:GuiTypesLoaded = $true
 }
 
@@ -669,7 +726,19 @@ function Focus-DevinChatInput {
   }
   [DevLoopWindows]::ShowWindow($Window, 3) | Out-Null
   Start-Sleep -Milliseconds 800
-  if (-not (Test-DevinForeground $Window)) { return $false }
+  # A briefly flashing console from another scheduled task can take the foreground; log who holds it and retry the click focus.
+  for ($focusTry = 1; -not (Test-DevinForeground $Window); $focusTry++) {
+    $holder = [DevLoopWindows]::GetForegroundInfo()
+    if ($null -ne $holder) {
+      Write-Log ('chat input focus lost (try ' + $focusTry + '/3) to class=' + [string]$holder.ClassName + ' process=' + [string]$holder.ProcessName)
+    } else {
+      Write-Log ('chat input focus lost (try ' + $focusTry + '/3) to an unknown window')
+    }
+    if ($focusTry -ge 3) { return $false }
+    Start-Sleep -Seconds 3
+    if (-not (Set-DevinForeground $Window)) { continue }
+    Start-Sleep -Milliseconds 500
+  }
   try {
     [DevLoopWindows]::SetTopmost($Window, $true) | Out-Null
     Start-Sleep -Milliseconds 300
@@ -782,6 +851,134 @@ function Send-DevinBypassCommandSafe {
   return (Wait-DevinBypass $modeSince 20)
 }
 
+function Wait-DevinSessionNew {
+  param([DateTime]$Since, [int]$Seconds)
+  $logs = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Devin\cli\logs'
+  $deadline = [DateTime]::Now.AddSeconds($Seconds)
+  $styles = [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+  $sinceUtc = $Since.ToUniversalTime().AddSeconds(-1)
+  while ($true) {
+    if (Test-Stop) { return $false }
+    if (Test-Path -LiteralPath $logs -PathType Container) {
+      $files = @(Get-DevinLogFiles $logs)
+      foreach ($file in $files) {
+        foreach ($line in (Read-LogLinesShared $file.FullName)) {
+          # session/new when Ctrl+N created a backend session; session/prompt when the mission reached a chat
+          # whose session already existed (an empty IDE-view side chat logs no session/new).
+          if ($line -notmatch '(?i)method="session/(new|prompt)"') { continue }
+          if ($line -notmatch '^(\S+Z)(?:\s|$)') { continue }
+          $parsed = [DateTime]::MinValue
+          if ([DateTime]::TryParse($Matches[1], [Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) {
+            if ($parsed -ge $sinceUtc) { return $true }
+          }
+        }
+      }
+    }
+    if ([DateTime]::Now -ge $deadline) { break }
+    Start-Sleep -Seconds 2
+  }
+  return $false
+}
+
+function Get-AutopilotMessage {
+  param(
+    [switch]$Nudge,
+    [switch]$FreshSession
+  )
+  $soloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
+  $soloStatePath = Join-Path $script:AutopilotDir 'solo-v3.json'
+  $soloState = Read-JsonFile $soloStatePath
+  $soloPhase = ''
+  if ($soloState) { $soloPhase = ([string](Get-JsonProp $soloState 'phase')).Trim().ToLowerInvariant() }
+  if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and $soloPhase -ne 'done') {
+    $message = 'Continue the mission: first re-read ' + $soloPlan + ' and ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub, ' + $script:ProgressPath + ', and ' + $soloStatePath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains. With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
+  } elseif ($Nudge) {
+    $message = 'Continue the autopilot task: first re-read ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep going (queue, parked revisits, hands-on milestone, and 30-minute polling). With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
+  } else {
+    $message = 'First re-read ' + $script:PromptPath + ' and carry it out exactly as written. Then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any of your own open nyx/ PRs (not nyx/h-) whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Work through the whole queue, parked revisits, hands-on milestone, and 30-minute polling loop without asking questions or waiting for a person. Re-read ' + $script:PromptPath + ' after every issue. Use these values wherever the file names its defaults: repository ' + $Repo + ', label ' + $Label + ', root folder ' + $script:WorkRoot + ' (progress.json and parked.json in its autopilot subfolder, STOP in its state subfolder). With 3 or more of Devin''s own open non-parked nyx/ PRs (branches not starting with nyx/h-), start no new issue: fix, gate and finish the open ones first. Skip issues labelled lane-hydrogen and nyx/h- PRs; label an issue lane-devin when you start it.'
+  }
+  if ($FreshSession) {
+    $message = $message + ' This is a fresh session started by the watchdog to keep Devin Desktop responsive. The previous session may have left uncommitted edits in ' + $script:WorkspacePath + ' on the current branch: inspect git status and git diff first, then finish or discard them deliberately.'
+  }
+  return $message
+}
+
+function Start-FreshDevinSession {
+  param([IntPtr]$Window, [string]$Reason)
+  $script:LastFreshSessionDeferred = $false
+    if (Test-Stop) {
+    $script:LastFreshSessionDeferred = $true
+    return $false
+  }
+  Initialize-GuiTypes
+  $idleSec = [DevLoopWindows]::GetUserIdleSeconds()
+  if ($idleSec -lt $UserIdleSeconds) {
+    Write-Log ('user active, deferred fresh session (idle ' + [Math]::Round($idleSec, 1) + 's < ' + $UserIdleSeconds + 's)')
+    $script:LastFreshSessionDeferred = $true
+    return $false
+  }
+
+  $folder = Split-Path -Leaf $script:WorkspacePath
+  $preferred = [DevLoopWindows]::Find($folder)
+  if ($preferred -ne [IntPtr]::Zero) { $Window = $preferred }
+  if ($Window -eq [IntPtr]::Zero) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + ')')
+    return $false
+  }
+  if (-not (Set-DevinForeground $Window)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + ')')
+    return $false
+  }
+  if (Test-Stop) {
+    $script:LastFreshSessionDeferred = $true
+    return $false
+  }
+
+  # Ctrl+N opens a new chat only while the chat has focus. In the IDE view (what `devin desktop <folder>`
+  # opens after a restart) it otherwise opens an Untitled editor tab, so focus the chat input first.
+  if (-not (Focus-DevinChatInput $Window)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; chat input not focused before Ctrl+N)')
+    return $false
+  }
+  $pressSince = [DateTime]::Now
+  if (-not (Send-DevinKeysSafe $Window '^n')) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; Ctrl+N not sent)')
+    return $false
+  }
+  Start-Sleep -Seconds 3
+  if (Test-Stop) {
+    $script:LastFreshSessionDeferred = $true
+    return $false
+  }
+  # New Devin Desktop sessions already open in Bypass Permissions, and current clients no longer log a
+  # mode change for /bypass, so the mission goes out directly. Only session/new in the log afterwards
+  # counts as a rotation; without it the caller falls back to its normal path.
+  if (-not (Set-DevinForeground $Window) -or -not (Focus-DevinChatInput $Window)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; focus lost before mission)')
+    return $false
+  }
+  if (Test-Stop) {
+    $script:LastFreshSessionDeferred = $true
+    return $false
+  }
+  $freshMessage = Get-AutopilotMessage -FreshSession
+  if (-not (Send-DevinTextSafe $Window $freshMessage)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; mission paste failed)')
+    return $false
+  }
+  if (-not (Wait-DevinSessionNew $pressSince 30)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; mission sent but no session/new or session/prompt in log within 30s)')
+    return $false
+  }
+
+  $state = Read-WatchdogState
+  $state['sessionStartedUtc'] = [DateTime]::UtcNow.ToString('o')
+  $state['sessionRotations'] = [int]$state['sessionRotations'] + 1
+  Save-WatchdogState $state
+  Write-Log ('session rotated (' + $Reason + ')')
+  return $true
+}
+
 function Get-DevinLogActivity {
   param([DateTime]$SinceUtc)
   $logs = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Devin\cli\logs'
@@ -807,6 +1004,9 @@ function Get-DevinLogActivity {
       if ($line -match 'Permission decision for tool \S+: prompting user') {
         $filePendingUtc = $parsed
       } elseif ($null -ne $filePendingUtc -and $line -match 'User approved tool permission|User denied tool permission|auto-decided') {
+        $filePendingUtc = $null
+      } elseif ($null -ne $filePendingUtc -and $agentWork -and $parsed -gt $filePendingUtc) {
+        # The same session did agent work after the prompt, so the prompt is no longer what it waits on.
         $filePendingUtc = $null
       }
     }
@@ -834,14 +1034,19 @@ function Read-WatchdogState {
     totalNudges = 0
     stuckNotified = $false
     nudges = @()
+    approvalPendingKey = ''
+    approvalFailures = 0
+    sessionStartedUtc = ''
+    sessionRotations = 0
+    hungStreak = 0
   }
   $data = Read-JsonFile $script:WatchdogPath
   if (-not $data) { return $state }
-  foreach ($key in @('lastSyncedSha', 'lastKickoffUtc', 'lastKickoffOutcome', 'lastKickoffAttemptUtc', 'firstSeenUtc', 'lastSeenLogWriteUtc', 'lastNudgeUtc', 'lastNudgeReason', 'lastNudgeLogWriteUtc')) {
+  foreach ($key in @('lastSyncedSha', 'lastKickoffUtc', 'lastKickoffOutcome', 'lastKickoffAttemptUtc', 'firstSeenUtc', 'lastSeenLogWriteUtc', 'lastNudgeUtc', 'lastNudgeReason', 'lastNudgeLogWriteUtc', 'approvalPendingKey', 'sessionStartedUtc')) {
     $val = Get-JsonProp $data $key
     if ($null -ne $val) { $state[$key] = [string]$val }
   }
-  foreach ($key in @('trackingIssue', 'kickoffFailures', 'consecutiveNudges', 'totalNudges')) {
+  foreach ($key in @('trackingIssue', 'kickoffFailures', 'consecutiveNudges', 'totalNudges', 'approvalFailures', 'sessionRotations', 'hungStreak')) {
     $val = Get-JsonProp $data $key
     if ($null -ne $val) { $state[$key] = [int]$val }
   }
@@ -1026,15 +1231,21 @@ function Set-KickoffOutcome {
   Save-WatchdogState $watchdog
 }
 
-function Stop-DevinDesktop {
-  # Stop only Devin Desktop's own process trees; the Devin CLI (bin\devin.exe) used by the
-  # PR reviewer and the audit arbiter must keep running.
-  $procs = @(Get-CimInstance Win32_Process -Filter "Name='Devin.exe'" -ErrorAction SilentlyContinue | Where-Object {
+function Get-DevinDesktopProcesses {
+  # Select only Devin Desktop's own root processes; exclude the Devin CLI (bin\devin.exe) used by
+  # the PR reviewer and the audit arbiter, and exclude Electron child/helper processes.
+  return @(Get-CimInstance Win32_Process -Filter "Name='Devin.exe'" -ErrorAction SilentlyContinue | Where-Object {
     $_.ExecutablePath -and
     $_.ExecutablePath -notmatch '\\bin\\devin\.exe$' -and
     [string]$_.CommandLine -notmatch '--type=' -and
     [string]$_.CommandLine -notmatch '--require='
   })
+}
+
+function Stop-DevinDesktop {
+  # Stop only Devin Desktop's own process trees; the Devin CLI (bin\devin.exe) used by the
+  # PR reviewer and the audit arbiter must keep running.
+  $procs = @(Get-DevinDesktopProcesses)
   foreach ($desk in $procs) {
     $null = & taskkill.exe /T /F /PID ([int]$desk.ProcessId) 2>&1
   }
@@ -1043,6 +1254,456 @@ function Stop-DevinDesktop {
     Start-Sleep -Seconds 3
   }
   return $procs.Count
+}
+
+function Stop-StrayApps {
+  # -File passes a list as one comma-joined string; 'none' disables the cleanup.
+  $strayNames = @(@($StrayApps) | ForEach-Object { ([string]$_) -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -ine 'none' })
+  if ($strayNames.Count -eq 0) { return }
+  $allProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  if ($allProcs.Count -eq 0) { return }
+  foreach ($rawName in $strayNames) {
+    if ([string]::IsNullOrWhiteSpace([string]$rawName)) { continue }
+    $baseName = ([string]$rawName).Trim()
+    if ($baseName.EndsWith('.exe', [StringComparison]::OrdinalIgnoreCase)) {
+      $baseName = $baseName.Substring(0, $baseName.Length - 4)
+    }
+    if ([string]::IsNullOrWhiteSpace($baseName)) { continue }
+    if ($baseName -ieq 'msedgewebview2') { continue }
+    $exeName = $baseName + '.exe'
+
+    $sameNamePids = New-Object 'Collections.Generic.HashSet[int]'
+    foreach ($p in $allProcs) {
+      if ([string]$p.Name -ieq $exeName) {
+        $null = $sameNamePids.Add([int]$p.ProcessId)
+      }
+    }
+    if ($sameNamePids.Count -eq 0) { continue }
+
+    $roots = @($allProcs | Where-Object {
+      [string]$_.Name -ieq $exeName -and
+      [string]$_.CommandLine -notmatch '--type=' -and
+      [string]$_.CommandLine -notmatch '(?i)zcode\.cjs' -and
+      -not $sameNamePids.Contains([int]$_.ParentProcessId) -and
+      (
+        ($baseName -ieq 'ZCode' -and [string]$_.CommandLine -match '(?i)--updated') -or
+        ($baseName -ieq 'msedge' -and [string]$_.CommandLine -match '(?i)--no-startup-window')
+      )
+    })
+    foreach ($root in $roots) {
+      $rootId = [int]$root.ProcessId
+      if ($rootId -le 0) { continue }
+      $treeIds = New-Object 'Collections.Generic.HashSet[int]'
+      $null = $treeIds.Add($rootId)
+      $grew = $true
+      while ($grew) {
+        $grew = $false
+        foreach ($cp in $allProcs) {
+          if ($treeIds.Contains([int]$cp.ParentProcessId) -and $treeIds.Add([int]$cp.ProcessId)) {
+            $grew = $true
+          }
+        }
+      }
+      $protected = $false
+      $wsBytes = 0.0
+      foreach ($cp in $allProcs) {
+        if (-not $treeIds.Contains([int]$cp.ProcessId)) { continue }
+        if ([string]$cp.CommandLine -match '(?i)C:\\tivano\\' -or [string]$cp.Name -ieq 'msedgewebview2.exe') {
+          $protected = $true
+          break
+        }
+        if ($null -ne $cp.WorkingSetSize) { $wsBytes += [double]$cp.WorkingSetSize }
+      }
+      if ($protected) { continue }
+      $mb = [int][Math]::Round($wsBytes / 1048576.0)
+      $null = & taskkill.exe /T /F /PID $rootId 2>&1
+      if ($LASTEXITCODE -eq 0) {
+        Write-Log ('stray app closed: ' + $baseName + ' (' + $mb + ' MB)')
+      }
+    }
+  }
+}
+
+function Get-ProtectedProcessIds {
+  param($AllProcs)
+  $parentByPid = @{}
+  foreach ($p in @($AllProcs)) {
+    if ($null -eq $p -or $null -eq $p.ProcessId) { continue }
+    $id = [int]$p.ProcessId
+    if ($id -gt 0) {
+      $ppid = 0
+      if ($null -ne $p.ParentProcessId) { $ppid = [int]$p.ParentProcessId }
+      $parentByPid[$id] = $ppid
+    }
+  }
+  $protectedIds = New-Object 'Collections.Generic.HashSet[int]'
+  $walkPid = [int]$PID
+  while ($walkPid -gt 0 -and $protectedIds.Add($walkPid)) {
+    if ($parentByPid.ContainsKey($walkPid)) {
+      $walkPid = [int]$parentByPid[$walkPid]
+    } else {
+      break
+    }
+  }
+  return ,$protectedIds
+}
+
+function Get-OrphanedLoopRoots {
+  param($AllProcs = $null)
+  if ($null -eq $AllProcs) {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  } else {
+    $all = @($AllProcs)
+  }
+  if ($all.Count -eq 0) { return @() }
+
+  $livePids = New-Object 'Collections.Generic.HashSet[int]'
+  foreach ($p in $all) {
+    if ($null -eq $p -or $null -eq $p.ProcessId) { continue }
+    $id = [int]$p.ProcessId
+    if ($id -gt 0) { $null = $livePids.Add($id) }
+  }
+
+  $protectedIds = Get-ProtectedProcessIds $all
+  $nowLocal = [DateTime]::Now
+  $targetNames = @('node.exe', 'electron.exe', 'esbuild.exe', 'cmd.exe', 'powershell.exe', 'pwsh.exe')
+  $results = New-Object Collections.Generic.List[object]
+
+  foreach ($p in $all) {
+    if ($null -eq $p -or $null -eq $p.ProcessId) { continue }
+    $procId = [int]$p.ProcessId
+    if ($procId -le 0 -or $protectedIds.Contains($procId)) { continue }
+    $parentId = 0
+    if ($null -ne $p.ParentProcessId) { $parentId = [int]$p.ParentProcessId }
+    if ($parentId -le 0 -or $livePids.Contains($parentId)) { continue }
+
+    $nameLower = ([string]$p.Name).Trim().ToLowerInvariant()
+    $exe = [string]$p.ExecutablePath
+    $cmd = [string]$p.CommandLine
+
+    $isTarget = $false
+    $displayName = ''
+    if ($targetNames -contains $nameLower) {
+      $isTarget = $true
+      $displayName = [IO.Path]::GetFileNameWithoutExtension($nameLower)
+    } elseif ($nameLower -like 'npm*.exe' -or $nameLower -like 'npx*.exe') {
+      $isTarget = $true
+      $displayName = [IO.Path]::GetFileNameWithoutExtension($nameLower)
+    } elseif ($nameLower -eq 'devin.exe' -and ($exe -match '(?i)\\bin\\devin\.exe$' -or $cmd -match '(?i)\\bin\\devin\.exe')) {
+      $isTarget = $true
+      $displayName = 'devin-cli'
+    }
+    if (-not $isTarget) { continue }
+
+    if ($cmd.IndexOf('C:\tivano', [StringComparison]::OrdinalIgnoreCase) -lt 0 -and
+        $exe.IndexOf('C:\tivano', [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+    # An identified task (gate, reviews, packaging, smoke) keeps its busy protection even after its
+    # launcher exits, so its tree is never treated as orphaned while it runs.
+    if ($cmd -match $script:IdentifiedTaskPattern) { continue }
+
+    $created = $p.CreationDate
+    if ($null -eq $created -or -not ($created -is [DateTime])) { continue }
+    $createdDt = [DateTime]$created
+    if ($createdDt.Kind -eq [DateTimeKind]::Utc) { $createdDt = $createdDt.ToLocalTime() }
+    $ageMinutes = ($nowLocal - $createdDt).TotalMinutes
+    if ($ageMinutes -le [double]$OrphanMinutes) { continue }
+    $ageHours = $ageMinutes / 60.0
+
+    $ws = 0.0
+    if ($null -ne $p.WorkingSetSize) { $ws = [double]$p.WorkingSetSize }
+    $null = $results.Add([pscustomobject]@{
+      name = $displayName
+      processName = $nameLower
+      processId = $procId
+      ageHours = [Math]::Round($ageHours, 1)
+      workingSetBytes = $ws
+      executablePath = $exe
+      commandLine = $cmd
+    })
+  }
+
+  return @($results.ToArray())
+}
+
+function Get-OrphanedLoopTrees {
+  param($AllProcs = $null)
+  $treeIds = New-Object 'Collections.Generic.HashSet[int]'
+  if ($null -eq $AllProcs) {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  } else {
+    $all = @($AllProcs)
+  }
+  if ($all.Count -eq 0) { return ,$treeIds }
+
+  $protectedIds = Get-ProtectedProcessIds $all
+  $roots = @(Get-OrphanedLoopRoots $all)
+  if ($roots.Count -eq 0) { return ,$treeIds }
+
+  foreach ($r in $roots) {
+    $rid = [int]$r.processId
+    if ($rid -gt 0 -and -not $protectedIds.Contains($rid)) {
+      $null = $treeIds.Add($rid)
+    }
+  }
+
+  $grew = $true
+  while ($grew) {
+    $grew = $false
+    foreach ($cp in $all) {
+      if ($null -eq $cp -or $null -eq $cp.ProcessId -or $null -eq $cp.ParentProcessId) { continue }
+      $childId = [int]$cp.ProcessId
+      $childParentId = [int]$cp.ParentProcessId
+      if ($childId -le 0 -or $protectedIds.Contains($childId)) { continue }
+      if ($treeIds.Contains($childParentId) -and $treeIds.Add($childId)) {
+        $grew = $true
+      }
+    }
+  }
+
+  return ,$treeIds
+}
+
+function Get-OrphanCandidates {
+  param($AllProcs = $null)
+  $roots = @(Get-OrphanedLoopRoots $AllProcs)
+  if ($roots.Count -eq 0) { return @() }
+  $results = New-Object Collections.Generic.List[object]
+  foreach ($r in $roots) {
+    $null = $results.Add([pscustomobject]@{
+      name = $r.name
+      processId = [int]$r.processId
+      ageHours = [double]$r.ageHours
+      workingSetBytes = [double]$r.workingSetBytes
+    })
+  }
+  return @($results.ToArray())
+}
+
+function Stop-OrphanedTestApps {
+  param($AllProcs = $null)
+  if ($ReapOrphanedTestApps -ne 1) { return }
+  if ($null -eq $AllProcs) {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  } else {
+    $all = @($AllProcs)
+  }
+  if ($all.Count -eq 0) { return }
+
+  $protectedIds = Get-ProtectedProcessIds $all
+  $roots = @(Get-OrphanedLoopRoots $all)
+  if ($roots.Count -eq 0) { return }
+
+  # Only test app instances started from the loop's own worktrees (Devin's <Root>\work and the
+  # Hydrogen lane), and only while the user is away, so an app someone opened by hand is left alone.
+  if ([DevLoopWindows]::GetUserIdleSeconds() -lt 600) { return }
+  $loopRoots = @((Join-Path $script:WorkRoot 'work'), (Join-Path $script:WorkRoot 'hydrogen'))
+  if (-not [string]::IsNullOrWhiteSpace($HydrogenLaneRoot)) { $loopRoots += $HydrogenLaneRoot }
+  $rootAlt = (@($loopRoots | ForEach-Object { [regex]::Escape($_.TrimEnd('\')) }) -join '|')
+  $testElectronPattern = '(?i)(?:' + $rootAlt + ')\\[^:"\r\n]*\\node_modules\\electron\\dist\\electron\.exe'
+  foreach ($root in $roots) {
+    if ([string]$root.processName -ne 'electron.exe') { continue }
+    $exe = [string]$root.executablePath
+    $cmd = [string]$root.commandLine
+    if ($exe -notmatch $testElectronPattern -and $cmd -notmatch $testElectronPattern) { continue }
+
+    $rootId = [int]$root.processId
+    if ($rootId -le 0 -or $protectedIds.Contains($rootId)) { continue }
+
+    $treeIds = New-Object 'Collections.Generic.HashSet[int]'
+    $null = $treeIds.Add($rootId)
+    $grew = $true
+    while ($grew) {
+      $grew = $false
+      foreach ($cp in $all) {
+        if ($null -eq $cp -or $null -eq $cp.ProcessId -or $null -eq $cp.ParentProcessId) { continue }
+        $cid = [int]$cp.ProcessId
+        if ($cid -le 0) { continue }
+        if ($treeIds.Contains([int]$cp.ParentProcessId) -and $treeIds.Add($cid)) {
+          $grew = $true
+        }
+      }
+    }
+
+    $touchesProtected = $false
+    $wsBytes = 0.0
+    foreach ($cp in $all) {
+      if ($null -eq $cp -or $null -eq $cp.ProcessId) { continue }
+      $cid = [int]$cp.ProcessId
+      if (-not $treeIds.Contains($cid)) { continue }
+      if ($protectedIds.Contains($cid)) {
+        $touchesProtected = $true
+        break
+      }
+      if ($null -ne $cp.WorkingSetSize) { $wsBytes += [double]$cp.WorkingSetSize }
+    }
+    if ($touchesProtected) { continue }
+
+    $mb = [int][Math]::Round($wsBytes / 1048576.0)
+    $ageText = ([Math]::Round([double]$root.ageHours, 1)).ToString('0.#', [Globalization.CultureInfo]::InvariantCulture)
+    $null = & taskkill.exe /T /F /PID $rootId 2>&1
+    if ($LASTEXITCODE -eq 0) {
+      Write-Log ('orphaned test app closed: electron pid ' + $rootId + ' (' + $ageText + 'h, ' + $mb + ' MB)')
+    }
+  }
+}
+
+function Write-HealthSample {
+  try {
+    Initialize-GuiTypes
+
+    $freeRamMB = 0
+    $commitPct = 0
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+    if ($null -ne $os) {
+      $freeRamMB = [int][Math]::Round(([double]$os.FreePhysicalMemory) / 1024.0)
+      $totalVirtKb = [double]$os.TotalVirtualMemorySize
+      $freeVirtKb = [double]$os.FreeVirtualMemory
+      if ($totalVirtKb -gt 0) {
+        $usedVirtKb = $totalVirtKb - $freeVirtKb
+        if ($usedVirtKb -lt 0) { $usedVirtKb = 0.0 }
+        $commitPct = [int][Math]::Round(($usedVirtKb / $totalVirtKb) * 100.0)
+      }
+    }
+
+    $desktopProcs = @(Get-DevinDesktopProcesses)
+    $pidList = New-Object Collections.Generic.List[int]
+    foreach ($proc in $desktopProcs) {
+      $procId = [int]$proc.ProcessId
+      if ($procId -gt 0) { $null = $pidList.Add($procId) }
+    }
+    # Electron keeps most of its memory in renderer/GPU/utility children, so sum each
+    # desktop root's whole process tree (children of children included).
+    $wsBytes = 0.0
+    $allProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $treeIds = New-Object 'Collections.Generic.HashSet[int]'
+    foreach ($rootId in $pidList) { $null = $treeIds.Add([int]$rootId) }
+    $grew = $true
+    while ($grew) {
+      $grew = $false
+      foreach ($cp in $allProcs) {
+        if ($treeIds.Contains([int]$cp.ParentProcessId) -and $treeIds.Add([int]$cp.ProcessId)) { $grew = $true }
+      }
+    }
+    foreach ($cp in $allProcs) {
+      if ($treeIds.Contains([int]$cp.ProcessId) -and $null -ne $cp.WorkingSetSize) { $wsBytes += [double]$cp.WorkingSetSize }
+    }
+    $desktopMB = [int][Math]::Round($wsBytes / 1048576.0)
+
+    $hungWindows = 0
+    $notRespondingDialogs = 0
+    if ($treeIds.Count -gt 0) {
+      [int[]]$pidArr = @($treeIds)
+      $counts = [DevLoopWindows]::GetHealthWindowCounts($pidArr)
+      if ($null -ne $counts) {
+        $hungWindows = [int]$counts.HungWindows
+        $notRespondingDialogs = [int]$counts.NotRespondingDialogs
+      }
+    }
+
+    $orphans = @(Get-OrphanCandidates $allProcs)
+    $orphanCandidates = $orphans.Count
+    $orphanBytes = 0.0
+    foreach ($orp in $orphans) {
+      $orphanBytes += [double]$orp.workingSetBytes
+    }
+    $orphanMB = [int][Math]::Round($orphanBytes / 1048576.0)
+
+    $sample = [ordered]@{
+      utc = [DateTime]::UtcNow.ToString('o')
+      freeRamMB = $freeRamMB
+      commitPct = $commitPct
+      desktopMB = $desktopMB
+      hungWindows = $hungWindows
+      notRespondingDialogs = $notRespondingDialogs
+      orphanCandidates = $orphanCandidates
+      orphanMB = $orphanMB
+    }
+    $jsonLine = ConvertTo-Json -InputObject $sample -Compress -Depth 3
+
+    $stateDir = $script:StateDir
+    if ([string]::IsNullOrWhiteSpace($stateDir) -and -not [string]::IsNullOrWhiteSpace($script:WorkRoot)) {
+      $stateDir = Join-Path $script:WorkRoot 'state'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($stateDir)) {
+      [IO.Directory]::CreateDirectory($stateDir) | Out-Null
+      $healthPath = Join-Path $stateDir 'health.jsonl'
+      $utf8NoBom = New-Object Text.UTF8Encoding($false)
+      [IO.File]::AppendAllText($healthPath, ($jsonLine + "`n"), $utf8NoBom)
+
+      $fi = New-Object IO.FileInfo($healthPath)
+      if ($fi.Exists -and $fi.Length -gt 2097152) {
+        $raw = [IO.File]::ReadAllText($healthPath, [Text.Encoding]::UTF8)
+        $allLines = @($raw -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($allLines.Count -gt 5000) {
+          $kept = @($allLines[($allLines.Count - 5000)..($allLines.Count - 1)])
+          $trimmed = ($kept -join "`n") + "`n"
+          $tmpPath = $healthPath + '.tmp'
+          try {
+            [IO.File]::WriteAllText($tmpPath, $trimmed, $utf8NoBom)
+            try {
+              [IO.File]::Replace($tmpPath, $healthPath, [NullString]::Value)
+            } catch {
+              [IO.File]::Copy($tmpPath, $healthPath, $true)
+            }
+          } finally {
+            try {
+              if (Test-Path -LiteralPath $tmpPath -PathType Leaf) { [IO.File]::Delete($tmpPath) }
+            } catch { }
+          }
+        }
+      }
+    }
+
+    Write-Log ('health: freeRamMB=' + $freeRamMB + ' commitPct=' + $commitPct + ' desktopMB=' + $desktopMB + ' hung=' + $hungWindows + ' dialog=' + $notRespondingDialogs + ' orphans=' + $orphanCandidates + ' orphanMB=' + $orphanMB)
+    if ($orphanCandidates -gt 0) {
+      $topOrphans = @($orphans | Sort-Object @{ Expression = { [double]$_.ageHours }; Descending = $true } | Select-Object -First 8)
+      $orphanParts = @($topOrphans | ForEach-Object {
+        $ageText = ([Math]::Round([double]$_.ageHours, 1)).ToString('0.#', [Globalization.CultureInfo]::InvariantCulture)
+        $_.name + ':' + $_.processId + ':' + $ageText + 'h'
+      })
+      Write-Log ('orphan candidates: ' + $orphanCandidates + ' (' + ($orphanParts -join ', ') + ')')
+    }
+    return $sample
+  } catch {
+    $msg = ''
+    try { $msg = [string]$_.Exception.Message } catch { $msg = 'unknown error' }
+    $msg = Protect-PublicText $msg
+    $msg = [regex]::Replace($msg, '(?i)[A-Za-z]:\\Users\\[^\\\s''"]+', '<user-path>')
+    if (-not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
+      $msg = [regex]::Replace($msg, [regex]::Escape($env:USERNAME), '<user>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
+      $msg = [regex]::Replace($msg, [regex]::Escape($env:COMPUTERNAME), '<host>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    $msg = ConvertTo-SingleLine $msg 160
+    if ([string]::IsNullOrWhiteSpace($msg)) { $msg = 'unknown error' }
+    Write-Log ('health: sample failed (' + $msg + ')')
+    return $null
+  }
+}
+
+function Restart-StuckDevin {
+  param($Watchdog, [string]$Reason)
+  $busyOnRestart = @(Get-BusyAutopilotProcesses)
+  if ($busyOnRestart.Count -gt 0) {
+    Write-Log ($Reason + ', but ' + $busyOnRestart.Count + ' task process(es) are running; not restarting')
+    return
+  }
+  if (-not [bool]$Watchdog['stuckNotified']) {
+    if (Send-StuckTrackingComment $Watchdog) {
+      $Watchdog['stuckNotified'] = $true
+      Save-WatchdogState $Watchdog
+    }
+  }
+  Write-Log ($Reason + '; restarting Devin Desktop')
+  $null = Stop-DevinDesktop
+  $Watchdog['consecutiveNudges'] = 0
+  $Watchdog['stuckNotified'] = $false
+  $Watchdog['approvalFailures'] = 0
+  $Watchdog['approvalPendingKey'] = ''
+  $Watchdog['hungStreak'] = 0
+  Save-WatchdogState $Watchdog
+  $null = Invoke-Kickoff -WaitForIdle $false
 }
 
 function Invoke-Kickoff {
@@ -1103,13 +1764,17 @@ function Invoke-Kickoff {
     return 'failed'
   }
 
-  $message = 'First re-read ' + $script:PromptPath + ' and carry it out exactly as written. Then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any open nyx/ PR whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Work through the whole queue, parked revisits, hands-on milestone, and 30-minute polling loop without asking questions or waiting for a person. Re-read ' + $script:PromptPath + ' after every issue. Use these values wherever the file names its defaults: repository ' + $Repo + ', label ' + $Label + ', root folder ' + $script:WorkRoot + ' (progress.json and parked.json in its autopilot subfolder, STOP in its state subfolder).'
-  $soloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
-  $soloStatePath = Join-Path $script:AutopilotDir 'solo-v3.json'
-  $soloState = Read-JsonFile $soloStatePath
-  if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and [string](Get-JsonProp $soloState 'phase') -ne 'done') {
-    $message = 'Continue the mission: first re-read ' + $soloPlan + ' and ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub, ' + $script:ProgressPath + ', and ' + $soloStatePath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any open nyx/ PR whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains.'
+  if (Start-FreshDevinSession $window 'kickoff') {
+    Set-KickoffOutcome 'ok'
+    Write-Log ('kickoff sent autopilot prompt to Devin Desktop window "' + $folder + '"')
+    return 'ok'
   }
+  if ($script:LastFreshSessionDeferred -or (Test-Stop)) {
+    Write-Log 'kickoff deferred after fresh-session check'
+    return 'deferred'
+  }
+
+  $message = Get-AutopilotMessage
   $sent = $false
   for ($try = 0; $try -lt 3 -and -not $sent; $try++) {
     $window = [DevLoopWindows]::Find($folder)
@@ -1120,10 +1785,10 @@ function Invoke-Kickoff {
       continue
     }
     if (Test-Stop) { Write-Log 'STOP file present; kickoff exiting'; return 'deferred' }
+    # Bypass is the default for new sessions and current clients do not log /bypass, so an
+    # unconfirmed /bypass no longer blocks the prompt (it used to fail every kickoff and reset Devin).
     if (-not (Send-DevinBypassCommandSafe $window)) {
-      Write-Log ('kickoff try ' + ($try + 1) + '/3: /bypass failed or focus changed')
-      Start-Sleep -Seconds 2
-      continue
+      Write-Log ('kickoff try ' + ($try + 1) + '/3: /bypass not confirmed; sending prompt anyway')
     }
     if (-not (Set-DevinForeground $window)) {
       Write-Log ('kickoff try ' + ($try + 1) + '/3: lost focus after /bypass')
@@ -1144,7 +1809,7 @@ function Invoke-Kickoff {
   }
 
   if (-not $sent) {
-    Write-Log 'kickoff failed: Devin Desktop chat did not take /bypass or focus changed'
+    Write-Log 'kickoff failed: focus changed before the prompt was sent'
     Set-KickoffOutcome 'failed'
     return 'failed'
   }
@@ -1155,11 +1820,22 @@ function Invoke-Kickoff {
 }
 
 function Get-BusyAutopilotProcesses {
+  param($AllProcs = $null)
+  if ($null -eq $AllProcs) {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  } else {
+    $all = @($AllProcs)
+  }
+  if ($all.Count -eq 0) { return @() }
+  $orphanedIds = Get-OrphanedLoopTrees $all
   $workDir = Join-Path $script:WorkRoot 'work'
-  return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+  return @($all | Where-Object {
+    $null -ne $_ -and
+    $null -ne $_.ProcessId -and
+    (-not $orphanedIds.Contains([int]$_.ProcessId)) -and
     $_.CommandLine -and (
       $_.CommandLine -like ('*' + $workDir + '*') -or
-      $_.CommandLine -match 'Invoke-AutopilotGate|Invoke-PrReview|Invoke-GlmReview|package-windows|packaged-smoke'
+      $_.CommandLine -match $script:IdentifiedTaskPattern
     )
   })
 }
@@ -1298,8 +1974,592 @@ function Add-AuditLogComment {
   }
 }
 
+function Read-JsonFileChecked {
+  param([string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return [pscustomobject]@{ ok = $true; exists = $false; data = $null; error = '' }
+  }
+  $text = $null
+  try {
+    $text = Read-Text $Path
+  } catch {
+    return [pscustomobject]@{ ok = $false; exists = $true; data = $null; error = $_.Exception.Message }
+  }
+  if ([string]::IsNullOrWhiteSpace($text)) {
+    return [pscustomobject]@{ ok = $true; exists = $true; data = $null; error = '' }
+  }
+  try {
+    $parsed = $text.TrimStart([char]0xFEFF) | ConvertFrom-Json
+    return [pscustomobject]@{ ok = $true; exists = $true; data = $parsed; error = '' }
+  } catch {
+    return [pscustomobject]@{ ok = $false; exists = $true; data = $null; error = $_.Exception.Message }
+  }
+}
+
+function Save-JsonAtomic {
+  param(
+    [string]$Path,
+    $Object,
+    [int]$Depth = 8
+  )
+  $parentDir = Split-Path -Parent $Path
+  if (-not [string]::IsNullOrWhiteSpace($parentDir)) {
+    [IO.Directory]::CreateDirectory($parentDir) | Out-Null
+  }
+  $temporary = $Path + '.' + $PID + '.' + [Guid]::NewGuid().ToString('N').Substring(0, 6) + '.tmp'
+  $json = ConvertTo-Json -InputObject $Object -Depth $Depth
+  Write-Text $temporary ($json + "`n")
+  for ($attempt = 1; $attempt -le 8; $attempt++) {
+    try {
+      if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        # PowerShell turns $null into an empty string for a string parameter; File.Replace needs a real null.
+        [IO.File]::Replace($temporary, $Path, [NullString]::Value)
+      } else {
+        [IO.File]::Move($temporary, $Path)
+      }
+      return
+    } catch {
+      if ($attempt -lt 8) {
+        Start-Sleep -Milliseconds (250 * $attempt)
+      }
+    }
+  }
+  try {
+    [IO.File]::Copy($temporary, $Path, $true)
+    try {
+      if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+        [IO.File]::Delete($temporary)
+      }
+    } catch { }
+    return
+  } catch {
+    $fallbackErr = $_
+    try {
+      if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+        [IO.File]::Delete($temporary)
+      }
+    } catch { }
+    throw $fallbackErr
+  }
+}
+
+function Get-StalePrLinkedIssue {
+  # Returns the issue the stale PR closes, or 0. The branch encodes its issue (nyx/<n>-slug or
+  # nyx/h-<n>-slug); the PR must also reference that same issue as a closing reference, so a PR that
+  # closes several issues or an unrelated nyx/ PR never parks the wrong one.
+  param(
+    [int]$PrNumber,
+    [AllowEmptyString()][string]$PrBody,
+    [AllowEmptyString()][string]$Branch
+  )
+  $branchIssue = 0
+  $bm = [regex]::Match([string]$Branch, '^nyx/(?:h-)?([0-9]+)-')
+  if ($bm.Success) { $branchIssue = [int]$bm.Groups[1].Value }
+  if ($branchIssue -le 0) {
+    Write-Log ('auto-park PR #' + $PrNumber + ': branch does not encode an issue number')
+    return 0
+  }
+  $candidates = New-Object 'Collections.Generic.HashSet[int]'
+  $viewRes = Invoke-Gh ('pr view ' + $PrNumber + ' -R ' + $Repo + ' --json closingIssuesReferences')
+  if ($viewRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$viewRes.text)) {
+    try {
+      $obj = $viewRes.text | ConvertFrom-Json
+      foreach ($ref in @(Get-JsonProp $obj 'closingIssuesReferences')) {
+        if ($null -eq $ref) { continue }
+        $rawNum = Get-JsonProp $ref 'number'
+        if ($null -ne $rawNum) { try { $null = $candidates.Add([int]$rawNum) } catch { } }
+      }
+    } catch {
+      Write-Log ('auto-park PR #' + $PrNumber + ': could not parse closingIssuesReferences JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+    }
+  } elseif ($viewRes.exitCode -ne 0) {
+    Write-Log ('auto-park PR #' + $PrNumber + ': gh pr view closingIssuesReferences failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $viewRes) 160))
+  }
+  if (-not [string]::IsNullOrWhiteSpace($PrBody)) {
+    $closingPattern = '(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(?:' + [regex]::Escape($Repo) + ')?#([0-9]+)\b'
+    foreach ($m in [regex]::Matches($PrBody, $closingPattern)) { try { $null = $candidates.Add([int]$m.Groups[1].Value) } catch { } }
+  }
+  if ($candidates.Contains($branchIssue)) { return $branchIssue }
+  Write-Log ('auto-park PR #' + $PrNumber + ': closing references do not include branch issue #' + $branchIssue)
+  return 0
+}
+
+function Get-DevinParkedEntry {
+  param($ParkedData, [int]$IssueNumber)
+  if ($null -eq $ParkedData -or $IssueNumber -le 0) { return $null }
+  foreach ($entry in @($ParkedData)) {
+    if ($null -eq $entry) { continue }
+    $rawIssue = Get-JsonProp $entry 'issue'
+    if ($null -ne $rawIssue) {
+      $pi = 0
+      try { $pi = [int]$rawIssue } catch { $pi = 0 }
+      if ($pi -eq $IssueNumber) { return $entry }
+    }
+  }
+  return $null
+}
+
+function Test-DevinParkedIssue {
+  param(
+    $ParkedData,
+    [int]$IssueNumber
+  )
+  if ($null -eq $ParkedData -or $IssueNumber -le 0) { return $false }
+  foreach ($entry in @($ParkedData)) {
+    if ($null -eq $entry) { continue }
+    $rawIssue = Get-JsonProp $entry 'issue'
+    if ($null -ne $rawIssue) {
+      $pi = 0
+      try { $pi = [int]$rawIssue } catch { $pi = 0 }
+      if ($pi -eq $IssueNumber) { return $true }
+    }
+  }
+  return $false
+}
+
+function Test-HydrogenParkedEntry {
+  param(
+    $ParkedEntries,
+    [int]$IssueNumber,
+    [int]$PrNumber,
+    [AllowEmptyString()][string]$HeadSha
+  )
+  if ($null -eq $ParkedEntries) { return $false }
+  foreach ($entry in @($ParkedEntries)) {
+    if ($null -eq $entry) { continue }
+    if ($entry -is [int] -or $entry -is [long]) {
+      if ($IssueNumber -gt 0 -and [int]$entry -eq $IssueNumber) { return $true }
+      continue
+    }
+    $pi = 0
+    $rawIssue = Get-JsonProp $entry 'issue'
+    if ($null -ne $rawIssue) {
+      try { $pi = [int]$rawIssue } catch { $pi = 0 }
+    }
+    if ($IssueNumber -gt 0 -and $pi -eq $IssueNumber) { return $true }
+    $pp = 0
+    $rawPr = Get-JsonProp $entry 'pr'
+    if ($null -ne $rawPr) {
+      try { $pp = [int]$rawPr } catch { $pp = 0 }
+    }
+    if ($PrNumber -gt 0 -and $pp -eq $PrNumber) {
+      $psha = ''
+      $rawSha = Get-JsonProp $entry 'headSha'
+      if ($null -ne $rawSha) { $psha = ([string]$rawSha).Trim() }
+      if ([string]::IsNullOrWhiteSpace($psha) -or
+          ([string]::IsNullOrWhiteSpace($HeadSha) -or $psha.Equals($HeadSha, [StringComparison]::OrdinalIgnoreCase))) {
+        return $true
+      }
+    }
+  }
+  return $false
+}
+
+function Remove-IssueFromProgressAwaitingAudit {
+  param(
+    [int]$IssueNumber,
+    [int]$PrNumber
+  )
+  try {
+    $progRead = Read-JsonFileChecked $script:ProgressPath
+    if (-not $progRead.exists) { return }
+    if (-not $progRead.ok) {
+      Write-Log ('auto-park PR #' + $PrNumber + ' (issue #' + $IssueNumber + '): could not parse progress.json to update awaitingAudit: ' + (ConvertTo-SingleLine $progRead.error 160))
+      return
+    }
+    if ($null -eq $progRead.data -or -not ($progRead.data -is [pscustomobject])) { return }
+    $awaitProp = $progRead.data.PSObject.Properties['awaitingAudit']
+    if ($null -eq $awaitProp -or $null -eq $awaitProp.Value) { return }
+    $kept = New-Object Collections.Generic.List[object]
+    $removed = $false
+    foreach ($entry in @($awaitProp.Value)) {
+      if ($null -eq $entry) { continue }
+      $ei = 0
+      $rawEi = Get-JsonProp $entry 'issue'
+      if ($null -ne $rawEi) {
+        try { $ei = [int]$rawEi } catch { $ei = 0 }
+      }
+      $ep = 0
+      $rawEp = Get-JsonProp $entry 'pr'
+      if ($null -ne $rawEp) {
+        try { $ep = [int]$rawEp } catch { $ep = 0 }
+      }
+      if (($IssueNumber -gt 0 -and $ei -eq $IssueNumber) -or ($PrNumber -gt 0 -and $ep -eq $PrNumber)) {
+        $removed = $true
+        continue
+      }
+      $null = $kept.Add($entry)
+    }
+    if ($removed) {
+      Add-Member -InputObject $progRead.data -MemberType NoteProperty -Name 'awaitingAudit' -Value ([object[]]$kept.ToArray()) -Force
+      Save-JsonAtomic -Path $script:ProgressPath -Object $progRead.data -Depth 8
+    }
+  } catch {
+    Write-Log ('auto-park PR #' + $PrNumber + ' (issue #' + $IssueNumber + '): failed to remove issue from progress.json awaitingAudit: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+  }
+}
+
+function Set-DevinParkedNotified {
+  param([string]$ParkedPath, [int]$IssueNumber)
+  try {
+    $r = Read-JsonFileChecked $ParkedPath
+    if (-not $r.ok -or $null -eq $r.data) { return }
+    $list = New-Object Collections.Generic.List[object]
+    foreach ($e in @($r.data)) {
+      if ($null -eq $e) { continue }
+      $ei = 0
+      try { $ei = [int](Get-JsonProp $e 'issue') } catch { $ei = 0 }
+      if ($ei -eq $IssueNumber) { Add-Member -InputObject $e -MemberType NoteProperty -Name 'notified' -Value $true -Force }
+      $null = $list.Add($e)
+    }
+    Save-JsonAtomic -Path $ParkedPath -Object ([object[]]$list.ToArray()) -Depth 6
+  } catch {
+    Write-Log ('auto-park issue #' + $IssueNumber + ': could not record notified flag: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+  }
+}
+
+function Send-AutoParkTrackingComment {
+  param(
+    $Watchdog,
+    [int]$IssueNumber,
+    [AllowEmptyString()][string]$IssueTitle,
+    [int]$PrNumber,
+    [int]$AgeHours,
+    [int]$GateRuns,
+    [int]$Attempt = 0
+  )
+  $state = $Watchdog
+  if ($null -eq $state) { $state = Read-WatchdogState }
+  $trackingNo = Resolve-TrackingIssue $state
+  if ($trackingNo -le 0) {
+    Write-Log ('auto-park PR #' + $PrNumber + ': could not locate open tracking issue to post park comment')
+    return $false
+  }
+  $safeTitle = Protect-PublicText ([string]$IssueTitle)
+  $safeTitle = [regex]::Replace($safeTitle, '(?i)[A-Za-z]:\\[^\s''"]+', '<redacted>')
+  $safeTitle = [regex]::Replace($safeTitle, '\\\\[^\s''"]+', '<redacted>')
+  if (-not [string]::IsNullOrWhiteSpace($env:USERNAME) -and $env:USERNAME.Length -ge 6) {
+    $safeTitle = [regex]::Replace($safeTitle, [regex]::Escape($env:USERNAME), '<redacted>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  }
+  $safeTitle = ConvertTo-SingleLine $safeTitle 200
+  if ([string]::IsNullOrWhiteSpace($safeTitle)) { $safeTitle = 'issue' }
+  $stamp = [DateTime]::Now.ToString('yyyy-MM-ddTHH:mm:ssK')
+  $message = '#' + $IssueNumber + ' ' + $safeTitle + ': parked (attempt ' + $Attempt + '): long-running PR #' + $PrNumber + ' (' + $AgeHours + 'h, ' + $GateRuns + ' gate runs), auto-parked by the watchdog'
+  $clean = ConvertTo-SingleLine (Protect-PublicText $message) 500
+  $bodyPath = Join-Path $script:AutopilotDir ('tracking-autopark-' + $PrNumber + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.md')
+  try {
+    Write-Text $bodyPath ($stamp + ' ' + $clean + "`n")
+    $result = Invoke-Gh ('issue comment ' + $trackingNo + ' -R ' + $Repo + ' --body-file ' + (Quote-Argument $bodyPath))
+    if ($result.exitCode -ne 0) {
+      Write-Log ('auto-park PR #' + $PrNumber + ': failed to comment on tracking issue #' + $trackingNo + ': ' + (ConvertTo-SingleLine (Get-ErrorSummary $result) 180))
+      return $false
+    }
+    return $true
+  } finally {
+    Remove-Item -LiteralPath $bodyPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Write-StalePrReport {
+  # Lists open nyx/ PRs that have been open for at least $StalePrHours hours and have used at least
+  # $StalePrGateRuns gate runs, in <autopilot>\stale-prs.json, and returns the list for
+  # Invoke-AutoParkStale; the report itself changes nothing.
+  param($OpenPrs)
+  $gateRoot = Join-Path $script:AutopilotDir 'gate'
+  $nowUtc = [DateTime]::UtcNow
+  $stale = New-Object Collections.Generic.List[object]
+  foreach ($pr in @($OpenPrs)) {
+    $head = [string](Get-JsonProp $pr 'headRefName')
+    if (-not $head.StartsWith('nyx/')) { continue }
+    $num = [int](Get-JsonProp $pr 'number')
+    $created = Parse-UtcTimestamp ([string](Get-JsonProp $pr 'createdAt'))
+    if ($null -eq $created) { continue }
+    $ageHours = ($nowUtc - $created).TotalHours
+    if ($ageHours -lt $StalePrHours) { continue }
+    $runs = 0
+    if (Test-Path -LiteralPath $gateRoot -PathType Container) {
+      $runs = @(Get-ChildItem -LiteralPath $gateRoot -Directory -Filter ('pr-' + $num + '-*') -ErrorAction SilentlyContinue |
+          Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'summary.json') -PathType Leaf }).Count
+    }
+    if ($runs -lt $StalePrGateRuns) { continue }
+    $lane = 'devin'
+    if ($head.StartsWith('nyx/h-')) { $lane = 'hydrogen' }
+    $null = $stale.Add([ordered]@{ pr = $num; branch = $head; lane = $lane; ageHours = [Math]::Round($ageHours, 1); gateRuns = $runs })
+  }
+  $report = [ordered]@{ generatedUtc = $nowUtc.ToString('o'); thresholdHours = $StalePrHours; thresholdGateRuns = $StalePrGateRuns; prs = $stale.ToArray() }
+  Write-Text (Join-Path $script:AutopilotDir 'stale-prs.json') ((ConvertTo-Json -InputObject $report -Depth 4) + "`n")
+  if ($stale.Count -gt 0) {
+    $names = @($stale.ToArray() | ForEach-Object { '#' + $_.pr + ' (' + $_.gateRuns + ' runs, ' + [int]$_.ageHours + 'h)' })
+    Write-Log ('stale PRs to park: ' + ($names -join ', '))
+  }
+  return @($stale.ToArray())
+}
+
+function Invoke-AutoParkStale {
+  param(
+    $StalePrs,
+    $OpenPrs = @(),
+    $Watchdog = $null
+  )
+  $staleList = @($StalePrs | Where-Object { $null -ne $_ })
+  if ($staleList.Count -eq 0) { return }
+
+  $openPrByNum = @{}
+  foreach ($pr in @($OpenPrs)) {
+    if ($null -eq $pr) { continue }
+    $rawNum = Get-JsonProp $pr 'number'
+    if ($null -ne $rawNum) {
+      $n = 0
+      try { $n = [int]$rawNum } catch { $n = 0 }
+      if ($n -gt 0) { $openPrByNum[$n] = $pr }
+    }
+  }
+
+  $parkedPath = Join-Path $script:AutopilotDir 'parked.json'
+  $hLane = $HydrogenLaneRoot
+  if ([string]::IsNullOrWhiteSpace($hLane)) { $hLane = Join-Path $script:WorkRoot 'hydrogen' }
+  $hydrogenProgressPath = Join-Path (Join-Path $hLane 'state') 'progress-hydrogen.json'
+  $maxPerTick = 5
+  $parkedThisTick = 0
+
+  foreach ($staleItem in $staleList) {
+    if (Test-Stop) {
+      Write-Log 'auto-park: STOP file present; stopping'
+      break
+    }
+    if ($parkedThisTick -ge $maxPerTick) {
+      Write-Log ('auto-park: reached cap of ' + $maxPerTick + ' PRs this tick; deferring remaining stale PRs')
+      break
+    }
+
+    $prNum = 0
+    $rawPr = Get-JsonProp $staleItem 'pr'
+    if ($null -ne $rawPr) {
+      try { $prNum = [int]$rawPr } catch { $prNum = 0 }
+    }
+    $branch = [string](Get-JsonProp $staleItem 'branch')
+    if ($prNum -le 0 -or [string]::IsNullOrWhiteSpace($branch)) { continue }
+
+    $isHydrogen = $branch.StartsWith('nyx/h-', [StringComparison]::Ordinal)
+    $isDevin = $branch.StartsWith('nyx/', [StringComparison]::Ordinal) -and (-not $isHydrogen)
+    if (-not $isDevin -and -not $isHydrogen) { continue }
+
+    $hoursInt = 0
+    $rawHours = Get-JsonProp $staleItem 'ageHours'
+    if ($null -ne $rawHours) {
+      try { $hoursInt = [int]$rawHours } catch { $hoursInt = 0 }
+    }
+    $runsInt = 0
+    $rawRuns = Get-JsonProp $staleItem 'gateRuns'
+    if ($null -ne $rawRuns) {
+      try { $runsInt = [int]$rawRuns } catch { $runsInt = 0 }
+    }
+
+    try {
+      $prObj = $null
+      if ($openPrByNum.ContainsKey($prNum)) { $prObj = $openPrByNum[$prNum] }
+      $prBody = ''
+      $headSha = ''
+      $prLabels = @()
+      if ($null -ne $prObj) {
+        $prBody = [string](Get-JsonProp $prObj 'body')
+        $headSha = ([string](Get-JsonProp $prObj 'headRefOid')).Trim()
+        $prLabels = @(Get-LabelNames (Get-JsonProp $prObj 'labels'))
+      }
+
+      if ($isHydrogen) {
+        if ($prLabels -contains 'parked' -or $prLabels -contains 'audit-parked') { continue }
+      }
+
+      $issueNum = Get-StalePrLinkedIssue -PrNumber $prNum -PrBody $prBody -Branch $branch
+      if ($issueNum -le 0) {
+        Write-Log ('auto-park PR #' + $prNum + ': skipped (no linked issue found)')
+        continue
+      }
+
+      $reason = 'long-running PR: open ' + $hoursInt + 'h with ' + $runsInt + ' gate runs; restart from main as a smaller change'
+
+      if ($isDevin) {
+        $preRead = Read-JsonFileChecked $parkedPath
+        if ($preRead.exists -and -not $preRead.ok) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unreadable parked.json: ' + (ConvertTo-SingleLine $preRead.error 160) + ')')
+          continue
+        }
+        if ($null -ne $preRead.data -and -not ($preRead.data -is [Array]) -and -not ($preRead.data -is [pscustomobject])) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unexpected parked.json structure)')
+          continue
+        }
+        $existingEntry = Get-DevinParkedEntry -ParkedData $preRead.data -IssueNumber $issueNum
+        $newAttempt = 0
+        if ($null -ne $existingEntry) {
+          $existingPr = 0
+          try { $existingPr = [int](Get-JsonProp $existingEntry 'pr') } catch { $existingPr = 0 }
+          if ($existingPr -eq $prNum) {
+            # Already parked for this PR: retry any step that failed on an earlier tick.
+            Remove-IssueFromProgressAwaitingAudit -IssueNumber $issueNum -PrNumber $prNum
+            if ([string](Get-JsonProp $existingEntry 'notified') -eq 'False') {
+              $retryIssue = Invoke-Gh ('issue view ' + $issueNum + ' -R ' + $Repo + ' --json title')
+              $retryTitle = ''
+              if ($retryIssue.exitCode -eq 0) { try { $retryTitle = [string](Get-JsonProp ($retryIssue.text | ConvertFrom-Json) 'title') } catch { } }
+              if (Send-AutoParkTrackingComment -Watchdog $Watchdog -IssueNumber $issueNum -IssueTitle $retryTitle -PrNumber $prNum -AgeHours $hoursInt -GateRuns $runsInt) {
+                Set-DevinParkedNotified -ParkedPath $parkedPath -IssueNumber $issueNum
+              }
+            }
+            continue
+          }
+          # A revisit PR (different from the recorded one) went stale: count it as a failed revisit.
+          $oldAttempt = 0
+          try { $oldAttempt = [int](Get-JsonProp $existingEntry 'attempt') } catch { $oldAttempt = 0 }
+          if ($oldAttempt -ge 2) { continue }
+          $newAttempt = $oldAttempt + 1
+        }
+
+        $issueRes = Invoke-Gh ('issue view ' + $issueNum + ' -R ' + $Repo + ' --json number,title,labels')
+        if ($issueRes.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$issueRes.text)) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (gh issue view failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $issueRes) 180) + ')')
+          continue
+        }
+        $issueObj = $null
+        try {
+          $issueObj = $issueRes.text | ConvertFrom-Json
+        } catch {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (could not parse gh issue view JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 160) + ')')
+          continue
+        }
+        $issueLabels = @(Get-LabelNames (Get-JsonProp $issueObj 'labels'))
+        if ($issueLabels -contains 'parked') { continue }
+        $issueTitle = [string](Get-JsonProp $issueObj 'title')
+
+        # Read-modify-write right before saving to keep the race window with Devin small.
+        $saveRead = Read-JsonFileChecked $parkedPath
+        if ($saveRead.exists -and -not $saveRead.ok) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unreadable parked.json: ' + (ConvertTo-SingleLine $saveRead.error 160) + ')')
+          continue
+        }
+        if ($null -ne $saveRead.data -and -not ($saveRead.data -is [Array]) -and -not ($saveRead.data -is [pscustomobject])) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unexpected parked.json structure)')
+          continue
+        }
+        $parkedList = New-Object Collections.Generic.List[object]
+        if ($null -ne $saveRead.data) {
+          foreach ($existing in @($saveRead.data)) {
+            if ($null -eq $existing) { continue }
+            $ei = 0
+            try { $ei = [int](Get-JsonProp $existing 'issue') } catch { $ei = 0 }
+            if ($ei -eq $issueNum) {
+              $ep = 0
+              try { $ep = [int](Get-JsonProp $existing 'pr') } catch { $ep = 0 }
+              if ($ep -eq $prNum) { $parkedList = $null; break }
+              continue
+            }
+            $null = $parkedList.Add($existing)
+          }
+        }
+        if ($null -eq $parkedList) { continue }
+        $null = $parkedList.Add([ordered]@{
+          issue = $issueNum
+          pr = $prNum
+          reason = $reason
+          attempt = $newAttempt
+          notified = $false
+        })
+        Save-JsonAtomic -Path $parkedPath -Object ([object[]]$parkedList.ToArray()) -Depth 6
+        if ($newAttempt -ge 2) {
+          $labelRes = Invoke-Gh ('issue edit ' + $issueNum + ' -R ' + $Repo + ' --add-label parked')
+          if ($labelRes.exitCode -ne 0) { Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): could not add parked label: ' + (ConvertTo-SingleLine (Get-ErrorSummary $labelRes) 160)) }
+        }
+
+        Remove-IssueFromProgressAwaitingAudit -IssueNumber $issueNum -PrNumber $prNum
+        if (Send-AutoParkTrackingComment -Watchdog $Watchdog -IssueNumber $issueNum -IssueTitle $issueTitle -PrNumber $prNum -AgeHours $hoursInt -GateRuns $runsInt -Attempt $newAttempt) {
+          Set-DevinParkedNotified -ParkedPath $parkedPath -IssueNumber $issueNum
+        }
+        Write-Log ('auto-parked PR #' + $prNum + ' (issue #' + $issueNum + ', attempt ' + $newAttempt + '): ' + $hoursInt + 'h, ' + $runsInt + ' gate runs')
+        $parkedThisTick++
+      } elseif ($isHydrogen) {
+        if (-not (Test-Path -LiteralPath $hydrogenProgressPath -PathType Leaf)) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (no Hydrogen progress file under the lane root; set -HydrogenLaneRoot)')
+          continue
+        }
+        $hPreRead = Read-JsonFileChecked $hydrogenProgressPath
+        if ($hPreRead.exists -and -not $hPreRead.ok) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unreadable progress-hydrogen.json: ' + (ConvertTo-SingleLine $hPreRead.error 160) + ')')
+          continue
+        }
+        if ($null -ne $hPreRead.data -and -not ($hPreRead.data -is [pscustomobject])) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unexpected progress-hydrogen.json structure)')
+          continue
+        }
+        if ($null -ne $hPreRead.data) {
+          $preParked = Get-JsonProp $hPreRead.data 'parked'
+          if (Test-HydrogenParkedEntry -ParkedEntries $preParked -IssueNumber $issueNum -PrNumber $prNum -HeadSha $headSha) { continue }
+        }
+
+        $issueRes = Invoke-Gh ('issue view ' + $issueNum + ' -R ' + $Repo + ' --json number,title,labels')
+        if ($issueRes.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$issueRes.text)) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (gh issue view failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $issueRes) 180) + ')')
+          continue
+        }
+        $issueObj = $null
+        try {
+          $issueObj = $issueRes.text | ConvertFrom-Json
+        } catch {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (could not parse gh issue view JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 160) + ')')
+          continue
+        }
+        $issueLabels = @(Get-LabelNames (Get-JsonProp $issueObj 'labels'))
+        if ($issueLabels -contains 'parked' -or $issueLabels -contains 'needs-human') { continue }
+        $issueTitle = [string](Get-JsonProp $issueObj 'title')
+
+        # Read-modify-write right before saving to keep the race window with Hydrogen small.
+        $hSaveRead = Read-JsonFileChecked $hydrogenProgressPath
+        if ($hSaveRead.exists -and -not $hSaveRead.ok) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unreadable progress-hydrogen.json: ' + (ConvertTo-SingleLine $hSaveRead.error 160) + ')')
+          continue
+        }
+        if ($null -ne $hSaveRead.data -and -not ($hSaveRead.data -is [pscustomobject])) {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (unexpected progress-hydrogen.json structure)')
+          continue
+        }
+
+        $newHydrogenEntry = [ordered]@{
+          issue = $issueNum
+          pr = $prNum
+          headSha = $headSha
+          reason = $reason
+          at = [DateTime]::UtcNow.ToString('o')
+        }
+        if ($null -ne $hSaveRead.data) {
+          $curParked = Get-JsonProp $hSaveRead.data 'parked'
+          if (Test-HydrogenParkedEntry -ParkedEntries $curParked -IssueNumber $issueNum -PrNumber $prNum -HeadSha $headSha) { continue }
+          $hParkedList = New-Object Collections.Generic.List[object]
+          if ($null -ne $curParked) {
+            foreach ($existing in @($curParked)) {
+              if ($null -ne $existing) { $null = $hParkedList.Add($existing) }
+            }
+          }
+          $null = $hParkedList.Add($newHydrogenEntry)
+          Add-Member -InputObject $hSaveRead.data -MemberType NoteProperty -Name 'parked' -Value ([object[]]$hParkedList.ToArray()) -Force
+          Save-JsonAtomic -Path $hydrogenProgressPath -Object $hSaveRead.data -Depth 8
+        } else {
+          Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (empty Hydrogen progress file)')
+          continue
+        }
+
+        $null = Send-AutoParkTrackingComment -Watchdog $Watchdog -IssueNumber $issueNum -IssueTitle $issueTitle -PrNumber $prNum -AgeHours $hoursInt -GateRuns $runsInt
+        Write-Log ('auto-parked PR #' + $prNum + ' (issue #' + $issueNum + '): ' + $hoursInt + 'h, ' + $runsInt + ' gate runs')
+        $parkedThisTick++
+      }
+    } catch {
+      Write-Log ('auto-park PR #' + $prNum + ': skipped (unexpected error: ' + (ConvertTo-SingleLine $_.Exception.Message 180) + ')')
+    }
+  }
+}
+
 function Invoke-AutoMerge {
-  param([switch]$DryRun)
+  param(
+    [switch]$DryRun,
+    $Watchdog = $null
+  )
   $whatIfVar = Get-Variable -Name 'WhatIfPreference' -ErrorAction SilentlyContinue
   $isDryRun = [bool]$DryRun
   if ($null -ne $whatIfVar -and [bool]$whatIfVar.Value) { $isDryRun = $true }
@@ -1313,7 +2573,7 @@ function Invoke-AutoMerge {
     $script:GhPath = $ghCmd.Source
   }
 
-  $listRes = Invoke-Gh ('pr list -R ' + $Repo + ' --state open --limit 100 --json number,headRefName,headRefOid,title,body,labels,author,baseRefName,isCrossRepository')
+  $listRes = Invoke-Gh ('pr list -R ' + $Repo + ' --state open --limit 100 --json number,headRefName,headRefOid,title,body,labels,author,baseRefName,isCrossRepository,createdAt')
   if ($listRes.exitCode -ne 0) {
     Write-Log ('auto-merge: skipped (gh pr list failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $listRes) 200) + ')')
     return
@@ -1329,6 +2589,20 @@ function Invoke-AutoMerge {
   } catch {
     Write-Log ('auto-merge: skipped (could not parse gh pr list JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 200) + ')')
     return
+  }
+
+  $stalePrs = @()
+  try {
+    $stalePrs = @(Write-StalePrReport $openPrs)
+  } catch {
+    Write-Log ('stale-pr report error: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
+  }
+  if ($AutoParkStale -eq 1 -and -not $isDryRun -and @($stalePrs).Count -gt 0) {
+    try {
+      Invoke-AutoParkStale -StalePrs $stalePrs -OpenPrs $openPrs -Watchdog $Watchdog
+    } catch {
+      Write-Log ('auto-park error: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
+    }
   }
 
   $mergedTodayLoaded = $false
@@ -1397,7 +2671,7 @@ function Invoke-AutoMerge {
       }
 
       # (c) PR body contains a closing keyword for the issue number parsed from nyx/<n>-...
-      $branchMatch = [regex]::Match($headRef, '^nyx/([0-9]+)-')
+      $branchMatch = [regex]::Match($headRef, '^nyx/(?:h-)?([0-9]+)-')
       if (-not $branchMatch.Success) {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (branch ' + $headRef + ' does not match nyx/<issue>-...)')
         continue
@@ -1505,7 +2779,7 @@ function Invoke-AutoMerge {
         continue
       }
 
-      # (e) Today's merges are under the daily cap (20).
+      # (e) Today's merges are under the daily cap (40).
       if (-not $mergedTodayLoaded) {
         $mergedToday = Get-TodayMergedNyxPrCount
         $mergedTodayLoaded = $true
@@ -1628,7 +2902,24 @@ function Invoke-AutoMerge {
 }
 
 function Invoke-WatchTick {
+  try { Initialize-GuiTypes } catch { }
+  $healthSample = Write-HealthSample
   if (Test-Stop) { return }
+  if ($ReapOrphanedTestApps -eq 1) {
+    try {
+      Stop-OrphanedTestApps
+    } catch {
+      $reapErr = Protect-PublicText ([string]$_.Exception.Message)
+      $reapErr = [regex]::Replace($reapErr, '(?i)[A-Za-z]:\\Users\\[^\\\s''"]+', '<user-path>')
+      if (-not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
+        $reapErr = [regex]::Replace($reapErr, [regex]::Escape($env:USERNAME), '<user>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+      }
+      if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
+        $reapErr = [regex]::Replace($reapErr, [regex]::Escape($env:COMPUTERNAME), '<host>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+      }
+      Write-Log ('orphaned test app cleanup error: ' + (ConvertTo-SingleLine $reapErr 160))
+    }
+  }
 
   $env:GH_PROMPT_DISABLED = '1'
   $env:GH_NO_UPDATE_NOTIFIER = '1'
@@ -1636,13 +2927,20 @@ function Invoke-WatchTick {
   $env:GCM_INTERACTIVE = 'never'
 
   $watchdog = Read-WatchdogState
+  if ($null -ne $healthSample) {
+    if ([int]$healthSample['hungWindows'] -gt 0 -or [int]$healthSample['notRespondingDialogs'] -gt 0) {
+      $watchdog['hungStreak'] = [int]$watchdog['hungStreak'] + 1
+    } else {
+      $watchdog['hungStreak'] = 0
+    }
+  }
   Invoke-SelfSync $watchdog
 
   $gh = Get-Command -Name 'gh' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($gh) {
     $script:GhPath = $gh.Source
     try {
-      Invoke-AutoMerge
+      Invoke-AutoMerge -Watchdog $watchdog
     } catch {
       Write-Log ('auto-merge error: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
     }
@@ -1684,6 +2982,38 @@ function Invoke-WatchTick {
   $userIdleSec = [DevLoopWindows]::GetUserIdleSeconds()
   if ($userIdleSec -lt $UserIdleSeconds) {
     Write-Log ('user active, deferred (idle ' + [Math]::Round($userIdleSec, 1) + 's < ' + $UserIdleSeconds + 's)')
+    return
+  }
+  if (Test-Stop) { return }
+
+  if ($userIdleSec -ge 600) {
+    try {
+      Stop-StrayApps
+    } catch {
+      $strayErr = Protect-PublicText ([string]$_.Exception.Message)
+      $strayErr = [regex]::Replace($strayErr, '(?i)[A-Za-z]:\\Users\\[^\\\s''"]+', '<user-path>')
+      if (-not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
+        $strayErr = [regex]::Replace($strayErr, [regex]::Escape($env:USERNAME), '<user>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+      }
+      if (-not [string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) {
+        $strayErr = [regex]::Replace($strayErr, [regex]::Escape($env:COMPUTERNAME), '<host>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+      }
+      Write-Log ('stray-app cleanup error: ' + (ConvertTo-SingleLine $strayErr 160))
+    }
+  }
+
+  if ([int]$watchdog['hungStreak'] -ge 2) {
+    $busyHang = @(Get-BusyAutopilotProcesses)
+    if ($busyHang.Count -gt 0) {
+      Write-Log ('Devin Desktop hung for ' + $watchdog['hungStreak'] + ' samples, but ' + $busyHang.Count + ' task process(es) are running; restart deferred')
+      return
+    }
+    $streakCount = [int]$watchdog['hungStreak']
+    Write-Log ('Devin Desktop hung for ' + $streakCount + ' samples; restarting')
+    $null = Stop-DevinDesktop
+    $watchdog['hungStreak'] = 0
+    Save-WatchdogState $watchdog
+    $null = Invoke-Kickoff -WaitForIdle $false
     return
   }
 
@@ -1759,50 +3089,87 @@ function Invoke-WatchTick {
   }
 
   if ([int]$watchdog['consecutiveNudges'] -ge 6) {
-    $busyOnRestart = @(Get-BusyAutopilotProcesses)
-    if ($busyOnRestart.Count -gt 0) {
-      Write-Log ('6 nudges reached, but ' + $busyOnRestart.Count + ' task process(es) are running; not restarting')
-      return
-    }
-    if (-not [bool]$watchdog['stuckNotified']) {
-      if (Send-StuckTrackingComment $watchdog) {
-        $watchdog['stuckNotified'] = $true
-        Save-WatchdogState $watchdog
-      }
-    }
-    Write-Log 'autopilot unresponsive after 6 nudges with no new log activity; restarting Devin Desktop'
-    $null = Stop-DevinDesktop
-    $watchdog['consecutiveNudges'] = 0
-    $watchdog['stuckNotified'] = $false
-    Save-WatchdogState $watchdog
-    $null = Invoke-Kickoff -WaitForIdle $false
+    Restart-StuckDevin $watchdog 'autopilot unresponsive after 6 nudges with no new log activity'
     return
   }
 
-  if ($null -ne $activity.pendingApprovalUtc) {
+  $sessionStartedUtc = Parse-UtcTimestamp ([string]$watchdog['sessionStartedUtc'])
+  $sessionHasAge = $false
+  $sessionAgeMin = 0.0
+  if ($null -eq $sessionStartedUtc) {
+    $watchdog['sessionStartedUtc'] = $nowUtc.ToString('o')
+    Save-WatchdogState $watchdog
+  } else {
+    $sessionAgeMin = ($nowUtc - $sessionStartedUtc).TotalMinutes
+    $sessionHasAge = $true
+  }
+
+  $rotationAttempted = $false
+  if ($sessionHasAge -and $sessionAgeMin -ge $SessionMaxMinutes) {
+    $recent3Min = ($null -ne $activity.newestWriteUtc -and ($nowUtc - $activity.newestWriteUtc).TotalMinutes -lt 3)
+    if (-not $recent3Min) {
+      $hardSoloPlan = Join-Path $PSScriptRoot 'solo-v3.md'
+      $hardSoloState = Read-JsonFile (Join-Path $script:AutopilotDir 'solo-v3.json')
+      $hardSoloPhase = ''
+      if ($hardSoloState) { $hardSoloPhase = ([string](Get-JsonProp $hardSoloState 'phase')).Trim().ToLowerInvariant() }
+      $hardPolling = ($pState -eq 'polling' -or $pState -eq 'done')
+      if ($hardSoloState -and (Test-Path -LiteralPath $hardSoloPlan) -and $hardSoloPhase -ne 'polling' -and $hardSoloPhase -ne 'done') { $hardPolling = $false }
+      $hardSkip = $false
+      if ($hardPolling) {
+        $hardWork = Test-WorkRemains
+        if ($null -eq $hardWork -or -not $hardWork) { $hardSkip = $true }
+      }
+      $busyHard = @()
+      if (-not $hardSkip) { $busyHard = @(Get-BusyAutopilotProcesses) }
+      if (-not $hardSkip -and $busyHard.Count -eq 0) {
+        $ageInt = [int][Math]::Round($sessionAgeMin)
+        $rotationAttempted = $true
+        if (Start-FreshDevinSession $window ('max age ' + $ageInt + ' min')) {
+          return
+        }
+        if ($script:LastFreshSessionDeferred -or (Test-Stop)) { return }
+      }
+    }
+  }
+
+  $recentWork = ($null -ne $activity.newestWriteUtc -and ($nowUtc - $activity.newestWriteUtc).TotalMinutes -lt $IdleMinutes)
+  if ($null -ne $activity.pendingApprovalUtc -and $recentWork) {
+    Write-Log ('approval prompt from ' + $activity.pendingApprovalUtc.ToString('o') + ' looks stale: agent work seen ' + [Math]::Round(($nowUtc - $activity.newestWriteUtc).TotalMinutes, 1) + 'm ago; not recovering')
+  } elseif ($null -ne $activity.pendingApprovalUtc) {
     $pendingMin = ($nowUtc - $activity.pendingApprovalUtc).TotalMinutes
     if ($pendingMin -ge $ApprovalMinutes) {
-      Write-Log ('approval pending for ' + [Math]::Round($pendingMin, 1) + 'm (>= ' + $ApprovalMinutes + 'm); recovering /bypass')
+      $pendingKey = $activity.pendingApprovalUtc.ToString('o')
+      if ([string]$watchdog['approvalPendingKey'] -ne $pendingKey) {
+        $watchdog['approvalPendingKey'] = $pendingKey
+        $watchdog['approvalFailures'] = 0
+        Save-WatchdogState $watchdog
+      }
+      # A prompt that /bypass cannot clear (bypass already on, or a hung tool call that logged a prompt the
+      # UI never shows) would otherwise block every later nudge; after repeated failures restart instead.
+      if ([int]$watchdog['approvalFailures'] -ge $ApprovalRecoveryAttempts) {
+        Restart-StuckDevin $watchdog ('approval pending for ' + [Math]::Round($pendingMin, 1) + 'm and ' + $watchdog['approvalFailures'] + ' recovery attempts failed')
+        return
+      }
+      Write-Log ('approval pending for ' + [Math]::Round($pendingMin, 1) + 'm (>= ' + $ApprovalMinutes + 'm); recovering /bypass (attempt ' + ([int]$watchdog['approvalFailures'] + 1) + '/' + $ApprovalRecoveryAttempts + ')')
+      $abort = ''
       if (-not (Set-DevinForeground $window)) {
-        Write-Log 'approval recovery aborted: could not focus Devin window'
+        $abort = 'could not focus Devin window'
+      } elseif (-not (Send-DevinBypassCommandSafe $window)) {
+        $abort = '/bypass not confirmed or focus changed'
+      } elseif (-not (Set-DevinForeground $window)) {
+        $abort = 'lost focus after /bypass'
+      } elseif (-not (Focus-DevinChatInput $window)) {
+        $abort = 'focus changed before clear'
+      } elseif (-not (Send-DevinTextSafe $window 'Bypass mode is on again. Continue where you left off.')) {
+        $abort = 'focus changed before paste'
+      }
+      if ($abort) {
+        $watchdog['approvalFailures'] = [int]$watchdog['approvalFailures'] + 1
+        Save-WatchdogState $watchdog
+        Write-Log ('approval recovery aborted: ' + $abort + ' (' + $watchdog['approvalFailures'] + '/' + $ApprovalRecoveryAttempts + ')')
         return
       }
-      if (-not (Send-DevinBypassCommandSafe $window)) {
-        Write-Log 'approval recovery aborted: /bypass not confirmed or focus changed'
-        return
-      }
-      if (-not (Set-DevinForeground $window)) {
-        Write-Log 'approval recovery aborted: lost focus after /bypass'
-        return
-      }
-      if (-not (Focus-DevinChatInput $window)) {
-        Write-Log 'approval recovery aborted: focus changed before clear'
-        return
-      }
-      if (-not (Send-DevinTextSafe $window 'Bypass mode is on again. Continue where you left off.')) {
-        Write-Log 'approval recovery aborted: focus changed before paste'
-        return
-      }
+      $watchdog['approvalFailures'] = 0
       Register-WatchdogNudge $watchdog 'approval' $activity.newestWriteUtc $nowUtc
       Write-Log ('sent approval recovery nudge (' + $watchdog['consecutiveNudges'] + '/6)')
       return
@@ -1839,6 +3206,14 @@ function Invoke-WatchTick {
       Write-Log ('no log write for ' + [Math]::Round($idleMin, 1) + 'm, but ' + $busy.Count + ' task process(es) are running; not nudging')
       return
     }
+    if (-not $rotationAttempted -and $sessionHasAge -and $sessionAgeMin -ge $SessionIdleRotateMinutes) {
+      $ageInt = [int][Math]::Round($sessionAgeMin)
+      $rotationAttempted = $true
+      if (Start-FreshDevinSession $window ('idle, age ' + $ageInt + ' min')) {
+        return
+      }
+      if ($script:LastFreshSessionDeferred -or (Test-Stop)) { return }
+    }
     Write-Log ('no log write for ' + [Math]::Round($idleMin, 1) + 'm (>= ' + $IdleMinutes + 'm) while work remains; nudging')
     if (-not (Set-DevinForeground $window)) {
       Write-Log 'idle nudge aborted: could not focus Devin window'
@@ -1848,11 +3223,7 @@ function Invoke-WatchTick {
       Write-Log 'idle nudge aborted: focus changed before clear'
       return
     }
-    $nudgeMessage = 'Continue the autopilot task: first re-read ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub and ' + $script:ProgressPath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any open nyx/ PR whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep going (queue, parked revisits, hands-on milestone, and 30-minute polling).'
-    # The v3 solo mission supersedes the per-issue loop while its state file says it is not finished.
-    if ($soloState -and (Test-Path -LiteralPath $soloPlan) -and $soloPhase -ne 'done') {
-      $nudgeMessage = 'Continue the mission: first re-read ' + $soloPlan + ' and ' + $script:PromptPath + ', then check open nyx/ PRs on GitHub, ' + $script:ProgressPath + ', and ' + $soloStatePath + '. Never merge PRs yourself: the watchdog merges any PR whose gate passed and nyx/audit is success on the exact head. Any open nyx/ PR whose current head has no passing gate needs Invoke-AutopilotGate.ps1 run on that head before any new issue starts. Keep working through every phase, milestone, and polling cycle without waiting for a person. Do not end your turn with a checkpoint while work remains.'
-    }
+    $nudgeMessage = Get-AutopilotMessage -Nudge
     if (-not (Send-DevinTextSafe $window $nudgeMessage)) {
       Write-Log 'idle nudge aborted: focus changed before paste'
       return
@@ -1893,12 +3264,19 @@ function Invoke-RegisterTask {
     '-Label', (Quote-Argument $Label),
     '-IdleMinutes', [string]$IdleMinutes,
     '-ApprovalMinutes', [string]$ApprovalMinutes,
+    '-AutoParkStale', [string]$AutoParkStale,
     '-UserIdleSeconds', [string]$UserIdleSeconds,
     '-IntervalMinutes', [string]$IntervalMinutes,
+    '-SessionIdleRotateMinutes', [string]$SessionIdleRotateMinutes,
+    '-SessionMaxMinutes', [string]$SessionMaxMinutes,
+    '-StrayApps', $(if (@($StrayApps | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0) { Quote-Argument ((@($StrayApps) | ForEach-Object { [string]$_ }) -join ',') } else { 'none' }),
+    '-OrphanMinutes', [string]$OrphanMinutes,
+    '-ReapOrphanedTestApps', [string]$ReapOrphanedTestApps,
     '-SyncSource', (Quote-Argument $SyncSource),
     '-SyncTarget', (Quote-Argument $SyncTarget)
   )
 
+  if (-not [string]::IsNullOrWhiteSpace($HydrogenLaneRoot)) { $watchArgs += @('-HydrogenLaneRoot', (Quote-Argument $HydrogenLaneRoot)) }
   Initialize-TaskFolder
   $action = New-ScheduledTaskAction -Execute $script:PowerShellExe -WorkingDirectory $script:WorkRoot -Argument ($watchArgs -join ' ')
   $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
@@ -1958,7 +3336,11 @@ try {
   $script:WatchdogPath = Join-Path $script:AutopilotDir 'watchdog.json'
   $script:LogPath = Join-Path $script:LogsDir ('autopilot-' + [DateTime]::Now.ToString('yyyyMMdd') + '.log')
 
-  if ($Watch -and (Test-Stop)) { exit 0 }
+  if ($Watch -and (Test-Stop)) {
+    [IO.Directory]::CreateDirectory($script:LogsDir) | Out-Null
+    $null = Write-HealthSample
+    exit 0
+  }
 
   [IO.Directory]::CreateDirectory($script:WorkRoot) | Out-Null
   [IO.Directory]::CreateDirectory($script:LogsDir) | Out-Null

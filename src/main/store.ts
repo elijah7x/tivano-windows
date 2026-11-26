@@ -8,6 +8,7 @@
 // a newer schema fails closed instead of being silently wiped.
 
 import {
+  copyFileSync,
   mkdirSync,
   openSync,
   closeSync,
@@ -328,9 +329,13 @@ export class Store {
   private segmentCache = new Map<string, string>();
   /** Segments that failed to load — never written or swept by us. */
   private readonly protectedSegments = new Set<string>();
+  /** P2-63: thread ids whose in-memory history was released under memory
+   *  pressure while their on-disk turns/<id>.json remains intact. */
+  private readonly releasedSegments = new Set<string>();
   /** True only after open() fully succeeded — the only state that may write. */
   private opened = false;
   private closed = false;
+  private existedOnOpen = false;
   recoveredFrom?: string;
   /** F30: the last open()'s segment hydration report — missing/corrupt
    *  turn files are surfaced honestly, never silently rewritten. */
@@ -358,6 +363,7 @@ export class Store {
       if (!isPathInsideRoot(this.root, STORE_FILENAME))
         throw new Error(`refusing to read store through a link: ${this.file}`);
       if (!existsSync(this.file)) {
+        this.existedOnOpen = false;
         this.data = emptyStore();
         this.opened = true;
         return { data: this.data };
@@ -413,6 +419,7 @@ export class Store {
       }
       this.data = head as StoreFile;
       this.segmentReport = segments;
+      this.existedOnOpen = true;
       this.opened = true;
       return {
         data: this.data,
@@ -430,10 +437,8 @@ export class Store {
       // start clean. If the preservation itself fails we fail CLOSED — the
       // original file stays byte-identical and nothing is ever overwritten.
       if (err instanceof CorruptStoreError || err instanceof SyntaxError) {
-        const backup = join(
-          this.root,
-          `store.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
-        );
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const backup = join(this.root, `store.corrupt-${stamp}.json`);
         try {
           renameSync(this.file, backup);
         } catch (backupErr) {
@@ -442,6 +447,23 @@ export class Store {
           throw new Error(
             `corrupt store could not be preserved aside (${(backupErr as Error).message}); ` +
               `refusing to start clean and lose the evidence`,
+          );
+        }
+        try {
+          this.preserveSegmentsOnCorruptHead(stamp);
+        } catch (segBackupErr) {
+          // Restore the corrupt head file if segment preservation fails so we
+          // fail closed with original evidence intact and never wipe turns/.
+          try {
+            renameSync(backup, this.file);
+          } catch {
+            /* best effort; backup stays on disk */
+          }
+          this.lock.release();
+          this.closed = true;
+          throw new Error(
+            `corrupt store turn segments could not be preserved aside (${(segBackupErr as Error).message}); ` +
+              `refusing to start clean and lose conversation history`,
           );
         }
         this.recoveredFrom = backup;
@@ -456,6 +478,54 @@ export class Store {
     }
   }
 
+  /**
+   * Preserve existing turn segments when a corrupt or unreadable store head
+   * is moved aside so a subsequent atomicWrite() orphan sweep against the
+   * empty recovered head never deletes conversation history. Throws if any
+   * live segment cannot be durably backed up so open() fails closed.
+   */
+  private preserveSegmentsOnCorruptHead(stamp: string): void {
+    const turnsDir = join(this.root, TURNS_DIRNAME);
+    if (!existsSync(turnsDir)) return;
+    const stat = lstatSync(turnsDir);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(`turns path is not a physical directory: ${turnsDir}`);
+    }
+    const entries = readdirSync(turnsDir);
+    if (entries.length === 0) return;
+    let turnsBackup = join(this.root, `${TURNS_DIRNAME}.corrupt-${stamp}`);
+    if (existsSync(turnsBackup)) {
+      turnsBackup = join(this.root, `${TURNS_DIRNAME}.corrupt-${stamp}-${randomUUID().slice(0, 8)}`);
+    }
+    try {
+      renameSync(turnsDir, turnsBackup);
+      return;
+    } catch {
+      // Directory rename failed (e.g., an open handle on Windows); quarantine
+      // individual segment files in place or copy stubborn files into a
+      // durable turns.corrupt-* backup directory.
+    }
+    let backupDirCreated = false;
+    for (const f of entries) {
+      if (!f.endsWith(".json") || f.includes(".corrupt-")) continue;
+      const src = join(turnsDir, f);
+      const id = f.slice(0, -".json".length);
+      let dest = join(turnsDir, `${id}.corrupt-${stamp}.json`);
+      if (existsSync(dest)) {
+        dest = join(turnsDir, `${id}.corrupt-${stamp}-${randomUUID().slice(0, 8)}.json`);
+      }
+      try {
+        renameSync(src, dest);
+      } catch {
+        if (!backupDirCreated) {
+          mkdirSync(turnsBackup, { recursive: true, mode: 0o700 });
+          backupDirCreated = true;
+        }
+        copyFileSync(src, join(turnsBackup, f));
+      }
+    }
+  }
+
   get state(): StoreFile {
     return this.data;
   }
@@ -463,6 +533,11 @@ export class Store {
   /** Whether this instance currently owns the file (lock held + opened). */
   get ownsWrites(): boolean {
     return this.opened && !this.closed && this.lock.isHeld();
+  }
+
+  /** Whether an existing valid store file was loaded on open() (false on fresh install or corrupt recovery). */
+  get hadStoreFileOnOpen(): boolean {
+    return this.existedOnOpen;
   }
 
   /** Mutate in memory and schedule an atomic flush — no-ops once closed. */
@@ -487,6 +562,104 @@ export class Store {
       this.lastWriteError = (err as Error).message;
       throw err;
     }
+  }
+
+  /** P2-63: whether this thread's message history is currently released from RAM. */
+  isThreadHistoryReleased(id: string): boolean {
+    return this.releasedSegments.has(id);
+  }
+
+  /** P2-63: read a thread's persisted messages without loading a released
+   *  thread back into RAM (used by read-only local-control projections). */
+  readThreadMessages(id: string): StoreFile["threads"][number]["messages"] {
+    const t = this.data.threads.find((x) => x.id === id);
+    if (!t) return [];
+    if (!this.releasedSegments.has(id)) return t.messages;
+    if (!/^[A-Za-z0-9_-]{1,120}$/.test(id)) return [];
+    const rel = join(TURNS_DIRNAME, `${id}.json`);
+    if (!isPathInsideRoot(this.root, rel)) return [];
+    const p = join(this.root, rel);
+    if (!existsSync(p)) return [];
+    try {
+      const seg = validateTurnSegment(JSON.parse(readFileSync(p, "utf8")));
+      if (seg.threadId !== id || seg.schemaVersion > SCHEMA_VERSION) return [];
+      return seg.messages;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * P2-63: persist any uncached messages to turns/<id>.json, then drop the
+   * thread's in-memory messages and segmentCache string so memory pressure
+   * frees hidden chats without losing history.
+   */
+  releaseThreadHistory(id: string): boolean {
+    if (!this.ownsWrites) return false;
+    if (this.releasedSegments.has(id) || this.protectedSegments.has(id)) return false;
+    const t = this.data.threads.find((x) => x.id === id);
+    if (!t || !/^[A-Za-z0-9_-]{1,120}$/.test(t.id)) return false;
+    const rel = join(TURNS_DIRNAME, `${t.id}.json`);
+    if (!isPathInsideRoot(this.root, rel)) return false;
+    const turnsDir = join(this.root, TURNS_DIRNAME);
+    const segPath = join(this.root, rel);
+    const body = JSON.stringify(
+      {
+        schemaVersion: SCHEMA_VERSION,
+        threadId: t.id,
+        messages: t.messages,
+        turn: t.turn,
+      },
+      null,
+      2,
+    );
+    if (this.segmentCache.get(t.id) !== body || !existsSync(segPath)) {
+      mkdirSync(turnsDir, { recursive: true, mode: 0o700 });
+      const tmp = join(turnsDir, `.seg-${process.pid}-${randomUUID()}.tmp`);
+      try {
+        writeFileSync(tmp, body);
+        renameSync(tmp, segPath);
+      } catch (err) {
+        try {
+          rmSync(tmp, { force: true });
+        } catch {
+          /* best-effort */
+        }
+        throw err;
+      }
+    }
+    this.segmentCache.delete(t.id);
+    t.messages = [];
+    this.releasedSegments.add(t.id);
+    return true;
+  }
+
+  /**
+   * P2-63: reload a previously released thread's messages from turns/<id>.json.
+   */
+  reloadThreadHistory(id: string): boolean {
+    if (!this.releasedSegments.has(id)) return false;
+    const t = this.data.threads.find((x) => x.id === id);
+    if (!t) {
+      this.releasedSegments.delete(id);
+      return false;
+    }
+    const seg = this.loadTurnSegment(id);
+    this.releasedSegments.delete(id);
+    if (seg === "missing") {
+      t.messages = [];
+      t.turn = null;
+      return false;
+    }
+    if (seg === "skipped") {
+      t.messages = [];
+      t.turn = null;
+      this.protectedSegments.add(id);
+      return false;
+    }
+    t.messages = seg.messages;
+    if (t.turn === null) t.turn = seg.turn;
+    return true;
   }
 
   private scheduleFlush(): void {
@@ -566,7 +739,7 @@ export class Store {
     mkdirSync(turnsDir, { recursive: true, mode: 0o700 });
     const live = new Set(this.data.threads.map((t) => t.id));
     for (const t of this.data.threads) {
-      if (this.protectedSegments.has(t.id)) continue;
+      if (this.protectedSegments.has(t.id) || this.releasedSegments.has(t.id)) continue;
       if (!/^[A-Za-z0-9_-]{1,120}$/.test(t.id)) continue;
       const body = JSON.stringify(
         {
@@ -592,6 +765,9 @@ export class Store {
         }
         throw err;
       }
+    }
+    for (const id of [...this.releasedSegments]) {
+      if (!live.has(id)) this.releasedSegments.delete(id);
     }
     // Orphan sweep — a deleted thread's history goes with it, same as
     // the monolith did. Quarantined files and protected ids are never

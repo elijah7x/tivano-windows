@@ -28,6 +28,7 @@ export class CodexProtocolError extends Error {
       | "CODEX_REQUEST_TIMEOUT"
       | "CODEX_CONNECTION_CLOSED"
       | "CODEX_WRITE_FAILED",
+    readonly rpcError?: RpcErrorObject,
   ) {
     super(message);
     this.name = "CodexProtocolError";
@@ -411,6 +412,7 @@ export class CodexRpc {
           new CodexProtocolError(
             `${m.error!.code}: ${m.error!.message}`,
             "CODEX_PROTOCOL_ERROR",
+            m.error!,
           ),
         );
         return;
@@ -427,7 +429,11 @@ export class CodexRpc {
     clearTimeout(p.timer);
     if (m.error) {
       p.reject(
-        new CodexProtocolError(`${m.error.code}: ${m.error.message}`, "CODEX_PROTOCOL_ERROR"),
+        new CodexProtocolError(
+          `${m.error.code}: ${m.error.message}`,
+          "CODEX_PROTOCOL_ERROR",
+          m.error,
+        ),
       );
     } else {
       this.resolved++;

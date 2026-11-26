@@ -94,10 +94,10 @@ describe("hydration and revision boundaries", () => {
     const store = new ClientStore(async () => ({}));
     store.hydrate(snap(5), store.beginHydration());
     store.onBridgeEvent({ type: "settings-changed", rev: 7,
-      settings: { theme: "dark", language: "en", alwaysAllow: [] } });
+      settings: { theme: "nord", language: "en", alwaysAllow: [] } });
     store.onBridgeEvent({ type: "settings-changed", rev: 6,
-      settings: { theme: "light", language: "en", alwaysAllow: [] } });
-    expect(store.snapshot!.settings.theme).toBe("dark");
+      settings: { theme: "github", language: "en", alwaysAllow: [] } });
+    expect(store.snapshot!.settings.theme).toBe("nord");
     expect(store.snapshot!.rev).toBe(7);
   });
 
@@ -238,5 +238,216 @@ describe("per-thread drafts", () => {
     store.apply({ type: "turn-unsent", threadId: "t1", text: "back" });
     expect(store.draft("t1")).toBe("back");
     expect(invoke.mock.calls.some(([c]) => c === "followUps:enqueue")).toBe(false);
+  });
+});
+
+describe("finish-signal notification visibility (P2-62)", () => {
+  function withDomMocks(opts: {
+    focused: boolean;
+    permission?: "granted" | "default" | "denied";
+    requestRejects?: boolean;
+  }) {
+    const prevNotification = (globalThis as { Notification?: unknown }).Notification;
+    const prevDocument = (globalThis as { document?: unknown }).document;
+    const sent: { title: string; body?: string; tag?: string; silent?: boolean }[] = [];
+    class MockNotification {
+      static permission = opts.permission ?? "granted";
+      static requestPermission = vi.fn(() =>
+        opts.requestRejects
+          ? Promise.reject(new Error("permission error"))
+          : Promise.resolve("denied"),
+      );
+      onclick: (() => void) | null = null;
+      constructor(
+        title: string,
+        init?: { body?: string; tag?: string; silent?: boolean },
+      ) {
+        sent.push({ title, ...init });
+      }
+    }
+    (globalThis as { Notification: unknown }).Notification = MockNotification;
+    (globalThis as { document: unknown }).document = {
+      hasFocus: () => opts.focused,
+    };
+    return {
+      sent,
+      MockNotification,
+      restore: () => {
+        if (prevNotification === undefined) {
+          delete (globalThis as { Notification?: unknown }).Notification;
+        } else {
+          (globalThis as { Notification: unknown }).Notification = prevNotification;
+        }
+        if (prevDocument === undefined) {
+          delete (globalThis as { document?: unknown }).document;
+        } else {
+          (globalThis as { document: unknown }).document = prevDocument;
+        }
+      },
+    };
+  }
+
+  it("notifies for an unselected thread when focused and permission is granted", () => {
+    const mocks = withDomMocks({ focused: true });
+    try {
+      const store = new ClientStore(async () => ({}));
+      const s = snap(1, [
+        streamingThread("t1", "u1", "m1"),
+        streamingThread("t2", "u2", "m2"),
+      ]);
+      s.selectedThreadId = "t1";
+      store.hydrate(s, store.beginHydration());
+      store.apply({
+        type: "finish-signal",
+        threadId: "t2",
+        status: "done",
+        chime: false,
+        notify: "done",
+        silent: false,
+      });
+      expect(mocks.sent).toHaveLength(1);
+      expect(mocks.sent[0]).toMatchObject({
+        title: "t2",
+        body: "Turn finished",
+        silent: false,
+      });
+    } finally {
+      mocks.restore();
+    }
+  });
+
+  it("suppresses notifications for the selected thread or an open helper panel while focused", () => {
+    const mocks = withDomMocks({ focused: true });
+    try {
+      const store = new ClientStore(async () => ({}));
+      const parent = streamingThread("p1", "u1", "m1");
+      const helper = {
+        ...streamingThread("h1", "u2", "m2"),
+        parentThreadId: "p1",
+        isInPanel: true,
+      };
+      const closedHelper = {
+        ...streamingThread("h2", "u3", "m3"),
+        parentThreadId: "p1",
+        isInPanel: false,
+      };
+      const s = snap(1, [parent, helper, closedHelper]);
+      s.selectedThreadId = "p1";
+      store.hydrate(s, store.beginHydration());
+
+      store.apply({
+        type: "finish-signal",
+        threadId: "p1",
+        status: "done",
+        chime: false,
+        notify: "done",
+        silent: false,
+      });
+      store.apply({
+        type: "finish-signal",
+        threadId: "h1",
+        status: "done",
+        chime: false,
+        notify: "done",
+        silent: false,
+      });
+      expect(mocks.sent).toHaveLength(0);
+
+      // A closed helper dropped to the sidebar is no longer on screen, so it notifies.
+      store.apply({
+        type: "finish-signal",
+        threadId: "h2",
+        status: "done",
+        chime: false,
+        notify: "done",
+        silent: false,
+      });
+      expect(mocks.sent).toHaveLength(1);
+      expect(mocks.sent[0]?.title).toBe("h2");
+    } finally {
+      mocks.restore();
+    }
+  });
+
+  it("never notifies for a hydraHead thread and swallows requestPermission rejections", async () => {
+    const mocks = withDomMocks({
+      focused: false,
+      permission: "default",
+      requestRejects: true,
+    });
+    try {
+      const store = new ClientStore(async () => ({}));
+      const head = {
+        ...streamingThread("head1", "u1", "m1"),
+        hydraHead: {
+          leadId: "lead1",
+          headIndex: 0,
+          name: "Hank",
+          task: "work",
+          batchId: "b1",
+          status: "completed" as const,
+          spawnedAt: 1,
+        },
+      };
+      const plain = streamingThread("plain1", "u2", "m2");
+      const s = snap(1, [head, plain]);
+      s.selectedThreadId = "lead1";
+      store.hydrate(s, store.beginHydration());
+
+      store.apply({
+        type: "finish-signal",
+        threadId: "head1",
+        status: "done",
+        chime: false,
+        notify: "done",
+        silent: false,
+      });
+      expect(mocks.MockNotification.requestPermission).not.toHaveBeenCalled();
+
+      store.apply({
+        type: "finish-signal",
+        threadId: "plain1",
+        status: "done",
+        chime: false,
+        notify: "done",
+        silent: false,
+      });
+      expect(mocks.MockNotification.requestPermission).toHaveBeenCalledTimes(1);
+      await Promise.resolve();
+      expect(mocks.sent).toHaveLength(0);
+    } finally {
+      mocks.restore();
+    }
+  });
+});
+
+describe("P2-51 system-accent-changed event", () => {
+  it("updates snapshot.info.systemAccentColor and notifies subscribers after hydration", () => {
+    const store = new ClientStore(async () => ({}));
+    const s = snap(5);
+    s.info.systemAccentColor = "0078D4";
+    store.hydrate(s, store.beginHydration());
+
+    let notified = 0;
+    const unsub = store.subscribe(() => {
+      notified += 1;
+    });
+    store.onBridgeEvent({ type: "system-accent-changed", accentColor: "D13438" });
+    unsub();
+
+    expect(notified).toBe(1);
+    expect(store.snapshot!.info.systemAccentColor).toBe("D13438");
+  });
+
+  it("retains pre-hydration system-accent-changed updates when the snapshot lands", () => {
+    const store = new ClientStore(async () => ({}));
+    const gen = store.beginHydration();
+    store.onBridgeEvent({ type: "system-accent-changed", accentColor: "E81123" });
+
+    const s = snap(5);
+    s.info.systemAccentColor = "0078D4";
+    store.hydrate(s, gen);
+
+    expect(store.snapshot!.info.systemAccentColor).toBe("E81123");
   });
 });

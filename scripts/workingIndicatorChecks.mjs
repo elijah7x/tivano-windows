@@ -263,6 +263,7 @@ export async function runWorkingIndicatorChecks({
   await p3.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
   await p3.locator(".sidebar-foot button.row").click();
   await p3.waitForSelector(".modal", { timeout: 8000 });
+  await p3.locator('[data-settings-page="connections"]').click();
   await p3.locator(".mcp-section").scrollIntoViewIfNeeded();
   await p3.locator(".mcp-add").click();
   await p3.waitForSelector(".mcp-form");

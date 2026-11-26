@@ -14,6 +14,8 @@ import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
 import { Store } from "../src/main/store";
 import { finishChimeWav, toneWave } from "../src/shared/toneSynth";
+import { requestValidators } from "../src/shared/ipc";
+import type { ProviderAdapter } from "../src/main/provider";
 
 const roots: string[] = [];
 function tmp(): string {
@@ -57,7 +59,7 @@ const thread = (engine: Engine, id: string) =>
   engine.snapshot().threads.find((t) => t.id === id)!;
 
 describe("F28 finish-signal (frozen turnFinished)", () => {
-  it("a done turn chimes by default and stays silent about notifying", async () => {
+  it("a done turn chimes and notifies by default, silent because the chime sounded", async () => {
     const { engine, store, signals } = make();
     const th = engine.createThread(null, "chat");
     engine.selectThread(th.id);
@@ -68,19 +70,6 @@ describe("F28 finish-signal (frozen turnFinished)", () => {
       threadId: th.id,
       status: "done",
       chime: true,
-      notify: null, // notifyOnDone defaults off
-    });
-    store.close();
-  });
-
-  it("notifyOnDone wants a notification, silent because the chime sounded", async () => {
-    const { engine, store, signals } = make();
-    engine.setSettings({ notifyOnDone: true });
-    const th = engine.createThread(null, "chat");
-    engine.sendTurn(th.id, "work");
-    await waitFor(() => thread(engine, th.id).turn?.status === "done");
-    expect(signals.at(-1)).toMatchObject({
-      chime: true,
       notify: "done",
       silent: true,
     });
@@ -89,7 +78,7 @@ describe("F28 finish-signal (frozen turnFinished)", () => {
 
   it("chime off → no chime and the notification keeps its own sound", async () => {
     const { engine, store, signals } = make();
-    engine.setSettings({ notifyOnDone: true, chimeWhenFinished: false });
+    engine.setSettings({ chimeWhenFinished: false });
     const th = engine.createThread(null, "chat");
     engine.sendTurn(th.id, "work");
     await waitFor(() => thread(engine, th.id).turn?.status === "done");
@@ -103,7 +92,6 @@ describe("F28 finish-signal (frozen turnFinished)", () => {
 
   it("a user-stopped turn claims neither — the stop was witnessed", async () => {
     const { engine, store, signals } = make();
-    engine.setSettings({ notifyOnDone: true });
     const th = engine.createThread(null, "chat");
     engine.sendTurn(th.id, "[mock:approval] work");
     await waitFor(() => thread(engine, th.id).turn?.status === "waiting-approval");
@@ -119,7 +107,6 @@ describe("F28 finish-signal (frozen turnFinished)", () => {
 
   it("a queued send-now suppresses both — the thread is still working", async () => {
     const { engine, store, signals } = make();
-    engine.setSettings({ notifyOnDone: true });
     const th = engine.createThread(null, "chat");
     engine.sendTurn(th.id, "[mock:approval] first");
     await waitFor(() => thread(engine, th.id).turn?.status === "waiting-approval");
@@ -139,7 +126,6 @@ describe("F28 finish-signal (frozen turnFinished)", () => {
 
   it("a queued follow-up suppresses both — the turn continues", async () => {
     const { engine, store, signals } = make();
-    engine.setSettings({ notifyOnDone: true });
     const th = engine.createThread(null, "chat");
     engine.sendTurn(th.id, "first");
     engine.enqueueFollowUp(th.id, "queued");
@@ -152,7 +138,6 @@ describe("F28 finish-signal (frozen turnFinished)", () => {
 
   it("a failed turn still chimes and notifies as 'failed'", async () => {
     const { engine, store, signals } = make();
-    engine.setSettings({ notifyOnDone: true });
     const th = engine.createThread(null, "chat");
     engine.sendTurn(th.id, "[mock:fail] work");
     await waitFor(() => thread(engine, th.id).turn?.status === "error");
@@ -167,7 +152,6 @@ describe("F28 finish-signal (frozen turnFinished)", () => {
 
   it("a denied approval counts as user-stopped — no chime, no notify", async () => {
     const { engine, store, signals } = make();
-    engine.setSettings({ notifyOnDone: true });
     const th = engine.createThread(null, "chat");
     engine.sendTurn(th.id, "[mock:approval] work");
     await waitFor(() => thread(engine, th.id).turn?.status === "waiting-approval");
@@ -192,6 +176,56 @@ describe("F28 finish-signal (frozen turnFinished)", () => {
     store2.open();
     expect(store2.state.settings.chimeWhenFinished).toBe(false);
     store2.close();
+  });
+
+  it("an interrupted turn notifies as 'stopped' without chiming", async () => {
+    const root = tmp();
+    const store = new Store(root);
+    store.open();
+    const interrupting: ProviderAdapter = {
+      descriptor: { id: "int", label: "Int", mode: "mock", synthetic: true },
+      start(_ctx, cb) {
+        queueMicrotask(() => cb.onInterrupted?.());
+        return {
+          cancel: () => {},
+          resume: () => {},
+        };
+      },
+      dispose: () => Promise.resolve({ children: [], orphanedPending: 0 }),
+    };
+    const engine = new Engine(store, interrupting, root, "0.0.0-test");
+    const signals: FinishSignal[] = [];
+    engine.onEvent((e) => {
+      if (e.type === "finish-signal") signals.push(e as FinishSignal);
+    });
+    const th = engine.createThread(null, "chat");
+    engine.sendTurn(th.id, "work");
+    await waitFor(() => thread(engine, th.id).turn?.status === "interrupted");
+    expect(signals.at(-1)).toMatchObject({
+      threadId: th.id,
+      status: "interrupted",
+      chime: false,
+      notify: "stopped",
+      silent: false,
+    });
+    engine.shutdown();
+    store.close();
+  });
+
+  it("rejects notifyOnDone in settings:set and always notifies on done", async () => {
+    const { engine, store, signals } = make();
+    const patch: Record<string, unknown> = { notifyOnDone: false };
+    expect(() => requestValidators["settings:set"](patch)).toThrow();
+    engine.setSettings(patch as Parameters<Engine["setSettings"]>[0]);
+    const th = engine.createThread(null, "chat");
+    engine.sendTurn(th.id, "work");
+    await waitFor(() => thread(engine, th.id).turn?.status === "done");
+    expect(signals.at(-1)).toMatchObject({
+      threadId: th.id,
+      status: "done",
+      notify: "done",
+    });
+    store.close();
   });
 });
 
