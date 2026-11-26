@@ -573,8 +573,8 @@ describe.skipIf(!haveDirectGit)("autoWorktreeEligibility — real git probe", ()
 
 // #104 (audit follow-up on #98): the win32 eligibility path never ran in
 // any test — the POSIX-gated probe above skips this suite's host. A
-// simulated containment refusal plus an injected-runner run of the
-// probe's real git sequence cover it instead.
+// production-shaped containment refusal plus canned-runner probe runs
+// cover it instead.
 describe("autoWorktreeEligibility — win32 simulation", () => {
   const gitResult = (over: Partial<GitRunResult>): GitRunResult => ({
     code: 0,
@@ -586,8 +586,25 @@ describe("autoWorktreeEligibility — win32 simulation", () => {
     cancelled: false,
     ...over,
   });
+  const INSIDE_ARGS = ["rev-parse", "--is-inside-work-tree"] as const;
+  const ROOT_ARGS = ["rev-parse", "--path-format=absolute", "--show-toplevel"] as const;
+  const HEAD_ARGS = ["rev-parse", "--verify", "--quiet", "HEAD"] as const;
+  const GIT_DIR_ARGS = ["rev-parse", "--path-format=absolute", "--git-dir"] as const;
+  const PROBE_ARGS = [INSIDE_ARGS, ROOT_ARGS, HEAD_ARGS, GIT_DIR_ARGS] as const;
+  const sameArgs = (a: readonly string[], b: readonly string[]) =>
+    a.length === b.length && a.every((x, i) => x === b[i]);
+  const handle = (result: GitRunResult): GitRunHandle =>
+    ({
+      done: Promise.resolve(result),
+      cancel() {},
+      pid: 1,
+    }) as GitRunHandle;
 
-  function winRig(repoDir: string, runner?: GitRunner) {
+  function winRig(
+    repoDir: string,
+    runner?: GitRunner,
+    opts: { unavailableReason?: string } = {},
+  ) {
     const dataRoot = tmp("wtauto-wdata-");
     const store = new Store(dataRoot);
     store.open();
@@ -613,52 +630,106 @@ describe("autoWorktreeEligibility — win32 simulation", () => {
       mutable: () => true,
       emit: () => {},
       dataRoot,
+      gitExe: GIT,
       platform: "win32",
       ...(runner ? { runner } : {}),
+      ...(opts.unavailableReason !== undefined
+        ? { unavailableReason: opts.unavailableReason }
+        : {}),
     });
     services.push(git);
     return { git, projectId: project.id };
   }
 
-  it("win32 without the attested runner answers git-containment's unavailable", async () => {
-    const dir = tmp("wtauto-wplain-");
-    const r = winRig(dir);
-    // platform win32 + no deps.runner pins unavailableReason =
-    // git-containment — the probe refuses before any spawn.
-    expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("unavailable");
-  });
+  type ProbeOutcome = "eligible" | "nonGit" | "rootMismatch" | "noCommits" | "opInProgress";
 
-  it("win32 with an injected runner runs the probe's real git sequence", async () => {
-    const dir = tmp("wtauto-wrepo-");
-    // A real .git dir: operationInProgress checks its markers on disk.
-    mkdirSync(join(dir, ".git"));
+  function probeRunner(repoDir: string, outcome: ProbeOutcome) {
+    const gitDir = join(repoDir, ".git");
+    if (outcome !== "nonGit") mkdirSync(gitDir, { recursive: true });
+    if (outcome === "opInProgress")
+      writeFileSync(join(gitDir, "MERGE_HEAD"), "synthetic-head\n");
+    const mismatchRoot = outcome === "rootMismatch" ? tmp("wtauto-wroot-") : "";
     const calls: string[][] = [];
     const runner: GitRunner = {
       run: (args) => {
         calls.push([...args]);
-        const cmd = args.join(" ");
-        const result = cmd.includes("--is-inside-work-tree")
-          ? gitResult({ stdout: "true\n" })
-          : cmd.includes("--show-toplevel")
-            ? gitResult({ stdout: dir + "\n" })
-            : cmd.includes("--git-dir")
-              ? gitResult({ stdout: join(dir, ".git") + "\n" })
-              : gitResult({});
-        return {
-          done: Promise.resolve(result),
-          cancel() {},
-          pid: 1,
-        } as GitRunHandle;
+        let result: GitRunResult;
+        if (sameArgs(args, INSIDE_ARGS)) {
+          result =
+            outcome === "nonGit"
+              ? gitResult({ code: 128, stderr: "fatal: not a git repository\n" })
+              : gitResult({ stdout: "true\n" });
+        } else if (sameArgs(args, ROOT_ARGS)) {
+          result = gitResult({
+            stdout: (outcome === "rootMismatch" ? mismatchRoot : repoDir) + "\n",
+          });
+        } else if (sameArgs(args, HEAD_ARGS)) {
+          result =
+            outcome === "noCommits"
+              ? gitResult({ code: 128, stderr: "fatal: Needed a single revision\n" })
+              : gitResult({ stdout: "0123456789abcdef0123456789abcdef01234567\n" });
+        } else if (sameArgs(args, GIT_DIR_ARGS)) {
+          result = gitResult({ stdout: gitDir + "\n" });
+        } else {
+          throw new Error("unexpected probe argv: " + args.join(" "));
+        }
+        return handle(result);
       },
       active: () => new Set(),
     };
-    const r = winRig(dir, runner);
+    return { calls, runner };
+  }
+
+  async function expectProbeOutcome(
+    outcome: Exclude<ProbeOutcome, "eligible">,
+    want: "nonGit" | "unavailable",
+    argvCount: number,
+  ) {
+    const dir = tmp("wtauto-w" + outcome.toLowerCase() + "-");
+    const probe = probeRunner(dir, outcome);
+    const r = winRig(dir, probe.runner);
+    expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe(want);
+    expect(probe.calls).toEqual(PROBE_ARGS.slice(0, argvCount).map((args) => [...args]));
+  }
+
+  it("win32 production containment refuses before any spawn", async () => {
+    const dir = tmp("wtauto-wplain-");
+    let reached = false;
+    const runner: GitRunner = {
+      run: () => {
+        reached = true;
+        throw new Error("runner must never be reached");
+      },
+      active: () => new Set(),
+    };
+    // The production bootstrap shape: win32 carries the pinned
+    // git-containment reason, and any runner present is never reached.
+    const r = winRig(dir, runner, { unavailableReason: "git-containment" });
+    expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("unavailable");
+    expect(reached).toBe(false);
+  });
+
+  it("win32 with an injected runner runs the probe's exact git sequence in order", async () => {
+    const dir = tmp("wtauto-wrepo-");
+    const probe = probeRunner(dir, "eligible");
+    const r = winRig(dir, probe.runner);
     expect(await r.git.autoWorktreeEligibility(r.projectId)).toBe("eligible");
-    // The frozen probe order: inside-work-tree → toplevel → HEAD → git-dir.
-    const flat = calls.map((c) => c.join(" "));
-    expect(flat.some((c) => c.includes("--is-inside-work-tree"))).toBe(true);
-    expect(flat.some((c) => c.includes("--show-toplevel"))).toBe(true);
-    expect(flat.some((c) => c.includes("--verify") && c.includes("HEAD"))).toBe(true);
-    expect(flat.some((c) => c.includes("--git-dir"))).toBe(true);
+    expect(probe.calls).toEqual(PROBE_ARGS.map((args) => [...args]));
+  });
+
+  it("win32 canned runner covers the nonGit outcome", async () => {
+    await expectProbeOutcome("nonGit", "nonGit", 1);
+  });
+
+  it("win32 canned runner covers the root-mismatch outcome", async () => {
+    await expectProbeOutcome("rootMismatch", "unavailable", 2);
+  });
+
+  it("win32 canned runner covers the no-commits outcome", async () => {
+    await expectProbeOutcome("noCommits", "unavailable", 3);
+  });
+
+  it("win32 canned runner covers the operation-in-progress outcome", async () => {
+    await expectProbeOutcome("opInProgress", "unavailable", 4);
   });
 });
