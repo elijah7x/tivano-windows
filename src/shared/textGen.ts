@@ -1,8 +1,211 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-29.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-26.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-// F31 text generation — frozen `TextCleanup.singleLine` + `TextGeneration`
-// title validation ported verbatim. A generated reply only becomes a thread
+// F31 / P2-18 text generation — frozen `TextCleanup.singleLine` +
+// `TextGeneration` prompts, title validation, and Codex background-model
+// resolution ported verbatim. A generated reply only becomes a thread
 // title when it reads like one; chatty model output is rejected.
+
+import type { CodexModelOption, Settings } from "./types";
+
+/**
+ * Maintainer decision (P2-18): Automatic Codex text generation uses the
+ * cheapest mini-tier model in the Codex catalog at low effort.
+ * Single named constant so changing the preferred mini model is a one-line edit.
+ */
+export const CODEX_AUTOMATIC_TEXT_MODEL = "gpt-5.1-codex-mini";
+export const CODEX_AUTOMATIC_TEXT_EFFORT = "low";
+
+const MINI_TIER_RE = /\bmini\b/i;
+
+function effortRank(effort: string): number | undefined {
+  return (
+    {
+      none: 0,
+      minimal: 1,
+      low: 2,
+      medium: 3,
+      high: 4,
+      xhigh: 5,
+      "extra-high": 5,
+      extra_high: 5,
+      "extra high": 5,
+      max: 6,
+      ultra: 6,
+    } as Record<string, number>
+  )[effort.toLowerCase()];
+}
+
+export function orderedTextGenEfforts(values: readonly string[]): string[] {
+  const ranked = values.map((v, i) => ({ i, v, r: effortRank(v) }));
+  if (ranked.filter((x) => x.r !== undefined).length <= 1) return [...values];
+  return ranked
+    .sort((a, b) =>
+      a.r !== undefined && b.r !== undefined && a.r !== b.r ? a.r - b.r : a.i - b.i,
+    )
+    .map((x) => x.v);
+}
+
+export function textGenEffortTitle(effort: string): string {
+  if (effort === "xhigh" || effort === "extra-high") return "Extra High";
+  if (effort === "") return "Default";
+  return effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+/**
+ * Locate the Automatic mini-tier Codex model in a catalog: prefers the
+ * maintainer-named constant first, then any mini-tier catalog entry.
+ */
+export function findAutomaticCodexTextModel(
+  models: readonly CodexModelOption[],
+): CodexModelOption | null {
+  const target = CODEX_AUTOMATIC_TEXT_MODEL.toLowerCase();
+  const exact = models.find((m) => m.id.toLowerCase() === target);
+  if (exact) return exact;
+  return (
+    models.find((m) => MINI_TIER_RE.test(m.id) || MINI_TIER_RE.test(m.name)) ??
+    null
+  );
+}
+
+/** Frozen AppModel.textEngine lowEffort helper: "low" when supported, else defaultEffort. */
+export function lowCodexEffort(model: CodexModelOption): string | undefined {
+  if (model.efforts.includes(CODEX_AUTOMATIC_TEXT_EFFORT)) {
+    return CODEX_AUTOMATIC_TEXT_EFFORT;
+  }
+  if (model.efforts.length === 0) return undefined;
+  return model.defaultEffort;
+}
+
+export type TextGenerationPlan =
+  | { enabled: false }
+  | { enabled: true; model?: string | undefined; effort?: string | undefined };
+
+/**
+ * Resolve which Codex model and reasoning effort should execute a background
+ * text-generation call (titles, commit messages, predictions).
+ * Never falls back to the Codex default model unless `allowsDefaultModel` is
+ * true AND no mini-tier model exists in the catalog.
+ */
+export function resolveTextGenerationPlan(
+  settings: {
+    textGeneration?: Settings["textGeneration"] | undefined;
+    textGenerationModelID?: string | undefined;
+    textGenerationEffort?: string | undefined;
+  },
+  models: readonly CodexModelOption[] | null,
+  opts?: { allowsDefaultModel?: boolean | undefined },
+): TextGenerationPlan {
+  const choice = settings.textGeneration ?? "automatic";
+  if (choice === "off") return { enabled: false };
+
+  const resolveAutomatic = (): TextGenerationPlan => {
+    if (models === null) return { enabled: true };
+    const mini = findAutomaticCodexTextModel(models);
+    if (mini) {
+      const effort = lowCodexEffort(mini);
+      return { enabled: true, model: mini.id, ...(effort ? { effort } : {}) };
+    }
+    if (opts?.allowsDefaultModel !== false) {
+      const fallback = models.find((m) => m.isDefault) ?? models[0];
+      if (fallback) {
+        const effort = lowCodexEffort(fallback);
+        return {
+          enabled: true,
+          model: fallback.id,
+          ...(effort ? { effort } : {}),
+        };
+      }
+    }
+    return { enabled: false };
+  };
+
+  if (choice === "codex") {
+    const modelID = settings.textGenerationModelID?.trim();
+    if (!modelID) return resolveAutomatic();
+    if (models === null) {
+      return {
+        enabled: true,
+        model: modelID,
+        ...(settings.textGenerationEffort ? { effort: settings.textGenerationEffort } : {}),
+      };
+    }
+    const option = models.find((m) => m.id === modelID);
+    if (!option) return resolveAutomatic();
+    const chosenEffort =
+      settings.textGenerationEffort &&
+      option.efforts.includes(settings.textGenerationEffort)
+        ? settings.textGenerationEffort
+        : undefined;
+    return {
+      enabled: true,
+      model: option.id,
+      ...(chosenEffort ? { effort: chosenEffort } : {}),
+    };
+  }
+
+  return resolveAutomatic();
+}
+
+export function buildThreadTitlePrompt(message: string): string {
+  return [
+    "Write a title for this coding task so the user can recognize it weeks later.",
+    "Rules: 3 to 7 words, under 40 characters, sentence case, no quotes, no trailing punctuation.",
+    "Name the subject and the outcome. Do not copy the request word for word.",
+    "The request may be a word or two, or come with attachments; even then, reply with",
+    "your single best title and nothing else. Never ask a question, never explain,",
+    "never mention the request or the word title.",
+    "Reply with the title only.",
+    "",
+    "Request:",
+    message.slice(0, 4_000),
+  ].join("\n");
+}
+
+export function buildRefreshedTitlePrompt(current: string, context: string): string {
+  return [
+    "Decide whether the current title still describes this coding conversation.",
+    "If it still summarizes the work the conversation is doing now, reply with KEEP only.",
+    "If the work has substantially changed direction, write a new title.",
+    "Rules for a new title: 3 to 7 words, under 40 characters, sentence case, no quotes, no trailing punctuation.",
+    "Name the subject and the outcome. Do not copy the request word for word.",
+    "Never ask a question, never explain, never mention the request or the word title.",
+    "Reply with KEEP or the new title only.",
+    "",
+    "Current title:",
+    current,
+    "",
+    "Conversation:",
+    context.slice(0, 3_000),
+  ].join("\n");
+}
+
+export function extractRefreshedTitle(currentTitle: string, text: string): string | null {
+  const marker = text.trim().replace(/^["']+|["']+$/g, "");
+  if (marker.toUpperCase() === "KEEP") return null;
+  const title = extractTitle(text);
+  if (!title || title === currentTitle) return null;
+  return title;
+}
+
+export function buildCommitMessagePrompt(
+  summary: string,
+  patch: string,
+  instructions: string,
+): string {
+  const extra = instructions ? `\nFollow these instructions too: ${instructions}\n` : "";
+  return [
+    "Write a git commit message for the changes below.",
+    "Rules: an imperative subject line of at most 72 characters with no trailing period. Optionally add a blank line and a few short bullet points. Reply with the message only, without code fences.",
+    extra,
+    "Changed files:",
+    summary.slice(0, 6_000),
+    "",
+    "Patch:",
+    patch.slice(0, 40_000),
+  ]
+    .filter((line, i) => !(i === 2 && extra === ""))
+    .join("\n");
+}
 
 /** Frozen TextCleanup.singleLine: first non-empty line, capped with "…". */
 export function singleLine(text: string, limit = 120): string {

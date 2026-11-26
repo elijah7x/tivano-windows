@@ -143,6 +143,8 @@ export const LANGUAGE_LABELS: Record<LanguageId, string> = {
   fr: "Français",
 };
 
+export type TextGenerationChoice = "automatic" | "codex" | "off";
+
 export interface Settings {
   theme: ThemeId;
   /** P2-51: light / dark / match-system appearance mode (absent = "system"). */
@@ -234,13 +236,15 @@ export interface Settings {
    */
   taskSleepMode?: TaskSleepMode;
   /**
-   * F31: provider-generated thread titles. "automatic" uses the thread's
-   * own provider when the adapter supports it; "off" keeps the
-   * prompt-derived fallback. Claude/Codex-specific picks are deferred —
-   * they need a signed-in provider CLI, which this build does not have.
-   * Absent on old stores = automatic (frozen default).
+   * P2-18: background text generation (thread titles, commit messages,
+   * composer predictions). "automatic" uses the cheapest mini-tier Codex
+   * model at low effort; "codex" uses the chosen textGenerationModelID /
+   * textGenerationEffort; "off" disables all background text generation.
+   * Absent on old stores = "automatic".
    */
-  textGeneration?: "automatic" | "off";
+  textGeneration?: TextGenerationChoice;
+  textGenerationModelID?: string;
+  textGenerationEffort?: string;
   /**
    * v2.2.34 Settings › Text generation › Thread titles. "once" names a
    * chat from its first turn and leaves it (today's behavior); "updated"

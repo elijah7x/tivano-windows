@@ -38,6 +38,7 @@ import { RemoteMcpSection } from "./RemoteMcpSection";
 import { ForgeSection } from "./ForgeSection";
 import { WallpaperSection } from "./WallpaperSection";
 import { ModelListSettings } from "./ModelListSettings";
+import { TextGenerationPicker } from "./TextGenerationPicker";
 import { ArchiveSection } from "./ArchiveSection";
 import { VersionSection } from "./WhatsNewViews";
 import {
@@ -625,31 +626,7 @@ export function SettingsModal(props: {
             </p>
 
             <h3>{t("Text generation")}</h3>
-            <div
-              className="choice-row"
-              role="radiogroup"
-              aria-label={t("Thread titles")}
-            >
-              {(
-                [
-                  ["automatic", "Automatic"],
-                  ["off", "Off"],
-                ] as const
-              ).map(([mode, label]) => (
-                <button
-                  key={mode}
-                  role="radio"
-                  aria-checked={(settings.textGeneration ?? "automatic") === mode}
-                  className={`choice${(settings.textGeneration ?? "automatic") === mode ? " active" : ""}`}
-                  onClick={() => tryCall("settings:set", { textGeneration: mode })}
-                >
-                  {t(label)}
-                </button>
-              ))}
-            </div>
-            <p className="codex-note">
-              {t("Automatic uses the thread's own provider to write a title for a new thread and a draft for a commit message. Provider-specific picks are not supported yet.")}
-            </p>
+            <TextGenerationPicker settings={settings} providerMode={info.mode} />
             <label className="wt-field settings-field-gap">
               <span>{t("Thread titles")}</span>
               <div className="choices" role="radiogroup">

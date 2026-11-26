@@ -79,6 +79,7 @@ import type {
   ProviderAdapter,
   ProviderTurnHandle,
   ReasoningActivity,
+  TextGenerationOptions,
   ToolActivity,
   WorkspaceGrant,
 } from "./provider";
@@ -113,6 +114,7 @@ import type {
   RuntimeMode,
   Snapshot,
   SubagentMode,
+  TextGenerationChoice,
   TodoStep,
   Turn,
   WorktreeResult,
@@ -2987,7 +2989,9 @@ export class Engine {
     showsSkylight?: boolean | undefined;
     cliInstallationTarget?: string | null | undefined;
     taskSleepMode?: "off" | "system" | "display" | undefined;
-    textGeneration?: "automatic" | "off" | undefined;
+    textGeneration?: TextGenerationChoice | undefined;
+    textGenerationModelID?: string | null | undefined;
+    textGenerationEffort?: string | null | undefined;
     threadTitles?: "once" | "updated" | undefined;
     autoShelveDays?: number | undefined;
     shelvedGroupName?: string | null | undefined;
@@ -3093,6 +3097,14 @@ export class Engine {
       }
       if (patch.taskSleepMode !== undefined) d.settings.taskSleepMode = patch.taskSleepMode;
       if (patch.textGeneration !== undefined) d.settings.textGeneration = patch.textGeneration;
+      if (patch.textGenerationModelID !== undefined) {
+        if (patch.textGenerationModelID === null) delete d.settings.textGenerationModelID;
+        else d.settings.textGenerationModelID = patch.textGenerationModelID;
+      }
+      if (patch.textGenerationEffort !== undefined) {
+        if (patch.textGenerationEffort === null) delete d.settings.textGenerationEffort;
+        else d.settings.textGenerationEffort = patch.textGenerationEffort;
+      }
       if (patch.threadTitles !== undefined) d.settings.threadTitles = patch.threadTitles;
       if (patch.autoShelveDays !== undefined)
         // Frozen picker only offers 0/3/7/14 — a stray value degrades
@@ -4658,17 +4670,40 @@ export class Engine {
    *  The off setting and a missing adapter capability report the same
    *  honest unavailable; output is sanitized like frozen (fences stripped,
    *  empty rejected) and returned as a DRAFT — never auto-committed. */
-  async commitMessageFor(summary: string, patch: string): Promise<GitCommitMessageResult> {
-    if (this.store.state.settings.textGeneration === "off")
-      return { kind: "unavailable", reason: "text-generation-off" };
+  private textGenOptions(workspaceDir?: string): TextGenerationOptions | null {
+    const s = this.store.state.settings;
+    const choice = s.textGeneration ?? "automatic";
+    if (choice === "off") return null;
+    if (choice === "codex") {
+      return {
+        mode: "codex",
+        ...(s.textGenerationModelID ? { model: s.textGenerationModelID } : {}),
+        ...(s.textGenerationEffort ? { effort: s.textGenerationEffort } : {}),
+        allowsDefaultModel: true,
+        ...(workspaceDir ? { workspaceDir } : {}),
+      };
+    }
+    return {
+      mode: "automatic",
+      allowsDefaultModel: true,
+      ...(workspaceDir ? { workspaceDir } : {}),
+    };
+  }
+
+  async commitMessageFor(
+    summary: string,
+    patch: string,
+    projectId?: string,
+  ): Promise<GitCommitMessageResult> {
+    const workspaceDir = projectId
+      ? this.store.state.projects.find((p) => p.id === projectId)?.directory
+      : undefined;
+    const opts = this.textGenOptions(workspaceDir);
+    if (!opts) return { kind: "unavailable", reason: "text-generation-off" };
     const gen = this.provider.generateCommitMessage?.bind(this.provider);
     if (!gen) return { kind: "unavailable", reason: "no-engine" };
     try {
-      const raw = await gen(
-        summary,
-        patch,
-        "",
-      );
+      const raw = await gen(summary, patch, "", opts);
       const message = (raw ?? "").replace(/```/g, "").trim();
       if (!message) return { kind: "unavailable", reason: "generation-empty" };
       return { kind: "ok", message };
@@ -4678,11 +4713,12 @@ export class Engine {
   }
 
   private maybeGenerateTitle(threadId: string, prompt: string): void {
-    if (this.store.state.settings.textGeneration === "off") return;
+    const opts = this.textGenOptions();
+    if (!opts) return;
     const gen = this.provider.generateTitle?.bind(this.provider);
     if (!gen) return;
     const atSend = this.store.state.threads.find((t) => t.id === threadId)?.title;
-    void gen(prompt)
+    void gen(prompt, opts)
       .then((raw) => {
         const title = raw ? extractTitle(raw) : null;
         if (!title) return;
@@ -4707,6 +4743,8 @@ export class Engine {
    */
   private maybeReviewTitle(thread: ChatThread): void {
     if (this.store.state.settings.threadTitles !== "updated") return;
+    const opts = this.textGenOptions();
+    if (!opts) return;
     if (thread.titleUserSet) return;
     const gen = this.provider.generateTitle?.bind(this.provider);
     if (!gen) return;
@@ -4720,7 +4758,7 @@ export class Engine {
       .join("\n---\n");
     if (!context.trim()) return;
     const atReview = thread.title;
-    void gen(context)
+    void gen(context, { ...opts, refresh: { currentTitle: atReview, context } })
       .then((raw) => {
         const title = raw ? extractTitle(raw) : null;
         if (!title || title === atReview) return;

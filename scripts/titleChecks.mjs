@@ -81,16 +81,25 @@ export async function runTitleChecks({
   await page.locator(".sidebar-foot button.row").last().click();
   await page.waitForSelector(".modal", { timeout: 10000 });
   await page.locator('[data-settings-page="conversation"]').click();
-  const group = page.locator('.modal [role="radiogroup"][aria-label="对话标题"]');
-  await group.waitFor({ timeout: 10000 });
+  const modelBtn = page.locator('[data-testid="text-generation-model-button"]');
+  await modelBtn.waitFor({ timeout: 10000 });
   const heads = await page.locator(".modal h3").allInnerTexts();
-  const groupText = await group.innerText();
+  const btnText = await modelBtn.innerText();
+  await modelBtn.click();
+  const pop = page.locator('[data-testid="text-generation-model-popover"]');
+  await pop.waitFor({ timeout: 10000 });
+  const popText = await pop.innerText();
   verify(
-    "TITLE-05 zh text-generation section renders",
-    heads.includes("文本生成") && groupText.includes("自动") && groupText.includes("关闭"),
-    { heads, groupText },
+    "TITLE-05 zh text-generation Model picker renders",
+    heads.includes("文本生成") &&
+      btnText.includes("自动") &&
+      popText.includes("自动") &&
+      popText.includes("关闭") &&
+      popText.includes("指定模型"),
+    { heads, btnText, popText },
   );
   await page.screenshot({ path: join(outDir, "91-title-gen-zh.png") });
+  await page.locator('[data-testid="tg-choice-automatic"]').click();
   await page.locator(".modal-actions .primary").click();
   let c = await boundedClose(app, proc);
   ledger.exited = c.exited;

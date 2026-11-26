@@ -1,10 +1,11 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-31.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-26.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F13 commit-flow e2e (bounded): REAL synthetic repos bound as user
 // grants → the Git panel's actions menu → CommitDialog → real
 // `add -A`/`commit -F` → optional `push -u origin HEAD` against a LOCAL
 // bare remote (no network, no credentials). Generation is proven through
-// the mock adapter; the Codex fixture honestly reports no engine.
+// both the Codex fixture (Automatic) and the mock adapter; setting
+// textGeneration to "off" honestly disables generation.
 // Pull-request items stay disabled — forge integration is not this slice.
 
 import { execFileSync } from "node:child_process";
@@ -13,15 +14,15 @@ import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const GIT = "/usr/bin/git";
+const GIT = process.platform === "win32" ? "git" : "/usr/bin/git";
 function git(cwd, args) {
   return execFileSync(GIT, args, {
     cwd,
     env: {
-      PATH: "/usr/bin:/bin",
+      ...(process.platform === "win32" ? process.env : { PATH: "/usr/bin:/bin" }),
       HOME: cwd,
       GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
     },
     encoding: "utf8",
   });
@@ -143,8 +144,8 @@ export async function runGitCommitChecks({
     (await items.filter({ hasText: "repository" }).count()) === 0,
   );
 
-  // Commit… opens the sheet; Codex fixture has no text engine → the
-  // generate control is disabled with the frozen hint, never faked.
+  // Commit… opens the sheet; with textGeneration=automatic (default), the
+  // Codex fixture drafts a commit message through the real one-shot path.
   await items.filter({ hasText: "Commit" }).first().click();
   await page.locator(".commit-dialog").waitFor({ timeout: 10000 });
   await page.waitForFunction(
@@ -152,8 +153,45 @@ export async function runGitCommitChecks({
     null,
     { timeout: 15000 },
   );
+  await page.waitForFunction(
+    () => (document.querySelector(".commit-message")?.value ?? "").length > 0,
+    null,
+    { timeout: 15000 },
+  );
+  const codexDraft = await page.locator(".commit-message").inputValue();
+  verify(
+    "Codex fixture drafted a commit message in Automatic mode",
+    codexDraft.includes("[m=fixture-model e=low]") &&
+      codexDraft.includes("sb=readOnly"),
+    codexDraft,
+  );
+  // Empty message keeps Commit disabled (frozen rule).
+  await page.locator(".commit-message").fill("");
+  verify(
+    "Commit disabled while the message is empty",
+    await page.locator(".commit-dialog .primary").isDisabled(),
+  );
+  await page.locator(".commit-dialog button", { hasText: "Cancel" }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".commit-dialog") === null,
+    null,
+    { timeout: 10000 },
+  );
+
+  // With textGeneration=off, the generate control disables honestly with the
+  // hint pointing at Settings and leaves the message box empty.
+  await page.evaluate(() => window.tivano.invoke("settings:set", { textGeneration: "off" }));
+  await page.locator(".git-menu-btn").click();
+  await page.locator(".git-menu").waitFor({ timeout: 5000 });
+  await page.locator('.git-menu [role="menuitem"]', { hasText: "Commit" }).click();
+  await page.locator(".commit-dialog").waitFor({ timeout: 10000 });
+  await page.waitForFunction(
+    () => (document.querySelector(".commit-summary")?.textContent ?? "").includes("a.txt"),
+    null,
+    { timeout: 15000 },
+  );
   // The button is ALSO disabled while a generation request is in flight —
-  // wait for the settled "no engine" state, told apart by its hint title.
+  // wait for the settled "off" state, told apart by its hint title.
   await page.waitForFunction(
     () =>
       document.querySelector(".commit-generate")?.disabled === true &&
@@ -164,7 +202,7 @@ export async function runGitCommitChecks({
     { timeout: 15000 },
   );
   verify(
-    "generation unavailable under Codex fixture — disabled honestly",
+    "generation unavailable when textGeneration is off — disabled honestly",
     await page.locator(".commit-generate").isDisabled(),
   );
   const genTitle = await page.locator(".commit-generate").getAttribute("title");
@@ -176,8 +214,8 @@ export async function runGitCommitChecks({
 
   // Empty message keeps Commit disabled (frozen rule).
   verify(
-    "Commit disabled while the message is empty",
-    await page.locator('.commit-dialog .primary').isDisabled(),
+    "Commit disabled while the message is still empty",
+    await page.locator(".commit-dialog .primary").isDisabled(),
   );
   await page.locator(".commit-message").fill("e2e: first commit");
   verify(
@@ -263,6 +301,7 @@ export async function runGitCommitChecks({
     pushErr,
   );
   await page.screenshot({ path: join(outDir, "97-commit-flow-en.png") });
+  await page.evaluate(() => window.tivano.invoke("settings:set", { textGeneration: "automatic" }));
 
   const aClose = await boundedClose(app, proc);
   ledger.exited = aClose.exited;
