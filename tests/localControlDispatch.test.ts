@@ -266,4 +266,44 @@ describe("local control dispatch (F34)", () => {
       s.close();
     }
   });
+
+  it("settingsSet textGeneration allows codex only in codex mode and rejects claude", async () => {
+    const { engine, svc } = rig();
+    engine.setSettings({ alphaEnabled: true, externalControlEnabled: true });
+    await expect(
+      call(svc, "settingsSet", { ticket: ticket(svc), key: "textGeneration", textGeneration: "codex" }),
+    ).rejects.toMatchObject({ code: "unsupported" });
+    await expect(
+      call(svc, "settingsSet", { ticket: ticket(svc), key: "textGeneration", textGeneration: "claude" }),
+    ).rejects.toMatchObject({ code: "unsupported" });
+
+    const root = mkdtempSync(join(tmpdir(), "tivano-lcd-codex-"));
+    dirs.push(root);
+    const store = new Store(root);
+    store.open();
+    const codexMock = new MockProvider({ tickMs: 1 });
+    Object.defineProperty(codexMock, "descriptor", {
+      value: { id: "codex", label: "Codex (offline fixture)", mode: "codex", synthetic: true },
+    });
+    const codexEngine = new Engine(store, codexMock, root, "t");
+    codexEngine.setSettings({ alphaEnabled: true, externalControlEnabled: true });
+    const codexSvc = new LocalControlService(codexEngine, root, "dev");
+    services.push(codexSvc);
+
+    const setRes = (await call(codexSvc, "settingsSet", {
+      ticket: ticket(codexSvc),
+      key: "textGeneration",
+      textGeneration: "codex",
+    })) as { operation: { state: string } };
+    expect(setRes.operation.state).toBe("ended");
+    expect(codexEngine.snapshot().settings.textGeneration).toBe("codex");
+    const got = (await call(codexSvc, "settingsGet", {})) as {
+      settings: Array<{ key: string; preference: { textGeneration?: string }; effective: { textGeneration?: string } }>;
+    };
+    const tg = got.settings.find((x) => x.key === "textGeneration");
+    expect(tg?.preference.textGeneration).toBe("codex");
+    expect(tg?.effective.textGeneration).toBe("codex");
+    codexSvc.dispose();
+    store.close();
+  });
 });
