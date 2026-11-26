@@ -1,7 +1,8 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-30.
-// F33 local control — real Unix-socket round trips: the frozen double
-// gate, hello/welcome handshake, read queries, the write trio with the
-// ticket ledger (dedupe/conflict/stale), and refusal surface.
+// F33 / P2-23 local control — real Unix-socket round trips: the
+// externalControlEnabled gate (migrated out of Alpha), hello/welcome
+// handshake, read queries, the write trio with the ticket ledger
+// (dedupe/conflict/stale), and refusal surface.
 
 import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

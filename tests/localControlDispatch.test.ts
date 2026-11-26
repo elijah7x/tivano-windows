@@ -4,7 +4,7 @@
 // sandboxes that deny filesystem/named-pipe listeners (the socket layer
 // itself is covered by tests/localControl.test.ts where binding works).
 
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -205,20 +205,17 @@ describe("local control dispatch (F34)", () => {
   });
 
   it("P2-23: gates local control on externalControlEnabled alone and migrates older stores", async () => {
-    // Default and alpha-only settings stay disabled/closed without Alpha gating.
+    // Socket-free dispatch/gate checks: alphaEnabled alone stays disabled,
+    // while externalControlEnabled alone enables info/dispatch without Alpha.
     const { engine, store, svc } = rig();
     await expect(svc.handleExternal("info", {}, "local")).rejects.toMatchObject({ code: "disabled" });
     engine.setSettings({ alphaEnabled: true });
-    svc.refreshListening();
-    expect(svc.listening).toBe(false);
     await expect(svc.handleExternal("info", {}, "local")).rejects.toMatchObject({ code: "disabled" });
 
     engine.setSettings({ alphaEnabled: false, externalControlEnabled: true });
-    svc.refreshListening();
-    expect(svc.listening).toBe(true);
-    const infoRes = await svc.handleExternal("info", {}, "local");
-    expect((infoRes.info as { version: number }).version).toBe(1);
-    expect("alphaEnabled" in (infoRes.info as Record<string, unknown>)).toBe(false);
+    const infoRes = (await call(svc, "info", {})) as { info: Record<string, unknown> };
+    expect(infoRes.info.version).toBe(1);
+    expect("alphaEnabled" in infoRes.info).toBe(false);
     svc.dispose();
     store.close();
 
@@ -257,13 +254,13 @@ describe("local control dispatch (F34)", () => {
       const e = new Engine(s, new MockProvider({ tickMs: 1 }), root, "t");
       const lc = new LocalControlService(e, root, "dev");
       services.push(lc);
-      lc.refreshListening();
       expect(s.state.settings.externalControlEnabled, c.name).toBe(c.expected);
       expect(s.state.settings.controlLeftAlpha, c.name).toBe(true);
-      expect(lc.listening, c.name).toBe(c.expected);
       if (!c.expected) {
-        expect(existsSync(join(root, "control", "control.sock")), c.name).toBe(false);
         await expect(lc.handleExternal("info", {}, "local")).rejects.toMatchObject({ code: "disabled" });
+      } else {
+        const res = (await call(lc, "info", {})) as { info: { version: number } };
+        expect(res.info.version, c.name).toBe(1);
       }
       lc.dispose();
       s.close();
