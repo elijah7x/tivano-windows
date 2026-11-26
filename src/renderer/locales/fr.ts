@@ -903,7 +903,6 @@ export const fr: Record<string, string> = {
   "Heads run on this chat's model and effort.": "Les sous-agents utilisent le modèle et l’effort de cette conversation.",
   "No heads out yet": "Aucun sous-agent lancé",
   "Show the panel": "Afficher le panneau",
-
   "Show the sub-agent panel": "Afficher le panneau du sous-agent",
   "Hide the panel": "Masquer le panneau",
   "1 head working": "1 sous-agent au travail",

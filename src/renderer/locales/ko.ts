@@ -903,7 +903,6 @@ export const ko: Record<string, string> = {
   "Heads run on this chat's model and effort.": "하위 에이전트는 이 채팅의 모델과 강도로 실행됩니다.",
   "No heads out yet": "아직 파견된 하위 에이전트가 없습니다",
   "Show the panel": "패널 표시",
-
   "Show the sub-agent panel": "하위 에이전트 패널 표시",
   "Hide the panel": "패널 숨기기",
   "1 head working": "하위 에이전트 1개 작업 중",

@@ -903,7 +903,6 @@ export const ja: Record<string, string> = {
   "Heads run on this chat's model and effort.": "サブエージェントはこのチャットのモデルと推論レベルで実行されます。",
   "No heads out yet": "稼働中のサブエージェントはまだいません",
   "Show the panel": "パネルを表示",
-
   "Show the sub-agent panel": "サブエージェントパネルを表示",
   "Hide the panel": "パネルを隠す",
   "1 head working": "1 件のサブエージェントが作業中",
