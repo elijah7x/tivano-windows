@@ -1947,8 +1947,10 @@ select.runtime-mode:disabled {
 .model-pop-cols {
   display: grid;
   grid-template-columns: 124px 1fr;
+  grid-template-rows: minmax(0, 1fr);
   gap: 6px;
   max-height: 280px;
+  min-height: 0;
 }
 .model-pop-cols.two-col {
   grid-template-columns: 220px 1fr;
@@ -1962,6 +1964,8 @@ select.runtime-mode:disabled {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-height: 0;
+  max-height: 280px;
   overflow-y: auto;
   border-right: 1px solid var(--line, var(--border));
   padding-right: 6px;
@@ -1972,6 +1976,7 @@ select.runtime-mode:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
+  flex-shrink: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -1991,6 +1996,8 @@ select.runtime-mode:disabled {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-height: 0;
+  max-height: 300px;
   overflow-y: auto;
   border-right: 1px solid var(--line, var(--border));
   padding-right: 6px;
@@ -1999,9 +2006,15 @@ select.runtime-mode:disabled {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-height: 0;
+  max-height: 280px;
   overflow-y: auto;
 }
-.model-pop-sec { display: flex; flex-direction: column; gap: 1px; margin-bottom: 4px; }
+.model-pop-cols.two-col .model-pop-list,
+.model-pop-cols.single-col .model-pop-list {
+  max-height: 300px;
+}
+.model-pop-sec { display: flex; flex-direction: column; gap: 1px; margin-bottom: 4px; flex-shrink: 0; }
 .model-pop-head {
   padding: 3px 8px 2px;
   color: var(--text-2);
@@ -2012,6 +2025,7 @@ select.runtime-mode:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;

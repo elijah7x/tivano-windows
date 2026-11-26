@@ -345,6 +345,8 @@ export interface Settings {
   hydraPairs?: HydraPair[];
   /** The pair the model picker last put a chat on. */
   lastHydraPairId?: string;
+  /** P2-03: the pair the picker last selected locally (kept for the Recent row). */
+  lastNewChatPairId?: string;
   /** P2-03: the model the picker last selected locally. */
   lastNewChatModel?: ModelPin;
   /** P1-36: the sub-agent mode new chats seed from (frozen picker

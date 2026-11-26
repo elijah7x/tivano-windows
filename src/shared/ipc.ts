@@ -544,6 +544,7 @@ export const requestValidators = {
     hydraReviewFirst: vOptional(vNullable(vHydraReviewChoice)),
     hydraReviewSecond: vOptional(vNullable(vHydraReviewChoice)),
     lastHydraPairId: vOptional(vNullable(vNonEmptyString(120))),
+    lastNewChatPairId: vOptional(vNullable(vNonEmptyString(120))),
     lastNewChatModel: vOptional(vNullable(vModelPin)),
     // F17: frozen modelList / modelSections / collapsedModelSections /
     // modelPreferences — whole-array writes (layout ops are computed

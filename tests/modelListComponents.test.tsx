@@ -337,7 +337,7 @@ describe("ModelPicker (P2-03 two-column pairs & models with recents)", () => {
       modelSections: [],
       hydraEnabled: true,
       hydraPairs: [PAIR_1, PAIR_2],
-      lastHydraPairId: "pair-2",
+      lastNewChatPairId: "pair-2",
       lastNewChatModel: { provider: "codex", modelID: "gpt-b1" },
     });
     const html = renderLang(

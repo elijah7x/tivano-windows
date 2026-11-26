@@ -636,7 +636,7 @@ describe("P2-56 chip drag-reorder and rail drops", () => {
     ).toBeUndefined();
   });
 
-  it("P2-03 persists lastNewChatModel and applies/clears hydraPairId via setThreadModel", () => {
+  it("P2-03 persists recents, applies/clears hydraPairId via setThreadModel, and enforces adaptive lock", () => {
     const root = freshRoot();
     const { store, engine } = makeEngine(root);
     const t = engine.createThread(null, "picker-thread");
@@ -646,15 +646,57 @@ describe("P2-56 chip drag-reorder and rail drops", () => {
     engine.setThreadModel(t.id, "gpt-5.4", "high", null, "pair-1");
     expect(engine.snapshot().threads.find((x) => x.id === t.id)?.hydraPairId).toBe("pair-1");
     expect(engine.snapshot().threads.find((x) => x.id === t.id)?.subagentMode).toBe("preset");
+    expect(engine.snapshot().settings.lastHydraPairId).toBe("pair-1");
+    expect(engine.snapshot().settings.lastNewChatPairId).toBe("pair-1");
     expect(engine.snapshot().settings.lastNewChatModel).toEqual({
       provider: "codex",
       modelID: "gpt-5.4",
     });
 
-    // Leaving pair via setThreadModel(..., null) clears hydraPairId and preset mode.
+    // Leaving pair via setThreadModel(..., null) clears hydraPairId, preset mode,
+    // and lastHydraPairId (so new chats start on no pair), while keeping lastNewChatPairId
+    // for the picker's Recent row.
     engine.setThreadModel(t.id, "gpt-5.4-mini", null, null, null);
     expect(engine.snapshot().threads.find((x) => x.id === t.id)?.hydraPairId).toBeUndefined();
     expect(engine.snapshot().threads.find((x) => x.id === t.id)?.subagentMode).toBeUndefined();
+    expect(engine.snapshot().settings.lastHydraPairId).toBeUndefined();
+    expect(engine.snapshot().settings.lastNewChatPairId).toBe("pair-1");
+    const nextChat = engine.createThread(null, "after-leaving-pair");
+    expect(nextChat.hydraPairId).toBeUndefined();
+
+    // Re-enables hydraEnabled on the thread when applying a pair.
+    engine.setThreadHydra(t.id, false);
+    engine.setThreadModel(t.id, "gpt-5.4", "high", null, "pair-1");
+    expect(engine.snapshot().threads.find((x) => x.id === t.id)?.hydraEnabled).toBe(true);
+
+    // Adaptive lock: throws while a head is running under adaptive mode and leaves recents untouched.
+    engine.setSubagentMode(t.id, "adaptive");
+    store.update((d) => {
+      d.threads.push({
+        id: "head-busy-1",
+        projectId: null,
+        title: "Busy head",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [],
+        turn: null,
+        sessionGrants: [],
+        hydraHead: {
+          leadId: t.id,
+          headIndex: 0,
+          name: "worker",
+          task: "work",
+          batchId: "b1",
+          status: "running",
+          spawnedAt: Date.now(),
+        },
+      });
+    });
+    expect(() => engine.setThreadModel(t.id, "gpt-5.4", "high", null, "pair-2")).toThrow(
+      "switch modes when no sub-agents are at work",
+    );
+    expect(engine.snapshot().settings.lastHydraPairId).toBe("pair-1");
+    expect(engine.snapshot().settings.lastNewChatPairId).toBe("pair-1");
 
     // Flush and reload from disk to prove storeDoc persistence.
     store.close();
@@ -664,6 +706,7 @@ describe("P2-56 chip drag-reorder and rail drops", () => {
       provider: "codex",
       modelID: "gpt-5.4",
     });
+    expect(store2.state.settings.lastNewChatPairId).toBe("pair-1");
     store2.close();
   });
 });

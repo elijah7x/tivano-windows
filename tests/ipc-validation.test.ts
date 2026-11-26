@@ -229,6 +229,11 @@ describe("IPC request validators", () => {
       }),
     ).toBeTruthy();
     expect(requestValidators["settings:set"]({ lastNewChatModel: null })).toBeTruthy();
+    expect(requestValidators["settings:set"]({ lastNewChatPairId: "pair-1" })).toBeTruthy();
+    expect(requestValidators["settings:set"]({ lastNewChatPairId: null })).toBeTruthy();
+    expect(() => requestValidators["settings:set"]({ lastNewChatPairId: "" })).toThrow(
+      ValidationError,
+    );
     for (const bad of [
       { threadId: uuid, model: 5, effort: null, fastTier: null },
       { threadId: uuid, model: "", effort: null, fastTier: null },

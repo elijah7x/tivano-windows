@@ -3017,6 +3017,7 @@ export class Engine {
     hasSeenHydraIntro?: boolean | undefined;
     hydraPairs?: import("../shared/hydra").HydraPair[] | undefined;
     lastHydraPairId?: string | null | undefined;
+    lastNewChatPairId?: string | null | undefined;
     lastNewChatModel?: import("../shared/modelList").ModelPin | null | undefined;
     subagentModeDefault?: SubagentMode | undefined;
     chimeraPresets?: import("../shared/chimera").ChimeraPreset[] | undefined;
@@ -3181,6 +3182,10 @@ export class Engine {
       if (patch.lastHydraPairId !== undefined) {
         if (patch.lastHydraPairId === null) delete d.settings.lastHydraPairId;
         else d.settings.lastHydraPairId = patch.lastHydraPairId;
+      }
+      if (patch.lastNewChatPairId !== undefined) {
+        if (patch.lastNewChatPairId === null) delete d.settings.lastNewChatPairId;
+        else d.settings.lastNewChatPairId = patch.lastNewChatPairId;
       }
       if (patch.lastNewChatModel !== undefined) {
         if (patch.lastNewChatModel === null) delete d.settings.lastNewChatModel;
@@ -3363,7 +3368,8 @@ export class Engine {
       throw new EngineError("switch modes when no sub-agents are at work");
     }
     const modelBefore = thread.codexModel;
-    this.store.update(() => {
+    let settingsChanged = false;
+    this.store.update((d) => {
       if (model === null) delete thread.codexModel;
       else thread.codexModel = model;
       if (effort === null) delete thread.codexEffort;
@@ -3373,14 +3379,31 @@ export class Engine {
       if (hydraPairId === null) {
         delete thread.hydraPairId;
         if (thread.subagentMode === "preset") delete thread.subagentMode;
+        if (!thread.hydraHead && d.settings.lastHydraPairId !== undefined) {
+          delete d.settings.lastHydraPairId;
+          settingsChanged = true;
+        }
       } else if (hydraPairId !== undefined) {
         thread.hydraPairId = hydraPairId;
-        if (!thread.hydraHead) thread.subagentMode = "preset";
+        if (!thread.hydraHead) {
+          thread.subagentMode = "preset";
+          if (d.settings.lastHydraPairId !== hydraPairId) {
+            d.settings.lastHydraPairId = hydraPairId;
+            settingsChanged = true;
+          }
+          if (d.settings.lastNewChatPairId !== hydraPairId) {
+            d.settings.lastNewChatPairId = hydraPairId;
+            settingsChanged = true;
+          }
+        }
         if (thread.hydraEnabled === false) thread.hydraEnabled = true;
       }
       thread.updatedAt = Date.now();
     });
     this.emit({ type: "thread-updated", thread });
+    if (settingsChanged) {
+      this.emit({ type: "settings-changed", settings: this.store.state.settings });
+    }
     // 2.2.12 parity (frozen AutoContinue.applies): a wait armed against
     // the old model's limit must end the moment the model changes — the
     // composer wait state clears now, not at fire time. Effort and

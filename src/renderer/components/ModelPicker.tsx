@@ -34,7 +34,7 @@ import {
 } from "../../shared/modelList";
 import { useT } from "../locale";
 import { translateError } from "../i18n";
-import { api, tryCall, clientStore } from "../client";
+import { api, callApi, tryCall, clientStore } from "../client";
 
 /** Frozen Provider.swift effortRank — low to high ordering whatever
  *  order the agent lists levels in; unknown levels keep their place. */
@@ -258,7 +258,21 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       ...(hydraPairId !== undefined ? { hydraPairId } : {}),
     });
 
-  const chooseModel = (nextModel: string | null) => {
+  const applyModelChoice = (
+    model: string | null,
+    effort: string | null,
+    fastTier: string | null,
+    hydraPairId: string | null,
+  ) =>
+    callApi("threads:set-model", {
+      threadId: thread.id,
+      model,
+      effort,
+      fastTier,
+      hydraPairId,
+    });
+
+  const chooseModel = async (nextModel: string | null): Promise<boolean> => {
     const nextOption = models.find((m) => m.id === nextModel);
     // A stored fast tier only survives a model switch when the new
     // model advertises the SAME tier id — never guessed.
@@ -275,7 +289,11 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
     if (pref?.effort !== undefined) nextEffort = pref.effort;
     if (pref?.fastMode === true && nextOption?.fastTier)
       nextTier = nextOption.fastTier;
-    set(nextModel, nextEffort, nextTier, thread.hydraPairId ? null : undefined);
+    try {
+      await applyModelChoice(nextModel, nextEffort, nextTier, null);
+    } catch {
+      return false;
+    }
     if (
       nextModel !== null &&
       (settings?.lastNewChatModel?.provider !== "codex" ||
@@ -285,9 +303,10 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         lastNewChatModel: { provider: "codex", modelID: nextModel },
       });
     }
+    return true;
   };
 
-  const choosePair = (pair: HydraPair) => {
+  const choosePair = async (pair: HydraPair): Promise<boolean> => {
     const leadModel = pair.orchestratorModel ?? (thread.codexModel ?? null);
     const leadOption = leadModel ? models.find((m) => m.id === leadModel) : undefined;
     const pref = leadModel ? settings?.modelPreferences?.[prefKey("codex", leadModel)] : undefined;
@@ -300,16 +319,12 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         : null;
     if (pref?.fastMode === true && leadOption?.fastTier) leadTier = leadOption.fastTier;
 
-    if (settings?.hydraEnabled === false) {
-      tryCall("settings:set", { hydraEnabled: true });
+    try {
+      await applyModelChoice(leadModel, leadEffort, leadTier, pair.id);
+    } catch {
+      return false;
     }
-    if (thread.hydraEnabled === false) {
-      tryCall("threads:set-hydra", { threadId: thread.id, enabled: true });
-    }
-    set(leadModel, leadEffort, leadTier, pair.id);
-    if (settings?.lastHydraPairId !== pair.id) {
-      tryCall("settings:set", { lastHydraPairId: pair.id });
-    }
+    return true;
   };
 
   const renderSelectOption = (entry: PickerEntry<CodexModelOption>) => (
@@ -341,7 +356,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   const visibleEntries: PickerEntry<CodexModelOption>[] = usePins
     ? allEntries
     : partition.ungrouped;
-  const recentPair = resolveRecentPickerPair(pairs, settings?.lastHydraPairId);
+  const recentPair =
+    resolveRecentPickerPair(pairs, settings?.lastNewChatPairId) ??
+    resolveRecentPickerPair(pairs, settings?.lastHydraPairId);
   const recentModel = resolveRecentPickerModel(visibleEntries, settings?.lastNewChatModel);
 
   const totalModelCount =
@@ -548,8 +565,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
           col === "left" ? setActiveLeftKey(key) : setActiveRightKey(key)
         }
         onClick={() => {
-          choosePair(pair);
-          setPopOpen(false);
+          void choosePair(pair).then((ok) => {
+            if (ok) setPopOpen(false);
+          });
         }}
       >
         <span className="model-pop-check" aria-hidden="true">
@@ -580,8 +598,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         title={entry.option?.detail ? t(entry.option.detail) : undefined}
         onFocus={() => setActiveRightKey(key)}
         onClick={() => {
-          chooseModel(entry.modelId);
-          setPopOpen(false);
+          void chooseModel(entry.modelId).then((ok) => {
+            if (ok) setPopOpen(false);
+          });
         }}
       >
         <span className="model-pop-check" aria-hidden="true">
@@ -614,8 +633,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         className={`model-pop-row${isSel ? " selected" : ""}`}
         onFocus={() => setActiveRightKey(key)}
         onClick={() => {
-          chooseModel(null);
-          setPopOpen(false);
+          void chooseModel(null).then((ok) => {
+            if (ok) setPopOpen(false);
+          });
         }}
       >
         <span className="model-pop-check" aria-hidden="true">
@@ -757,8 +777,10 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
             {recentModel && renderPopRow(recentModel, true)}
           </div>
         )}
-        {(recentPair || recentModel) && <div className="model-pop-head">{t("Models")}</div>}
-        {renderDefaultModelRow()}
+        <div className="model-pop-sec">
+          {(recentPair || recentModel) && <div className="model-pop-head">{t("Models")}</div>}
+          {renderDefaultModelRow()}
+        </div>
         {partition.groups
           .filter((g) => g.items.length > 0)
           .map((g) => (
@@ -802,7 +824,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         value={selected}
         disabled={!!props.readOnly}
         onFocus={refresh}
-        onChange={(e) => chooseModel(e.target.value === "" ? null : e.target.value)}
+        onChange={(e) => {
+          void chooseModel(e.target.value === "" ? null : e.target.value);
+        }}
       >
         <option value="">{t("Default (provider decides)")}</option>
         {selected !== "" && !selectedModel && (
