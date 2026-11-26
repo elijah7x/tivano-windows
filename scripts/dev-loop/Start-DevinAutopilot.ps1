@@ -717,6 +717,44 @@ function Set-DevinForeground {
 # Keyboard shortcuts toggle the chat panel or land in an open editor depending on what had focus, so the
 # chat input is clicked instead: maximized, it is the box at the bottom of the right-hand Devin panel.
 # No Ctrl+A/Delete afterwards: if the click ever lands in an editor, a paste is recoverable, a wipe is not.
+# Finds Devin's chat composer (the Slate editor exposed as an Edit control named Prompt) through UI
+# Automation, so the click lands in the chat in both the Agents view and the IDE view's side panel.
+# Chromium builds its accessibility tree only after a first UIA query, so one wake-up pass runs per script run.
+function Find-DevinPromptElement {
+  param([IntPtr]$Window)
+  try {
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop
+    $root = [Windows.Automation.AutomationElement]::FromHandle($Window)
+    if ($null -eq $root) { return $null }
+    $cond = New-Object Windows.Automation.AndCondition(
+      (New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Edit)),
+      (New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::NameProperty, 'Prompt')))
+    $found = $root.FindAll([Windows.Automation.TreeScope]::Descendants, $cond)
+    if ($found.Count -eq 0 -and -not $script:DevinUiaWoken) {
+      $script:DevinUiaWoken = $true
+      $null = $root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition).Count
+      Start-Sleep -Seconds 4
+      $found = $root.FindAll([Windows.Automation.TreeScope]::Descendants, $cond)
+    }
+    $best = $null
+    $bestBottom = [double]::MinValue
+    foreach ($el in $found) {
+      try {
+        if ($el.Current.IsOffscreen) { continue }
+        $r = $el.Current.BoundingRectangle
+        if ($r.IsEmpty) { continue }
+        if ([double]::IsInfinity($r.X) -or [double]::IsNaN($r.X) -or [double]::IsInfinity($r.Y) -or [double]::IsNaN($r.Y)) { continue }
+        if ($r.Width -le 0 -or $r.Height -le 0) { continue }
+        $bottom = $r.Y + $r.Height
+        if ($bottom -gt $bestBottom) { $bestBottom = $bottom; $best = $el }
+      } catch { continue }
+    }
+    return $best
+  } catch {
+    return $null
+  }
+}
+
 function Focus-DevinChatInput {
   param([IntPtr]$Window)
   if (-not (Set-DevinForeground $Window)) { return $false }
@@ -742,12 +780,29 @@ function Focus-DevinChatInput {
   try {
     [DevLoopWindows]::SetTopmost($Window, $true) | Out-Null
     Start-Sleep -Milliseconds 300
+    $prompt = Find-DevinPromptElement $Window
+    if ($null -ne $prompt) {
+      $pr = $prompt.Current.BoundingRectangle
+      $px = [int]($pr.X + $pr.Width / 2)
+      $py = [int]($pr.Y + $pr.Height / 2)
+      if (-not [DevLoopWindows]::IsPointOnWindow($Window, $px, $py)) {
+        Write-Log 'chat input click skipped: another window covers the Devin Prompt box'
+        return $false
+      }
+      [DevLoopWindows]::SetCursorPos($px, $py) | Out-Null
+      Start-Sleep -Milliseconds 200
+      [DevLoopWindows]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+      [DevLoopWindows]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+      Start-Sleep -Milliseconds 600
+      return (Test-DevinForeground $Window)
+    }
+    Write-Log 'chat input: UI Automation found no Prompt box; using the fixed click point'
     $rect = New-Object DevLoopWindows+RECT
     if (-not [DevLoopWindows]::GetWindowRect($Window, [ref]$rect)) { return $false }
     $width = $rect.Right - $rect.Left
     $height = $rect.Bottom - $rect.Top
-    # Lands in the chat input both in the IDE view's side chat and in the
-    # Agents view with its right-hand panel hidden (maximized window).
+    # Fallback only: aimed at the Agents view with its right-hand panel hidden (maximized window);
+    # in the IDE view this point is the editor, which is why the UI Automation path comes first.
     # The input box is centred in the chat column; a "N files changed" strip above it pushes it down,
     # so aim low (11% from the bottom) and at 60% of the width, inside the box with or without the strip.
     $x = [int]($rect.Left + $width * 0.60)
