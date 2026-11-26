@@ -568,6 +568,8 @@ export const ja: Record<string, string> = {
   "The picker is full (30 models)": "ピッカーがいっぱいです（最大 30 モデル）",
   "No models reported": "モデルが報告されませんでした",
   "No models match": "一致するモデルはありません",
+  "Clear search": "検索を消去",
+  "Other models": "その他のモデル",
   "Done": "完了",
   "Provider reports": "プロバイダーの報告",
   "Applies to the next turn": "次のターンから適用",
