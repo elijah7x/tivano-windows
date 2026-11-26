@@ -942,29 +942,25 @@ function Start-FreshDevinSession {
     $script:LastFreshSessionDeferred = $true
     return $false
   }
-  # Turn on bypass in the new chat and confirm it from the log before any mission text goes out.
-  # If Ctrl+N landed in an editor instead of a new chat, /bypass is never confirmed and nothing
-  # else is sent, so the caller falls back to its normal path.
-  if (-not (Send-DevinBypassCommandSafe $Window)) {
-    Write-Log ('session rotation unconfirmed (' + $Reason + '; /bypass not confirmed after Ctrl+N)')
-    return $false
-  }
-  if (-not (Wait-DevinSessionNew $pressSince 10)) {
-    Write-Log ('session rotation unconfirmed (' + $Reason + '; no session/new in log)')
+  # New Devin Desktop sessions already open in Bypass Permissions, and current clients no longer log a
+  # mode change for /bypass, so the mission goes out directly. session/new in the log afterwards shows
+  # Ctrl+N really opened a chat; without it the rotation is still counted as sent (the mission was
+  # pasted, and resending would duplicate it) and the idle watchdog nudges if nothing follows.
+  if (-not (Set-DevinForeground $Window) -or -not (Focus-DevinChatInput $Window)) {
+    Write-Log ('session rotation unconfirmed (' + $Reason + '; focus lost before mission)')
     return $false
   }
   if (Test-Stop) {
     $script:LastFreshSessionDeferred = $true
     return $false
   }
-  if (-not (Set-DevinForeground $Window) -or -not (Focus-DevinChatInput $Window)) {
-    Write-Log ('session rotation unconfirmed (' + $Reason + '; focus lost before mission)')
-    return $false
-  }
   $freshMessage = Get-AutopilotMessage -FreshSession
   if (-not (Send-DevinTextSafe $Window $freshMessage)) {
     Write-Log ('session rotation unconfirmed (' + $Reason + '; mission paste failed)')
     return $false
+  }
+  if (-not (Wait-DevinSessionNew $pressSince 30)) {
+    Write-Log ('session rotation: mission sent but no session/new in log within 30s (' + $Reason + ')')
   }
 
   $state = Read-WatchdogState
@@ -1781,10 +1777,10 @@ function Invoke-Kickoff {
       continue
     }
     if (Test-Stop) { Write-Log 'STOP file present; kickoff exiting'; return 'deferred' }
+    # Bypass is the default for new sessions and current clients do not log /bypass, so an
+    # unconfirmed /bypass no longer blocks the prompt (it used to fail every kickoff and reset Devin).
     if (-not (Send-DevinBypassCommandSafe $window)) {
-      Write-Log ('kickoff try ' + ($try + 1) + '/3: /bypass failed or focus changed')
-      Start-Sleep -Seconds 2
-      continue
+      Write-Log ('kickoff try ' + ($try + 1) + '/3: /bypass not confirmed; sending prompt anyway')
     }
     if (-not (Set-DevinForeground $window)) {
       Write-Log ('kickoff try ' + ($try + 1) + '/3: lost focus after /bypass')
@@ -1805,7 +1801,7 @@ function Invoke-Kickoff {
   }
 
   if (-not $sent) {
-    Write-Log 'kickoff failed: Devin Desktop chat did not take /bypass or focus changed'
+    Write-Log 'kickoff failed: focus changed before the prompt was sent'
     Set-KickoffOutcome 'failed'
     return 'failed'
   }
