@@ -27,7 +27,6 @@ import {
   protectedModelIds,
   removePin,
   removeSection,
-  renameSection,
   sectionEditTargetAlive,
   simplifiedModels,
   type ModelGroupBlock,
