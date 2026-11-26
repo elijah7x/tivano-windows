@@ -18,6 +18,7 @@ import type {
   GitRunner,
 } from "../src/main/gitExec";
 import { GitService } from "../src/main/gitService";
+import { MockProvider } from "../src/main/mockProvider";
 import type { ProviderAdapter, TurnContext } from "../src/main/provider";
 import { ProjectRuntimePaths } from "../src/main/projectRuntimePaths";
 import { Store } from "../src/main/store";
@@ -117,11 +118,21 @@ function fakeWorktrees(
     switchBranch: async () => fail,
     createBranch: async () => fail,
     renameBranch: async () => fail,
-    hydraCapture: async () => fail,
-    hydraCopyAdd: async () => fail,
-    hydraEndTree: async () => fail,
-    hydraLand: async () => fail,
-    hydraCopyRemove: async () => fail,
+    hydraCapture: async () => ({
+      kind: "captured" as const,
+      tree: "0000000000000000000000000000000000000000",
+      commit: "1111111111111111111111111111111111111111",
+    }),
+    hydraCopyAdd: async (projectId, slug) => {
+      const parent = join(dataRoot, "worktrees", projectId);
+      mkdirSync(parent, { recursive: true });
+      const dir = mkdtempSync(join(parent, `head-${slug}-`));
+      writeFileSync(join(dir, "a.txt"), "one\n");
+      return { kind: "created" as const, directory: realpathSync(dir), branch: "hydra" };
+    },
+    hydraEndTree: async () => ({ kind: "ok" as const, tree: "2222222222222222222222222222222222222222" }),
+    hydraLand: async () => ({ kind: "landed" as const, files: [], conflicts: [] }),
+    hydraCopyRemove: async () => ({ kind: "removed" as const }),
     hydraReviewDiff: async () => fail,
   };
 }
@@ -130,6 +141,7 @@ function rig(
   eligibility: "eligible" | "nonGit" | "unavailable",
   seen: TurnContext[],
   providerOpts?: { hold?: boolean; errorOnce?: string },
+  providerOverride?: ProviderAdapter,
 ) {
   const repoDir = tmp("wtauto-repo-");
   // A plain folder suffices — the eligibility answer is stubbed; git is
@@ -140,7 +152,7 @@ function rig(
   store.open();
   stores.push(store);
   const paths = new ProjectRuntimePaths([], join(dataRoot, "grants.json"), dataRoot);
-  const provider = execProvider(seen, providerOpts);
+  const provider = providerOverride ?? execProvider(seen, providerOpts);
   const engine = new Engine(store, provider, dataRoot, "0.0.0-test", paths);
   const { project } = engine.openUserDirectory(repoDir);
   engine.attachWorktrees(fakeWorktrees(dataRoot, eligibility));
@@ -328,6 +340,51 @@ describe("P1-39 workspace auto mode", () => {
     await waitFor(() => seen.length === 2);
     expect(thread(r.engine, b.id).worktreeDir).toBeUndefined();
     expect(seen[1]!.workspace?.directory).toBe(r.repoDir);
+  });
+
+  it("a lead whose isolated head is still at work holds the checkout", async () => {
+    const seen: TurnContext[] = [];
+    const mock = new MockProvider({ tickMs: 1 });
+    const recordingMock: ProviderAdapter = {
+      descriptor: mock.descriptor,
+      start: (ctx, cb) => {
+        seen.push(ctx);
+        return mock.start(ctx, cb);
+      },
+      dispose: () => mock.dispose(),
+    };
+    const r = rig("eligible", seen, undefined, recordingMock);
+    // The workspace-auto eligibility answer is stubbed, but Hydra probes
+    // the folder itself before deciding whether a head can be isolated.
+    // A minimal .git/HEAD is enough here because every Git operation the
+    // head copy would need is stubbed below; no real Git command runs.
+    mkdirSync(join(r.repoDir, ".git"));
+    writeFileSync(join(r.repoDir, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const lead = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(lead.id, "go [mock:hydra-wait]");
+    const headOfLead = () =>
+      r.engine.snapshot().threads.find((t) => t.hydraHead?.leadId === lead.id);
+
+    await waitFor(() => {
+      const h = headOfLead();
+      return h?.worktreeDir !== undefined && h.turn?.status === "waiting-approval";
+    });
+    await waitFor(() => turnStatus(r.engine, lead.id) === "done");
+    const h = headOfLead()!;
+    // The head's own row is worktree-bound, so the probe cannot see its
+    // live turn directly; only the lead-bound Hydra state can keep the
+    // checkout claimed. No report is pending yet.
+    expect(h.hydraHead!.status).toBe("running");
+    expect(r.engine.hydraLeadBusy(lead.id)).toBe(true);
+
+    const b = r.engine.createThread(r.projectId);
+    r.engine.sendTurn(b.id, "second chat, same repo");
+    await waitFor(() => thread(r.engine, b.id).worktreeDir !== undefined);
+    await waitFor(() =>
+      seen.some((c) => c.prompt.includes("second chat, same repo")),
+    );
+    const second = seen.find((c) => c.prompt.includes("second chat, same repo"))!;
+    expect(second.workspace?.directory).toBe(thread(r.engine, b.id).worktreeDir);
   });
 
   it("a queued follow-up still holds the checkout", async () => {
