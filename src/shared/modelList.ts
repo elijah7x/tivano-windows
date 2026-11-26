@@ -772,7 +772,7 @@ export function parseModelDragTarget(dragged: string | null): ModelDragTarget | 
     const id = dragged.slice("section/".length);
     return id === "" ? null : { kind: "section", id };
   }
-  return dragged === "" ? null : { kind: "pin", id: dragged };
+  return { kind: "pin", id: dragged };
 }
 
 function liveDraggedPin(pins: readonly ModelPin[], id: string): ModelPin | null {
@@ -806,7 +806,7 @@ export function planModelDropOnWallGroup(
   const drag = parseModelDragTarget(dragged);
   if (!drag || drag.kind !== "pin" || isSearching) return null;
   const pin = liveDraggedPin(pins, drag.id);
-  return pin ? dropPinOnGroupEnd(pins, sections, pin, sectionId, options) : null;
+  return pin ? dropPinOnGroupEnd(pins, sections, pin, sectionId) : null;
 }
 
 /** Pure rail-drop plan: section-on-section reorder or pin-to-group end. A
