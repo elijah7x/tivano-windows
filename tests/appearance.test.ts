@@ -283,6 +283,7 @@ describe("P2-62 retired settings migration", () => {
         settings: Record<string, unknown>;
       };
       raw.settings.theme = legacy;
+      delete raw.settings.appearanceMode;
       const migrated = validateStoreFile(raw);
       expect(migrated.settings.theme, legacy).toBe(expectedTheme);
       expect(migrated.settings.appearanceMode, legacy).toBe(expectedMode);
@@ -317,12 +318,31 @@ describe("P2-62 retired settings migration", () => {
     }
   });
 
+  it("persists Match System when a fresh store selects a legacy-family accent", () => {
+    const root = freshRoot();
+    const { store, engine } = makeEngine(root);
+    expect(engine.snapshot().settings.appearanceMode).toBe("system");
+    engine.setSettings({ theme: "nord" });
+    store.close();
+
+    const persisted = JSON.parse(readFileSync(join(root, "store.json"), "utf8")) as {
+      settings: Record<string, unknown>;
+    };
+    expect(persisted.settings.appearanceMode).toBe("system");
+
+    const { store: store2, engine: engine2 } = makeEngine(root);
+    expect(store2.recoveredFrom).toBeUndefined();
+    expect(engine2.snapshot().settings.theme).toBe("nord");
+    expect(engine2.snapshot().settings.appearanceMode).toBe("system");
+    store2.close();
+  });
+
   it("keeps neutral current accents on system appearance and preserves explicit appearanceMode", () => {
     const validators = [
       ["head", validateStoreHead],
       ["file", validateStoreFile],
     ] as const;
-    for (const theme of ["breeze", "system", "github"] as const) {
+    for (const theme of ["breeze", "system", "github", "catppuccin"] as const) {
       for (const [validatorName, validate] of validators) {
         const raw = JSON.parse(JSON.stringify(emptyStore())) as {
           settings: Record<string, unknown>;

@@ -3094,6 +3094,8 @@ export class Engine {
     this.store.update((d) => {
       if (patch.theme) d.settings.theme = patch.theme;
       if (patch.appearanceMode !== undefined) d.settings.appearanceMode = patch.appearanceMode;
+      else if (patch.theme && d.settings.appearanceMode === undefined)
+        d.settings.appearanceMode = "system";
       if (patch.language) d.settings.language = patch.language;
       if (patch.chimeWhenFinished !== undefined)
         d.settings.chimeWhenFinished = patch.chimeWhenFinished;
