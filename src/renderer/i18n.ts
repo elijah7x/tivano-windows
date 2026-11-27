@@ -998,6 +998,8 @@ const zhHans: Record<string, string> = {
   "%@ are done": "%@ 已完成",
   "%@ stopped": "%@ 已停止",
   "%@ failed": "%@ 失败",
+  "Restart stopped sub-agent %@ before it finished.": "重启使子代理 %@ 在完成前停止。",
+  "Restart stopped sub-agents %@ before they finished.": "重启使子代理 %@ 在完成前停止。",
   "Hydra: no project named %@ is in the sidebar, so %@ did not start.":
     "Hydra：侧边栏中没有名为 %@ 的项目，因此 %@ 未启动。",
   "Hydra: %@ did not start because its checkout could not be read.":
@@ -2410,6 +2412,8 @@ let noticeTemplates: { key: string; re: RegExp }[] | undefined;
 const WEEKDAY_PATTERN = "(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)";
 const NOTICE_PREFIXES = ["Hydra:", "Hydra settings:", "Sub-agents:", "Auto-merge"];
 const EXTRA_NOTICE_KEYS = [
+  "Restart stopped sub-agent %@ before it finished.",
+  "Restart stopped sub-agents %@ before they finished.",
   "%@'s work landed; the lead is settling a conflict in 1 file.\n%@\n\nThe checkout had moved on where %@ was working, so the merge was three-way and left markers in this file. The lead resolves them before the work goes out; nothing to do on your side.",
   "%@'s work landed; the lead is settling a conflict in %d files.\n%@\n\nThe checkout had moved on where %@ was working, so the merge was three-way and left markers in these files. The lead resolves them before the work goes out; nothing to do on your side.",
   "%@'s work did not land and was kept as a patch.\n%@\n\n%@Apply it with `git apply --3way %@` and settle what conflicts.",

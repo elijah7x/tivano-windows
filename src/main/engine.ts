@@ -706,12 +706,48 @@ export class Engine {
       /* teardown — a failed activity write never blocks shutdown */
     }
     const now = Date.now();
+    const { stoppedHeads } = this.interruptInFlightThreads(now, true);
+    this.flagLeadsForStoppedHeads(stoppedHeads);
+    this.updateSleepGuard();
+  }
+
+  /** Interrupt every persisted in-flight thread and report the Hydra heads this stopped. */
+  private interruptInFlightThreads(
+    now: number,
+    emitUpdates: boolean,
+  ): { recovered: string[]; stoppedHeads: Map<string, string[]> } {
+    const recovered: string[] = [];
+    const stoppedHeads = new Map<string, string[]>();
     this.store.update((d) => {
       for (const t of d.threads) {
-        if (this.markInterrupted(t, now)) this.emit({ type: "thread-updated", thread: t });
+        const head = t.hydraHead;
+        const wasRunningHead = head?.status === "running";
+        if (this.markInterrupted(t, now)) {
+          recovered.push(t.id);
+          if (emitUpdates) this.emit({ type: "thread-updated", thread: t });
+        }
+        if (wasRunningHead && head?.status === "stopped") {
+          const names = stoppedHeads.get(head.leadId) ?? [];
+          names.push(head.name);
+          stoppedHeads.set(head.leadId, names);
+        }
       }
     });
-    this.updateSleepGuard();
+    return { recovered, stoppedHeads };
+  }
+
+  /** A lead owns the interrupted result when shutdown or restart recovery stops its heads. */
+  private flagLeadsForStoppedHeads(stoppedHeads: Map<string, string[]>): void {
+    for (const [leadId, names] of stoppedHeads) {
+      const lead = this.store.state.threads.find((t) => t.id === leadId);
+      if (!lead || lead.hydraHead) continue;
+      lead.hasUnread = true;
+      lead.unreadStatus = "interrupted";
+      const note = names.length === 1
+        ? `Restart stopped sub-agent ${names[0]} before it finished.`
+        : `Restart stopped sub-agents ${names.join(", ")} before they finished.`;
+      this.appendNotice(lead, note, "warning");
+    }
   }
 
   /** Mark an in-flight turn or stale Hydra landing interrupted; true when anything changed. */
@@ -813,12 +849,12 @@ export class Engine {
    */
   recoverInFlight(): string[] {
     const now = Date.now();
-    const recovered: string[] = [];
-    this.store.update((d) => {
-      for (const t of d.threads) {
-        if (this.markInterrupted(t, now)) recovered.push(t.id);
-      }
-    });
+    const { recovered, stoppedHeads } = this.interruptInFlightThreads(now, false);
+    // Frozen recovery parity: a lead whose dispatch turn had already
+    // finished still owns the interrupted result when restart recovery
+    // stops its heads. The head itself stays silent; the lead is unread
+    // and its timeline names the stopped heads.
+    this.flagLeadsForStoppedHeads(stoppedHeads);
     this.recoverHydraWork();
     this.interruptedThreads = recovered;
     return recovered;
@@ -5135,12 +5171,16 @@ export class Engine {
     // were witnessed, never unread. Hydra heads and leads whose heads
     // are still out stay silent; a queued successor (pendingSend /
     // drain) does not suppress the mark: the result still happened.
+    const selectedId = this.store.state.ui.selectedThreadId;
+    const isOpenPanel =
+      thread.isInPanel === true && thread.parentThreadId === selectedId;
     if (
       !isHead &&
       (status === "done" || status === "error" || status === "interrupted") &&
       !waitingForLimit &&
       !leadHeadsBusy &&
-      this.store.state.ui.selectedThreadId !== thread.id
+      selectedId !== thread.id &&
+      !isOpenPanel
     ) {
       thread.hasUnread = true;
       thread.unreadStatus = status;
@@ -7705,6 +7745,13 @@ export class Engine {
     thread.updatedAt = now;
     this.store.update((d) => {
       d.ui.selectedThreadId = parentId;
+      // A helper visible in the open panel is on screen by the renderer's
+      // rule, so opening the panel spends its unread mark exactly like
+      // selecting an ordinary thread does.
+      if (thread.hasUnread) {
+        thread.hasUnread = false;
+        delete thread.unreadStatus;
+      }
     });
     this.emit({ type: "thread-updated", thread });
     this.emit({ type: "thread-selected", threadId: parentId });
