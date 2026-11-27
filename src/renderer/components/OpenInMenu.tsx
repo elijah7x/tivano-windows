@@ -1,11 +1,11 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-// F15 "Open in" menu (frozen OpenInMenu): the file manager, every
-// editor actually installed, then Copy path. The menu asks main for
-// real data — a missing directory disables actions and a failed open
-// surfaces the engine's error in place, like the frozen alert.
+// F15 "Open in" menu items (frozen): the file manager, every editor
+// actually installed, then Copy path. The items ask main for real data — a
+// missing directory disables actions and a failed open surfaces the engine's
+// error in place, like the frozen alert.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, callApi } from "../client";
 import { useT } from "../locale";
 import { translateError } from "../i18n";
@@ -17,7 +17,7 @@ interface EditorEntry {
 
 /** Shared "Open in" menu items (file manager, discovered editors, Copy path)
  *  with in-place translated error surfacing. Reused inside ChatView's More
- *  controls overflow menu and standalone OpenInMenu. */
+ *  controls overflow menu. */
 export function OpenInItems(props: {
   threadId: string;
   hasDirectory: boolean;
@@ -93,55 +93,3 @@ export function OpenInItems(props: {
   );
 }
 
-export function OpenInMenu(props: {
-  threadId: string;
-  hasDirectory: boolean;
-  readOnly?: boolean;
-}): React.JSX.Element {
-  const t = useT();
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const down = (e: MouseEvent): void => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const key = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("mousedown", down);
-    window.addEventListener("keydown", key);
-    return () => {
-      window.removeEventListener("mousedown", down);
-      window.removeEventListener("keydown", key);
-    };
-  }, [open]);
-
-  return (
-    <div className="openin" ref={rootRef}>
-      <button
-        className="openin-btn"
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={t("Open in another app")}
-        aria-label={t("Open in another app")}
-        disabled={props.readOnly === true}
-        onClick={() => setOpen((o) => !o)}
-      >
-        ↗ ▾
-      </button>
-      {open && (
-        <div className="openin-menu" role="menu" aria-label={t("Open in")}>
-          <OpenInItems
-            threadId={props.threadId}
-            hasDirectory={props.hasDirectory}
-            open={open}
-            onClose={() => setOpen(false)}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
