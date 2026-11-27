@@ -261,7 +261,7 @@ Then:
      ```
      (On a parked revisit before the new PR is created, pass `-PrNumber <oldPr>` and `-IssueNumber <n>`.)
   3. Its last stdout line is JSON `{"status":"ok|unavailable|no-change","changedFiles":[...],"reverted":[...],"error":"","retryable":bool,"runDir":""}`; exit codes: `0` = `ok`, `2` = `unavailable`, `3` = `no-change`.
-     - `Invoke-NeonFix.ps1` runs `agy.exe` (`gemini-4-neon-high`) inside the PR worktree with `--mode accept-edits` and `--add-dir C:\tivano\reference\tivano-v3.0.0`, kills the process tree on timeout, reverts any edits outside tracked source/tests or under guarded paths / `package.json` dependencies / `package-lock.json`, and never commits or pushes.
+     - `Invoke-NeonFix.ps1` runs `agy.exe` (`gemini-4-neon-high`) inside the PR worktree with `--mode accept-edits` and `--add-dir C:\tivano\reference\tivano-v3.0.26`, kills the process tree on timeout, reverts any edits outside tracked source/tests or under guarded paths / `package.json` dependencies / `package-lock.json`, and never commits or pushes.
      - If `agy` fails with a non-retryable error (such as `FAILED_PRECONDITION`), `Invoke-NeonFix.ps1` records it in `C:\tivano\dev-loop\autopilot\neon\health.json` and skips calling `agy` for 6 hours, returning `unavailable` immediately with the stored error.
   4. **On `ok` (exit `0`):**
      - Review `git diff` and `changedFiles` (and check any `reverted` entries) in the worktree to confirm all edits are minimal, in scope, and respect every guardrail.

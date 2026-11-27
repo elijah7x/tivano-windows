@@ -7,7 +7,7 @@ param(
   [string]$ScriptDir = 'C:\tivano\audit\tool\scripts\dev-loop',
   [string]$LaneRoot = 'C:\tivano\dev-loop\hydrogen',
   [string]$GateRoot = 'C:\tivano\dev-loop\autopilot\gate',
-  [string]$ReferenceRoot = 'C:\tivano\reference\tivano-v3.0.0',
+  [string]$ReferenceRoot = 'C:\tivano\reference\tivano-v3.0.26',
   [string]$Repo = 'elijah7x/tivano-windows',
   [ValidatePattern('^[A-Za-z0-9._:/-]+$')][string]$Model = 'gemini-4-hydrogen-high',
   [ValidatePattern('^[A-Za-z0-9_.-]+$')][string]$Label = 'nyx-auto',

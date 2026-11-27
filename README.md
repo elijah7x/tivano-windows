@@ -1,6 +1,6 @@
 # Tivano Windows
 
-An independent Windows product, currently implemented with Electron + React + TypeScript. The goal is full parity of features and product style with the frozen **Tivano for macOS v3.0.0** baseline. System behavior (windows, paths, shortcuts, processes, credentials) is adapted to Windows where that makes sense. The Mac product is not rewritten or modified.
+An independent Windows product, currently implemented with Electron + React + TypeScript. The goal is full parity of features and product style with the frozen **Tivano for macOS v3.0.26** baseline. System behavior (windows, paths, shortcuts, processes, credentials) is adapted to Windows where that makes sense. The Mac product is not rewritten or modified.
 
 This is development software, not a release. Nothing here is accepted as a supported Windows product yet, and the full feature/provider support matrix is not complete, so do not assume any given provider is supported.
 
@@ -82,7 +82,7 @@ Still unverified:
 
 ## Origin and license
 
-The baseline is [Tivano v3.0.0](https://github.com/elijah7x/tivano/releases/tag/v3.0.0) (released 2026-11-20), commit `15e03374f077343e500e8e5e3574c8c598162171`. The current main/dev branches are not used in its place. The reference source is read-only: fetch it from that GitHub tag and do not develop in it or run its scripts. Earlier baselines v2.5.7 (commit `8d1b8c2814f51d105cb5bf4a0e3a6aa04fef8ca1`), v2.2.34 (commit `d4c27410553677354bd08e70becd20ebbd240183`) and v2.0.0 (commit `d31e093b356846ff538dd8ba0dc22d62598e4427`) are recorded in [docs/source-baseline.json](docs/source-baseline.json) as historical.
+The baseline is [Tivano v3.0.26](https://github.com/elijah7x/tivano/releases/tag/v3.0.26) (released 2026-11-27), commit `23ac46c6f2e922d62b1a388f3ead7c42260e2dd4`. The current main/dev branches are not used in its place. The reference source is read-only: fetch it from that GitHub tag and do not develop in it or run its scripts. Earlier baselines v3.0.0 (commit `15e03374f077343e500e8e5e3574c8c598162171`), v2.5.7 (commit `8d1b8c2814f51d105cb5bf4a0e3a6aa04fef8ca1`), v2.2.34 (commit `d4c27410553677354bd08e70becd20ebbd240183`) and v2.0.0 (commit `d31e093b356846ff538dd8ba0dc22d62598e4427`) are recorded in [docs/source-baseline.json](docs/source-baseline.json) as historical.
 
 Tivano Windows is an independent Windows rewrite derived from that baseline (started 2026-10-23). It is not the original Droppy Code and does not represent production by, endorsement by or affiliation with Droppy or Jordy Spruit. Original attribution: **Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app**.
 

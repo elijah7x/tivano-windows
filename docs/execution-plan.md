@@ -4,7 +4,7 @@
 
 ## 对齐基线
 
-当前对齐目标为 Mac v3.0.0（2026-11-20 发布），commit `15e03374f077343e500e8e5e3574c8c598162171`。v2.5.7（commit `8d1b8c2814f51d105cb5bf4a0e3a6aa04fef8ca1`）、v2.2.34（commit `d4c27410553677354bd08e70becd20ebbd240183`）和 v2.0.0 均为历史基线；各阶段记录是对着当时的基线验收的，不因目标变更而改写。
+当前对齐目标为 Mac v3.0.26（2026-11-27 发布），commit `23ac46c6f2e922d62b1a388f3ead7c42260e2dd4`。v3.0.0（commit `15e03374f077343e500e8e5e3574c8c598162171`）、v2.5.7（commit `8d1b8c2814f51d105cb5bf4a0e3a6aa04fef8ca1`）、v2.2.34（commit `d4c27410553677354bd08e70becd20ebbd240183`）和 v2.0.0 均为历史基线；各阶段记录是对着当时的基线验收的，不因目标变更而改写。
 
 v2.0.0 为历史基线（2026-10-22 发布），tag object `dcf12b2b06f581d450d6dc3b8e5c4cce15da179a`，commit `d31e093b356846ff538dd8ba0dc22d62598e4427`。已精确 fetch 标签并核对这两个对象，取得记录见 [source-baseline.json](source-baseline.json)。不以未固定的 main/dev 替代已固定的基线，不在参考中开发或执行来源脚本。已原样保留 LICENSE、THIRD_PARTY_NOTICES.md、TRADEMARK.md；图片、字体及其他资源仍须逐项核对资格。
 
