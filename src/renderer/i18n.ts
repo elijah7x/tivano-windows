@@ -2311,6 +2311,11 @@ const zhHans: Record<string, string> = {
   "This model has one reasoning level.": "此模型只有一档推理强度。",
   "Fast mode": "快速模式",
   "Fast mode is on": "快速模式已开启",
+  // P2-78: Remove-this-project confirmation popover (v3.0.15 SidebarView.swift).
+  "Remove this project?": "移除这个项目？",
+  "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
+    "这将永久删除 %lld 个对话，包括关联到其他项目的子代理和助手。项目源文件不会被删除。",
+  "Remove project": "移除项目",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
