@@ -136,6 +136,24 @@ describe("i18n", () => {
       ),
     );
     expect(translateNotice(t, en)).toContain("系统文件夹");
+    expect(
+      translateNotice(t, "Restart stopped sub-agent Walter before it finished."),
+    ).toBe(
+      translate(
+        "zh-Hans",
+        "Restart stopped sub-agent %@ before it finished.",
+        ["Walter"],
+      ),
+    );
+    expect(
+      translateNotice(t, "Restart stopped sub-agents Hank, Walter before they finished."),
+    ).toBe(
+      translate(
+        "zh-Hans",
+        "Restart stopped sub-agents %@ before they finished.",
+        ["Hank, Walter"],
+      ),
+    );
     // An untemplated notice falls through to the prefix path.
     const raw = "UNLISTED_THING: happened";
     expect(translateNotice(t, raw)).toBe(translateError(t, raw));

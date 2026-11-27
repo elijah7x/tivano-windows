@@ -1396,6 +1396,17 @@ describe("P2-62 Hydra finish-signal & unread suppression (frozen AppModel.turnFi
 
     expect(engine2.hydraLeadBusy(lead.id)).toBe(false);
 
+    // #177: the lead owns the interrupted result when restart recovery
+    // stops one of its heads — unread, interrupted, and told which head.
+    const recoveredLead = thread(engine2, lead.id);
+    expect(recoveredLead.hasUnread).toBe(true);
+    expect(recoveredLead.unreadStatus).toBe("interrupted");
+    const recoveryNote = recoveredLead.messages.find(
+      (m) => m.role === "system" && m.content.includes("Walter"),
+    );
+    expect(recoveryNote?.content).toContain("Restart stopped");
+    expect(recoveryNote?.content).toContain("Walter");
+
     const signals: {
       threadId: string;
       status: string;
@@ -1417,6 +1428,96 @@ describe("P2-62 Hydra finish-signal & unread suppression (frozen AppModel.turnFi
       silent: true,
     });
     expect(thread(engine2, lead.id).hasUnread).toBe(true);
+    store2.close();
+  });
+
+  it("marks the lead when a normal shutdown stops running heads before reopen", () => {
+    const { engine, store, root } = make();
+    const lead = engine.createThread(null, "lead");
+    const firstHead = engine.createThread(null, "head-one");
+    const secondHead = engine.createThread(null, "head-two");
+    const alreadyStopped = engine.createThread(null, "head-stopped");
+    const now = Date.now();
+    store.update((d) => {
+      const running = (id: string, headIndex: number, name: string) => {
+        const head = d.threads.find((t) => t.id === id)!;
+        head.messages = [
+          {
+            id: `m-run-${headIndex}`,
+            role: "assistant",
+            content: "Working",
+            ts: now - 400,
+            turnId: `t-run-${headIndex}`,
+            status: "streaming",
+          },
+        ];
+        head.turn = {
+          id: `t-run-${headIndex}`,
+          threadId: id,
+          seq: 1,
+          assistantMessageId: `m-run-${headIndex}`,
+          status: "running",
+          startedAt: now - 400,
+        };
+        head.hydraHead = {
+          leadId: lead.id,
+          headIndex,
+          name,
+          task: "still running",
+          batchId: "b-shutdown",
+          status: "running",
+          spawnedAt: now - 400,
+        };
+      };
+      running(firstHead.id, 1, "Hank");
+      running(secondHead.id, 2, "Walter");
+      const stopped = d.threads.find((t) => t.id === alreadyStopped.id)!;
+      stopped.hydraHead = {
+        leadId: lead.id,
+        headIndex: 3,
+        name: "Ivy",
+        task: "already stopped",
+        batchId: "b-shutdown",
+        status: "stopped",
+        spawnedAt: now - 500,
+        finishedAt: now - 100,
+      };
+    });
+
+    engine.shutdown();
+
+    const shutdownLead = thread(engine, lead.id);
+    expect(shutdownLead.hasUnread).toBe(true);
+    expect(shutdownLead.unreadStatus).toBe("interrupted");
+    const shutdownNotes = shutdownLead.messages.filter(
+      (m) => m.role === "system" && m.content.includes("Restart stopped"),
+    );
+    expect(shutdownNotes).toHaveLength(1);
+    expect(shutdownNotes[0]?.content).toContain("sub-agents Hank, Walter");
+    expect(shutdownNotes[0]?.content).not.toContain("Ivy");
+    expect(shutdownNotes[0]?.noticeLevel).toBe("warning");
+    expect(thread(engine, firstHead.id).hydraHead?.status).toBe("stopped");
+    expect(thread(engine, secondHead.id).hydraHead?.status).toBe("stopped");
+    store.close();
+
+    const store2 = new Store(root);
+    store2.open();
+    const engine2 = new Engine(store2, new MockProvider({ tickMs: 1 }), root, "0.0.0-test");
+    const persistedLead = thread(engine2, lead.id);
+    expect(persistedLead.hasUnread).toBe(true);
+    expect(persistedLead.unreadStatus).toBe("interrupted");
+    expect(
+      persistedLead.messages.filter(
+        (m) => m.role === "system" && m.content.includes("Restart stopped"),
+      ),
+    ).toHaveLength(1);
+
+    expect(engine2.recoverInFlight()).toEqual([]);
+    expect(
+      thread(engine2, lead.id).messages.filter(
+        (m) => m.role === "system" && m.content.includes("Restart stopped"),
+      ),
+    ).toHaveLength(1);
     store2.close();
   });
 });

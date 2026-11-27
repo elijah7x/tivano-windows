@@ -859,6 +859,8 @@ export const ko: Record<string, string> = {
   "%@ are done": "%@ 완료됨",
   "%@ stopped": "%@ 중지됨",
   "%@ failed": "%@ 실패",
+  "Restart stopped sub-agent %@ before it finished.": "다시 시작하는 동안 하위 에이전트 %@이(가) 완료되기 전에 중지되었습니다.",
+  "Restart stopped sub-agents %@ before they finished.": "다시 시작하는 동안 하위 에이전트 %@이(가) 완료되기 전에 중지되었습니다.",
   "Hydra: no project named %@ is in the sidebar, so %@ did not start.": "Hydra: 사이드바에 %@이라는 프로젝트가 없어 %@이(가) 시작되지 않았습니다.",
   "Hydra: %@ did not start because its checkout could not be read.": "Hydra: 체크아웃을 읽을 수 없어 %@이(가) 시작되지 않았습니다.",
   "Hydra: %@ is a system folder, so %@ did not start.": "Hydra: %@은(는) 시스템 폴더이므로 %@이(가) 시작되지 않았습니다.",
