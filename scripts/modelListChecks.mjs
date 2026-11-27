@@ -778,6 +778,118 @@ export async function runModelListChecks({
     }),
   );
 
+  // ML-19 (P2-80): model/reasoning popover collapsed -> expanded layout,
+  // chevron beside model name, reasoning-level label above slider,
+  // localization width, and keyboard slider/Escape interaction.
+  // Restore selection to threadId (which has fixture-max selected with 3 efforts).
+  await page.evaluate((tid) => window.tivano.invoke("threads:select", { id: tid }), threadId);
+  await page.waitForSelector(".effort-picker-btn", { timeout: 5000 });
+  await page.locator(".effort-picker-btn").click();
+  await page.waitForSelector(".model-picker-pop.effort-only", { timeout: 5000 });
+  await page.waitForSelector(".effort-slider-wrap", { timeout: 5000 });
+  const p280Collapsed = await page.evaluate(() => {
+    const pop = document.querySelector(".model-picker-pop.effort-only");
+    const card = pop?.querySelector(".effort-card");
+    const nameEl = pop?.querySelector(".effort-model-name");
+    const chevEl = pop?.querySelector(".effort-model-chev");
+    const labelEl = pop?.querySelector(".effort-level-label");
+    const sliderEl = pop?.querySelector(".effort-slider-wrap");
+    const popBox = pop?.getBoundingClientRect();
+    const nameBox = nameEl?.getBoundingClientRect();
+    const chevBox = chevEl?.getBoundingClientRect();
+    const labelBox = labelEl?.getBoundingClientRect();
+    const sliderBox = sliderEl?.getBoundingClientRect();
+    return {
+      state: card?.getAttribute("data-state"),
+      hasCols: !!pop?.querySelector(".model-pop-cols"),
+      popWidth: popBox?.width ?? 0,
+      scrollOk: pop ? pop.scrollWidth <= pop.clientWidth + 1 : false,
+      chevFollowsName:
+        !!nameBox && !!chevBox && chevBox.x >= nameBox.x + nameBox.width - 1,
+      labelAboveSlider:
+        !!labelBox && !!sliderBox && labelBox.y + labelBox.height <= sliderBox.y + 2,
+      labelText: labelEl?.textContent ?? "",
+    };
+  });
+  verify(
+    "ML-19a collapsed reasoning popover puts chevron beside model name and label above slider",
+    p280Collapsed.state === "collapsed" &&
+      !p280Collapsed.hasCols &&
+      p280Collapsed.popWidth > 0 &&
+      p280Collapsed.popWidth <= 340 &&
+      p280Collapsed.scrollOk &&
+      p280Collapsed.chevFollowsName &&
+      p280Collapsed.labelAboveSlider,
+    p280Collapsed,
+  );
+
+  // Keyboard step on the slider updates the thread effort and label (fixture-max: medium/high/xhigh, starting at high -> medium).
+  await page.locator(".effort-slider").focus();
+  await page.keyboard.press("ArrowLeft");
+  await waitSnapshot(page, (st) => {
+    const t = st.threads.find((x) => x.id === threadId);
+    return t?.codexEffort === "medium";
+  });
+  const afterSlide = await page.evaluate(() => ({
+    label: document.querySelector(".effort-level-label")?.textContent ?? "",
+    val: document.querySelector(".effort-slider")?.value ?? "",
+  }));
+  verify(
+    "ML-19b slider keyboard arrow updates effort label",
+    afterSlide.label === "Medium" && afterSlide.val === "0",
+    afterSlide,
+  );
+
+  // Clicking the model+chevron button expands the model list and collapsing returns to effort-only.
+  await page.locator(".effort-model-btn").click();
+  await page.waitForSelector(".model-pop-cols", { timeout: 5000 });
+  const expandedState = await page.evaluate(() => ({
+    cardState: document.querySelector(".effort-card")?.getAttribute("data-state"),
+    ariaExpanded: document.querySelector(".effort-model-btn")?.getAttribute("aria-expanded"),
+    searchFocused: document.activeElement?.classList.contains("model-pop-search") ?? false,
+  }));
+  verify(
+    "ML-19c clicking model+chevron expands the model list and focuses search",
+    expandedState.cardState === "expanded" &&
+      expandedState.ariaExpanded === "true" &&
+      expandedState.searchFocused,
+    expandedState,
+  );
+  await page.locator(".effort-model-btn").click();
+  await page.waitForSelector(".model-picker-pop.effort-only", { timeout: 5000 });
+
+  // French localization keeps compact width without horizontal overflow.
+  await page.evaluate(() => window.tivano.invoke("settings:set", { language: "fr" }));
+  await page.waitForFunction(
+    () => document.querySelector(".effort-model-btn")?.getAttribute("aria-label") === "Choisir un modèle",
+    null,
+    { timeout: 5000 },
+  );
+  const frLayout = await page.evaluate(() => {
+    const pop = document.querySelector(".model-picker-pop.effort-only");
+    const box = pop?.getBoundingClientRect();
+    return {
+      width: box?.width ?? 0,
+      scrollOk: pop ? pop.scrollWidth <= pop.clientWidth + 1 : false,
+      chooseAria: document.querySelector(".effort-model-btn")?.getAttribute("aria-label") ?? "",
+    };
+  });
+  verify(
+    "ML-19d localized compact popover stays within 340px without horizontal overflow",
+    frLayout.width > 0 &&
+      frLayout.width <= 340 &&
+      frLayout.scrollOk &&
+      frLayout.chooseAria === "Choisir un modèle",
+    frLayout,
+  );
+  await page.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".model-picker-pop", { state: "detached", timeout: 5000 });
+  const focusReturned = await page.evaluate(
+    () => document.activeElement?.classList.contains("effort-picker-btn") ?? false,
+  );
+  verify("ML-19e Escape closes popover and returns focus to effort-picker-btn", focusReturned);
+
   {
     const c = await boundedClose(app, proc);
     ledger.exited = c.exited;

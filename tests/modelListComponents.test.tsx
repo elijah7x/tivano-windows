@@ -1011,3 +1011,314 @@ describe("ModelListSettings P2-33 controller & component regressions", () => {
     expect(removeWrite.modelSections[0]?.id).toBe("sec-b");
   });
 });
+
+describe("ModelPicker (P2-80 model/reasoning popover layout)", () => {
+  const VARIANT_CATALOG: CodexModelCatalog = {
+    state: "ready",
+    models: [
+      {
+        id: "gpt-multi",
+        name: "GPT-5.4 Multi Reasoning Very Long Variant Name For Compact Overflow Check",
+        efforts: ["low", "medium", "high", "xhigh"],
+        defaultEffort: "medium",
+        fastTier: "fast",
+        isDefault: true,
+      },
+      {
+        id: "gpt-single",
+        name: "GPT-5.4 Single",
+        efforts: ["high"],
+        defaultEffort: "high",
+        isDefault: false,
+      },
+      {
+        id: "gpt-zero",
+        name: "GPT-5.4 Standard",
+        efforts: [],
+        isDefault: false,
+      },
+    ],
+  };
+
+  it("places trailing chevron beside model name and reasoning label directly above the slider in collapsed and expanded states", () => {
+    setMockSettings({ modelList: [], modelSections: [], hydraPairs: [] });
+
+    const collapsedHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-multi", codexEffort: "xhigh", codexServiceTier: "fast" }),
+        initialCatalog: VARIANT_CATALOG,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(collapsedHtml).toContain("model-picker-pop effort-only");
+    expect(collapsedHtml).toContain('data-state="collapsed"');
+    expect(collapsedHtml).toContain('aria-expanded="false" aria-label="Choose a model"');
+    expect(collapsedHtml).not.toContain("model-pop-search");
+    expect(collapsedHtml).not.toContain("model-pop-cols");
+
+    // Chevron follows the model name inside .effort-model-btn, and .effort-level-label sits directly above .effort-slider-wrap.
+    const cardHtml = collapsedHtml.slice(collapsedHtml.indexOf('class="effort-card"'));
+    const nameIdx = cardHtml.indexOf('class="effort-model-name"');
+    const chevIdx = cardHtml.indexOf('class="effort-model-chev"');
+    const labelIdx = cardHtml.indexOf('class="effort-level-label"');
+    const sliderIdx = cardHtml.indexOf('class="effort-slider-wrap"');
+    expect(nameIdx).toBeGreaterThan(-1);
+    expect(chevIdx).toBeGreaterThan(nameIdx);
+    expect(labelIdx).toBeGreaterThan(chevIdx);
+    expect(sliderIdx).toBeGreaterThan(labelIdx);
+    expect(cardHtml).toContain(">Extra High<");
+    expect(cardHtml).toContain('data-max="true"');
+    expect(cardHtml).toContain('data-fast="true"');
+    expect(cardHtml).toContain('type="range"');
+    expect(cardHtml).toContain('min="0" max="3" step="1"');
+    expect(cardHtml).toContain('value="3"');
+    expect(cardHtml).toContain('aria-valuetext="Extra High"');
+    expect(cardHtml.match(/class="effort-slider-stop[ "]/g)).toHaveLength(4);
+    expect(cardHtml).toContain('aria-pressed="true" aria-label="Fast mode"');
+
+    // Expanded state keeps the header + slider above the search/list columns and flips the chevron/state.
+    const expandedHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-multi", codexEffort: "medium" }),
+        initialCatalog: VARIANT_CATALOG,
+        initialOpen: true,
+        initialModelsExpanded: true,
+      }),
+    );
+    expect(expandedHtml).toContain("model-picker-pop single-col");
+    expect(expandedHtml).toContain('data-state="expanded"');
+    expect(expandedHtml).toContain('aria-expanded="true" aria-label="Choose a model"');
+    expect(expandedHtml).toContain('class="effort-model-chev open"');
+    expect(expandedHtml).toContain(">Medium<");
+    expect(expandedHtml.indexOf('class="effort-card"')).toBeLessThan(
+      expandedHtml.indexOf('class="model-pop-search-row"'),
+    );
+    expect(expandedHtml.indexOf('class="model-pop-search-row"')).toBeLessThan(
+      expandedHtml.indexOf('class="model-pop-cols'),
+    );
+  });
+
+  it("handles model variants, default/zero/single reasoning levels, saved fallback, and pair header", () => {
+    setMockSettings({
+      modelList: [],
+      modelSections: [],
+      hydraEnabled: true,
+      hydraPairs: [
+        {
+          id: "p-hdr",
+          provider: "codex",
+          orchestratorModel: "gpt-multi",
+          workerModel: "gpt-single",
+          name: "Header Combo",
+          headProfiles: [],
+        },
+      ],
+    });
+
+    // Unset thread effort falls back to model defaultEffort ("medium") without breaking slider stops.
+    const defaultEffortHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-multi" }),
+        initialCatalog: VARIANT_CATALOG,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(defaultEffortHtml).toContain('data-effort-level="medium"');
+    expect(defaultEffortHtml).toContain('min="0" max="3" step="1"');
+    expect(defaultEffortHtml).toContain('value="1"');
+
+    // Single-level model renders one stop and preserves the label above the slider.
+    const singleLevelHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-single" }),
+        initialCatalog: VARIANT_CATALOG,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(singleLevelHtml).toContain('data-effort-level="high"');
+    expect(singleLevelHtml).toContain('min="0" max="0" step="1"');
+    expect(singleLevelHtml).toContain('value="0"');
+    expect(singleLevelHtml.match(/class="effort-slider-stop[ "]/g)).toHaveLength(1);
+
+    // Zero-effort model renders Standard directly above the single-level note instead of a slider.
+    const zeroEffortHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-zero" }),
+        initialCatalog: VARIANT_CATALOG,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(zeroEffortHtml).toContain('data-effort-level="standard"');
+    expect(zeroEffortHtml).toContain(">Standard<");
+    expect(zeroEffortHtml).toContain("This model has one reasoning level.");
+    expect(zeroEffortHtml).not.toContain('type="range"');
+
+    // Active Hydra pair surfaces pair title beside the chevron; saved-only model stays labeled when catalog is pending.
+    const pairHeaderHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-multi", hydraPairId: "p-hdr", subagentMode: "preset" }),
+        initialCatalog: VARIANT_CATALOG,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(pairHeaderHtml).toContain("Header Combo");
+    expect(pairHeaderHtml).toContain('class="effort-model-chev"');
+
+    const pendingSavedHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "offline-saved", codexEffort: "high" }),
+        initialCatalog: { state: "pending", reason: "no Codex session is bound yet — send a turn, then reopen" },
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(pendingSavedHtml).toContain("offline-saved (saved)");
+    expect(pendingSavedHtml).toContain(">High<");
+    expect(pendingSavedHtml).toContain("no Codex session is bound yet — send a turn, then reopen");
+    expect(pendingSavedHtml).not.toContain("This model has one reasoning level.");
+
+    // Loading/unavailable/default-model states never fabricate "This model has one reasoning level.".
+    const emptyThread = (() => {
+      const t = makeThread();
+      delete t.codexModel;
+      return t;
+    })();
+    const loadingNullHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: emptyThread,
+        initialCatalog: null,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(loadingNullHtml).toContain("Loading model list…");
+    expect(loadingNullHtml).toContain(">Default<");
+    expect(loadingNullHtml).not.toContain("This model has one reasoning level.");
+
+    const unavailableHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: emptyThread,
+        initialCatalog: { state: "unavailable", reason: "the active provider has no model catalog" },
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(unavailableHtml).toContain("the active provider has no model catalog");
+    expect(unavailableHtml).not.toContain("This model has one reasoning level.");
+
+    const readyDefaultModelHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: emptyThread,
+        initialCatalog: VARIANT_CATALOG,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(readyDefaultModelHtml).toContain("Applies to the next turn");
+    expect(readyDefaultModelHtml).not.toContain("This model has one reasoning level.");
+
+    // Case/underscore effort variant ("extra_high") folds cleanly to Extra High.
+    const extraHighVariantHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-multi", codexEffort: "extra_high" }),
+        initialCatalog: VARIANT_CATALOG,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(extraHighVariantHtml).toContain(">Extra High<");
+  });
+
+  it("localizes P2-80 labels and preserves compact truncation classes across all 6 languages", () => {
+    const cases: Array<{ lang: LanguageId; choose: string; xhigh: string; standard: string; singleNote: string }> = [
+      {
+        lang: "en",
+        choose: "Choose a model",
+        xhigh: "Extra High",
+        standard: "Standard",
+        singleNote: "This model has one reasoning level.",
+      },
+      {
+        lang: "zh-Hans",
+        choose: "选择模型",
+        xhigh: "超高",
+        standard: "标准",
+        singleNote: "此模型只有一档推理强度。",
+      },
+      {
+        lang: "zh-Hant",
+        choose: "選擇模型",
+        xhigh: "超高",
+        standard: "標準",
+        singleNote: "此模型只有一檔推理強度。",
+      },
+      {
+        lang: "ja",
+        choose: "モデルを選択",
+        xhigh: "最高",
+        standard: "標準",
+        singleNote: "このモデルの推論レベルは 1 段階のみです。",
+      },
+      {
+        lang: "ko",
+        choose: "모델 선택",
+        xhigh: "매우 높음",
+        standard: "표준",
+        singleNote: "이 모델에는 추론 강도가 한 단계만 있습니다.",
+      },
+      {
+        lang: "fr",
+        choose: "Choisir un modèle",
+        xhigh: "Très élevé",
+        standard: "Standard",
+        singleNote: "Ce modèle ne propose qu’un seul niveau de raisonnement.",
+      },
+    ];
+
+    for (const c of cases) {
+      setMockSettings({ modelList: [], modelSections: [], hydraPairs: [] }, c.lang);
+      const multiHtml = renderLang(
+        c.lang,
+        createElement(ModelPicker, {
+          thread: makeThread({ codexModel: "gpt-multi", codexEffort: "xhigh" }),
+          initialCatalog: VARIANT_CATALOG,
+          initialOpen: true,
+          initialModelsExpanded: false,
+        }),
+      );
+      expect(multiHtml, c.lang).toContain(`aria-label="${c.choose}"`);
+      expect(multiHtml, c.lang).toContain(`>${c.xhigh}<`);
+      expect(multiHtml, c.lang).toContain("effort-picker-btn-label");
+      expect(multiHtml, c.lang).toContain("effort-model-name");
+      expect(multiHtml, c.lang).toContain("model-picker-pop effort-only");
+
+      const zeroHtml = renderLang(
+        c.lang,
+        createElement(ModelPicker, {
+          thread: makeThread({ codexModel: "gpt-zero" }),
+          initialCatalog: VARIANT_CATALOG,
+          initialOpen: true,
+          initialModelsExpanded: false,
+        }),
+      );
+      expect(zeroHtml, c.lang).toContain(`>${c.standard}<`);
+      expect(zeroHtml, c.lang).toContain(c.singleNote);
+    }
+  });
+});
