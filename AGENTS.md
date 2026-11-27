@@ -10,7 +10,7 @@ Tivano Windows is an independent derivative of Tivano for macOS, currently imple
 
 ## Parity target and reference source
 
-- The target is **Tivano for macOS v3.0.26**, commit `23ac46c6f2e922d62b1a388f3ead7c42260e2dd4`, recorded in [docs/source-baseline.json](docs/source-baseline.json). Do not substitute main, dev or another tag. v3.0.0, v2.5.7, v2.2.34 and v2.0.0 are historical baselines.
+- The target is **Tivano for macOS v3.0.26**, commit `23ac46c6f2e922d62b1a388f3ead7c42260e2dd4`, recorded in [docs/source-baseline.json](docs/source-baseline.json). Do not substitute main, dev or another tag. v3.0.0, v2.5.7, v2.2.34 and v2.0.0 are historical baselines. Until the gated re-baseline PR (`Parity: retarget the checklist to macOS v3.0.26`) merges, `docs/source-baseline.json`, `docs/parity.md` and the About page still name v3.0.0; that PR moves them, and v3.0.26 is the target meanwhile.
 - The reference source is read-only. Fetch it from the GitHub tag `v3.0.26` ([release](https://github.com/elijah7x/tivano/releases/tag/v3.0.26)). Do not develop inside it or run its scripts.
 - Do not copy the whole Mac source tree. Do not copy images, fonts or brand assets whose licensing has not been verified.
 
