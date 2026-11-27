@@ -67,7 +67,15 @@ function orderedEfforts(values: string[]): string[] {
     .map((x) => x.v);
 }
 function effortTitle(effort: string): string {
-  if (effort === "xhigh" || effort === "extra-high") return "Extra High";
+  const lower = effort.toLowerCase();
+  if (
+    lower === "xhigh" ||
+    lower === "extra-high" ||
+    lower === "extra_high" ||
+    lower === "extra high"
+  ) {
+    return "Extra High";
+  }
   if (effort === "") return "Default";
   return effort.charAt(0).toUpperCase() + effort.slice(1);
 }
@@ -83,6 +91,7 @@ export interface ModelPickerProps {
   readOnly?: boolean;
   initialCatalog?: CodexModelCatalog | null;
   initialOpen?: boolean;
+  initialModelsExpanded?: boolean;
   initialQuery?: string;
   trimCache?: PickerModelsCache<CodexModelOption>;
   onTrimCompute?: () => void;
@@ -95,6 +104,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
     props.initialCatalog ?? null,
   );
   const [popOpen, setPopOpen] = useState(props.initialOpen ?? false);
+  const [modelsExpanded, setModelsExpanded] = useState(
+    props.initialModelsExpanded ?? (props.initialOpen ? true : false),
+  );
   const [pickerQuery, setPickerQuery] = useState(props.initialQuery ?? "");
   const [selectedCategory, setSelectedCategory] = useState<PickerCategory | null>(null);
   const [activeLeftKey, setActiveLeftKey] = useState<string | null>(null);
@@ -102,6 +114,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   const gen = useRef(0);
   const popRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const effortTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const lastTriggerRef = useRef<"model" | "effort">("model");
+  const prevExpandedRef = useRef(modelsExpanded);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const leftColRef = useRef<HTMLDivElement | null>(null);
   const rightColRef = useRef<HTMLDivElement | null>(null);
@@ -130,7 +145,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       if (e.key === "Escape") {
         e.preventDefault();
         setPopOpen(false);
-        triggerRef.current?.focus();
+        (lastTriggerRef.current === "effort" ? effortTriggerRef.current : triggerRef.current)?.focus();
       }
     };
     const onDown = (e: MouseEvent) => {
@@ -145,6 +160,13 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       document.removeEventListener("mousedown", onDown, true);
     };
   }, [popOpen]);
+
+  useEffect(() => {
+    if (popOpen && modelsExpanded && !prevExpandedRef.current) {
+      searchRef.current?.focus();
+    }
+    prevExpandedRef.current = modelsExpanded;
+  }, [popOpen, modelsExpanded]);
 
   const models: CodexModelOption[] =
     catalog?.state === "ready" ? catalog.models : EMPTY_MODELS;
@@ -272,10 +294,33 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   const selectedModel = models.find((m) => m.id === selected);
   const efforts = orderedEfforts(selectedModel?.efforts ?? []);
   const selectedEffort = thread.codexEffort ?? "";
+  const resolvedIndex = (() => {
+    if (efforts.length === 0) return -1;
+    if (selectedEffort !== "") {
+      const idx = efforts.indexOf(selectedEffort);
+      if (idx >= 0) return idx;
+    }
+    if (selectedModel?.defaultEffort) {
+      const idx = efforts.indexOf(selectedModel.defaultEffort);
+      if (idx >= 0) return idx;
+    }
+    const medIdx = efforts.indexOf("medium");
+    return medIdx >= 0 ? medIdx : 0;
+  })();
+  const resolvedEffort =
+    resolvedIndex >= 0
+      ? efforts[resolvedIndex]!
+      : selectedEffort !== ""
+        ? selectedEffort
+        : "";
+  const reasoningLabel =
+    resolvedEffort !== "" ? t(effortTitle(resolvedEffort)) : t("Standard");
+  const isMaxEffort = efforts.length > 1 && resolvedIndex === efforts.length - 1;
   const reported = thread.codexModelReported
     ? `${thread.codexModelReported}${thread.codexEffortReported ? ` / ${thread.codexEffortReported}` : ""}`
     : null;
   const tierId = thread.codexServiceTier ?? selectedModel?.fastTier ?? null;
+  const isFastOn = tierId !== null && thread.codexServiceTier === tierId;
   const set = (
     model: string | null,
     effort: string | null,
@@ -565,7 +610,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       e.preventDefault();
       e.stopPropagation();
       setPopOpen(false);
-      triggerRef.current?.focus();
+      (lastTriggerRef.current === "effort" ? effortTriggerRef.current : triggerRef.current)?.focus();
       return;
     }
     const activeEl = document.activeElement;
@@ -922,6 +967,32 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       ? t("Pairs & models")
       : t("Browse models");
 
+  const currentModelDisplayName = activePair
+    ? pairTitle(activePair)
+    : selectedModel
+      ? selectedModel.name
+      : selected !== ""
+        ? `${selected} (${t("saved")})`
+        : t("Default (provider decides)");
+
+  const openPopover = (expanded: boolean, source: "model" | "effort") => {
+    lastTriggerRef.current = source;
+    refresh();
+    setPickerQuery("");
+    setActiveLeftKey(null);
+    setActiveRightKey(null);
+    if (hasUserGroups) {
+      setSelectedCategory(
+        defaultPickerCategory(partition, selected, {
+          leadsWithPair,
+          hasPairs: showsPairs,
+        }),
+      );
+    }
+    setModelsExpanded(expanded);
+    setPopOpen(true);
+  };
+
   return (
     <div className="model-picker" data-cat={catalog?.state ?? "loading"}>
       <select
@@ -967,26 +1038,15 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
           className={popTriggerClass}
           disabled={!!props.readOnly}
           aria-haspopup="dialog"
-          aria-expanded={popOpen}
+          aria-expanded={popOpen && modelsExpanded}
           aria-label={popTriggerAria}
           title={popTriggerAria}
           onClick={() => {
-            const next = !popOpen;
-            if (next) {
-              refresh();
-              setPickerQuery("");
-              setActiveLeftKey(null);
-              setActiveRightKey(null);
-              if (hasUserGroups) {
-                setSelectedCategory(
-                  defaultPickerCategory(partition, selected, {
-                    leadsWithPair,
-                    hasPairs: showsPairs,
-                  }),
-                );
-              }
+            if (popOpen && modelsExpanded) {
+              setPopOpen(false);
+              return;
             }
-            setPopOpen(next);
+            openPopover(true, "model");
           }}
         >
           <span className={hasUserGroups ? "model-groups-btn-label" : "model-picker-btn-label"}>
@@ -994,14 +1054,166 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
           </span>
           <span aria-hidden="true">▾</span>
         </button>
+        <button
+          ref={effortTriggerRef}
+          type="button"
+          className="effort-picker-btn"
+          disabled={!!props.readOnly}
+          aria-haspopup="dialog"
+          aria-expanded={popOpen && !modelsExpanded}
+          aria-label={t("Reasoning effort")}
+          title={t("Reasoning effort — applies to the next turn")}
+          onClick={() => {
+            if (popOpen && !modelsExpanded) {
+              setPopOpen(false);
+              return;
+            }
+            openPopover(false, "effort");
+          }}
+        >
+          <span className="effort-picker-btn-label">{reasoningLabel}</span>
+          <span aria-hidden="true">▾</span>
+        </button>
 
         {popOpen && (
           <div
-            className={`model-picker-pop${hasUserGroups ? "" : twoColumns ? " two-col" : " single-col"}`}
+            className={`model-picker-pop${
+              !modelsExpanded
+                ? " effort-only"
+                : hasUserGroups
+                  ? ""
+                  : twoColumns
+                    ? " two-col"
+                    : " single-col"
+            }`}
             role="dialog"
-            aria-label={popTriggerAria}
+            aria-label={modelsExpanded ? popTriggerAria : t("Reasoning effort")}
             onKeyDown={onPopKeyDown}
           >
+            <div
+              className="effort-card"
+              data-state={modelsExpanded ? "expanded" : "collapsed"}
+            >
+              <div className="effort-card-head">
+                {tierId !== null ? (
+                  <button
+                    type="button"
+                    className={`effort-fast-btn${isFastOn ? " active" : ""}`}
+                    disabled={!!props.readOnly}
+                    aria-pressed={isFastOn}
+                    aria-label={t("Fast mode")}
+                    title={isFastOn ? t("Fast mode is on") : t("Fast mode")}
+                    onClick={() =>
+                      set(
+                        thread.codexModel ?? null,
+                        thread.codexEffort ?? null,
+                        isFastOn ? null : tierId,
+                      )
+                    }
+                  >
+                    ⚡
+                  </button>
+                ) : (
+                  <span className="effort-head-spacer" aria-hidden="true" />
+                )}
+                <button
+                  type="button"
+                  className="effort-model-btn"
+                  aria-expanded={modelsExpanded}
+                  aria-label={t("Choose a model")}
+                  title={t("Choose a model")}
+                  onClick={() => setModelsExpanded((was) => !was)}
+                >
+                  <span className="effort-model-name">{currentModelDisplayName}</span>
+                  <span
+                    className={`effort-model-chev${modelsExpanded ? " open" : ""}`}
+                    aria-hidden="true"
+                  >
+                    {modelsExpanded ? "▾" : "›"}
+                  </span>
+                </button>
+                <span className="effort-head-spacer" aria-hidden="true" />
+              </div>
+
+              <div
+                className="effort-level-label"
+                data-effort-level={resolvedEffort || "standard"}
+                data-max={isMaxEffort ? "true" : undefined}
+                data-fast={isFastOn ? "true" : undefined}
+              >
+                {reasoningLabel}
+              </div>
+
+              {efforts.length > 0 ? (
+                <div className="effort-slider-wrap">
+                  <div className="effort-slider-track" aria-hidden="true">
+                    <div className="effort-slider-bar">
+                      <div
+                        className={`effort-slider-fill${isMaxEffort ? " max" : ""}${isFastOn ? " fast" : ""}`}
+                        style={{
+                          width:
+                            efforts.length > 1
+                              ? `${(resolvedIndex / (efforts.length - 1)) * 100}%`
+                              : "100%",
+                        }}
+                      />
+                    </div>
+                    <div
+                      className="effort-slider-stops"
+                      style={{
+                        justifyContent: efforts.length === 1 ? "center" : "space-between",
+                      }}
+                    >
+                      {efforts.map((eff, idx) => (
+                        <span
+                          key={eff}
+                          className={`effort-slider-stop${idx <= resolvedIndex ? " active" : ""}`}
+                        />
+                      ))}
+                    </div>
+                    <span
+                      className="effort-slider-thumb"
+                      style={{
+                        left:
+                          efforts.length > 1
+                            ? `calc(9px + (100% - 18px) * ${resolvedIndex / (efforts.length - 1)})`
+                            : "50%",
+                      }}
+                    />
+                  </div>
+                  <input
+                    type="range"
+                    className="effort-slider"
+                    min={0}
+                    max={efforts.length - 1}
+                    step={1}
+                    value={resolvedIndex}
+                    disabled={!!props.readOnly}
+                    aria-label={t("Reasoning effort")}
+                    aria-valuetext={reasoningLabel}
+                    onChange={(e) => {
+                      const idx = Number(e.target.value);
+                      const nextEffort = efforts[idx];
+                      if (nextEffort !== undefined) {
+                        set(
+                          thread.codexModel ?? null,
+                          nextEffort,
+                          thread.codexServiceTier ?? null,
+                        );
+                      }
+                    }}
+                  />
+                </div>
+              ) : (
+                <div className="effort-single-note">
+                  {t("This model has one reasoning level.")}
+                </div>
+              )}
+            </div>
+
+            {modelsExpanded && <div className="effort-divider" />}
+            {modelsExpanded && (
+              <>
             <div className="model-pop-search-row">
               <input
                 ref={searchRef}
@@ -1141,6 +1353,8 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
                   {renderPopListBody()}
                 </div>
               </div>
+            )}
+              </>
             )}
           </div>
         )}

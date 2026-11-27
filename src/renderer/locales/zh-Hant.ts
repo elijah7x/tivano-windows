@@ -2118,4 +2118,9 @@ export const zhHant: Record<string, string> = {
   "Where Droppy Code began": "Droppy Code 的起源",
   "Responsive chat architecture": "流暢對話架構參考",
   "Streaming text fade": "串流文字漸顯",
+  // P2-80
+  "Standard": "標準",
+  "This model has one reasoning level.": "此模型只有一檔推理強度。",
+  "Fast mode": "快速模式",
+  "Fast mode is on": "快速模式已開啟",
 };
