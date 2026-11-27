@@ -2733,6 +2733,13 @@ function Invoke-AutoMerge {
       }
 
       # (c) PR body contains a closing keyword for the issue number parsed from nyx/<n>-...
+      # A parity re-baseline PR (nyx/rebaseline-v*, solo-v3.md) has no linked issue: the gate and
+      # audit apply their guarded-file exemption only to that branch, so it skips the issue checks.
+      $prBody = [string](Get-JsonProp $pr 'body')
+      $issueNum = 0
+      $closingPattern = ''
+      $isRebaselinePr = ($headRef -like 'nyx/rebaseline-v*')
+      if (-not $isRebaselinePr) {
       $branchMatch = [regex]::Match($headRef, '^nyx/(?:h-)?([0-9]+)-')
       if (-not $branchMatch.Success) {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (branch ' + $headRef + ' does not match nyx/<issue>-...)')
@@ -2743,7 +2750,6 @@ function Invoke-AutoMerge {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (invalid issue number in branch ' + $headRef + ')')
         continue
       }
-      $prBody = [string](Get-JsonProp $pr 'body')
       $closingPattern = '(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(?:' + [regex]::Escape($Repo) + ')?#' + $issueNum + '\b'
       if ([string]::IsNullOrWhiteSpace($prBody) -or ($prBody -notmatch $closingPattern)) {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (PR body missing closing keyword for #' + $issueNum + ')')
@@ -2779,6 +2785,7 @@ function Invoke-AutoMerge {
       if ($parkedHit) {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (recorded in parked.json)')
         continue
+      }
       }
 
       # (b) Combined commit status context 'nyx/audit' on that SHA is 'success'.
@@ -2859,7 +2866,9 @@ function Invoke-AutoMerge {
       if ([string]::IsNullOrWhiteSpace($prTitle)) { $prTitle = 'PR' }
       $subject = $prTitle + ' (#' + $prNum + ')'
       $cleanBody = Remove-AttributionLines $prBody
-      if ([string]::IsNullOrWhiteSpace($cleanBody)) {
+      if ($issueNum -le 0) {
+        if ([string]::IsNullOrWhiteSpace($cleanBody)) { $cleanBody = $prTitle }
+      } elseif ([string]::IsNullOrWhiteSpace($cleanBody)) {
         $cleanBody = 'Closes #' + $issueNum
       } elseif ($cleanBody -notmatch $closingPattern) {
         $cleanBody = $cleanBody + "`n`nCloses #" + $issueNum
@@ -2937,7 +2946,8 @@ function Invoke-AutoMerge {
 
       Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): merged (issue #' + $issueNum + ', mergeCommit ' + $mergeSha7 + ', today ' + $mergedToday + '/' + $script:AutoMergeDailyCap + ')')
 
-      # Close the linked issue with a comment if it is still open.
+      # Close the linked issue with a comment if it is still open (re-baseline PRs have none).
+      if ($issueNum -le 0) { continue }
       $issueViewRes = Invoke-Gh ('issue view ' + $issueNum + ' -R ' + $Repo + ' --json state')
       if ($issueViewRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$issueViewRes.text)) {
         try {
