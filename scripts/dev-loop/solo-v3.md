@@ -76,6 +76,8 @@ Clear existing open `nyx-auto` work before re-baselining so pending PRs do not c
 
 ## 2. Phase 1 — Re-baseline to v3.0.0
 
+Historical: this phase ran in 2026-11. Skip it whenever `docs/source-baseline.json` on `origin/main` names any tag other than `v2.5.7` (go straight to Phase 2); the current re-baseline is step 2a.
+
 Deliver one PR titled `Parity: retarget the checklist to macOS v3.0.0` moving the parity baseline from `v2.5.7` to `v3.0.0`. This PR must pass the gate and merge before Phase 2 starts.
 
 1. **Prepare the read-only v3.0.0 reference clone** at `C:\tivano\reference\tivano-v3.0.0`. If missing, create it with `--no-checkout` and check out the tag in detached HEAD; always verify both hashes:
@@ -125,7 +127,7 @@ Deliver one PR titled `Parity: retarget the checklist to macOS v3.0.0` moving th
 
 This step interrupts whatever phase is current and does **not** require Phase 0 to clear open work.
 
-- **Trigger:** `docs/source-baseline.json` on `origin/main` still has `"tag": "v3.0.0"`.
+- **Trigger:** `docs/source-baseline.json` on `origin/main` still has `"tag": "v3.0.0"`, **or** `solo-v3.json` `rebaseline3026` is not `"issues-opened"` (so a restart after the merge still opens the follow-up issues; when the tag already reads `v3.0.26`, skip straight to item 7's issue step).
 - **When triggered:** finish only the current step of the issue in hand (pushing, gating, or recording an awaited audit is fine). Then, before starting any new issue, deliver one PR titled `Parity: retarget the checklist to macOS v3.0.26` on branch `nyx/rebaseline-v3-0-26` in worktree `C:\tivano\dev-loop\work\rebaseline-v3-0-26` from `origin/main`, following Phase 1 steps 1-7 with these substitutions:
   1. **Verify the existing read-only v3.0.26 reference clone** at `C:\tivano\reference\tivano-v3.0.26` (the clone already exists; only verify, never modify or re-clone). Verify both hashes: `v3.0.26` tag object `700f4f3e9a0c5f73378e46d389a88899d5a33a0f` and commit `23ac46c6f2e922d62b1a388f3ead7c42260e2dd4`; `HEAD` must equal `23ac46c6f2e922d62b1a388f3ead7c42260e2dd4` before reading files.
   2. **Worktree and branch:** create or reuse `C:\tivano\dev-loop\work\rebaseline-v3-0-26` on branch `nyx/rebaseline-v3-0-26` from `origin/main`.
@@ -136,10 +138,10 @@ This step interrupts whatever phase is current and does **not** require Phase 0 
      - Keep all existing sections and row IDs.
      - Add one new section `v3.0.0 -> v3.0.26` immediately before `Windows platform gates`: one row per user-visible behavior, continuing `P1`/`P2` numbering after the highest existing IDs, statuses never `done`, never touching `deferred` rows, and macOS-only items marked `n/a (macOS-only: <reason>)`.
      - Re-check existing rows whose behavior `3.0.1`-`3.0.26` changed; update their `Notes` and, if warranted, status only to `partial` or `n/a` (never `done`, never touching `deferred` rows).
-  6. **Scope, verification, gate, audit, and merge:** the PR touches **only** `docs/source-baseline.json` and `docs/parity.md`, runs `npm run verify` (stopping leftover worktree processes), follows `.github/pull_request_template.md`, and goes through `Invoke-AutopilotGate.ps1` and `nyx/audit` like any PR; the watchdog merges it (never run `gh pr merge`). It counts toward Devin's 3-PR WIP cap like any Devin PR, but takes priority over new issues.
+  6. **Scope, verification, gate, audit, and merge:** the PR touches **only** `docs/source-baseline.json`, `docs/parity.md`, and the two live target strings that name the baseline: `baselineTag` (and its commit, if shown) in `src/main/engine.ts` (Settings › About) and the `description` in `package.json` (plus any test asserting those strings), runs `npm run verify` (stopping leftover worktree processes), follows `.github/pull_request_template.md`, and goes through `Invoke-AutopilotGate.ps1` and `nyx/audit` like any PR; the watchdog merges it (never run `gh pr merge`). It counts toward Devin's 3-PR WIP cap like any Devin PR, but takes priority over new issues.
   7. **Tracking and post-merge follow-up:**
      - Post one public-text-safe line to tracking issue `#34` when the PR opens and one line when it merges.
-     - After GitHub confirms `MERGED`, remove the worktree and record `"rebaseline3026": "merged"` in `C:\tivano\dev-loop\autopilot\solo-v3.json`.
+     - After GitHub confirms `MERGED`, remove the worktree and record `"rebaseline3026": "merged"` in `C:\tivano\dev-loop\autopilot\solo-v3.json`. After every follow-up issue exists (re-list open `parity` issues first so none is duplicated), set `"rebaseline3026": "issues-opened"`.
      - Open `nyx-auto` parity issues following Phase 2 rules: one issue per `not started` or `partial` row of the new `v3.0.0 -> v3.0.26` section that is actionable on Windows, using the `parity_task` template (`.github/ISSUE_TEMPLATE/parity_task.yml`), with `--label parity --label nyx-auto` and **no** lane label until claimed. Then continue the current queue phase.
 
 ## 3. Phase 2 — Plan the queue
