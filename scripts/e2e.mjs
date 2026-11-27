@@ -58,6 +58,10 @@ import { runSleepChecks } from "./sleepChecks.mjs";
 import { runFontSizeChecks } from "./fontSizeChecks.mjs";
 import { runLocalControlChecks } from "./localControlChecks.mjs";
 import { runHydraChecks } from "./hydraChecks.mjs";
+import {
+  runOffHelperInteractionChecks,
+  runOffHelperInteractionStandalone,
+} from "./offHelperInteractionChecks.mjs";
 import { runTurnGroupChecks } from "./turnGroupChecks.mjs";
 import { runMoveChecks } from "./moveChecks.mjs";
 import { runCodexApprovalChecks } from "./codexApprovalChecks.mjs";
@@ -87,6 +91,15 @@ import { runRemoteMcpChecks } from "./remoteMcpChecks.mjs";
 import { runWelcomeChecks } from "./welcomeChecks.mjs";
 import { runP253ChromeChecks } from "./p253ChromeChecks.mjs";
 import { runPredictionChecks } from "./predictionChecks.mjs";
+
+const onlySuite = process.argv.find((a) => a.startsWith("--only="))?.slice("--only=".length);
+if (onlySuite) {
+  if (onlySuite !== "offhelper") {
+    console.error(`unknown --only suite: ${onlySuite}`);
+    process.exit(2);
+  }
+  process.exit(await runOffHelperInteractionStandalone());
+}
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const require = createRequire(join(root, "package.json"));
@@ -1766,6 +1779,19 @@ try {
     check,
     boundedClose,
     dataRoot,
+    outDir,
+  });
+
+  // P2-40 audit follow-up: Off capsule + automatic-pop hold interactions.
+  // This module also has a targeted `--only=offhelper` mode so its desktop
+  // evidence can be produced while the older POSIX-bound suites are being
+  // made Windows-native.
+  await runOffHelperInteractionChecks({
+    launch,
+    instances,
+    snap,
+    check,
+    closeInstance: boundedClose,
     outDir,
   });
 
