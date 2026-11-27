@@ -177,7 +177,10 @@ export class LocalControlService {
   }
 
   whenSettled(): Promise<void> {
-    return this.queue;
+    return this.queue.then(
+      () => {},
+      () => {},
+    );
   }
 
   /** Frozen refreshListening — called on settings changes, library load
