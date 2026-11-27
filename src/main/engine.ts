@@ -1536,18 +1536,13 @@ export class Engine {
         else void this.worktrees.worktreeRemove(projectId, wt).catch(() => {});
       }
     }
-    const removeOwnTaskWorkspace =
-      !del.projectId &&
-      !del.parentThreadId &&
-      this.paths?.hasTaskWorkspaceRoot() === true &&
-      !this.isTaskWorkspaceReferenced(id);
+    // Upstream `AppModel.delete` / `Storage.deleteDocuments` removes only the
+    // thread records and leaves `<dataRoot>/task-workspaces/<id>` intact so
+    // files created during Just chat are never silently lost on deletion.
     this.store.update((d) => {
       d.threads = d.threads.filter((t) => t.id !== id);
       if (d.ui.selectedThreadId === id) d.ui.selectedThreadId = null;
     });
-    if (removeOwnTaskWorkspace) {
-      this.paths!.removeTaskWorkspace(id);
-    }
     this.emit({ type: "thread-removed", threadId: id });
   }
 
@@ -7864,17 +7859,6 @@ export class Engine {
       cur = parent;
     }
     return cur.id;
-  }
-
-  private isTaskWorkspaceReferenced(ownerId: string): boolean {
-    return this.store.state.threads.some((t) => {
-      if (t.id === ownerId || t.projectId) return false;
-      try {
-        return this.taskWorkspaceOwnerId(t) === ownerId;
-      } catch {
-        return false;
-      }
-    });
   }
 
   private resolveAuthorizedWorkspace(thread: ChatThread): WorkspaceGrant {
