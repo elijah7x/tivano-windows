@@ -228,8 +228,7 @@ describe("CodexAppServerProvider P2-57 lightweight-start", () => {
     const models = await p.fetchModelCatalogOneShot(ws);
     expect(models.map((m) => m.id)).toContain("fixture-model");
     expect(models.map((m) => m.id)).not.toContain("fixture-hidden");
-    // Unbound modelCatalog() contract remains null until a chat session binds.
-    await expect(p.modelCatalog()).resolves.toBeNull();
+    // Production modelCatalog() uses the same one-shot path before any chat.
 
     // 3. Regular chat turn stays unchanged (no lightweight config overrides).
     const grant: WorkspaceGrant = { projectId: "p1", directory: ws };
@@ -302,6 +301,52 @@ describe("CodexAppServerProvider P2-57 lightweight-start", () => {
     expect(disposeRes.orphanedPending).toBe(1);
     expect(disposeRes.children.length).toBe(1);
     expect(disposeRes.children[0]!.confirmed).toBe(true);
+  });
+
+  it("runOneShot bounds concurrent lightweight children", async () => {
+    const ws = tmp("tivano-p257-ws-");
+    const c1 = new ScriptedChild();
+    const c2 = new ScriptedChild();
+    const queue = [c1, c2];
+    const spawned: string[][] = [];
+    const p = makeProvider(fixtureCfg(), {
+      limits: { maxOneShotChildren: 1 },
+      spawnImpl: (spec) => {
+        spawned.push([...spec.args]);
+        return queue.shift() as unknown as ChildProcess;
+      },
+    });
+
+    const first = p.runOneShot(ws, async (rpc) => rpc.request("model/list", {}));
+    const init1 = await c1.next();
+    c1.write({
+      id: init1.id as number,
+      result: { codexHome: p.config.codexHome, userAgent: "fixture" },
+    });
+    await c1.next(); // initialized
+    const list1 = await c1.next();
+    expect(list1.method).toBe("model/list");
+
+    const second = p.runOneShot(ws, async (rpc) => rpc.request("model/list", {}));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(spawned).toHaveLength(1);
+
+    c1.write({ id: list1.id as number, result: { data: [], nextCursor: null } });
+    await expect(first).resolves.toEqual({ data: [], nextCursor: null });
+
+    const init2 = await c2.next();
+    expect(spawned).toHaveLength(2);
+    c2.write({
+      id: init2.id as number,
+      result: { codexHome: p.config.codexHome, userAgent: "fixture" },
+    });
+    await c2.next(); // initialized
+    const list2 = await c2.next();
+    c2.write({ id: list2.id as number, result: { data: [], nextCursor: null } });
+    await expect(second).resolves.toEqual({ data: [], nextCursor: null });
+    expect(spawned[0]).toEqual([FIXTURE, ...CODEX_ONE_SHOT_CONFIG_ARGS]);
+    expect(spawned[1]).toEqual([FIXTURE, ...CODEX_ONE_SHOT_CONFIG_ARGS]);
+    await p.dispose();
   });
 
   it("runOneShot enforces config, tree-capability, workspace, and codexHome guards", async () => {

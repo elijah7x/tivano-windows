@@ -4085,8 +4085,10 @@ export class Engine {
 
   /**
    * The provider-owned model catalog (Codex model/list). Never
-   * fabricated: non-Codex providers → unsupported; no live session →
-   * pending; a failed read → unavailable with the real reason.
+   * fabricated: non-Codex providers → unsupported; a provider that
+   * genuinely cannot report yet → pending; a failed read → unavailable
+   * with the real reason. Codex production reads use a lightweight
+   * one-shot probe, so no chat session is required.
    */
   async codexModels(): Promise<CodexModelCatalog> {
     if (this.provider.descriptor.mode !== "codex")

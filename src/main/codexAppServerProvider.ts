@@ -30,6 +30,7 @@
 //     still-living child so provider.dispose can retry it honestly.
 
 import { mkdirSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type {
   ApprovalRequest,
@@ -176,6 +177,8 @@ export interface CodexProviderLimits {
   rollbackTimeoutMs: number;
   /** P2-01/F31 one-shot text generation turn completion cap (180s matching macOS TextGeneration.swift). */
   predictionTimeoutMs: number;
+  /** Max concurrent lightweight one-shot app-server children across catalog/text probes. */
+  maxOneShotChildren: number;
 }
 
 export const DEFAULT_CODEX_LIMITS: CodexProviderLimits = {
@@ -211,6 +214,7 @@ export const DEFAULT_CODEX_LIMITS: CodexProviderLimits = {
   disposeInterruptMs: 5_000,
   rollbackTimeoutMs: 30_000,
   predictionTimeoutMs: 180_000,
+  maxOneShotChildren: 3,
 };
 
 export interface CodexProviderOptions {
@@ -2977,6 +2981,9 @@ export class CodexAppServerProvider implements ProviderAdapter {
   private oneShotTransports = new Set<StdioTransport<CodexMessage>>();
   private oneShotRpcs = new Set<CodexRpc>();
   private oneShotCleanupFailures = new Map<StdioTransport<CodexMessage>, ChildCleanupResult>();
+  private oneShotActive = 0;
+  private readonly oneShotWaiters = new Set<() => void>();
+  private catalogFlight: Promise<CodexModelOption[]> | null = null;
   private cachedCatalog: CodexModelOption[] | null = null;
   private disposed = false;
 
@@ -3163,12 +3170,6 @@ export class CodexAppServerProvider implements ProviderAdapter {
   }
 
   /**
-   * Provider-owned model catalog. model/list needs a live session —
-   * sessions are provider-global, so ANY ready one can serve it. No
-   * ready session → null (the engine reports "pending"); a failing
-   * read propagates → "unavailable". Never fabricates a list.
-   */
-  /**
    * F09: frozen session.compact — thread/compact/start on the bound
    * session. No bound or no longer-ready session → CODEX_NOT_RUNNING,
    * which the engine maps to "Nothing to compact yet.".
@@ -3243,6 +3244,35 @@ export class CodexAppServerProvider implements ProviderAdapter {
     }
   }
 
+  private wakeOneShotWaiter(): void {
+    const wake = this.oneShotWaiters.values().next().value as (() => void) | undefined;
+    if (!wake) return;
+    this.oneShotWaiters.delete(wake);
+    wake();
+  }
+
+  /** Admit at most maxOneShotChildren concurrent lightweight children. */
+  private async acquireOneShotSlot(): Promise<() => void> {
+    for (;;) {
+      if (this.disposed) {
+        throw new CodexProviderError("CODEX_BUSY: provider is disposed", "CODEX_BUSY");
+      }
+      if (this.oneShotActive < this.limits.maxOneShotChildren) {
+        this.oneShotActive++;
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          this.oneShotActive = Math.max(0, this.oneShotActive - 1);
+          this.wakeOneShotWaiter();
+        };
+      }
+      await new Promise<void>((resolve) => {
+        this.oneShotWaiters.add(() => resolve());
+      });
+    }
+  }
+
   /**
    * Run a lightweight one-shot `app-server` background session (no plugins,
    * apps, or telemetry via `CODEX_ONE_SHOT_CONFIG_ARGS`), handshake
@@ -3250,6 +3280,23 @@ export class CodexAppServerProvider implements ProviderAdapter {
    * Regular chat sessions keep `lightweight` unset and retain plugins.
    */
   async runOneShot<T>(
+    workspaceDir: string,
+    fn: (rpc: CodexRpc, initResult: Record<string, unknown>) => Promise<T>,
+    opts?: {
+      onNotification?: (method: string, params: unknown) => void;
+      onClose?: (err: Error) => void;
+    },
+  ): Promise<T> {
+    this.assertCanLaunch();
+    const release = await this.acquireOneShotSlot();
+    try {
+      return await this.runOneShotUnchecked(workspaceDir, fn, opts);
+    } finally {
+      release();
+    }
+  }
+
+  private async runOneShotUnchecked<T>(
     workspaceDir: string,
     fn: (rpc: CodexRpc, initResult: Record<string, unknown>) => Promise<T>,
     opts?: {
@@ -3401,7 +3448,8 @@ export class CodexAppServerProvider implements ProviderAdapter {
     return models;
   }
 
-  private textGenWorkspaceDir(preferred?: string): string {
+  /** Temporary local cwd for provider-global one-shot probes, matching upstream's temporary-directory model. */
+  private oneShotWorkspaceDir(preferred?: string): string {
     if (
       preferred &&
       !preferred.includes("\0") &&
@@ -3419,6 +3467,15 @@ export class CodexAppServerProvider implements ProviderAdapter {
     const fallback = join(this.config.codexHome, "tmp");
     mkdirSync(fallback, { recursive: true });
     return fallback;
+  }
+
+  private textGenWorkspaceDir(preferred?: string): string {
+    return this.oneShotWorkspaceDir(preferred);
+  }
+
+  /** Upstream listModels runs in the OS temporary directory, never in a user checkout. */
+  private catalogWorkspaceDir(): string {
+    return tmpdir();
   }
 
   /**
@@ -3666,15 +3723,26 @@ export class CodexAppServerProvider implements ProviderAdapter {
     }
   }
 
+  /**
+   * Provider-owned model catalog. Upstream listModels is always a fresh
+   * lightweight one-shot in a temporary directory, so no chat session is
+   * required. Concurrent callers share one in-flight probe; failures
+   * propagate to the engine's honest "unavailable" state and nothing is
+   * fabricated.
+   */
   async modelCatalog(): Promise<CodexModelOption[] | null> {
-    for (const s of this.sessions.values()) {
-      if (s.phase === "ready") return s.fetchModelCatalog();
-    }
-    return null;
+    this.catalogFlight ??= this.fetchModelCatalogOneShot(this.catalogWorkspaceDir()).finally(() => {
+      this.catalogFlight = null;
+    });
+    return this.catalogFlight;
   }
 
   async dispose(): Promise<AdapterDisposeResult> {
     this.disposed = true;
+    for (const wake of [...this.oneShotWaiters]) {
+      this.oneShotWaiters.delete(wake);
+      wake();
+    }
     const children: ChildCleanupResult[] = [];
     let orphaned = 0;
     for (const r of [...this.oneShotRpcs]) {
