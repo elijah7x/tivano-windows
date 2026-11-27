@@ -216,7 +216,6 @@ export const ja: Record<string, string> = {
   "Thread actions": "スレッド操作",
   "Reveal folder": "フォルダーを表示",
   "Reveal": "Finder で表示",
-  "Open in another app": "別のアプリで開く",
   "Open in": "次で開く",
   "File Explorer": "エクスプローラー",
   "Reveal in Finder": "Finder で表示",

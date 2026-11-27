@@ -4023,7 +4023,7 @@ html[data-paused="1"] .md-veil { animation: none !important; }
 .wt-input.invalid { border-color: var(--danger, #e5534b); }
 .script-check { display: flex; align-items: center; gap: 6px; font-size: calc(12px + var(--fs-ui-off)); color: var(--muted, #9a9aa0); cursor: pointer; }
 
-/* F13 commit flow (frozen GitActionsMenu + CommitSheet); F15 OpenInMenu
+/* F13 commit flow (frozen GitActionsMenu + CommitSheet); F15 Open-in menu items
    shares the same chrome with its own class names. */
 .git-actions, .openin { position: relative; }
 .git-menu-btn, .openin-btn {

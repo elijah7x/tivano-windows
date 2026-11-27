@@ -216,7 +216,6 @@ export const ko: Record<string, string> = {
   "Thread actions": "스레드 작업",
   "Reveal folder": "폴더 보기",
   "Reveal": "Finder에서 보기",
-  "Open in another app": "다른 앱으로 열기",
   "Open in": "다음으로 열기",
   "File Explorer": "파일 탐색기",
   "Reveal in Finder": "Finder에서 보기",
