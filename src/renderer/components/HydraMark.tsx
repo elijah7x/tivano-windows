@@ -16,6 +16,32 @@ import type { SettingsPageId } from "./SettingsModal";
 
 type Pop = "intro" | "idle" | "switch";
 
+export type HydraMarkClickAction =
+  | "none"
+  | "toggle-panel"
+  | "open-intro"
+  | "open-idle"
+  | "open-switch"
+  | "close-pop";
+
+export function resolveHydraMarkClick(opts: {
+  readOnly: boolean;
+  hasHeads: boolean;
+  isOn: boolean;
+  isChimera: boolean;
+  seenIntro: boolean;
+  pop: Pop | null;
+}): HydraMarkClickAction {
+  if (opts.readOnly) return "none";
+  if (opts.hasHeads) {
+    if (opts.isOn && !opts.isChimera && !opts.seenIntro) return "open-intro";
+    return "toggle-panel";
+  }
+  if (!opts.isOn) return opts.pop === "switch" ? "close-pop" : "open-switch";
+  if (!opts.isChimera && !opts.seenIntro) return "open-intro";
+  return opts.pop === "idle" ? "close-pop" : "open-idle";
+}
+
 const hex = (n: number): string => `#${n.toString(16).padStart(6, "0")}`;
 
 function ChimeraMarkSvg(): React.JSX.Element {
@@ -152,29 +178,27 @@ export function HydraMark(props: {
   };
 
   const onClick = (): void => {
-    if (props.readOnly) return;
-    if (hasHeads) {
-      if (!isChimera && !seenIntro) {
-        if (pop === "intro") setPop(null);
-        else openPop("intro");
-        return;
-      }
+    const action = resolveHydraMarkClick({
+      readOnly: props.readOnly === true,
+      hasHeads,
+      isOn,
+      isChimera,
+      seenIntro,
+      pop,
+    });
+    if (action === "none") return;
+    if (action === "toggle-panel") {
       setPop(null);
       props.onTogglePanel();
-      return;
+    } else if (action === "open-intro") {
+      openPop("intro");
+    } else if (action === "open-idle") {
+      openPop("idle");
+    } else if (action === "open-switch") {
+      openPop("switch");
+    } else {
+      setPop(null);
     }
-    if (!isOn) {
-      if (pop === "switch") setPop(null);
-      else openPop("switch");
-      return;
-    }
-    if (!isChimera && !seenIntro) {
-      if (pop === "intro") setPop(null);
-      else openPop("intro");
-      return;
-    }
-    if (pop === "idle") setPop(null);
-    else openPop("idle");
   };
 
   const markTitle = (): string => {

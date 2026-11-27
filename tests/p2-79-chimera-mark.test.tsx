@@ -26,7 +26,7 @@ import { describe, expect, it } from "vitest";
 };
 
 import { ChatView } from "../src/renderer/components/ChatView";
-import { HydraMark } from "../src/renderer/components/HydraMark";
+import { HydraMark, resolveHydraMarkClick } from "../src/renderer/components/HydraMark";
 import { LanguageContext } from "../src/renderer/locale";
 import type { ChatThread, LanguageId, Settings } from "../src/shared/types";
 
@@ -209,5 +209,83 @@ describe("P2-79 Chimera mark and sub-agent panel button", () => {
     expect(hiddenHtml).toContain('class="hydra-mark chimera"');
     expect(hiddenHtml).toContain('aria-expanded="false"');
     expect(hiddenHtml).not.toContain('class="hydra-panel');
+  });
+
+  it("handles click actions across adaptive, Hydra unread intro, and disabled-with-heads states", () => {
+    // Adaptive mode with heads always toggles the panel even when intro is unread.
+    expect(
+      resolveHydraMarkClick({
+        readOnly: false,
+        hasHeads: true,
+        isOn: true,
+        isChimera: true,
+        seenIntro: false,
+        pop: null,
+      }),
+    ).toBe("toggle-panel");
+    // Disabled / adaptive-off chat with heads and unread intro toggles the panel instead of opening Meet Hydra.
+    expect(
+      resolveHydraMarkClick({
+        readOnly: false,
+        hasHeads: true,
+        isOn: false,
+        isChimera: false,
+        seenIntro: false,
+        pop: null,
+      }),
+    ).toBe("toggle-panel");
+    // Unread Hydra intro clicks remain idempotent when pop === "intro" is already open (HY-46).
+    expect(
+      resolveHydraMarkClick({
+        readOnly: false,
+        hasHeads: true,
+        isOn: true,
+        isChimera: false,
+        seenIntro: false,
+        pop: "intro",
+      }),
+    ).toBe("open-intro");
+    expect(
+      resolveHydraMarkClick({
+        readOnly: false,
+        hasHeads: false,
+        isOn: true,
+        isChimera: false,
+        seenIntro: false,
+        pop: "intro",
+      }),
+    ).toBe("open-intro");
+    // Adaptive mode with zero heads toggles the adaptive idle note even before Hydra intro is seen.
+    expect(
+      resolveHydraMarkClick({
+        readOnly: false,
+        hasHeads: false,
+        isOn: true,
+        isChimera: true,
+        seenIntro: false,
+        pop: null,
+      }),
+    ).toBe("open-idle");
+    expect(
+      resolveHydraMarkClick({
+        readOnly: false,
+        hasHeads: false,
+        isOn: true,
+        isChimera: true,
+        seenIntro: false,
+        pop: "idle",
+      }),
+    ).toBe("close-pop");
+    // Off with zero heads toggles the switch popover.
+    expect(
+      resolveHydraMarkClick({
+        readOnly: false,
+        hasHeads: false,
+        isOn: false,
+        isChimera: false,
+        seenIntro: false,
+        pop: null,
+      }),
+    ).toBe("open-switch");
   });
 });
