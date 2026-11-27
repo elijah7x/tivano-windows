@@ -614,8 +614,8 @@ export function ChatView(props: {
   // P2-40 "One per sub-agent" (frozen hydraAutoPopsHeads +
   // hydraAutoPopHeld): under Independent with the panels allowed to
   // open, every head after the first pops its own floating panel.
-  // Dismissing one holds it closed until the lead is re-opened; the
-  // head stays reachable in the team panel.
+  // Dismissing one holds it closed until the team panel is dismissed;
+  // the head stays reachable in the team panel.
   const [popHeld, setPopHeld] = useState<ReadonlySet<string>>(new Set());
   const popsOn = hydraPanelLayout(props.settings ?? {}) === "independent";
 
@@ -731,12 +731,14 @@ export function ChatView(props: {
             {...(props.onOpenSettings ? { onOpenSettings: props.onOpenSettings } : {})}
           />
           {offTopHelper && (
-            <div className="chrome-capsule helper-working-top">
+            <div className="chrome-capsule">
               <button
                 type="button"
                 className="helper-working-btn"
                 title={t("Show the sub-agent panel")}
                 aria-label={t("Show the sub-agent panel")}
+                aria-valuetext={t("Sub-agent working")}
+                disabled={props.readOnly === true}
                 onClick={() =>
                   void callApi("threads:show-helper", { id: offTopHelper.id }).catch(() => {})
                 }

@@ -19,7 +19,7 @@ afterEach(() => {
   else (globalThis as { window?: unknown }).window = prevWindow;
 });
 
-function renderWithLayout(autoOpens: boolean): string {
+function renderWithLayout(autoOpens: boolean, readOnly = false): string {
   (globalThis as { window?: unknown }).window = {
     tivano: { platform: "win32", invoke: async () => ({}), onEvent: () => () => {} },
   };
@@ -40,7 +40,7 @@ function renderWithLayout(autoOpens: boolean): string {
       createElement(ChatView, {
         thread, threads: [thread, helper], projects: [], providerLabel: "Mock Provider",
         mode: "mock", directory: "C:\\synthetic\\repo", sidebarCollapsed: true,
-        onToggleSidebar: () => {}, settings,
+        readOnly, onToggleSidebar: () => {}, settings,
       }),
     ),
   );
@@ -48,8 +48,17 @@ function renderWithLayout(autoOpens: boolean): string {
 
 describe("Off top-bar helper indicator", () => {
   it("appears for a plain helper running outside its panel only under Off", () => {
-    expect(renderWithLayout(false)).toContain("helper-working-btn");
-    expect(renderWithLayout(false)).toContain('title="Show the sub-agent panel"');
+    const off = renderWithLayout(false);
+    expect(off).toContain("helper-working-btn");
+    expect(off).toContain('title="Show the sub-agent panel"');
+    expect(off).toContain('aria-valuetext="Sub-agent working"');
+    expect(off).not.toContain('class="chrome-capsule helper-working-top"');
     expect(renderWithLayout(true)).not.toContain("helper-working-btn");
+  });
+
+  it("disables the capsule in a read-only window like its neighbors", () => {
+    const html = renderWithLayout(false, true);
+    expect(html).toContain("helper-working-btn");
+    expect(html).toMatch(/class="helper-working-btn"[^>]*disabled=""/);
   });
 });

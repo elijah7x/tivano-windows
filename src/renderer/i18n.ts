@@ -1052,6 +1052,7 @@ const zhHans: Record<string, string> = {
   "No heads out yet": "尚未派出子智能体",
   "Show the panel": "显示面板",
   "Show the sub-agent panel": "显示子代理面板",
+  "Sub-agent working": "子代理运行中",
   "Hide the panel": "隐藏面板",
   "1 head working": "1 个子智能体正在工作",
   "%d heads working": "%d 个子智能体正在工作",
