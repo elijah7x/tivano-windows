@@ -4,13 +4,19 @@
 // Electron has no window.prompt/confirm, so rename/create use inline fields
 // and delete uses a two-tap armed confirmation on the row itself.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ChatThread, OpenDirectoryResult, Snapshot } from "../../shared/types";
+import {
+  isAnchorVisibleInContainer,
+  rectToAnchor,
+  type AnchorRect,
+} from "../../shared/popoverAnchor";
 import { compareThreads } from "../../shared/threadOrder";
 import { useT } from "../locale";
 import { api, callApi, clientStore, tryCall, type WeatherFlashStatus } from "../client";
 import { ProjectIconPicker } from "./ProjectIconPicker";
+import { RemoveProjectPopover } from "./RemoveProjectPopover";
 import { MiniSpinner } from "./SpinnerCells";
 import { Skylight } from "./Skylight";
 import { resolveWeatherWindowMode } from "../../shared/skylight";
@@ -81,6 +87,14 @@ export function Sidebar(props: {
   const [projectHint, setProjectHint] = useState<{ id: string; mode: "before" | "after" | "into" } | null>(null);
   // F01: the project-icon popover, anchored at the clicked mark button.
   const [iconPop, setIconPop] = useState<{ projectId: string; x: number; y: number } | null>(null);
+  // P2-78: Remove-this-project confirmation popover anchored beside the selected project row.
+  const [pendingProjectDelete, setPendingProjectDelete] = useState<{
+    projectId: string;
+    anchor: AnchorRect;
+  } | null>(null);
+  const threadListRef = useRef<HTMLDivElement>(null);
+  const projectRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const projectDeleteBtnRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   // v2.2.x: the shelf popover + inline shelf rename (v2.2.22).
   const [shelfOpen, setShelfOpen] = useState(false);
   const [shelfRename, setShelfRename] = useState<string | null>(null);
@@ -337,6 +351,111 @@ export function Sidebar(props: {
       archived,
     };
   }, [snapshot, q]);
+
+  const pendingProjectId = pendingProjectDelete?.projectId ?? null;
+  const pendingProject = useMemo(
+    () =>
+      pendingProjectId
+        ? (snapshot.projects.find((p) => p.id === pendingProjectId && !p.isShelved) ?? null)
+        : null,
+    [snapshot.projects, pendingProjectId],
+  );
+  const pendingProjectThreadCount = useMemo(
+    () =>
+      pendingProject
+        ? snapshot.threads.filter((th) => th.projectId === pendingProject.id).length
+        : 0,
+    [snapshot.threads, pendingProject],
+  );
+
+  const readProjectAnchor = useCallback(
+    (projectId: string): { anchor: AnchorRect; visible: boolean } | null => {
+      const rowEl = projectRowRefs.current.get(projectId);
+      if (!rowEl) return null;
+      const anchor = rectToAnchor(rowEl.getBoundingClientRect());
+      const listEl = threadListRef.current;
+      const visible = listEl
+        ? isAnchorVisibleInContainer(anchor, rectToAnchor(listEl.getBoundingClientRect()))
+        : true;
+      return { anchor, visible };
+    },
+    [],
+  );
+
+  const getPendingTriggerEl = useCallback(
+    () => (pendingProjectId ? (projectDeleteBtnRefs.current.get(pendingProjectId) ?? null) : null),
+    [pendingProjectId],
+  );
+
+  const getPendingAnchorRect = useCallback(
+    () => (pendingProjectId ? readProjectAnchor(pendingProjectId) : null),
+    [pendingProjectId, readProjectAnchor],
+  );
+
+  const cancelProjectDelete = useCallback(
+    (restoreFocus: boolean): void => {
+      const targetId = pendingProjectId;
+      setPendingProjectDelete(null);
+      if (restoreFocus && targetId) {
+        requestAnimationFrame(() => {
+          projectDeleteBtnRefs.current.get(targetId)?.focus();
+        });
+      }
+    },
+    [pendingProjectId],
+  );
+
+  const confirmProjectDelete = useCallback((): void => {
+    if (!pendingProject) return;
+    const id = pendingProject.id;
+    const remainingIds = groups.projects
+      .map((g) => g.project.id)
+      .filter((pid) => pid !== id);
+    setPendingProjectDelete(null);
+    tryCall("projects:delete", { id });
+    requestAnimationFrame(() => {
+      const fallbackId = remainingIds[0];
+      if (fallbackId) {
+        const nextBtn = projectDeleteBtnRefs.current.get(fallbackId);
+        if (nextBtn) {
+          nextBtn.focus();
+          return;
+        }
+      }
+      threadListRef.current?.focus();
+    });
+  }, [pendingProject, groups.projects]);
+
+  useEffect(() => {
+    if (pendingProjectDelete && (!pendingProject || snapshot.readOnly === true)) {
+      setPendingProjectDelete(null);
+    }
+  }, [pendingProjectDelete, pendingProject, snapshot.readOnly]);
+
+  // Re-sync anchor coordinates if project collapse/expand, search, or sibling
+  // updates shift the selected row's position while the popover is open.
+  useLayoutEffect(() => {
+    if (!pendingProjectId || !pendingProject) return;
+    const next = readProjectAnchor(pendingProjectId);
+    if (!next || !next.visible) {
+      setPendingProjectDelete(null);
+      return;
+    }
+    setPendingProjectDelete((prev) => {
+      if (!prev || prev.projectId !== pendingProjectId) return prev;
+      const a = prev.anchor;
+      const b = next.anchor;
+      if (
+        Math.abs(a.left - b.left) < 0.5 &&
+        Math.abs(a.right - b.right) < 0.5 &&
+        Math.abs(a.top - b.top) < 0.5 &&
+        Math.abs(a.bottom - b.bottom) < 0.5
+      ) {
+        return prev;
+      }
+      return { projectId: pendingProjectId, anchor: b };
+    });
+  }, [pendingProjectId, pendingProject, groups.projects, q, readProjectAnchor]);
 
   const select = (id: string) => tryCall("threads:select", { id });
 
@@ -648,7 +767,7 @@ export function Sidebar(props: {
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
-      <div className="thread-list" role="list">
+      <div className="thread-list" role="list" ref={threadListRef} tabIndex={-1}>
         {snapshot.projects.length === 0 && snapshot.threads.length === 0 && (
           <div className="center-state">
             <span>{t("No projects yet")}</span>
@@ -657,6 +776,11 @@ export function Sidebar(props: {
         {groups.projects.map(({ project, threads }) => (
           <div key={project.id}>
             <div
+              ref={(el) => {
+                if (el) projectRowRefs.current.set(project.id, el);
+                else projectRowRefs.current.delete(project.id);
+              }}
+              data-project-id={project.id}
               className={`group-row${
                 projectHint?.id === project.id
                   ? projectHint.mode === "into"
@@ -747,31 +871,41 @@ export function Sidebar(props: {
               >
                 ＋
               </button>
-              {armedDeleteId === project.id ? (
-                <button
-                  className="icon-btn danger-arm"
-                  aria-label={`${t("Delete project")}: ${project.name}`}
-                  disabled={snapshot.readOnly === true}
-                  autoFocus
-                  onBlur={() => setArmedDeleteId(null)}
-                  onClick={() => {
-                    setArmedDeleteId(null);
-                    tryCall("projects:delete", { id: project.id });
-                  }}
-                >
-                  {t("Delete")}?
-                </button>
-              ) : (
-                <button
-                  className="icon-btn"
-                  title={t("Delete project")}
-                  aria-label={`${t("Delete project")}: ${project.name}`}
-                  disabled={snapshot.readOnly === true}
-                  onClick={() => setArmedDeleteId(project.id)}
-                >
-                  ×
-                </button>
-              )}
+              <button
+                ref={(el) => {
+                  if (el) projectDeleteBtnRefs.current.set(project.id, el);
+                  else projectDeleteBtnRefs.current.delete(project.id);
+                }}
+                type="button"
+                className={`icon-btn${pendingProjectDelete?.projectId === project.id ? " active" : ""}`}
+                title={t("Delete project")}
+                aria-label={`${t("Delete project")}: ${project.name}`}
+                aria-haspopup="dialog"
+                aria-expanded={pendingProjectDelete?.projectId === project.id}
+                aria-controls={
+                  pendingProjectDelete?.projectId === project.id
+                    ? "project-delete-popover"
+                    : undefined
+                }
+                disabled={snapshot.readOnly === true}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (pendingProjectDelete?.projectId === project.id) {
+                    setPendingProjectDelete(null);
+                    return;
+                  }
+                  const rowEl =
+                    projectRowRefs.current.get(project.id) ??
+                    e.currentTarget.closest(".group-row") ??
+                    e.currentTarget;
+                  setPendingProjectDelete({
+                    projectId: project.id,
+                    anchor: rectToAnchor(rowEl.getBoundingClientRect()),
+                  });
+                }}
+              >
+                ×
+              </button>
             </div>
             {project.directory && (
               <div className="dir-hint" title={project.directory}>
@@ -1005,6 +1139,27 @@ export function Sidebar(props: {
         </div>,
         document.body,
       )}
+      {pendingProject &&
+        pendingProjectDelete &&
+        (() => {
+          const pop = (
+            <RemoveProjectPopover
+              projectId={pendingProject.id}
+              projectName={pendingProject.name}
+              threadCount={pendingProjectThreadCount}
+              anchor={pendingProjectDelete.anchor}
+              getAnchorRect={getPendingAnchorRect}
+              scrollContainer={threadListRef.current}
+              getTriggerEl={getPendingTriggerEl}
+              readOnly={snapshot.readOnly === true}
+              onRemove={confirmProjectDelete}
+              onCancel={cancelProjectDelete}
+            />
+          );
+          return typeof document !== "undefined" && document.body
+            ? createPortal(pop, document.body)
+            : pop;
+        })()}
     </nav>
   );
 }
