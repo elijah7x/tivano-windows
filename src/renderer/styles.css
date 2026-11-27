@@ -617,6 +617,68 @@ button.primary:hover {
 .row-menu [role="menuitem"]:hover:not(:disabled) { background: var(--surface-3); }
 .row-menu [role="menuitem"].danger { color: var(--danger); }
 
+/* P2-78 Remove-this-project confirmation popover anchored beside the selected project row. */
+.group-row .icon-btn.active {
+  background: var(--hover);
+  color: var(--text);
+}
+.proj-delete-pop {
+  position: fixed;
+  width: 280px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  z-index: 65;
+  overflow-y: auto;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+.proj-delete-title {
+  padding: 6px 8px 3px;
+  font-size: calc(12px + var(--fs-ui-off));
+  font-weight: 600;
+  color: var(--text-2);
+}
+.proj-delete-note {
+  padding: 5px 8px;
+  font-size: calc(12.5px + var(--fs-ui-off));
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.proj-delete-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 5px 8px;
+}
+.proj-delete-btn {
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: calc(12.5px + var(--fs-ui-off));
+  cursor: pointer;
+}
+.proj-delete-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+.proj-delete-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.proj-delete-btn.danger {
+  color: var(--danger);
+}
+.proj-delete-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .sidebar-foot {
   border-top: 1px solid var(--border);
   padding: 6px 8px 10px;
@@ -4023,7 +4085,7 @@ html[data-paused="1"] .md-veil { animation: none !important; }
 .wt-input.invalid { border-color: var(--danger, #e5534b); }
 .script-check { display: flex; align-items: center; gap: 6px; font-size: calc(12px + var(--fs-ui-off)); color: var(--muted, #9a9aa0); cursor: pointer; }
 
-/* F13 commit flow (frozen GitActionsMenu + CommitSheet); F15 OpenInMenu
+/* F13 commit flow (frozen GitActionsMenu + CommitSheet); F15 Open-in menu items
    shares the same chrome with its own class names. */
 .git-actions, .openin { position: relative; }
 .git-menu-btn, .openin-btn {

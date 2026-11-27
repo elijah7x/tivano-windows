@@ -95,6 +95,7 @@ import { runRemoteMcpChecks } from "./remoteMcpChecks.mjs";
 import { runWelcomeChecks } from "./welcomeChecks.mjs";
 import { runP253ChromeChecks } from "./p253ChromeChecks.mjs";
 import { runPredictionChecks } from "./predictionChecks.mjs";
+import { runProjectDeleteChecks } from "./projectDeleteChecks.mjs";
 
 const onlySuite = process.argv.find((a) => a.startsWith("--only="))?.slice("--only=".length);
 if (onlySuite) {
@@ -985,8 +986,9 @@ try {
   // Deleting the bound project revokes the grant but keeps user files.
   const deleteProject = page.getByRole("button", { name: `Delete project: ${pOpened.name}`, exact: true });
   await deleteProject.click();
+  await page.waitForSelector("#project-delete-popover", { timeout: 8000 });
   check("project delete requires confirmation", (await snap(page)).projects.some((p) => p.id === pidOpened));
-  await deleteProject.click();
+  await page.locator("#project-delete-popover").getByRole("button", { name: "Remove project", exact: true }).click();
   await waitSnapshot(page, (s) => !s.projects.some((p) => p.id === pidOpened));
   check(
     "delete revokes grant but preserves the user directory",
@@ -2196,6 +2198,15 @@ try {
     instances,
     snap,
     outDir,
+    check,
+    boundedClose,
+  });
+
+  // ---- session 36: P2-78 Remove-this-project confirmation popover --------
+  await runProjectDeleteChecks({
+    launch,
+    instances,
+    snap,
     check,
     boundedClose,
   });

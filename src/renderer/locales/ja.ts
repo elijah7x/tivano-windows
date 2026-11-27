@@ -216,7 +216,6 @@ export const ja: Record<string, string> = {
   "Thread actions": "スレッド操作",
   "Reveal folder": "フォルダーを表示",
   "Reveal": "Finder で表示",
-  "Open in another app": "別のアプリで開く",
   "Open in": "次で開く",
   "File Explorer": "エクスプローラー",
   "Reveal in Finder": "Finder で表示",
@@ -2140,4 +2139,9 @@ export const ja: Record<string, string> = {
   "This model has one reasoning level.": "このモデルの推論レベルは 1 段階のみです。",
   "Fast mode": "高速モード",
   "Fast mode is on": "高速モードがオンです",
+  // P2-78
+  "Remove this project?": "このプロジェクトを削除しますか？",
+  "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
+    "これにより %lld 件のチャット（他のプロジェクトの関連サブエージェントおよびヘルパーを含む）が完全に削除されます。プロジェクトのソースファイルは削除されません。",
+  "Remove project": "プロジェクトを削除",
 };

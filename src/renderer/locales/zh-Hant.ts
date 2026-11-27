@@ -216,7 +216,6 @@ export const zhHant: Record<string, string> = {
   "Thread actions": "對話操作",
   "Reveal folder": "在檔案管理員中顯示",
   "Reveal": "在 Finder 中顯示",
-  "Open in another app": "在其他應用程式中開啟",
   "Open in": "開啟方式",
   "File Explorer": "檔案總管",
   "Reveal in Finder": "在 Finder 中顯示",
@@ -2140,4 +2139,9 @@ export const zhHant: Record<string, string> = {
   "This model has one reasoning level.": "此模型只有一檔推理強度。",
   "Fast mode": "快速模式",
   "Fast mode is on": "快速模式已開啟",
+  // P2-78
+  "Remove this project?": "要移除此專案嗎？",
+  "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
+    "這將永久刪除 %lld 個對話，包含關聯至其他專案的子代理與助手。專案原始檔不會被刪除。",
+  "Remove project": "移除專案",
 };

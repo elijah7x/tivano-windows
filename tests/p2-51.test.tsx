@@ -9,7 +9,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-// Stub window/document for SSR renders of ChatView / OpenInMenu / MessagePopover.
+// Stub window/document for SSR renders of ChatView / OpenInItems / MessagePopover.
 if (typeof (globalThis as { window?: unknown }).window === "undefined") {
   (globalThis as { window?: unknown }).window = {
     innerWidth: 1280,
