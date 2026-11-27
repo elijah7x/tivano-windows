@@ -111,7 +111,7 @@ try {
   $principal = New-ScheduledTaskPrincipal -UserId $targetUser -LogonType $logonType -RunLevel Limited
 
   # 1. \TivanoAudit\pr -- every 10 minutes
-  $prArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + $prScriptPath + '" -ConfigPath "' + $configFullPath + '"'
+  $prArgs = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $prScriptPath + '" -ConfigPath "' + $configFullPath + '"'
   $prAction = New-ScheduledTaskAction -Execute $powershellPath -Argument $prArgs -WorkingDirectory $workRoot
   $prTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 10)
   $prSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
@@ -121,7 +121,7 @@ try {
 
   # 2. \TivanoAudit\postmerge -- daily at 03:00. A day of merges takes several hours to audit
   # (about 10 minutes each), so the limit only has to stop a run before the next day's start.
-  $postArgs = '-NoProfile -ExecutionPolicy Bypass -File "' + $postScriptPath + '" -ConfigPath "' + $configFullPath + '"'
+  $postArgs = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $postScriptPath + '" -ConfigPath "' + $configFullPath + '"'
   $postAction = New-ScheduledTaskAction -Execute $powershellPath -Argument $postArgs -WorkingDirectory $workRoot
   $postTrigger = New-ScheduledTaskTrigger -Daily -At '03:00'
   $postSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

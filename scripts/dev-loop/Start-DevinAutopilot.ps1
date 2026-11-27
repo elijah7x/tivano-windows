@@ -782,9 +782,16 @@ function Focus-DevinChatInput {
     Start-Sleep -Milliseconds 300
     $prompt = Find-DevinPromptElement $Window
     if ($null -ne $prompt) {
+      # UI Automation reports physical pixels, while this (DPI-unaware) process clicks in scaled
+      # coordinates, so map the Prompt box through the window's UIA rectangle onto GetWindowRect.
       $pr = $prompt.Current.BoundingRectangle
-      $px = [int]($pr.X + $pr.Width / 2)
-      $py = [int]($pr.Y + $pr.Height / 2)
+      $rr = [Windows.Automation.AutomationElement]::FromHandle($Window).Current.BoundingRectangle
+      $wr = New-Object DevLoopWindows+RECT
+      if (-not [DevLoopWindows]::GetWindowRect($Window, [ref]$wr) -or $rr.Width -le 0 -or $rr.Height -le 0) { return $false }
+      $sx = ($wr.Right - $wr.Left) / $rr.Width
+      $sy = ($wr.Bottom - $wr.Top) / $rr.Height
+      $px = [int]($wr.Left + ($pr.X + $pr.Width / 2 - $rr.X) * $sx)
+      $py = [int]($wr.Top + ($pr.Y + $pr.Height / 2 - $rr.Y) * $sy)
       if (-not [DevLoopWindows]::IsPointOnWindow($Window, $px, $py)) {
         Write-Log 'chat input click skipped: another window covers the Devin Prompt box'
         return $false
