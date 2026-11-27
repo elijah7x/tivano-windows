@@ -859,6 +859,8 @@ export const fr: Record<string, string> = {
   "%@ are done": "%@ ont terminé",
   "%@ stopped": "%@ s’est arrêté",
   "%@ failed": "%@ a échoué",
+  "Restart stopped sub-agent %@ before it finished.": "Le redémarrage a arrêté le sous-agent %@ avant la fin.",
+  "Restart stopped sub-agents %@ before they finished.": "Le redémarrage a arrêté les sous-agents %@ avant la fin.",
   "Hydra: no project named %@ is in the sidebar, so %@ did not start.": "Hydra : aucun projet nommé %@ n’est dans la barre latérale, %@ n’a donc pas démarré.",
   "Hydra: %@ did not start because its checkout could not be read.": "Hydra : %@ n’a pas démarré car sa copie de travail est illisible.",
   "Hydra: %@ is a system folder, so %@ did not start.": "Hydra : %@ est un dossier système, %@ n’a donc pas démarré.",

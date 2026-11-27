@@ -998,6 +998,8 @@ const zhHans: Record<string, string> = {
   "%@ are done": "%@ 已完成",
   "%@ stopped": "%@ 已停止",
   "%@ failed": "%@ 失败",
+  "Restart stopped sub-agent %@ before it finished.": "重启使子代理 %@ 在完成前停止。",
+  "Restart stopped sub-agents %@ before they finished.": "重启使子代理 %@ 在完成前停止。",
   "Hydra: no project named %@ is in the sidebar, so %@ did not start.":
     "Hydra：侧边栏中没有名为 %@ 的项目，因此 %@ 未启动。",
   "Hydra: %@ did not start because its checkout could not be read.":

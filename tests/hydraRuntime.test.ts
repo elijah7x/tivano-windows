@@ -1396,6 +1396,17 @@ describe("P2-62 Hydra finish-signal & unread suppression (frozen AppModel.turnFi
 
     expect(engine2.hydraLeadBusy(lead.id)).toBe(false);
 
+    // #177: the lead owns the interrupted result when restart recovery
+    // stops one of its heads — unread, interrupted, and told which head.
+    const recoveredLead = thread(engine2, lead.id);
+    expect(recoveredLead.hasUnread).toBe(true);
+    expect(recoveredLead.unreadStatus).toBe("interrupted");
+    const recoveryNote = recoveredLead.messages.find(
+      (m) => m.role === "system" && m.content.includes("Walter"),
+    );
+    expect(recoveryNote?.content).toContain("Restart stopped");
+    expect(recoveryNote?.content).toContain("Walter");
+
     const signals: {
       threadId: string;
       status: string;

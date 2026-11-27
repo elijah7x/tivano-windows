@@ -859,6 +859,8 @@ export const ja: Record<string, string> = {
   "%@ are done": "%@ が完了しました",
   "%@ stopped": "%@ が停止しました",
   "%@ failed": "%@ が失敗しました",
+  "Restart stopped sub-agent %@ before it finished.": "再起動によりサブエージェント %@ は完了前に停止しました。",
+  "Restart stopped sub-agents %@ before they finished.": "再起動によりサブエージェント %@ は完了前に停止しました。",
   "Hydra: no project named %@ is in the sidebar, so %@ did not start.": "Hydra: サイドバーに %@ という名前のプロジェクトがないため、%@ は起動しませんでした。",
   "Hydra: %@ did not start because its checkout could not be read.": "Hydra: チェックアウトを読み取れなかったため、%@ は起動しませんでした。",
   "Hydra: %@ is a system folder, so %@ did not start.": "Hydra: %@ はシステムフォルダーであるため、%@ は起動しませんでした。",

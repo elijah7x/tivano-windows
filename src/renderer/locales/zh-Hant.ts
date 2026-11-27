@@ -859,6 +859,8 @@ export const zhHant: Record<string, string> = {
   "%@ are done": "%@ 已完成",
   "%@ stopped": "%@ 已停止",
   "%@ failed": "%@ 失敗",
+  "Restart stopped sub-agent %@ before it finished.": "重新啟動使子代理 %@ 在完成前停止。",
+  "Restart stopped sub-agents %@ before they finished.": "重新啟動使子代理 %@ 在完成前停止。",
   "Hydra: no project named %@ is in the sidebar, so %@ did not start.": "Hydra：側邊欄中沒有名為 %@ 的專案，因此 %@ 未啟動。",
   "Hydra: %@ did not start because its checkout could not be read.": "Hydra：無法讀取 %@ 的檢出目錄，因此未啟動。",
   "Hydra: %@ is a system folder, so %@ did not start.": "Hydra：%@ 是系統資料夾，因此 %@ 未啟動。",

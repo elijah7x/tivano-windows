@@ -144,6 +144,33 @@ describe("F25 helper chat (frozen spawnSubagent/closeSubagent)", () => {
     expect(thread(engine, helper.id)!.messages[0]!.content).toBe(GITHUB_BRIEF.prompt);
   });
 
+  it("does not mark a helper unread while its open panel is on screen", async () => {
+    const { engine } = make();
+    const parent = engine.createThread(null, "parent");
+    const helper = engine.spawnHelper(parent.id, GITHUB_BRIEF.title, GITHUB_BRIEF.prompt);
+    await waitFor(() => turn(engine, helper.id)?.status === "done");
+
+    // The renderer treats a helper panel beside its selected parent as
+    // on-screen; the engine's unread mark must use the same rule.
+    expect(thread(engine, helper.id)?.isInPanel).toBe(true);
+    expect(engine.snapshot().selectedThreadId).toBe(parent.id);
+    expect(thread(engine, helper.id)?.hasUnread).toBeFalsy();
+  });
+
+  it("showing a helper panel spends its unread mark", async () => {
+    const { engine } = make();
+    const parent = engine.createThread(null, "parent");
+    const helper = engine.spawnHelper(parent.id, GITHUB_BRIEF.title, GITHUB_BRIEF.prompt);
+    engine.closeHelper(helper.id);
+    await waitFor(() => turn(engine, helper.id)?.status === "done");
+    expect(thread(engine, helper.id)?.hasUnread).toBe(true);
+
+    engine.showHelper(helper.id);
+    expect(thread(engine, helper.id)?.isInPanel).toBe(true);
+    expect(thread(engine, helper.id)?.hasUnread).toBe(false);
+    expect(thread(engine, helper.id)?.unreadStatus).toBeUndefined();
+  });
+
   it("spawn rejects an empty brief; helper of an unknown parent fails", () => {
     const { engine } = make();
     const parent = engine.createThread(null, "parent");
