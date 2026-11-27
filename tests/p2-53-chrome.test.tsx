@@ -510,6 +510,21 @@ describe("P2-53 window chrome simplification", () => {
     expect(regularRule).toContain("min-height: 28px");
     expect(regularRule).toContain("height: 28px");
 
+    const regularHeightRule = ruleBlock(".settings-modal .theme-btn");
+    expect(regularHeightRule).toContain(".settings-modal .shortcut-chord");
+    expect(regularHeightRule).toContain(".settings-modal .ml-newgroup-rail");
+    expect(regularHeightRule).toContain("min-height: 28px");
+    expect(regularHeightRule).toContain("height: 28px");
+    expect(regularHeightRule).toContain("padding-top: 0");
+    expect(regularHeightRule).toContain("padding-bottom: 0");
+
+    const modelIconRule = ruleBlock(".ml-tune, .ml-remove, .ml-add");
+    expect(modelIconRule).toContain("width: 24px");
+    expect(modelIconRule).toContain("min-width: 24px");
+    expect(modelIconRule).toContain("height: 24px");
+    expect(modelIconRule).toContain("min-height: 24px");
+    expect(modelIconRule).toContain("padding: 0");
+
     const hydraRemoveRule = ruleBlock(".settings-modal .choice.hydra-remove");
     expect(hydraRemoveRule).toContain("width: 24px");
     expect(hydraRemoveRule).toContain("min-height: 24px");
