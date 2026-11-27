@@ -7,9 +7,11 @@
 import type { CodexModelOption, Message, Settings } from "./types";
 
 /**
- * Maintainer decision (P2-18): Automatic Codex text generation uses the
- * cheapest mini-tier model in the Codex catalog at low effort.
- * Single named constant so changing the preferred mini model is a one-line edit.
+ * Maintainer decision (P2-18): Automatic Codex text generation targets a
+ * mini-tier Codex model at low effort, named in a single constant.
+ * Because `CodexModelOption` carries no pricing/cost metadata, selection
+ * prefers `CODEX_AUTOMATIC_TEXT_MODEL` first and otherwise falls back to
+ * the first catalog entry whose id or name matches `\bmini\b`.
  */
 export const CODEX_AUTOMATIC_TEXT_MODEL = "gpt-5.1-codex-mini";
 export const CODEX_AUTOMATIC_TEXT_EFFORT = "low";

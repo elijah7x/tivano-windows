@@ -138,6 +138,38 @@ describe("P2-18 text generation resolution and validation", () => {
     ).toEqual({ enabled: false });
   });
 
+  it("matches CODEX_AUTOMATIC_TEXT_MODEL first, else the first word-boundary mini match in catalog order", () => {
+    const nameOnlyMini: CodexModelOption = {
+      id: "codex-small",
+      name: "Codex Mini Preview",
+      efforts: ["low", "medium"],
+      defaultEffort: "medium",
+      isDefault: false,
+    };
+    const nonWordMini: CodexModelOption = {
+      id: "minimax-1",
+      name: "MiniMax",
+      efforts: ["low", "high"],
+      defaultEffort: "low",
+      isDefault: false,
+    };
+    const fallbackMini: CodexModelOption = {
+      id: "gpt-5.4-mini",
+      name: "GPT-5.4 Mini",
+      efforts: ["low", "medium", "high"],
+      defaultEffort: "medium",
+      isDefault: false,
+    };
+
+    expect(findAutomaticCodexTextModel([nonWordMini, nameOnlyMini, fallbackMini])?.id).toBe(
+      "codex-small",
+    );
+    expect(findAutomaticCodexTextModel([nonWordMini])?.id).toBeUndefined();
+    expect(findAutomaticCodexTextModel([nonWordMini, fallbackMini, CATALOG[2]!])?.id).toBe(
+      CODEX_AUTOMATIC_TEXT_MODEL,
+    );
+  });
+
   it("honors Specific model + effort and Off without falling back to Codex default", () => {
     expect(
       resolveTextGenerationPlan(

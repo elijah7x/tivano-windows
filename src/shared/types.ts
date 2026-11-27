@@ -237,10 +237,11 @@ export interface Settings {
   taskSleepMode?: TaskSleepMode;
   /**
    * P2-18: background text generation (thread titles, commit messages,
-   * composer predictions). "automatic" uses the cheapest mini-tier Codex
-   * model at low effort; "codex" uses the chosen textGenerationModelID /
-   * textGenerationEffort; "off" disables all background text generation.
-   * Absent on old stores = "automatic".
+   * composer predictions). "automatic" selects `CODEX_AUTOMATIC_TEXT_MODEL`
+   * (or else the first `\bmini\b` catalog match by id/name) at low effort;
+   * "codex" uses the chosen textGenerationModelID / textGenerationEffort;
+   * "off" disables all background text generation. Absent on old stores =
+   * "automatic".
    */
   textGeneration?: TextGenerationChoice;
   textGenerationModelID?: string;
