@@ -46,7 +46,7 @@ import {
   markdownMessageText,
 } from "../src/renderer/components/MessagePopover";
 import { clientStore } from "../src/renderer/client";
-import { ChatView, useMoreControlsDismiss } from "../src/renderer/components/ChatView";
+import { ChatView } from "../src/renderer/components/ChatView";
 import { CommandPalette } from "../src/renderer/components/CommandPalette";
 import { HydraPanel } from "../src/renderer/components/HydraPanel";
 import { Sidebar } from "../src/renderer/components/Sidebar";
@@ -371,7 +371,7 @@ describe("P2-51 persistent chat header More controls", () => {
               if (!node || node.nodeType !== 1 || typeof node.getAttribute !== "function") return false;
               if (selector === "[data-thread-switch]") return node.hasAttribute?.("data-thread-switch") === true;
               if (selector.startsWith("."))
-                return (node.getAttribute("class") ?? "").split(/s+/).includes(selector.slice(1));
+                return (node.getAttribute("class") ?? "").split(/\s+/).includes(selector.slice(1));
               return false;
             };
             let node: unknown = el;
