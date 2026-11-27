@@ -1,15 +1,15 @@
 {
   "repository_url": "https://github.com/elijah7x/tivano.git",
-  "release_url": "https://github.com/elijah7x/tivano/releases/tag/v3.0.0",
-  "release_date": "2026-11-20",
-  "tag": "v3.0.0",
-  "tag_object": "145684ceebc9c8e9a36ab563107150b9c2a8930a",
-  "commit": "15e03374f077343e500e8e5e3574c8c598162171",
-  "acquired_at": "2026-11-20T13:45:00Z",
-  "acquisition_method": "Read-only git clone of the upstream repository on a Windows test machine; checked out the v3.0.0 tag in detached HEAD and verified tag object 145684ceebc9c8e9a36ab563107150b9c2a8930a peels to commit 15e03374f077343e500e8e5e3574c8c598162171. No upstream scripts executed, no dependencies installed.",
-  "fetch_refspec": "refs/tags/v3.0.0",
-  "object_match": "Tag v3.0.0 resolves to tag object 145684ceebc9c8e9a36ab563107150b9c2a8930a, which peels to commit 15e03374f077343e500e8e5e3574c8c598162171; both were compared against the local read-only clone and match.",
-  "reference_policy": "Read-only reference, not a development checkout. Do not replace with current main/dev or execute upstream scripts. Obtain the reference source from the GitHub tag v3.0.0 (https://github.com/elijah7x/tivano/releases/tag/v3.0.0).",
+  "release_url": "https://github.com/elijah7x/tivano/releases/tag/v3.0.26",
+  "release_date": "2026-11-27",
+  "tag": "v3.0.26",
+  "tag_object": "700f4f3e9a0c5f73378e46d389a88899d5a33a0f",
+  "commit": "23ac46c6f2e922d62b1a388f3ead7c42260e2dd4",
+  "acquired_at": "2026-11-27T09:32:40.550Z",
+  "acquisition_method": "Read-only git clone of the upstream repository on a Windows test machine; checked out the v3.0.26 tag in detached HEAD and verified tag object 700f4f3e9a0c5f73378e46d389a88899d5a33a0f peels to commit 23ac46c6f2e922d62b1a388f3ead7c42260e2dd4. No upstream scripts executed, no dependencies installed.",
+  "fetch_refspec": "refs/tags/v3.0.26",
+  "object_match": "Tag v3.0.26 resolves to tag object 700f4f3e9a0c5f73378e46d389a88899d5a33a0f, which peels to commit 23ac46c6f2e922d62b1a388f3ead7c42260e2dd4; both were compared against the local read-only clone and match.",
+  "reference_policy": "Read-only reference, not a development checkout. Do not replace with current main/dev or execute upstream scripts. Obtain the reference source from the GitHub tag v3.0.26 (https://github.com/elijah7x/tivano/releases/tag/v3.0.26).",
   "relationship": "Tivano Windows is an independent Electron/React/TypeScript derivative rewrite targeting full parity with this frozen Tivano Mac baseline. It is not the original Droppy Code and does not claim endorsement or affiliation.",
   "preserved_upstream_files": [
     "LICENSE",
@@ -20,6 +20,14 @@
   "import_scope": "Only the three upstream legal/attribution files were copied into the Windows project during source preparation. The full Mac source tree and its images/fonts remain outside the project as reference; no production data or credentials were imported.",
   "validation_scope": "Source identity comparison only; no product build, test, launch or platform acceptance performed during preparation.",
   "previous_baselines": [
+    {
+      "tag": "v3.0.0",
+      "tag_object": "145684ceebc9c8e9a36ab563107150b9c2a8930a",
+      "commit": "15e03374f077343e500e8e5e3574c8c598162171",
+      "release_url": "https://github.com/elijah7x/tivano/releases/tag/v3.0.0",
+      "release_date": "2026-11-20",
+      "status": "historical - superseded as parity target on 2026-11-27 by v3.0.26"
+    },
     {
       "tag": "v2.5.7",
       "tag_object": "1d022b0e332f1e8b5006e2e867cbca9b2e9c69b6",
