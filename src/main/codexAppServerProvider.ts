@@ -3481,7 +3481,7 @@ export class CodexAppServerProvider implements ProviderAdapter {
 
   /** Upstream listModels runs in the OS temporary directory, never in a user checkout. */
   private catalogWorkspaceDir(): string {
-    return tmpdir();
+    return this.oneShotWorkspaceDir(tmpdir());
   }
 
   /**

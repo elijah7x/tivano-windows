@@ -483,6 +483,30 @@ describe("engine model selection (F17)", () => {
     await p.dispose();
   });
 
+  it("modelCatalog falls back to codexHome tmp when the OS temp directory is unsafe", async () => {
+    const { p } = provider();
+    const oldTemp = process.env.TEMP;
+    const oldTmp = process.env.TMP;
+    const seen: string[] = [];
+    const spy = vi.spyOn(p, "fetchModelCatalogOneShot").mockImplementation(async (workspaceDir) => {
+      seen.push(workspaceDir);
+      return [];
+    });
+    process.env.TEMP = "\\\\example.invalid\\share";
+    process.env.TMP = "\\\\example.invalid\\share";
+    try {
+      await expect(p.modelCatalog()).resolves.toEqual([]);
+    } finally {
+      if (oldTemp === undefined) delete process.env.TEMP;
+      else process.env.TEMP = oldTemp;
+      if (oldTmp === undefined) delete process.env.TMP;
+      else process.env.TMP = oldTmp;
+    }
+    expect(seen).toEqual([join(p.config.codexHome, "tmp")]);
+    spy.mockRestore();
+    await p.dispose();
+  });
+
   it("engine models:list disposal interrupts an unanswered one-shot model/list", async () => {
     const root = tmp("tivano-engmodel-");
     const store = new Store(root);
