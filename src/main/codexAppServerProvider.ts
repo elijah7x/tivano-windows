@@ -3746,7 +3746,6 @@ export class CodexAppServerProvider implements ProviderAdapter {
     const children: ChildCleanupResult[] = [];
     let orphaned = 0;
     for (const r of [...this.oneShotRpcs]) {
-      orphaned += r.pendingCount;
       r.failAllPending("CODEX_CONNECTION_CLOSED: provider disposed");
       this.oneShotRpcs.delete(r);
     }

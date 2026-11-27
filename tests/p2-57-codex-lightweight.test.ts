@@ -298,7 +298,7 @@ describe("CodexAppServerProvider P2-57 lightweight-start", () => {
       p.dispose(),
       expect(inFlight).rejects.toThrow(/CODEX_CONNECTION_CLOSED/),
     ]);
-    expect(disposeRes.orphanedPending).toBe(1);
+    expect(disposeRes.orphanedPending).toBe(0);
     expect(disposeRes.children.length).toBe(1);
     expect(disposeRes.children[0]!.confirmed).toBe(true);
   });

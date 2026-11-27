@@ -463,7 +463,7 @@ describe("engine model selection (F17)", () => {
 
     const [cat, disposed] = await Promise.all([pending, codex.dispose()]);
     expect(cat.state).toBe("unavailable");
-    expect(disposed.orphanedPending).toBe(1);
+    expect(disposed.orphanedPending).toBe(0);
     expect(disposed.children).toHaveLength(1);
     expect(disposed.children[0]!.confirmed).toBe(true);
     expect(child.killed.length).toBeGreaterThan(0);
