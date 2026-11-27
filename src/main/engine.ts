@@ -652,8 +652,8 @@ export class Engine {
     );
     return {
       appVersion: this.appVersion,
-      baselineTag: "v3.0.0",
-      baselineCommit: "15e03374f077343e500e8e5e3574c8c598162171",
+      baselineTag: "v3.0.26",
+      baselineCommit: "23ac46c6f2e922d62b1a388f3ead7c42260e2dd4",
       dataRoot: this.dataRoot,
       providerId: desc.id,
       providerLabel: desc.label,
