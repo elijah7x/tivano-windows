@@ -487,6 +487,7 @@ describe("engine model selection (F17)", () => {
     const { p } = provider();
     const oldTemp = process.env.TEMP;
     const oldTmp = process.env.TMP;
+    const oldTmpdir = process.env.TMPDIR;
     const seen: string[] = [];
     const spy = vi.spyOn(p, "fetchModelCatalogOneShot").mockImplementation(async (workspaceDir) => {
       seen.push(workspaceDir);
@@ -494,6 +495,7 @@ describe("engine model selection (F17)", () => {
     });
     process.env.TEMP = "\\\\example.invalid\\share";
     process.env.TMP = "\\\\example.invalid\\share";
+    process.env.TMPDIR = "\\\\example.invalid\\share";
     try {
       await expect(p.modelCatalog()).resolves.toEqual([]);
     } finally {
@@ -501,6 +503,8 @@ describe("engine model selection (F17)", () => {
       else process.env.TEMP = oldTemp;
       if (oldTmp === undefined) delete process.env.TMP;
       else process.env.TMP = oldTmp;
+      if (oldTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = oldTmpdir;
     }
     expect(seen).toEqual([join(p.config.codexHome, "tmp")]);
     spy.mockRestore();
