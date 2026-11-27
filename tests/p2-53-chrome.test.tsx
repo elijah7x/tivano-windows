@@ -6,11 +6,13 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createElement } from "react";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
+import { DOMImplementation } from "@xmldom/xmldom";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultSettings } from "../src/main/store";
-import { clientStore } from "../src/renderer/client";
+import { clientStore, type TivanoApi } from "../src/renderer/client";
 import { ChatView } from "../src/renderer/components/ChatView";
 import { CommandPalette } from "../src/renderer/components/CommandPalette";
 import { HydraMark } from "../src/renderer/components/HydraMark";
@@ -85,6 +87,98 @@ function renderInLang(lang: LanguageId, node: React.ReactElement): string {
   return renderToStaticMarkup(
     createElement(LanguageContext.Provider, { value: lang }, node),
   );
+}
+
+type GlobalDomSlots = {
+  window?: unknown;
+  document?: unknown;
+  IS_REACT_ACT_ENVIRONMENT?: boolean;
+};
+
+function setRuntimeProp(target: object, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    configurable: true,
+  });
+}
+
+function patchEventTarget(target: object): void {
+  setRuntimeProp(target, "addEventListener", () => {});
+  setRuntimeProp(target, "removeEventListener", () => {});
+  setRuntimeProp(target, "dispatchEvent", () => true);
+}
+
+/**
+ * Minimal DOM mount harness for interaction-path component tests. The project
+ * intentionally carries no browser-DOM test dependency; the XML document
+ * already present in the dev dependency tree supplies the node tree, with the
+ * few HTML/event gaps React touches patched here.
+ */
+function installMountedDom(invoke: TivanoApi["invoke"]): {
+  document: Document;
+  cleanup: () => void;
+} {
+  const globals = globalThis as GlobalDomSlots;
+  const previousWindow = globals.window;
+  const previousDocument = globals.document;
+  const previousActEnvironment = globals.IS_REACT_ACT_ENVIRONMENT;
+  const doc = new DOMImplementation().createDocument(null, "html", null) as Document;
+  const originalCreateTextNode = doc.createTextNode.bind(doc);
+  setRuntimeProp(doc, "createTextNode", (data: string) => {
+    const node = originalCreateTextNode(data);
+    Object.defineProperty(node, "nodeValue", {
+      configurable: true,
+      get: () => node.data,
+      set: (value: string) => {
+        node.data = String(value);
+      },
+    });
+    return node;
+  });
+  const head = doc.createElement("head");
+  const body = doc.createElement("body");
+  doc.documentElement.appendChild(head);
+  doc.documentElement.appendChild(body);
+  setRuntimeProp(doc, "head", head);
+  setRuntimeProp(doc, "body", body);
+  patchEventTarget(doc);
+  function HTMLIFrameElement(): void {}
+  const bridge: TivanoApi = {
+    platform: "win32",
+    invoke,
+    onEvent: () => () => {},
+  };
+  const testWindow = {
+    document: doc,
+    HTMLIFrameElement,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => true,
+    setTimeout,
+    clearTimeout,
+    tivano: bridge,
+  };
+  setRuntimeProp(doc, "defaultView", testWindow);
+  globals.document = doc;
+  globals.window = testWindow;
+  globals.IS_REACT_ACT_ENVIRONMENT = true;
+  return {
+    document: doc,
+    cleanup: () => {
+      if (previousWindow === undefined) delete globals.window;
+      else globals.window = previousWindow;
+      if (previousDocument === undefined) delete globals.document;
+      else globals.document = previousDocument;
+      if (previousActEnvironment === undefined) delete globals.IS_REACT_ACT_ENVIRONMENT;
+      else globals.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+    },
+  };
+}
+
+function patchMountContainer(container: Element): Element {
+  patchEventTarget(container);
+  return container;
 }
 
 afterEach(() => {
@@ -309,6 +403,48 @@ describe("P2-53 window chrome simplification", () => {
     expect(markHtml).toContain("hydra-mark");
   });
 
+  it("mounts ThreadChangesTab and toggles the empty popover through toggleSeq", async () => {
+    const { thread } = mockEnv("en");
+    const dom = installMountedDom(async (channel) => {
+      if (channel === "checkpoints:changes") return null;
+      throw new Error(`unexpected IPC channel in ThreadChangesTab mount test: ${channel}`);
+    });
+    try {
+      const container = patchMountContainer(dom.document.createElement("div"));
+      dom.document.body.appendChild(container);
+      const root = createRoot(container);
+      const tree = (toggleSeq: number): React.ReactElement =>
+        createElement(
+          LanguageContext.Provider,
+          { value: "en" },
+          createElement(ThreadChangesTab, { threadId: thread.id, toggleSeq }),
+        );
+
+      await act(async () => {
+        root.render(tree(0));
+      });
+      expect(container.toString()).not.toContain("thread-changes-pop");
+
+      await act(async () => {
+        root.render(tree(1));
+      });
+      const openHtml = container.toString();
+      expect(openHtml).toContain('class="thread-changes-pop"');
+      expect(openHtml).toContain('data-anchor="topbar"');
+      expect(openHtml).toContain("No changes yet");
+
+      await act(async () => {
+        root.render(tree(2));
+      });
+      expect(container.toString()).not.toContain("thread-changes-pop");
+      await act(async () => {
+        root.unmount();
+      });
+    } finally {
+      dom.cleanup();
+    }
+  });
+
   it("localizes Settings pages and top-bar strings in zh-Hans", () => {
     expect(translate("zh-Hans", "More controls")).toBe("更多控件");
     expect(translate("zh-Hans", "Models & Providers")).toBe("模型与服务商");
@@ -355,17 +491,37 @@ describe("P2-53 window chrome simplification", () => {
       join(__dirname, "..", "src", "renderer", "styles.css"),
       "utf8",
     );
+    const ruleBlock = (selector: string): string => {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const match = css.match(new RegExp(`(?:^|\\n)([^}]*${escaped}[^}]*)\\{([^}]*)\\}`, "m"));
+      expect(match, `missing CSS rule for ${selector}`).toBeTruthy();
+      return match?.[0] ?? "";
+    };
+
     expect(css).toContain(".sidebar.sidebar-tray");
     expect(css).toContain("border-radius: 16px");
     expect(css).toContain('.thread-changes-pop[data-anchor="topbar"]');
     expect(css).toContain(".chrome-capsule");
     expect(css).toContain(".settings-nav");
-    expect(css).toContain("height: 28px");
-    expect(css).toContain(".settings-modal .ml-newgroup");
-    expect(css).toContain(".settings-modal .choice.hydra-remove");
-    expect(css).toContain(".settings-modal .ml-remove:hover:not(:disabled)");
-    expect(css).toContain(".settings-btn-compact");
-    expect(css).toContain("height: 24px");
-    expect(css).toContain(".settings-modal .wp-btn.danger:hover:not(:disabled)");
+
+    const regularRule = ruleBlock(".settings-modal .modal-actions button");
+    expect(regularRule).toContain(".settings-modal .choice,");
+    expect(regularRule).toContain(".settings-modal .ml-newgroup,");
+    expect(regularRule).toContain("min-height: 28px");
+    expect(regularRule).toContain("height: 28px");
+
+    const hydraRemoveRule = ruleBlock(".settings-modal .choice.hydra-remove");
+    expect(hydraRemoveRule).toContain("width: 24px");
+    expect(hydraRemoveRule).toContain("min-height: 24px");
+    expect(hydraRemoveRule).toContain("height: 24px");
+
+    const compactRule = ruleBlock(".settings-modal .settings-btn-compact");
+    expect(compactRule).toContain(".settings-modal .shortcut-mini.settings-btn-compact");
+    expect(compactRule).toContain("min-height: 24px");
+    expect(compactRule).toContain("height: 24px");
+
+    const destructiveRule = ruleBlock(".settings-modal .wp-btn.danger:hover:not(:disabled)");
+    expect(destructiveRule).toContain(".settings-modal .ml-remove:hover:not(:disabled)");
+    expect(destructiveRule).toContain("color: var(--danger)");
   });
 });
