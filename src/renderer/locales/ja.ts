@@ -2135,4 +2135,9 @@ export const ja: Record<string, string> = {
   "Where Droppy Code began": "Droppy Code の原点",
   "Responsive chat architecture": "レスポンシブなチャット設計",
   "Streaming text fade": "ストリーミングテキストのフェード表示",
+  // P2-80
+  "Standard": "標準",
+  "This model has one reasoning level.": "このモデルの推論レベルは 1 段階のみです。",
+  "Fast mode": "高速モード",
+  "Fast mode is on": "高速モードがオンです",
 };

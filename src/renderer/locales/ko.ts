@@ -2135,4 +2135,9 @@ export const ko: Record<string, string> = {
   "Where Droppy Code began": "Droppy Code의 시작",
   "Responsive chat architecture": "반응형 대화 아키텍처",
   "Streaming text fade": "스트리밍 텍스트 페이드 효과",
+  // P2-80
+  "Standard": "표준",
+  "This model has one reasoning level.": "이 모델에는 추론 강도가 한 단계만 있습니다.",
+  "Fast mode": "빠른 모드",
+  "Fast mode is on": "빠른 모드가 켜져 있습니다",
 };

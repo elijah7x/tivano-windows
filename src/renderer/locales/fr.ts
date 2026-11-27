@@ -2135,4 +2135,9 @@ export const fr: Record<string, string> = {
   "Where Droppy Code began": "Aux origines de Droppy Code",
   "Responsive chat architecture": "Architecture de discussion réactive",
   "Streaming text fade": "Fondu du texte en streaming",
+  // P2-80
+  "Standard": "Standard",
+  "This model has one reasoning level.": "Ce modèle ne propose qu’un seul niveau de raisonnement.",
+  "Fast mode": "Mode rapide",
+  "Fast mode is on": "Le mode rapide est activé",
 };
