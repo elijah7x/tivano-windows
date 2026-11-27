@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-28.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Chat area: header with the labelled mock badge, message timeline with
 // streaming/approval/error/interruption states, and the composer.
@@ -270,6 +270,47 @@ function AutoPopPanels(props: {
   );
 }
 
+export type HydraPanelEvent =
+  | "toggle"
+  | "pill"
+  | "dismiss"
+  | "auto-open"
+  | "disable-auto-open"
+  | "thread-change";
+
+export interface HydraPanelState {
+  hidden: boolean;
+  focusSeq: number;
+}
+
+/**
+ * Computes the next sub-agent panel visibility and toggle-focus sequence.
+ * Any hide, dismiss, auto-open, or thread-switch clears `focusSeq` to 0 so
+ * remounting on a subsequent head spawn never replays a stale toggle focus
+ * and steals focus from the composer.
+ */
+export function nextHydraPanelState(
+  prev: HydraPanelState,
+  event: HydraPanelEvent,
+  autoOpensPanels: boolean,
+): HydraPanelState {
+  switch (event) {
+    case "toggle": {
+      const hidden = !prev.hidden;
+      return { hidden, focusSeq: hidden ? 0 : prev.focusSeq + 1 };
+    }
+    case "pill":
+      return { hidden: false, focusSeq: prev.focusSeq + 1 };
+    case "dismiss":
+    case "disable-auto-open":
+      return { hidden: true, focusSeq: 0 };
+    case "auto-open":
+      return { hidden: false, focusSeq: 0 };
+    case "thread-change":
+      return { hidden: !autoOpensPanels, focusSeq: 0 };
+  }
+}
+
 export function ChatView(props: {
   thread: ChatThread | null;
   /** F22: every thread — the Hydra panel resolves a lead's heads and a
@@ -444,7 +485,7 @@ export function ChatView(props: {
   const heads = useMemo(
     () =>
       (props.threads ?? [])
-        .filter((x) => x.hydraHead?.leadId === threadId)
+        .filter((x) => x.hydraHead?.leadId === threadId && !x.isArchived)
         .slice()
         .sort((a, b) => a.hydraHead!.spawnedAt - b.hydraHead!.spawnedAt),
     [props.threads, threadId],
@@ -452,10 +493,12 @@ export function ChatView(props: {
   // Frozen ThreadRuntime init: isHydraPanelHidden = !hydraAutoOpensPanels
   // — under Off a fresh thread starts with the panel hidden (the working
   // pill shows instead); Single/Independent open it.
-  const [hydraPanelHidden, setHydraPanelHidden] = useState(
-    () => props.settings?.hydraAutoOpensPanels === false,
-  );
-  const [panelFocusSeq, setPanelFocusSeq] = useState(0);
+  const [panelState, setPanelState] = useState<HydraPanelState>(() => ({
+    hidden: props.settings?.hydraAutoOpensPanels === false,
+    focusSeq: 0,
+  }));
+  const hydraPanelHidden = panelState.hidden;
+  const panelFocusSeq = panelState.focusSeq;
   const hydraMarkBtnRef = useRef<HTMLButtonElement>(null);
   const headCount = useRef(0);
   // Frozen HelpersWorkingRow.hidden: this chat's children at work that
@@ -516,8 +559,13 @@ export function ChatView(props: {
     return c;
   };
   useEffect(() => {
-    setHydraPanelHidden(props.settings?.hydraAutoOpensPanels === false);
-    setPanelFocusSeq(0);
+    setPanelState((s) =>
+      nextHydraPanelState(
+        s,
+        "thread-change",
+        props.settings?.hydraAutoOpensPanels !== false,
+      ),
+    );
     // Seed with THIS thread's count — resetting to 0 would count the
     // existing heads as "new" and reopen a panel the user dismissed
     // when switching between same-count threads (frozen parity: only
@@ -532,8 +580,9 @@ export function ChatView(props: {
   // turning it On only allows future auto-opens, nothing re-opens on
   // the flip itself.
   useEffect(() => {
-    if (props.settings?.hydraAutoOpensPanels === false)
-      setHydraPanelHidden(true);
+    if (props.settings?.hydraAutoOpensPanels === false) {
+      setPanelState((s) => nextHydraPanelState(s, "disable-auto-open", false));
+    }
   }, [props.settings?.hydraAutoOpensPanels]);
   useEffect(() => {
     if (!moreOpen) return;
@@ -609,8 +658,9 @@ export function ChatView(props: {
   // Only a new head count may auto-open — the layout flip alone never
   // re-opens a dismissed panel (frozen ThreadRuntime parity).
   useEffect(() => {
-    if (heads.length > headCount.current && props.settings?.hydraAutoOpensPanels !== false)
-      setHydraPanelHidden(false);
+    if (heads.length > headCount.current && props.settings?.hydraAutoOpensPanels !== false) {
+      setPanelState((s) => nextHydraPanelState(s, "auto-open", true));
+    }
     headCount.current = heads.length;
   }, [heads.length]);
 
@@ -732,11 +782,15 @@ export function ChatView(props: {
             buttonRef={hydraMarkBtnRef}
             readOnly={props.readOnly === true}
             panelHidden={hydraPanelHidden}
-            onTogglePanel={() => {
-              const nextHidden = !hydraPanelHidden;
-              setHydraPanelHidden(nextHidden);
-              if (!nextHidden) setPanelFocusSeq((n) => n + 1);
-            }}
+            onTogglePanel={() =>
+              setPanelState((s) =>
+                nextHydraPanelState(
+                  s,
+                  "toggle",
+                  props.settings?.hydraAutoOpensPanels !== false,
+                ),
+              )
+            }
             {...(props.onOpenSettings ? { onOpenSettings: props.onOpenSettings } : {})}
           />
           {offTopHelper && (
@@ -860,7 +914,13 @@ export function ChatView(props: {
             // every automatic-pop hold, so the held heads pop again when
             // the team panel returns.
             setPopHeld(new Set());
-            setHydraPanelHidden(true);
+            setPanelState((s) =>
+              nextHydraPanelState(
+                s,
+                "dismiss",
+                props.settings?.hydraAutoOpensPanels !== false,
+              ),
+            );
             requestAnimationFrame(() =>
               hydraMarkBtnRef.current?.focus({ preventScroll: true }),
             );
@@ -1314,8 +1374,13 @@ export function ChatView(props: {
                 title={t("Show the panel")}
                 onClick={() => {
                   if (first.hydraHead) {
-                    setHydraPanelHidden(false);
-                    setPanelFocusSeq((n) => n + 1);
+                    setPanelState((s) =>
+                      nextHydraPanelState(
+                        s,
+                        "pill",
+                        props.settings?.hydraAutoOpensPanels !== false,
+                      ),
+                    );
                   } else
                     void callApi("threads:show-helper", { id: first.id }).catch(
                       () => {},

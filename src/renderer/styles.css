@@ -5466,8 +5466,7 @@ html[data-paused="1"] .md-veil { animation: none !important; }
   padding: 0;
 }
 .hydra-mark:hover { background: var(--hover); }
-.hydra-mark.off .hydra-mark-dots,
-.hydra-mark.off .chimera-mark { opacity: 0.35; }
+.hydra-mark.off .hydra-mark-dots { opacity: 0.35; }
 .chimera-mark { display: inline-flex; align-items: center; justify-content: center; color: var(--text); }
 .chimera-mark-icon { display: block; }
 .hydra-mark-dots { display: inline-flex; }

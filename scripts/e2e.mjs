@@ -62,6 +62,10 @@ import {
   runOffHelperInteractionChecks,
   runOffHelperInteractionStandalone,
 } from "./offHelperInteractionChecks.mjs";
+import {
+  runP279ChimeraChecks,
+  runP279ChimeraStandalone,
+} from "./p279ChimeraChecks.mjs";
 import { runTurnGroupChecks } from "./turnGroupChecks.mjs";
 import { runMoveChecks } from "./moveChecks.mjs";
 import { runCodexApprovalChecks } from "./codexApprovalChecks.mjs";
@@ -94,11 +98,14 @@ import { runPredictionChecks } from "./predictionChecks.mjs";
 
 const onlySuite = process.argv.find((a) => a.startsWith("--only="))?.slice("--only=".length);
 if (onlySuite) {
-  if (onlySuite !== "offhelper") {
-    console.error(`unknown --only suite: ${onlySuite}`);
-    process.exit(2);
+  if (onlySuite === "offhelper") {
+    process.exit(await runOffHelperInteractionStandalone());
   }
-  process.exit(await runOffHelperInteractionStandalone());
+  if (onlySuite === "p279") {
+    process.exit(await runP279ChimeraStandalone());
+  }
+  console.error(`unknown --only suite: ${onlySuite}`);
+  process.exit(2);
 }
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -1787,6 +1794,17 @@ try {
   // evidence can be produced while the older POSIX-bound suites are being
   // made Windows-native.
   await runOffHelperInteractionChecks({
+    launch,
+    instances,
+    snap,
+    check,
+    closeInstance: boundedClose,
+    outDir,
+  });
+
+  // P2-79: Chimera mark, live running count, panel toggle/focus, and
+  // auto-open focus safety (also runnable via `--only=p279`).
+  await runP279ChimeraChecks({
     launch,
     instances,
     snap,

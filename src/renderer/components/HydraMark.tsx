@@ -1,10 +1,12 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-26.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-28.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-// F21/F22: the Hydra mark in the chat header — frozen HydraButton
-// parity, bounded. Click: the read-once intro first (until it has been
-// seen), then — no heads — an explainer note, otherwise the heads panel
-// toggle. Right-click (or control-click) opens the per-chat switch. The
-// mark itself dims while Hydra is off for the app or this chat.
+// F21/F22/P2-79: the chat-top Hydra / Chimera sub-agent mark — frozen
+// HydraButton parity, bounded. In Hydra mode, click opens the read-once
+// intro until seen, then the explainer note (no heads) or panel toggle
+// (heads out); in adaptive (Chimera) mode, renders the Chimera emblem
+// with live working count, suppresses the Hydra intro, and toggles the
+// sub-agent panel directly when heads are present. Right-click opens
+// the per-chat switch; the mark dims while sub-agents are off.
 
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
@@ -117,11 +119,13 @@ export function HydraMark(props: {
   // Frozen: the first chat's Hydra intro opens by itself until read (Hydra mode only).
   const introArmed = useRef(false);
   useEffect(() => {
-    if (introArmed.current) return;
+    if (introArmed.current) return undefined;
     if (!seenIntro && isOn && !isChimera && !props.readOnly) {
       introArmed.current = true;
-      requestAnimationFrame(() => openPop("intro"));
+      const raf = requestAnimationFrame(() => openPop("intro"));
+      return () => cancelAnimationFrame(raf);
     }
+    return undefined;
   }, [seenIntro, isOn, isChimera, props.readOnly]);
 
   const openPop = (p: Pop): void => {
@@ -233,16 +237,16 @@ export function HydraMark(props: {
     return parts.join(" · ");
   };
 
+  const useSubagentCopy = isChimera || subagentMode === "adaptive";
+
   const ariaLabel = (): string => {
-    if (!isChimera) return t("Hydra");
+    if (!isChimera) return useSubagentCopy ? t("Sub-agents") : t("Hydra");
     if (!hasHeads) return t("Sub-agents are on, no sub-agents out yet");
     if (running === 0) return t("Sub-agents are on, show the panel");
     return running === 1
       ? t("Sub-agents are on, 1 sub-agent working, show or hide the panel")
       : t("Sub-agents are on, %d sub-agents working, show or hide the panel", String(running));
   };
-
-  const useSubagentCopy = isChimera || subagentMode === "adaptive";
 
   return (
     <span className="hydra-mark-root" ref={rootRef}>

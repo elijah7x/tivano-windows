@@ -1,11 +1,12 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-27.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-28.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P2-79 component tests: Chimera mark, live running count, adaptive-off
-// behavior, and sub-agent panel attributes/focus wiring.
+// behavior, click routing, panel focus sequence transitions, and archived
+// head filtering.
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 (globalThis as { window?: unknown }).window = {
   tivano: {
@@ -25,10 +26,18 @@ import { describe, expect, it } from "vitest";
   removeEventListener: () => {},
 };
 
-import { ChatView } from "../src/renderer/components/ChatView";
+import { clientStore } from "../src/renderer/client";
+import { ChatView, nextHydraPanelState } from "../src/renderer/components/ChatView";
 import { HydraMark, resolveHydraMarkClick } from "../src/renderer/components/HydraMark";
+import { HydraPanel } from "../src/renderer/components/HydraPanel";
 import { LanguageContext } from "../src/renderer/locale";
-import type { ChatThread, LanguageId, Settings } from "../src/shared/types";
+import type { ChatThread, LanguageId, Settings, Snapshot } from "../src/shared/types";
+
+const prevSnapshot = clientStore.snapshot;
+
+afterEach(() => {
+  clientStore.snapshot = prevSnapshot;
+});
 
 const makeLead = (over: Partial<ChatThread> = {}): ChatThread =>
   ({
@@ -139,6 +148,7 @@ describe("P2-79 Chimera mark and sub-agent panel button", () => {
     expect(sameHtml).toContain("hydra-mark-dots");
     expect(sameHtml).not.toContain("chimera-mark-icon");
     expect(sameHtml).toContain('data-subagent-mode="same"');
+    expect(sameHtml).toContain('aria-label="Hydra"');
 
     const presetHtml = renderMark({ thread: makeLead({ subagentMode: "preset" }) });
     expect(presetHtml).toContain("hydra-mark-dots");
@@ -151,6 +161,7 @@ describe("P2-79 Chimera mark and sub-agent panel button", () => {
     expect(chatOffHtml).toContain('data-subagent-mode="off"');
     expect(chatOffHtml).not.toContain("chimera-mark-icon");
     expect(chatOffHtml).toContain("Sub-agents are off for this chat");
+    expect(chatOffHtml).toContain('aria-label="Sub-agents"');
 
     const globalOffHtml = renderMark({
       thread: makeLead({ subagentMode: "adaptive" }),
@@ -158,6 +169,7 @@ describe("P2-79 Chimera mark and sub-agent panel button", () => {
     });
     expect(globalOffHtml).toContain('class="hydra-mark off"');
     expect(globalOffHtml).toContain("Sub-agents are off in Settings");
+    expect(globalOffHtml).toContain('aria-label="Sub-agents"');
     expect(globalOffHtml).not.toContain("chimera-mark-icon");
   });
 
@@ -173,13 +185,22 @@ describe("P2-79 Chimera mark and sub-agent panel button", () => {
     expect(html).toContain("显示面板");
   });
 
-  it("wires live settings into ChatView and makes the sub-agent panel focusable", () => {
+  it("wires live settings into ChatView (overriding stale clientStore) and excludes archived heads consistently", () => {
     const thread = makeLead();
-    const running = makeHead("running");
+    const active = makeHead("running");
+    const archived = makeHead("running", { isArchived: true });
+    clientStore.snapshot = {
+      projects: [],
+      threads: [thread, active, archived],
+      selectedThreadId: thread.id,
+      activeTurns: {},
+      settings: { hydraEnabled: true, hasSeenHydraIntro: true },
+    } as unknown as Snapshot;
+
     const openHtml = renderToStaticMarkup(
       createElement(ChatView, {
         thread,
-        threads: [thread, running],
+        threads: [thread, active, archived],
         providerLabel: "Mock",
         mode: "mock",
         settings: {
@@ -193,25 +214,82 @@ describe("P2-79 Chimera mark and sub-agent panel button", () => {
     expect(openHtml).toContain('<span class="hydra-mark-badge">1</span>');
     expect(openHtml).toContain('class="hydra-panel" tabindex="-1"');
 
-    const hiddenHtml = renderToStaticMarkup(
+    // Discriminate on props.settings vs clientStore.snapshot: global off in props overrides enabled store.
+    const propsOffHtml = renderToStaticMarkup(
       createElement(ChatView, {
         thread,
-        threads: [thread, running],
+        threads: [thread, active],
         providerLabel: "Mock",
         mode: "mock",
         settings: {
-          hydraEnabled: true,
+          hydraEnabled: false,
           hasSeenHydraIntro: true,
           hydraAutoOpensPanels: false,
         } as Settings,
       }),
     );
-    expect(hiddenHtml).toContain('class="hydra-mark chimera"');
-    expect(hiddenHtml).toContain('aria-expanded="false"');
-    expect(hiddenHtml).not.toContain('class="hydra-panel');
+    expect(propsOffHtml).toContain('class="hydra-mark off"');
+    expect(propsOffHtml).toContain("Sub-agents are off in Settings");
+    expect(propsOffHtml).toContain('aria-expanded="false"');
+    expect(propsOffHtml).not.toContain('class="hydra-panel');
+
+    // Archived heads are excluded from both HydraMark and HydraPanel.
+    const panelHtml = renderToStaticMarkup(
+      createElement(HydraPanel, {
+        thread,
+        threads: [thread, active, archived],
+      }),
+    );
+    expect(panelHtml).toContain("Heads · 1");
+    expect(panelHtml).not.toContain(archived.hydraHead!.name);
   });
 
-  it("handles click actions across adaptive, Hydra unread intro, and disabled-with-heads states", () => {
+  it("resets panel focusSeq on hide, dismiss, disable-auto-open, and auto-open so remount never steals composer focus", () => {
+    const init = { hidden: true, focusSeq: 0 };
+    const shown = nextHydraPanelState(init, "toggle", true);
+    expect(shown).toEqual({ hidden: false, focusSeq: 1 });
+
+    // Hiding via toggle clears focusSeq so a later auto-open mounts with focusSeq === 0.
+    const hiddenByToggle = nextHydraPanelState(shown, "toggle", true);
+    expect(hiddenByToggle).toEqual({ hidden: true, focusSeq: 0 });
+    expect(nextHydraPanelState(hiddenByToggle, "auto-open", true)).toEqual({
+      hidden: false,
+      focusSeq: 0,
+    });
+
+    // Opening via pill then dismissing with Escape/menu also clears focusSeq before auto-open.
+    const shownByPill = nextHydraPanelState({ hidden: true, focusSeq: 0 }, "pill", true);
+    expect(shownByPill).toEqual({ hidden: false, focusSeq: 1 });
+    const dismissed = nextHydraPanelState(shownByPill, "dismiss", true);
+    expect(dismissed).toEqual({ hidden: true, focusSeq: 0 });
+    expect(nextHydraPanelState(dismissed, "auto-open", true)).toEqual({
+      hidden: false,
+      focusSeq: 0,
+    });
+
+    // Turning layout Off or switching threads clears any prior focusSeq.
+    expect(nextHydraPanelState(shown, "disable-auto-open", false)).toEqual({
+      hidden: true,
+      focusSeq: 0,
+    });
+    expect(nextHydraPanelState(shown, "thread-change", false)).toEqual({
+      hidden: true,
+      focusSeq: 0,
+    });
+  });
+
+  it("handles click actions across adaptive, Hydra unread intro, disabled, readOnly, and switch states", () => {
+    // Read-only disables clicks regardless of heads or mode.
+    expect(
+      resolveHydraMarkClick({
+        readOnly: true,
+        hasHeads: true,
+        isOn: true,
+        isChimera: true,
+        seenIntro: true,
+        pop: null,
+      }),
+    ).toBe("none");
     // Adaptive mode with heads always toggles the panel even when intro is unread.
     expect(
       resolveHydraMarkClick({
@@ -276,7 +354,28 @@ describe("P2-79 Chimera mark and sub-agent panel button", () => {
         pop: "idle",
       }),
     ).toBe("close-pop");
-    // Off with zero heads toggles the switch popover.
+    // Hydra mode with zero heads and seen intro toggles the Hydra idle explainer.
+    expect(
+      resolveHydraMarkClick({
+        readOnly: false,
+        hasHeads: false,
+        isOn: true,
+        isChimera: false,
+        seenIntro: true,
+        pop: null,
+      }),
+    ).toBe("open-idle");
+    expect(
+      resolveHydraMarkClick({
+        readOnly: false,
+        hasHeads: false,
+        isOn: true,
+        isChimera: false,
+        seenIntro: true,
+        pop: "idle",
+      }),
+    ).toBe("close-pop");
+    // Off with zero heads toggles the switch popover open and closed.
     expect(
       resolveHydraMarkClick({
         readOnly: false,
@@ -287,5 +386,15 @@ describe("P2-79 Chimera mark and sub-agent panel button", () => {
         pop: null,
       }),
     ).toBe("open-switch");
+    expect(
+      resolveHydraMarkClick({
+        readOnly: false,
+        hasHeads: false,
+        isOn: false,
+        isChimera: false,
+        seenIntro: false,
+        pop: "switch",
+      }),
+    ).toBe("close-pop");
   });
 });

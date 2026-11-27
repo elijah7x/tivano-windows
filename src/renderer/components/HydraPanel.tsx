@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-22.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-28.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F22: Hydra head strip — frozen HydraPanel parity, bounded. A lead
 // thread lists its heads (roster colour, name, task, status); a head
@@ -222,7 +222,7 @@ export function HydraPanel(props: {
   const heads = useMemo(
     () =>
       props.threads
-        .filter((x) => x.hydraHead?.leadId === thread.id)
+        .filter((x) => x.hydraHead?.leadId === thread.id && !x.isArchived)
         .slice()
         .sort((a, b) => a.hydraHead!.spawnedAt - b.hydraHead!.spawnedAt),
     [props.threads, thread.id],
