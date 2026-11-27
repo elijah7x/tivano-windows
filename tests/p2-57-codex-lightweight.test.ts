@@ -284,7 +284,8 @@ describe("CodexAppServerProvider P2-57 lightweight-start", () => {
     expect(seenArgs[0]).toEqual([FIXTURE, ...CODEX_ONE_SHOT_CONFIG_ARGS]);
     expect(c1.killed.length).toBeGreaterThan(0);
 
-    // Second one-shot interrupted by provider.dispose() accounts orphaned pending cleanly.
+    // Second one-shot interrupted by provider.dispose() is failed and torn down
+    // without counting as durable-session orphaned pending work.
     const inFlight = p.runOneShot(ws, async (rpc) => rpc.request("model/list", {}));
     const init2 = await c2.next();
     c2.write({
@@ -347,6 +348,42 @@ describe("CodexAppServerProvider P2-57 lightweight-start", () => {
     expect(spawned[0]).toEqual([FIXTURE, ...CODEX_ONE_SHOT_CONFIG_ARGS]);
     expect(spawned[1]).toEqual([FIXTURE, ...CODEX_ONE_SHOT_CONFIG_ARGS]);
     await p.dispose();
+  });
+
+  it("dispose wakes a queued one-shot waiter without spawning another child", async () => {
+    const ws = tmp("tivano-p257-ws-");
+    const c1 = new ScriptedChild();
+    const spawned: string[][] = [];
+    const p = makeProvider(fixtureCfg(), {
+      limits: { maxOneShotChildren: 1 },
+      spawnImpl: (spec) => {
+        spawned.push([...spec.args]);
+        return c1 as unknown as ChildProcess;
+      },
+    });
+
+    const first = p.runOneShot(ws, async (rpc) => rpc.request("model/list", {}));
+    const init1 = await c1.next();
+    c1.write({
+      id: init1.id as number,
+      result: { codexHome: p.config.codexHome, userAgent: "fixture" },
+    });
+    await c1.next(); // initialized
+    await c1.next(); // first model/list left unanswered
+
+    const second = p.runOneShot(ws, async (rpc) => rpc.request("model/list", {}));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(spawned).toHaveLength(1);
+
+    const [disposeRes] = await Promise.all([
+      p.dispose(),
+      expect(first).rejects.toThrow(/CODEX_CONNECTION_CLOSED/),
+      expect(second).rejects.toThrow(/CODEX_BUSY: provider is disposed/),
+    ]);
+    expect(spawned).toHaveLength(1);
+    expect(disposeRes.orphanedPending).toBe(0);
+    expect(disposeRes.children).toHaveLength(1);
+    expect(disposeRes.children[0]!.confirmed).toBe(true);
   });
 
   it("runOneShot enforces config, tree-capability, workspace, and codexHome guards", async () => {

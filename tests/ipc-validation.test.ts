@@ -176,9 +176,10 @@ describe("IPC request validators", () => {
     }
   });
 
-  it("model channels (F17): catalog is empty; set-model takes bounded ids only", () => {
+  it("model channels (F17): catalog takes only an optional force flag; set-model takes bounded ids only", () => {
     expect(() => requestValidators["models:list"]({})).not.toThrow();
-    for (const bad of [{ model: "x" }, { filter: "x" }, "m", null])
+    expect(() => requestValidators["models:list"]({ force: true })).not.toThrow();
+    for (const bad of [{ force: "yes" }, { model: "x" }, { filter: "x" }, "m", null])
       expect(() => requestValidators["models:list"](bad)).toThrow(ValidationError);
 
     expect(

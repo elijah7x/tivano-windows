@@ -212,7 +212,7 @@ export async function runCodexModelChecks({
       tier: restored.codexServiceTier,
     },
   );
-  // Give the picker a moment to fetch its (pending) catalog and settle.
+  // Give the picker a moment to fetch its one-shot catalog and settle.
   await page.waitForTimeout(300);
   const selDebug = await page.evaluate(() => {
     const el = document.querySelector(".model-select");

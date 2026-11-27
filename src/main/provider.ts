@@ -262,7 +262,10 @@ export interface ChildCleanupResult {
 
 export interface AdapterDisposeResult {
   children: ChildCleanupResult[];
-  /** Any pending request that never resolved cleanly. */
+  /** Durable-session requests that never resolved cleanly. Provider-internal
+   *  ephemeral one-shot probes interrupted by dispose are failed and torn down
+   *  as close-cleanup evidence, but they do not block application close and are
+   *  not counted here. */
   orphanedPending: number;
 }
 
@@ -303,7 +306,7 @@ export interface ProviderAdapter {
    * genuinely not reportable yet — never a fabricated list.
    * Optional — adapters without catalogs omit it.
    */
-  modelCatalog?(): Promise<CodexModelOption[] | null>;
+  modelCatalog?(force?: boolean): Promise<CodexModelOption[] | null>;
   /**
    * F31: one-shot title generation for a thread's first message, run with
    * no tools (frozen TextGeneration.threadTitle). Optional — adapters

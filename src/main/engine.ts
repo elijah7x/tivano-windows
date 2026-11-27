@@ -4090,14 +4090,14 @@ export class Engine {
    * with the real reason. Codex production reads use a lightweight
    * one-shot probe, so no chat session is required.
    */
-  async codexModels(): Promise<CodexModelCatalog> {
+  async codexModels(force = false): Promise<CodexModelCatalog> {
     if (this.provider.descriptor.mode !== "codex")
       return { state: "unsupported", reason: "the active provider has no model catalog" };
     const fetcher = this.provider.modelCatalog;
     if (!fetcher)
       return { state: "unsupported", reason: "this provider build cannot list models" };
     try {
-      const models = await fetcher.call(this.provider);
+      const models = await fetcher.call(this.provider, force);
       if (models === null)
         return {
           state: "pending",

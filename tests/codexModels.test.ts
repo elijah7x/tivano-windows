@@ -11,14 +11,14 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexAppServerProvider } from "../src/main/codexAppServerProvider";
 import {
   CODEX_ONE_SHOT_CONFIG_ARGS,
   type CodexRuntimeConfig,
 } from "../src/main/codexRuntimeConfig";
 import type { ProviderCallbacks, TurnContext, WorkspaceGrant } from "../src/main/provider";
-import type { ProviderThreadBinding } from "../src/shared/types";
+import type { CodexModelOption, ProviderThreadBinding } from "../src/shared/types";
 import { Store } from "../src/main/store";
 import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
@@ -395,6 +395,7 @@ describe("engine model selection (F17)", () => {
     store.open();
     const bindings = new Map<string, ProviderThreadBinding>();
     const spawnedArgs: string[][] = [];
+    const childClosed: boolean[] = [];
     const codex = new CodexAppServerProvider({
       config: cfg(),
       lookupBinding: (t) => bindings.get(t),
@@ -403,12 +404,18 @@ describe("engine model selection (F17)", () => {
       },
       spawnImpl: (spec) => {
         spawnedArgs.push([...spec.args]);
-        return spawn(spec.executable, spec.args, {
+        const child = spawn(spec.executable, spec.args, {
           cwd: spec.cwd,
           env: spec.env,
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         });
+        const idx = childClosed.length;
+        childClosed.push(false);
+        child.once("close", () => {
+          childClosed[idx] = true;
+        });
+        return child;
       },
     });
     const paths = new ProjectRuntimePaths([], join(root, "grants.json"), root);
@@ -421,11 +428,59 @@ describe("engine model selection (F17)", () => {
     expect(spawnedArgs).toHaveLength(1);
     expect(spawnedArgs[0]).toEqual([FIXTURE, ...CODEX_ONE_SHOT_CONFIG_ARGS]);
 
+    const cached = await engine.codexModels();
+    expect(cached.state).toBe("ready");
+    expect(spawnedArgs).toHaveLength(1);
+    await waitFor(() => childClosed[0] === true);
+
     engine.shutdown();
     const disposed = await codex.dispose();
     expect(disposed.orphanedPending).toBe(0);
-    expect(disposed.children.every((c) => c.confirmed)).toBe(true);
+    expect(disposed.children).toEqual([]);
     store.close();
+  });
+
+  it("modelCatalog reuses a fresh catalog and keeps it when a forced refresh fails", async () => {
+    const { p } = provider();
+    const delivered: CodexModelOption[] = [
+      { id: "cached-model", name: "Cached model", efforts: [], isDefault: false },
+    ];
+    const spy = vi.spyOn(p, "fetchModelCatalogOneShot");
+    spy.mockImplementationOnce(async () => {
+      p.cacheCatalog(delivered);
+      return delivered;
+    });
+
+    await expect(p.modelCatalog()).resolves.toEqual(delivered);
+    expect(spy).toHaveBeenCalledTimes(1);
+    await expect(p.modelCatalog()).resolves.toEqual(delivered);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    spy.mockRejectedValueOnce(new Error("refresh failed"));
+    await expect(p.modelCatalog(true)).resolves.toEqual(delivered);
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+    await p.dispose();
+  });
+
+  it("modelCatalog propagates an initial probe failure and retries after the flight clears", async () => {
+    const { p } = provider();
+    const delivered: CodexModelOption[] = [
+      { id: "retried-model", name: "Retried model", efforts: [], isDefault: false },
+    ];
+    const spy = vi.spyOn(p, "fetchModelCatalogOneShot");
+    spy.mockRejectedValueOnce(new Error("probe failed"));
+    await expect(p.modelCatalog()).rejects.toThrow("probe failed");
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    spy.mockImplementationOnce(async () => {
+      p.cacheCatalog(delivered);
+      return delivered;
+    });
+    await expect(p.modelCatalog()).resolves.toEqual(delivered);
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+    await p.dispose();
   });
 
   it("engine models:list disposal interrupts an unanswered one-shot model/list", async () => {

@@ -1,8 +1,8 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Per-thread Codex model/effort picker (P2-56 / F17). The catalog is
-// provider-owned state fetched via models:list — pending until a Codex
-// session binds, honest when unavailable. Follows Settings > Models
+// provider-owned state fetched via models:list through the provider's
+// lightweight catalog path, honest when unavailable. Follows Settings > Models
 // groups both in `<select>` optgroups and in the two-column group-aware
 // popover when user groups exist. Selections persist on the thread and
 // apply to the NEXT turn only; a running turn is never retargeted.
@@ -121,7 +121,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   };
 
   // First fetch on mount/thread switch; the dropdown ALSO refreshes on
-  // open so "no session yet" self-heals once a turn binds one.
+  // open so an unavailable or empty catalog can self-heal.
   useEffect(refresh, [thread.id, props.initialCatalog]);
 
   useEffect(() => {
