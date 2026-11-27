@@ -223,6 +223,7 @@ export function App(): React.JSX.Element {
         if (!disposed) setRemoteApproval(e.status.pendingApprovals[0] ?? null);
         return;
       }
+      if (e.type === "local-control-changed") return;
       store.onBridgeEvent(e);
     });
     api()

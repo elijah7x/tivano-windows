@@ -1486,3 +1486,9 @@ export interface RemoteMcpStatus {
   pendingApprovals: RemoteMcpApprovalRequest[];
   grants: RemoteMcpGrantView[];
 }
+
+export interface LocalControlStatus {
+  enabled: boolean;
+  listening: boolean;
+  failure: string | null;
+}

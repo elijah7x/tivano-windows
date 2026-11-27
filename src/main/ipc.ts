@@ -390,25 +390,27 @@ export function registerIpc(opts: IpcOptions): () => void {
     engine.answerQuestion(p.threadId, p.providerKey, p.answers),
   );
   handle("settings:set", (p) => engine.setSettings(p));
-  // F33: status read + retry for the Settings surface. The response
-  // reports the real socket state — never an optimistic flag.
-  handle("control:status", () => {
+  // F33: status read + retry for the Settings surface. Both await any
+  // in-flight bind/stop so the response always reflects the settled
+  // socket/pipe state — never an optimistic flag.
+  handle("control:status", async () => {
+    await opts.localControl?.whenSettled();
+    if (opts.localControl) return opts.localControl.status();
     const s = engine.snapshot().settings;
-    const enabled = s.externalControlEnabled === true;
     return {
-      enabled,
-      listening: opts.localControl?.listening === true,
-      failure: opts.localControl?.listenFailure ?? null,
+      enabled: s.externalControlEnabled === true,
+      listening: false,
+      failure: null,
     };
   });
-  handle("control:retry", () => {
-    opts.localControl?.refreshListening();
+  handle("control:retry", async () => {
+    await opts.localControl?.refreshListening();
+    if (opts.localControl) return opts.localControl.status();
     const s = engine.snapshot().settings;
-    const enabled = s.externalControlEnabled === true;
     return {
-      enabled,
-      listening: opts.localControl?.listening === true,
-      failure: opts.localControl?.listenFailure ?? null,
+      enabled: s.externalControlEnabled === true,
+      listening: false,
+      failure: null,
     };
   });
   handle("remoteMcp:status", () => opts.remoteMcp?.status() ?? null);

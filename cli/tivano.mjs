@@ -19,10 +19,10 @@
 //   tivano operation <ticket>
 //   tivano settings [get [KEY]] [set KEY=BOOL|automatic|off]...
 //
-// Socket lookup order:
-//   TIVANO_CONTROL_SOCKET env → explicit path
-//   TIVANO_DATA_ROOT env      → <root>/control/control.sock
-//   platform app-data default → …/Tivano Windows Dev/control/control.sock
+// Socket/pipe lookup order:
+//   TIVANO_CONTROL_SOCKET env → explicit socket or pipe path
+//   TIVANO_DATA_ROOT env      → \\.\pipe\tivano-control-<hash> (win32) or <root>/control/control.sock
+//   platform app-data default → platform-default dataRoot endpoint
 //
 // Write calls carry a client-issued idempotency ticket
 // (<instance>/<uuid>/<ms>) — replays return the stored receipt, they
@@ -30,10 +30,10 @@
 //
 // Exit codes: 0 ok · 2 usage · 3 connect failed · 4 refused/error reply.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { connect } from "node:net";
 import { homedir, platform } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const VERSION = 1;
 const EDITION = "dev";
@@ -51,6 +51,11 @@ function sockPath() {
           : (process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share")),
       "Tivano Windows Dev",
     );
+  if (platform() === "win32") {
+    const normalized = resolve(root).replace(/[\\/]+$/, "").toLowerCase();
+    const digest = createHash("sha256").update(normalized).digest("hex").slice(0, 32);
+    return `\\\\.\\pipe\\tivano-control-${digest}`;
+  }
   return join(root, "control", "control.sock");
 }
 

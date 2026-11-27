@@ -879,4 +879,5 @@ type AppEventPayload =
   | { type: "window-activity"; active: boolean }
   | { type: "memory-pressure"; critical: boolean }
   | { type: "system-accent-changed"; accentColor: string | null }
-  | { type: "remote-mcp-changed"; status: import("./types").RemoteMcpStatus };
+  | { type: "remote-mcp-changed"; status: import("./types").RemoteMcpStatus }
+  | { type: "local-control-changed"; status: import("./types").LocalControlStatus };

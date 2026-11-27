@@ -168,7 +168,7 @@ describe.runIf(loopbackBindable)("remote MCP (P2-25)", () => {
   it("runs outside Alpha independently of LocalControl", async () => {
     const { engine, lc, rm } = rig();
     engine.setSettings({ alphaEnabled: false, externalControlEnabled: false, remoteMCPEnabled: true });
-    lc.refreshListening();
+    await lc.refreshListening();
     await rm.refresh();
     expect(lc.listening).toBe(false);
     expect(rm.listening).toBe(true);
@@ -334,7 +334,7 @@ describe.runIf(loopbackBindable)("remote MCP (P2-25)", () => {
       hydraEnabled: true,
       hydraPairs: [{ id: "pair-1", provider: "mock", headProfiles: [] }],
     });
-    lc.refreshListening();
+    await lc.refreshListening();
     await rm.refresh();
     const base = `http://127.0.0.1:${rm.port}`;
     const tok = (await authorizeGrant(rm, base, "full"))!;
