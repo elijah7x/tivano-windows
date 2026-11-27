@@ -1287,5 +1287,134 @@ export async function runHydraChecks({
   await page3.locator(".chat-head h1").click();
   await page3.waitForSelector(".hydra-brief-pop", { state: "detached", timeout: 8000 });
 
+  // ---- HY-57..61: P2-79 Chimera mark, working count, panel toggle,
+  // panel focus, and adaptive-off behavior. ----------------------------
+  const leadChimera = await mkLead3();
+  await page3.evaluate(
+    (id) =>
+      Promise.all([
+        window.tivano.invoke("settings:set", { hasSeenHydraIntro: false }),
+        window.tivano.invoke("threads:set-subagent-mode", {
+          threadId: id,
+          mode: "adaptive",
+        }),
+      ]),
+    leadChimera,
+  );
+  await page3.waitForSelector(".hydra-mark.chimera .chimera-mark-icon", {
+    timeout: 8000,
+  });
+  verify(
+    "HY-57 adaptive mode shows Chimera mark without dots, badge, or auto-intro",
+    (await page3.locator(".hydra-mark.chimera .chimera-mark-icon").count()) === 1 &&
+      (await page3.locator(".hydra-mark .hydra-mark-dots").count()) === 0 &&
+      (await page3.locator(".hydra-mark .hydra-mark-badge").count()) === 0 &&
+      (await page3.locator(".hydra-intro-pop").count()) === 0,
+  );
+  await page3.locator(".hydra-mark.chimera").click();
+  await page3.waitForSelector(".hydra-idle-pop", { timeout: 5000 });
+  const chimeraIdleText = await page3.locator(".hydra-idle-pop").innerText();
+  verify(
+    "HY-57b zero-head adaptive click opens adaptive idle note (never Hydra intro)",
+    chimeraIdleText.includes("Sub-agents are on") &&
+      chimeraIdleText.includes("Adaptive sub-agents") &&
+      (await page3.locator(".hydra-intro-pop").count()) === 0,
+    chimeraIdleText.slice(0, 160),
+  );
+  await page3.locator(".chat-head h1").click();
+  await page3.waitForSelector(".hydra-idle-pop", { state: "detached", timeout: 5000 });
+
+  await page3.evaluate(
+    (a) => window.tivano.invoke("turns:send", a),
+    { threadId: leadChimera, text: "adaptive [mock:hydra-wait]" },
+  );
+  const sChimeraRun = await waitSnap3(
+    (s) =>
+      teamOf(s, leadChimera).length === 1 &&
+      teamOf(s, leadChimera)[0].hydraHead.status === "running",
+  );
+  const chimeraHeadId = teamOf(sChimeraRun, leadChimera)[0].id;
+  await page3.waitForSelector(".hydra-mark.chimera .hydra-mark-badge", {
+    timeout: 8000,
+  });
+  verify(
+    "HY-58 running adaptive head updates Chimera badge count live",
+    (await page3.locator(".hydra-mark.chimera .hydra-mark-badge").innerText()) === "1" &&
+      sChimeraRun.threads.find((t) => t.id === leadChimera)?.subagentMode === "adaptive",
+  );
+
+  await page3.locator(".hydra-mark.chimera").click();
+  await page3.waitForSelector(".hydra-panel", { state: "detached", timeout: 8000 });
+  const afterHideSnap = await snap(page3);
+  verify(
+    "HY-59 clicking Chimera mark hides sub-agent panel without switching mode back to Hydra",
+    (await page3.locator(".hydra-panel").count()) === 0 &&
+      (await page3.locator(".hydra-intro-pop").count()) === 0 &&
+      afterHideSnap.threads.find((t) => t.id === leadChimera)?.subagentMode === "adaptive",
+  );
+  await page3.locator(".hydra-mark.chimera").click();
+  await page3.waitForSelector(".hydra-panel", { timeout: 8000 });
+  const panelFocused = await page3.evaluate(
+    () => document.activeElement?.classList.contains("hydra-panel") === true,
+  );
+  verify("HY-59b clicking Chimera mark re-shows and focuses the sub-agent panel", panelFocused);
+  await page3.keyboard.press("Escape");
+  await page3.waitForSelector(".hydra-panel", { state: "detached", timeout: 5000 });
+  const focusReturned = await page3.evaluate(
+    () => document.activeElement?.classList.contains("hydra-mark") === true,
+  );
+  verify("HY-59c Escape on focused panel dismisses it and returns focus to the button", focusReturned);
+  await page3.locator(".hydra-mark.chimera").click();
+  await page3.waitForSelector(".hydra-panel", { timeout: 8000 });
+
+  await page3.evaluate(
+    (id) => window.tivano.invoke("hydra:stop", { threadId: id }),
+    chimeraHeadId,
+  );
+  await waitSnap3(
+    (s) =>
+      teamOf(s, leadChimera).every((t) => t.hydraHead.status !== "running") &&
+      s.threads
+        .find((t) => t.id === leadChimera)
+        ?.messages.some((m) => m.content.includes("Hydra reports:")),
+  );
+  verify(
+    "HY-60 stopping running head clears badge to zero while keeping Chimera mark",
+    (await page3.locator(".hydra-mark.chimera").count()) === 1 &&
+      (await page3.locator(".hydra-mark .hydra-mark-badge").count()) === 0,
+  );
+
+  await page3.evaluate(
+    (id) =>
+      window.tivano.invoke("threads:set-hydra", { threadId: id, enabled: false }),
+    leadChimera,
+  );
+  await page3.waitForSelector(".hydra-mark.off", { timeout: 5000 });
+  verify(
+    "HY-61 chat-off dims mark and hides Chimera emblem",
+    (await page3.locator(".hydra-mark.off .hydra-mark-dots").count()) === 1 &&
+      (await page3.locator(".hydra-mark.chimera").count()) === 0,
+  );
+  await page3.evaluate(
+    (id) =>
+      Promise.all([
+        window.tivano.invoke("threads:set-hydra", { threadId: id, enabled: true }),
+        window.tivano.invoke("threads:set-subagent-mode", {
+          threadId: id,
+          mode: "same",
+        }),
+        window.tivano.invoke("settings:set", { hasSeenHydraIntro: true }),
+      ]),
+    leadChimera,
+  );
+  await page3.waitForSelector(".hydra-mark:not(.off):not(.chimera) .hydra-mark-dots", {
+    timeout: 5000,
+  });
+  verify(
+    "HY-61b leaving adaptive restores Hydra dots",
+    (await page3.locator(".hydra-mark .hydra-mark-dots").count()) === 1 &&
+      (await page3.locator(".hydra-mark.chimera").count()) === 0,
+  );
+
   await boundedClose(s3.app, s3.proc);
 }

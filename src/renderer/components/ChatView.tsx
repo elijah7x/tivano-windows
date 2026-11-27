@@ -455,6 +455,8 @@ export function ChatView(props: {
   const [hydraPanelHidden, setHydraPanelHidden] = useState(
     () => props.settings?.hydraAutoOpensPanels === false,
   );
+  const [panelFocusSeq, setPanelFocusSeq] = useState(0);
+  const hydraMarkBtnRef = useRef<HTMLButtonElement>(null);
   const headCount = useRef(0);
   // Frozen HelpersWorkingRow.hidden: this chat's children at work that
   // no visible panel shows — heads while THEIR panel is hidden (Off, or
@@ -515,6 +517,7 @@ export function ChatView(props: {
   };
   useEffect(() => {
     setHydraPanelHidden(props.settings?.hydraAutoOpensPanels === false);
+    setPanelFocusSeq(0);
     // Seed with THIS thread's count — resetting to 0 would count the
     // existing heads as "new" and reopen a panel the user dismissed
     // when switching between same-count threads (frozen parity: only
@@ -725,9 +728,15 @@ export function ChatView(props: {
           <HydraMark
             thread={thread}
             heads={heads}
+            settings={props.settings}
+            buttonRef={hydraMarkBtnRef}
             readOnly={props.readOnly === true}
             panelHidden={hydraPanelHidden}
-            onTogglePanel={() => setHydraPanelHidden((h) => !h)}
+            onTogglePanel={() => {
+              const nextHidden = !hydraPanelHidden;
+              setHydraPanelHidden(nextHidden);
+              if (!nextHidden) setPanelFocusSeq((n) => n + 1);
+            }}
             {...(props.onOpenSettings ? { onOpenSettings: props.onOpenSettings } : {})}
           />
           {offTopHelper && (
@@ -845,12 +854,16 @@ export function ChatView(props: {
           thread={thread}
           threads={props.threads}
           readOnly={props.readOnly === true}
+          focusSeq={panelFocusSeq}
           onDismiss={() => {
             // Frozen dismissHydraHeads: dismissing the team panel releases
             // every automatic-pop hold, so the held heads pop again when
             // the team panel returns.
             setPopHeld(new Set());
             setHydraPanelHidden(true);
+            requestAnimationFrame(() =>
+              hydraMarkBtnRef.current?.focus({ preventScroll: true }),
+            );
           }}
         />
       )}
@@ -1300,8 +1313,10 @@ export function ChatView(props: {
                 className="hydra-working-pill"
                 title={t("Show the panel")}
                 onClick={() => {
-                  if (first.hydraHead) setHydraPanelHidden(false);
-                  else
+                  if (first.hydraHead) {
+                    setHydraPanelHidden(false);
+                    setPanelFocusSeq((n) => n + 1);
+                  } else
                     void callApi("threads:show-helper", { id: first.id }).catch(
                       () => {},
                     );
