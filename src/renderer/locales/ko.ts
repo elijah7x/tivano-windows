@@ -906,6 +906,7 @@ export const ko: Record<string, string> = {
   "No heads out yet": "아직 파견된 하위 에이전트가 없습니다",
   "Show the panel": "패널 표시",
   "Show the sub-agent panel": "하위 에이전트 패널 표시",
+  "Sub-agent working": "하위 에이전트 작업 중",
   "Hide the panel": "패널 숨기기",
   "1 head working": "하위 에이전트 1개 작업 중",
   "%d heads working": "하위 에이전트 %d개 작업 중",

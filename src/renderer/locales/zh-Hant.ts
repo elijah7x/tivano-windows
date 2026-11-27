@@ -906,6 +906,7 @@ export const zhHant: Record<string, string> = {
   "No heads out yet": "尚未派出子代理",
   "Show the panel": "顯示面板",
   "Show the sub-agent panel": "顯示子代理面板",
+  "Sub-agent working": "子代理運作中",
   "Hide the panel": "隱藏面板",
   "1 head working": "1 個子代理正在工作",
   "%d heads working": "%d 個子代理正在工作",

@@ -906,6 +906,7 @@ export const ja: Record<string, string> = {
   "No heads out yet": "稼働中のサブエージェントはまだいません",
   "Show the panel": "パネルを表示",
   "Show the sub-agent panel": "サブエージェントパネルを表示",
+  "Sub-agent working": "サブエージェント稼働中",
   "Hide the panel": "パネルを隠す",
   "1 head working": "1 件のサブエージェントが作業中",
   "%d heads working": "%d 件のサブエージェントが作業中",
