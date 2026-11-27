@@ -2123,4 +2123,9 @@ export const fr: Record<string, string> = {
   "This model has one reasoning level.": "Ce modèle ne propose qu’un seul niveau de raisonnement.",
   "Fast mode": "Mode rapide",
   "Fast mode is on": "Le mode rapide est activé",
+  // P2-78
+  "Remove this project?": "Retirer ce projet ?",
+  "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
+    "Cela supprime définitivement %lld discussions, y compris les sous-agents et assistants liés dans d’autres projets. Les fichiers sources du projet ne seront pas supprimés.",
+  "Remove project": "Retirer le projet",
 };

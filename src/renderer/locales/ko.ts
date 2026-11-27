@@ -2123,4 +2123,9 @@ export const ko: Record<string, string> = {
   "This model has one reasoning level.": "이 모델에는 추론 강도가 한 단계만 있습니다.",
   "Fast mode": "빠른 모드",
   "Fast mode is on": "빠른 모드가 켜져 있습니다",
+  // P2-78
+  "Remove this project?": "이 프로젝트를 제거할까요?",
+  "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
+    "다른 프로젝트의 연결된 하위 에이전트 및 헬퍼를 포함하여 %lld개의 대화를 영구적으로 삭제합니다. 프로젝트 소스 파일은 삭제되지 않습니다.",
+  "Remove project": "프로젝트 제거",
 };
