@@ -823,18 +823,22 @@ export async function runModelListChecks({
     p280Collapsed,
   );
 
-  // Keyboard step on the slider updates the thread effort and label.
+  // Keyboard step on the slider updates the thread effort and label (fixture-max: medium/high/xhigh, starting at high -> medium).
   await page.locator(".effort-slider").focus();
   await page.keyboard.press("ArrowLeft");
   await waitSnapshot(page, (st) => {
     const t = st.threads.find((x) => x.id === threadId);
-    return t?.codexEffort !== undefined;
+    return t?.codexEffort === "medium";
   });
   const afterSlide = await page.evaluate(() => ({
     label: document.querySelector(".effort-level-label")?.textContent ?? "",
     val: document.querySelector(".effort-slider")?.value ?? "",
   }));
-  verify("ML-19b slider keyboard arrow updates effort label", afterSlide.label.length > 0, afterSlide);
+  verify(
+    "ML-19b slider keyboard arrow updates effort label",
+    afterSlide.label === "Medium" && afterSlide.val === "0",
+    afterSlide,
+  );
 
   // Clicking the model+chevron button expands the model list and collapsing returns to effort-only.
   await page.locator(".effort-model-btn").click();
@@ -856,7 +860,11 @@ export async function runModelListChecks({
 
   // French localization keeps compact width without horizontal overflow.
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "fr" }));
-  await page.waitForTimeout(80);
+  await page.waitForFunction(
+    () => document.querySelector(".effort-model-btn")?.getAttribute("aria-label") === "Choisir un modèle",
+    null,
+    { timeout: 5000 },
+  );
   const frLayout = await page.evaluate(() => {
     const pop = document.querySelector(".model-picker-pop.effort-only");
     const box = pop?.getBoundingClientRect();

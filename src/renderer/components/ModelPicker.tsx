@@ -135,6 +135,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       });
   };
 
+  const focusTrigger = () =>
+    (lastTriggerRef.current === "effort" ? effortTriggerRef.current : triggerRef.current)?.focus();
+
   // First fetch on mount/thread switch; the dropdown ALSO refreshes on
   // open so "no session yet" self-heals once a turn binds one.
   useEffect(refresh, [thread.id, props.initialCatalog]);
@@ -145,7 +148,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       if (e.key === "Escape") {
         e.preventDefault();
         setPopOpen(false);
-        (lastTriggerRef.current === "effort" ? effortTriggerRef.current : triggerRef.current)?.focus();
+        focusTrigger();
       }
     };
     const onDown = (e: MouseEvent) => {
@@ -314,7 +317,11 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         ? selectedEffort
         : "";
   const reasoningLabel =
-    resolvedEffort !== "" ? t(effortTitle(resolvedEffort)) : t("Standard");
+    resolvedEffort !== ""
+      ? t(effortTitle(resolvedEffort))
+      : catalog?.state === "ready" && selectedModel
+        ? t("Standard")
+        : t("Default");
   const isMaxEffort = efforts.length > 1 && resolvedIndex === efforts.length - 1;
   const reported = thread.codexModelReported
     ? `${thread.codexModelReported}${thread.codexEffortReported ? ` / ${thread.codexEffortReported}` : ""}`
@@ -610,7 +617,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       e.preventDefault();
       e.stopPropagation();
       setPopOpen(false);
-      (lastTriggerRef.current === "effort" ? effortTriggerRef.current : triggerRef.current)?.focus();
+      focusTrigger();
       return;
     }
     const activeEl = document.activeElement;
@@ -1121,7 +1128,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
                   className="effort-model-btn"
                   aria-expanded={modelsExpanded}
                   aria-label={t("Choose a model")}
-                  title={t("Choose a model")}
+                  title={currentModelDisplayName}
                   onClick={() => setModelsExpanded((was) => !was)}
                 >
                   <span className="effort-model-name">{currentModelDisplayName}</span>
@@ -1137,7 +1144,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
 
               <div
                 className="effort-level-label"
-                data-effort-level={resolvedEffort || "standard"}
+                data-effort-level={
+                  resolvedEffort || (catalog?.state === "ready" && selectedModel ? "standard" : "default")
+                }
                 data-max={isMaxEffort ? "true" : undefined}
                 data-fast={isFastOn ? "true" : undefined}
               >
@@ -1206,7 +1215,13 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
                 </div>
               ) : (
                 <div className="effort-single-note">
-                  {t("This model has one reasoning level.")}
+                  {catalog === null
+                    ? t("Loading model list…")
+                    : catalog.state !== "ready"
+                      ? translateError(t, catalog.reason)
+                      : selectedModel
+                        ? t("This model has one reasoning level.")
+                        : t("Applies to the next turn")}
                 </div>
               )}
             </div>

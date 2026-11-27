@@ -1186,6 +1186,63 @@ describe("ModelPicker (P2-80 model/reasoning popover layout)", () => {
     );
     expect(pendingSavedHtml).toContain("offline-saved (saved)");
     expect(pendingSavedHtml).toContain(">High<");
+    expect(pendingSavedHtml).toContain("no Codex session is bound yet — send a turn, then reopen");
+    expect(pendingSavedHtml).not.toContain("This model has one reasoning level.");
+
+    // Loading/unavailable/default-model states never fabricate "This model has one reasoning level.".
+    const emptyThread = (() => {
+      const t = makeThread();
+      delete t.codexModel;
+      return t;
+    })();
+    const loadingNullHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: emptyThread,
+        initialCatalog: null,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(loadingNullHtml).toContain("Loading model list…");
+    expect(loadingNullHtml).toContain(">Default<");
+    expect(loadingNullHtml).not.toContain("This model has one reasoning level.");
+
+    const unavailableHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: emptyThread,
+        initialCatalog: { state: "unavailable", reason: "the active provider has no model catalog" },
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(unavailableHtml).toContain("the active provider has no model catalog");
+    expect(unavailableHtml).not.toContain("This model has one reasoning level.");
+
+    const readyDefaultModelHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: emptyThread,
+        initialCatalog: VARIANT_CATALOG,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(readyDefaultModelHtml).toContain("Applies to the next turn");
+    expect(readyDefaultModelHtml).not.toContain("This model has one reasoning level.");
+
+    // Case/underscore effort variant ("extra_high") folds cleanly to Extra High.
+    const extraHighVariantHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-multi", codexEffort: "extra_high" }),
+        initialCatalog: VARIANT_CATALOG,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    expect(extraHighVariantHtml).toContain(">Extra High<");
   });
 
   it("localizes P2-80 labels and preserves compact truncation classes across all 6 languages", () => {
