@@ -44,6 +44,27 @@ export function resolveHydraMarkClick(opts: {
   return opts.pop === "idle" ? "close-pop" : "open-idle";
 }
 
+export function scheduleHydraAutoIntro(opts: {
+  armedRef: { current: boolean };
+  seenIntro: boolean;
+  isOn: boolean;
+  isChimera: boolean;
+  readOnly: boolean;
+  onOpen: () => void;
+  scheduleFrame?: (cb: () => void) => number;
+  cancelFrame?: (id: number) => void;
+}): (() => void) | undefined {
+  if (opts.armedRef.current) return undefined;
+  if (opts.seenIntro || !opts.isOn || opts.isChimera || opts.readOnly) return undefined;
+  const schedule = opts.scheduleFrame ?? requestAnimationFrame;
+  const cancel = opts.cancelFrame ?? cancelAnimationFrame;
+  const raf = schedule(() => {
+    opts.armedRef.current = true;
+    opts.onOpen();
+  });
+  return () => cancel(raf);
+}
+
 const hex = (n: number): string => `#${n.toString(16).padStart(6, "0")}`;
 
 function ChimeraMarkSvg(): React.JSX.Element {
@@ -118,15 +139,18 @@ export function HydraMark(props: {
 
   // Frozen: the first chat's Hydra intro opens by itself until read (Hydra mode only).
   const introArmed = useRef(false);
-  useEffect(() => {
-    if (introArmed.current) return undefined;
-    if (!seenIntro && isOn && !isChimera && !props.readOnly) {
-      introArmed.current = true;
-      const raf = requestAnimationFrame(() => openPop("intro"));
-      return () => cancelAnimationFrame(raf);
-    }
-    return undefined;
-  }, [seenIntro, isOn, isChimera, props.readOnly]);
+  useEffect(
+    () =>
+      scheduleHydraAutoIntro({
+        armedRef: introArmed,
+        seenIntro,
+        isOn,
+        isChimera,
+        readOnly: props.readOnly === true,
+        onOpen: () => openPop("intro"),
+      }),
+    [seenIntro, isOn, isChimera, props.readOnly],
+  );
 
   const openPop = (p: Pop): void => {
     const r = btnRef.current?.getBoundingClientRect();

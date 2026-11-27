@@ -28,7 +28,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { clientStore } from "../src/renderer/client";
 import { ChatView, nextHydraPanelState } from "../src/renderer/components/ChatView";
-import { HydraMark, resolveHydraMarkClick } from "../src/renderer/components/HydraMark";
+import { HydraMark, resolveHydraMarkClick, scheduleHydraAutoIntro } from "../src/renderer/components/HydraMark";
 import { HydraPanel } from "../src/renderer/components/HydraPanel";
 import { LanguageContext } from "../src/renderer/locale";
 import type { ChatThread, LanguageId, Settings, Snapshot } from "../src/shared/types";
@@ -396,5 +396,89 @@ describe("P2-79 Chimera mark and sub-agent panel button", () => {
         pop: "switch",
       }),
     ).toBe("close-pop");
+  });
+
+  it("arms Hydra auto-intro inside the animation frame so StrictMode or pre-frame cancellation never suppresses it", () => {
+    const armedRef = { current: false };
+    let nextId = 0;
+    const frames = new Map<number, () => void>();
+    const scheduleFrame = (cb: () => void) => {
+      const id = ++nextId;
+      frames.set(id, cb);
+      return id;
+    };
+    const cancelFrame = (id: number) => {
+      frames.delete(id);
+    };
+    let opens = 0;
+
+    // First mount schedules a frame, then StrictMode/pre-frame cleanup cancels before it fires.
+    const cleanup1 = scheduleHydraAutoIntro({
+      armedRef,
+      seenIntro: false,
+      isOn: true,
+      isChimera: false,
+      readOnly: false,
+      onOpen: () => {
+        opens += 1;
+      },
+      scheduleFrame,
+      cancelFrame,
+    });
+    expect(armedRef.current).toBe(false);
+    cleanup1?.();
+    expect(frames.size).toBe(0);
+    expect(armedRef.current).toBe(false);
+
+    // Adaptive mode never schedules the Hydra intro.
+    expect(
+      scheduleHydraAutoIntro({
+        armedRef,
+        seenIntro: false,
+        isOn: true,
+        isChimera: true,
+        readOnly: false,
+        onOpen: () => {
+          opens += 1;
+        },
+        scheduleFrame,
+        cancelFrame,
+      }),
+    ).toBeUndefined();
+    expect(frames.size).toBe(0);
+
+    // Remount / switch back to Hydra schedules and fires once, then stays armed.
+    scheduleHydraAutoIntro({
+      armedRef,
+      seenIntro: false,
+      isOn: true,
+      isChimera: false,
+      readOnly: false,
+      onOpen: () => {
+        opens += 1;
+      },
+      scheduleFrame,
+      cancelFrame,
+    });
+    expect(frames.size).toBe(1);
+    for (const cb of [...frames.values()]) cb();
+    expect(opens).toBe(1);
+    expect(armedRef.current).toBe(true);
+
+    expect(
+      scheduleHydraAutoIntro({
+        armedRef,
+        seenIntro: false,
+        isOn: true,
+        isChimera: false,
+        readOnly: false,
+        onOpen: () => {
+          opens += 1;
+        },
+        scheduleFrame,
+        cancelFrame,
+      }),
+    ).toBeUndefined();
+    expect(opens).toBe(1);
   });
 });
