@@ -810,11 +810,14 @@ bootstrap = app.whenReady().then(async () => {
     }
   });
 
-  // F33 / P2-23 local control: same-account Unix socket, off by default behind
+  // F33 / P2-23 local control: same-account IPC socket (AF_UNIX on POSIX,
+  // exclusive named pipe on Windows), off by default behind
   // externalControlEnabled. refreshListening on every settings change —
   // closing the gate stops listening and drops live connections.
-  localControl = new LocalControlService(eng, dataRoot);
-  localControl.refreshListening();
+  localControl = new LocalControlService(eng, dataRoot, "dev", (status) =>
+    broadcast({ type: "local-control-changed", status }),
+  );
+  void localControl.refreshListening().catch(() => {});
   // P2-25 Remote MCP: loopback HTTP + OAuth 2.1 outside Alpha.
   remoteMcp = new RemoteMcpService({
     engine: eng,
@@ -827,7 +830,7 @@ bootstrap = app.whenReady().then(async () => {
   void remoteMcp.refresh().catch(() => {});
   eng.onEvent((e) => {
     if (e.type === "settings-changed") {
-      localControl?.refreshListening();
+      void localControl?.refreshListening().catch(() => {});
       void remoteMcp?.refresh().catch(() => {});
       refreshQuickChord();
     }

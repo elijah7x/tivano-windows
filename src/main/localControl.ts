@@ -26,11 +26,29 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import type { Engine } from "./engine";
-import type { ChatThread } from "../shared/types";
+import type { ChatThread, LocalControlStatus } from "../shared/types";
 import { hydraPairForProvider, type HydraPair } from "../shared/hydra";
 import { resolveWeatherWindowMode } from "../shared/skylight";
+
+/** Same-account IPC endpoint for a dataRoot: POSIX AF_UNIX socket at
+ *  `<dataRoot>/control/control.sock` or Windows exclusive Named Pipe
+ *  `\\.\pipe\tivano-control-<hash>` (Node net.Server on win32 binds
+ *  Named Pipes rather than filesystem AF_UNIX sockets). */
+export function localControlEndpoint(
+  dataRoot: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform === "win32") {
+    const normalized = win32.resolve(dataRoot).replace(/[\\/]+$/, "").toLowerCase();
+    const digest = createHash("sha256").update(normalized).digest("hex").slice(0, 32);
+    return `\\\\.\\pipe\\tivano-control-${digest}`;
+  }
+  return platform === process.platform
+    ? join(dataRoot, "control", "control.sock")
+    : posix.join(dataRoot, "control", "control.sock");
+}
 
 const VERSION = 1;
 const MAX_FRAME = 1_048_576;
@@ -108,18 +126,22 @@ const hashPayload = (v: unknown) =>
 const isUuid = (s: unknown): s is string =>
   typeof s === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
-/** One app's local-control endpoint. The socket only exists while
+/** One app's local-control endpoint. The socket/pipe only exists while
  *  `externalControlEnabled` is on; closing it closes listener and
  *  connections (accepted turns keep running — the gate never cancels work). */
 export class LocalControlService {
   readonly instance = randomUUID();
+  readonly endpoint: string;
   private server: Server | undefined;
   private conns = new Set<Socket>();
   private active = 0;
   private ops = new Map<string, Operation>();
   private readonly dir: string;
   private readonly sockPath: string;
+  private readonly isNamedPipe: boolean;
   private remoteListeningCheck?: () => boolean;
+  private queue: Promise<void> = Promise.resolve();
+  private disposed = false;
   listening = false;
   listenFailure: string | undefined;
 
@@ -127,59 +149,149 @@ export class LocalControlService {
     private readonly engine: Engine,
     dataRoot: string,
     private readonly edition: string = "dev",
+    private readonly onChanged?: (status: LocalControlStatus) => void,
   ) {
     this.dir = join(dataRoot, "control");
-    this.sockPath = join(this.dir, "control.sock");
+    this.sockPath = localControlEndpoint(dataRoot);
+    this.endpoint = this.sockPath;
+    this.isNamedPipe =
+      this.sockPath.startsWith("\\\\.\\pipe\\") ||
+      this.sockPath.startsWith("\\\\?\\pipe\\");
   }
 
   setRemoteListeningCheck(check: () => boolean): void {
     this.remoteListeningCheck = check;
   }
 
-  /** Frozen refreshListening — called on settings changes, library load
-   *  and shutdown. Gate closed → full stop. */
-  refreshListening(): void {
+  status(): LocalControlStatus {
     const s = this.engine.snapshot().settings;
-    const enabled = s.externalControlEnabled === true;
-    if (!enabled) {
-      this.stop();
-      return;
-    }
-    if (this.server) return;
-    try {
-      this.start();
-      this.listening = true;
-      this.listenFailure = undefined;
-    } catch (e) {
-      this.listening = false;
-      this.listenFailure = (e as Error).message;
-    }
+    return {
+      enabled: s.externalControlEnabled === true,
+      listening: this.listening,
+      failure: this.listenFailure ?? null,
+    };
   }
 
-  private start(): void {
-    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    chmodSync(this.dir, 0o700);
-    // Stale socket from a dead instance is unlinked; a live one would
-    // have refused the bind anyway.
-    if (existsSync(this.sockPath)) unlinkSync(this.sockPath);
-    const server = createServer({ allowHalfOpen: false }, (c) => this.accept(c));
-    server.on("error", () => {});
-    server.listen(this.sockPath, () => {
-      try {
-        chmodSync(this.sockPath, 0o600);
-      } catch {
-        /* keep the socket usable even where chmod is a no-op */
+  private notifyChanged(): void {
+    this.onChanged?.(this.status());
+  }
+
+  whenSettled(): Promise<void> {
+    return this.queue;
+  }
+
+  /** Frozen refreshListening — called on settings changes, library load
+   *  and retry. Gate closed → full stop; gate open → bind asynchronously
+   *  and only mark `listening = true` once `"listening"` fires. */
+  refreshListening(): Promise<void> {
+    const run = async () => {
+      if (this.disposed) return;
+      const s = this.engine.snapshot().settings;
+      const enabled = s.externalControlEnabled === true;
+      if (!enabled) {
+        await this.stopAsync();
+        this.listenFailure = undefined;
+        this.notifyChanged();
+        return;
       }
-    });
-    this.server = server;
+      if (this.server && this.listening) return;
+      if (this.server) {
+        await this.stopAsync();
+      }
+      await this.start();
+    };
+    const next = this.queue.then(run, run);
+    this.queue = next;
+    return next;
   }
 
-  stop(): void {
-    for (const c of this.conns) c.destroy();
-    this.conns.clear();
-    this.server?.close();
-    this.server = undefined;
-    this.listening = false;
+  private start(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let server: Server;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      try {
+        if (!this.isNamedPipe) {
+          mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+          chmodSync(this.dir, 0o700);
+          // Stale socket from a dead instance is unlinked; a live one would
+          // have refused the bind anyway.
+          if (existsSync(this.sockPath)) unlinkSync(this.sockPath);
+        }
+        server = createServer({ allowHalfOpen: false }, (c) => this.accept(c));
+      } catch (e) {
+        this.server = undefined;
+        this.listening = false;
+        this.listenFailure = (e as Error).message;
+        this.notifyChanged();
+        finish();
+        return;
+      }
+
+      this.server = server;
+      this.listening = false;
+      this.listenFailure = undefined;
+
+      server.on("error", (e: Error) => {
+        if (this.server === server) {
+          this.server = undefined;
+          this.listening = false;
+          this.listenFailure = e.message;
+          this.notifyChanged();
+        }
+        try {
+          server.close();
+        } catch {
+          /* ignore close error on failed server */
+        }
+        finish();
+      });
+
+      server.on("close", () => {
+        if (this.server === server) {
+          this.server = undefined;
+          this.listening = false;
+          this.notifyChanged();
+        }
+        finish();
+      });
+
+      const listenOpts = this.isNamedPipe
+        ? { path: this.sockPath, exclusive: true }
+        : { path: this.sockPath };
+
+      server.listen(listenOpts, () => {
+        if (this.disposed || this.server !== server) {
+          try {
+            server.close();
+          } catch {
+            /* already closed */
+          }
+          this.unlinkPosixSocket();
+          finish();
+          return;
+        }
+        if (!this.isNamedPipe) {
+          try {
+            chmodSync(this.sockPath, 0o600);
+          } catch {
+            /* keep the socket usable even where chmod is a no-op */
+          }
+        }
+        this.listening = true;
+        this.listenFailure = undefined;
+        this.notifyChanged();
+        finish();
+      });
+    });
+  }
+
+  private unlinkPosixSocket(): void {
+    if (this.isNamedPipe) return;
     // Only unlink the socket this instance created.
     try {
       const st = existsSync(this.sockPath) ? lstatSync(this.sockPath) : undefined;
@@ -189,8 +301,43 @@ export class LocalControlService {
     }
   }
 
+  private async stopAsync(): Promise<void> {
+    for (const c of this.conns) c.destroy();
+    this.conns.clear();
+    const srv = this.server;
+    this.server = undefined;
+    this.listening = false;
+    if (srv) {
+      await new Promise<void>((resolve) => {
+        try {
+          srv.close(() => resolve());
+        } catch {
+          resolve();
+        }
+      });
+    }
+    this.unlinkPosixSocket();
+  }
+
+  stop(): void {
+    for (const c of this.conns) c.destroy();
+    this.conns.clear();
+    const srv = this.server;
+    this.server = undefined;
+    this.listening = false;
+    if (srv) {
+      try {
+        srv.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.unlinkPosixSocket();
+  }
+
   /** Frozen suspendForShutdown — gates don't matter on quit. */
   dispose(): void {
+    this.disposed = true;
     this.stop();
     for (const op of this.ops.values()) op.unsubscribe?.();
     this.ops.clear();
@@ -320,7 +467,7 @@ export class LocalControlService {
       };
       if (typeof req.id === "string") id = req.id;
       const s = this.engine.snapshot().settings;
-      if (s.externalControlEnabled !== true)
+      if (s.externalControlEnabled !== true || !this.listening)
         fail("disabled");
       if (req.instance !== this.instance) fail("instanceMismatch");
       if (this.active >= MAX_CONNECTIONS) fail("busy");

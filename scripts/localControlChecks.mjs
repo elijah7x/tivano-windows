@@ -11,8 +11,17 @@ import { promisify } from "node:util";
 import { connect } from "node:net";
 import { existsSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { join, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+
+function controlEndpoint(dataRoot) {
+  if (process.platform === "win32") {
+    const normalized = resolve(dataRoot).replace(/[\\/]+$/, "").toLowerCase();
+    const digest = createHash("sha256").update(normalized).digest("hex").slice(0, 32);
+    return `\\\\.\\pipe\\tivano-control-${digest}`;
+  }
+  return join(dataRoot, "control", "control.sock");
+}
 
 const frame = (obj) => {
   const p = Buffer.from(JSON.stringify(obj), "utf8");
@@ -77,7 +86,7 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
   await page.waitForSelector(".sidebar-head", { timeout: 15000 });
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
   const info = (await snap(page)).info;
-  const sock = join(info.dataRoot, "control", "control.sock");
+  const sock = controlEndpoint(info.dataRoot);
 
   const status = () => page.evaluate(() => window.tivano.invoke("control:status", {}));
 
@@ -93,8 +102,9 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
     window.tivano.invoke("settings:set", { alphaEnabled: false, externalControlEnabled: true }));
   await wait(150);
   const st1 = await status();
-  verify("LC-02 externalControlEnabled alone -> listening", st1.enabled && st1.listening === true, st1);
-  verify("LC-03 socket file exists", existsSync(sock));
+  verify("LC-02 externalControlEnabled alone -> listening",
+    st1.enabled && st1.listening === true && st1.failure === null, st1);
+  verify("LC-03 socket/pipe endpoint exists", existsSync(sock));
 
   // ---- handshake -------------------------------------------------------
   const { hello: welcome } = await rpc(sock, { version: 1, edition: "dev" });
@@ -316,11 +326,32 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
     (await page.locator('[data-testid="local-control-section"]').count()) === 1);
   const statusLine = await page.locator('[data-testid="local-control-status"]').textContent();
   verify("LC-24 status shows listening", statusLine?.includes("Listening for this account only"), statusLine);
-  const localSwitch = page.locator('.choice-row button[role="switch"]', { hasText: "Local control" }).first();
+  const localSwitch = page.locator('[data-testid="local-control-toggle"]');
   await localSwitch.click();
-  await wait(200);
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[data-testid="local-control-status"]')?.textContent?.includes("Disabled"),
+    null,
+    { timeout: 10000 },
+  );
   const statusAfter = await page.locator('[data-testid="local-control-status"]').textContent();
-  verify("LC-25 UI toggle off drops listener", statusAfter?.includes("Disabled"), statusAfter);
+  verify("LC-25 UI toggle off drops listener",
+    (await localSwitch.getAttribute("aria-checked")) === "false" &&
+    statusAfter?.includes("Disabled") &&
+    !existsSync(sock), statusAfter);
+  await localSwitch.click();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector('[data-testid="local-control-status"]')
+        ?.textContent?.includes("Listening for this account only"),
+    null,
+    { timeout: 10000 },
+  );
+  const { hello: reenabledHello } = await rpc(sock, { version: 1, edition: "dev" });
+  verify("LC-25a UI toggle back on restores live listener",
+    (await localSwitch.getAttribute("aria-checked")) === "true" &&
+    reenabledHello.result?.welcome?.instance === instance, reenabledHello);
 
   // ---- CLI command install surface (frozen CLIInstallationSettings) ---
   // win32 installs write a `.cmd` sibling next to the sh shim; status

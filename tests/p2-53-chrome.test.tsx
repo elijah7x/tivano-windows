@@ -187,10 +187,25 @@ describe("P2-53 window chrome simplification", () => {
     );
     expect(connectionsHtml).toContain("settings-btn-compact");
     expect(connectionsHtml).toContain('data-testid="local-control-section"');
+    expect(connectionsHtml).toContain('data-testid="local-control-toggle"');
     expect(connectionsHtml).toContain("Local control");
     expect(connectionsHtml).toContain("CLI command");
     expect(connectionsHtml).not.toContain(">Alpha<");
     expect(connectionsHtml).not.toContain("Switch Alpha on to try its features.");
+
+    const connectionsEnabledHtml = renderInLang(
+      "en",
+      createElement(SettingsModal, {
+        settings: { ...settings, externalControlEnabled: true },
+        info,
+        threads: [thread],
+        projects: snapshot.projects,
+        tokenActivity: {},
+        initialPage: "connections",
+        onClose: () => {},
+      }),
+    );
+    expect(connectionsEnabledHtml).toContain('aria-checked="true" data-testid="local-control-toggle"');
 
     const storageHtml = renderInLang(
       "en",

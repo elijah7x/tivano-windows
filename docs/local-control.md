@@ -13,9 +13,11 @@ below as *bounded*.
 
 ## Socket and framing
 
-- Endpoint: `<dataRoot>/control/control.sock` — the directory is created
-  `0700`, the socket `0600`, a stale socket is unlinked before bind, and
-  only the socket this instance created is unlinked on stop.
+- Endpoint: `<dataRoot>/control/control.sock` on macOS/Linux (directory created
+  `0700`, socket `0600`, stale socket unlinked before bind, and only the socket
+  this instance created unlinked on stop) or an exclusive same-account Windows
+  named pipe `\\.\pipe\tivano-control-<hash>` derived from `<dataRoot>` on
+  Windows.
 - Frames are 4-byte big-endian lengths followed by JSON. The first frame
   is the `version`/`edition`/optional `expectedInstance` handshake; every
   later request also pins the negotiated `instance`.

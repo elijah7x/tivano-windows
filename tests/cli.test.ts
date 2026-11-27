@@ -129,7 +129,7 @@ describe("tivano.mjs client (real socket round trip)", () => {
     const engine = new Engine(store, new MockProvider({ tickMs: 1 }), root, "t");
     const svc = new LocalControlService(engine, root, "dev");
     services.push(svc);
-    return { engine, svc, sock: join(root, "control", "control.sock") };
+    return { engine, svc, root, sock: svc.endpoint };
   }
   const run = (sock: string, ...args: string[]) =>
     exec("node", [CLI, ...args], {
@@ -140,17 +140,32 @@ describe("tivano.mjs client (real socket round trip)", () => {
   it("info returns the real welcome payload after handshake", async () => {
     const { engine, svc, sock } = rig();
     engine.setSettings({ externalControlEnabled: true });
-    svc.refreshListening();
+    await svc.refreshListening();
     const { stdout } = await run(sock, "info");
     const info = JSON.parse(stdout) as { info: { edition: string; version: number } };
     expect(info.info.edition).toBe("dev");
     expect(info.info.version).toBe(1);
   });
 
+  it("connects via TIVANO_DATA_ROOT using the platform endpoint", async () => {
+    const { engine, svc, root } = rig();
+    engine.setSettings({ externalControlEnabled: true });
+    await svc.refreshListening();
+    const env: NodeJS.ProcessEnv = { ...process.env, TIVANO_DATA_ROOT: root };
+    delete env.TIVANO_CONTROL_SOCKET;
+    const { stdout } = await exec("node", [CLI, "info"], {
+      env,
+      timeout: 15_000,
+    });
+    const info = JSON.parse(stdout) as { info: { instance: string; edition: string } };
+    expect(info.info.instance).toBe(svc.instance);
+    expect(info.info.edition).toBe("dev");
+  });
+
   it("settings get returns the bounded settings snapshot", async () => {
     const { engine, svc, sock } = rig();
     engine.setSettings({ externalControlEnabled: true });
-    svc.refreshListening();
+    await svc.refreshListening();
     const { stdout } = await run(sock, "settings", "get");
     const r = JSON.parse(stdout) as { settings: { key: string }[] };
     expect(r.settings.map((s) => s.key)).toContain("showsSkylight");
@@ -159,7 +174,7 @@ describe("tivano.mjs client (real socket round trip)", () => {
   it("settings set writes a real persisted setting via a client ticket", async () => {
     const { engine, svc, sock } = rig();
     engine.setSettings({ externalControlEnabled: true });
-    svc.refreshListening();
+    await svc.refreshListening();
     const { stdout } = await run(sock, "settings", "set", "showsSkylight=false");
     const r = JSON.parse(stdout) as { operation: { state: string } };
     expect(r.operation.state).toBe("ended");
@@ -170,7 +185,7 @@ describe("tivano.mjs client (real socket round trip)", () => {
     const { svc, sock } = rig();
     // Gates off → service isn't even listening → connect fails (rc 3);
     // enable listening then the request is refused (rc 4).
-    svc.refreshListening();
+    await svc.refreshListening();
     expect(svc.listening).toBe(false);
     await expect(run(sock, "info")).rejects.toMatchObject({
       code: 3,

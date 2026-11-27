@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Store, emptyStore } from "../src/main/store";
 import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
-import { LocalControlService } from "../src/main/localControl";
+import { LocalControlService, localControlEndpoint } from "../src/main/localControl";
 
 const dirs: string[] = [];
 function freshRoot(): string {
@@ -22,14 +22,14 @@ function freshRoot(): string {
   return d;
 }
 const services: LocalControlService[] = [];
-function rig(): { engine: Engine; store: Store; svc: LocalControlService; sock: string } {
+function rig(): { engine: Engine; store: Store; svc: LocalControlService; sock: string; root: string } {
   const root = freshRoot();
   const store = new Store(root);
   store.open();
   const engine = new Engine(store, new MockProvider({ tickMs: 1 }), root, "t");
   const svc = new LocalControlService(engine, root, "dev");
   services.push(svc);
-  return { engine, store, svc, sock: join(root, "control", "control.sock") };
+  return { engine, store, svc, sock: svc.endpoint, root };
 }
 afterEach(() => {
   for (const s of services) s.dispose();
@@ -98,17 +98,6 @@ function hello(sock: string, h: unknown): Promise<Record<string, unknown>> {
   });
 }
 
-/** Some sandboxes deny filesystem/named-pipe listeners outright — the
- *  F34 socket cases probe once and skip there instead of failing on the
- *  environment; tests/localControlDispatch.test.ts covers the same ops
- *  without a socket and always runs. */
-const socketBindable = await new Promise<boolean>((resolve) => {
-  const probe = join(tmpdir(), `tivano-lc-probe-${randomUUID()}.sock`);
-  const s = createServer(() => {});
-  s.on("error", () => resolve(false));
-  s.listen(probe, () => s.close(() => resolve(true)));
-});
-
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const enabled = (e: Engine) =>
   e.setSettings({ externalControlEnabled: true });
@@ -118,33 +107,98 @@ const ticket = (svc: LocalControlService) =>
 describe("local control (F33)", () => {
   it("listens solely on externalControlEnabled; alphaEnabled no longer gates it", async () => {
     const { engine, svc, sock } = rig();
-    svc.refreshListening();
+    await svc.refreshListening();
     expect(svc.listening).toBe(false);
     expect(existsSync(sock)).toBe(false);
     engine.setSettings({ alphaEnabled: true });
-    svc.refreshListening();
+    await svc.refreshListening();
     expect(svc.listening).toBe(false);
     expect(existsSync(sock)).toBe(false);
     engine.setSettings({ alphaEnabled: false, externalControlEnabled: true });
-    svc.refreshListening();
+    await svc.refreshListening();
     expect(svc.listening).toBe(true);
-    if (socketBindable) {
-      await wait(30);
-      expect(existsSync(sock)).toBe(true);
-    }
+    expect(svc.listenFailure).toBeUndefined();
+    expect(existsSync(sock)).toBe(true);
     // Toggling Alpha while externalControlEnabled is on does not stop listening.
     engine.setSettings({ alphaEnabled: true });
-    svc.refreshListening();
+    await svc.refreshListening();
     expect(svc.listening).toBe(true);
     engine.setSettings({ alphaEnabled: false });
-    svc.refreshListening();
+    await svc.refreshListening();
     expect(svc.listening).toBe(true);
-    // Turning externalControlEnabled off closes the listener and unlinks the socket.
+    // Turning externalControlEnabled off closes the listener and removes the endpoint.
     engine.setSettings({ externalControlEnabled: false });
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     expect(svc.listening).toBe(false);
     expect(existsSync(sock)).toBe(false);
+  });
+
+  it("reports honest status on async listen failure and recovers on retry", async () => {
+    const { engine, root } = rig();
+    enabled(engine);
+    const events: Array<{ enabled: boolean; listening: boolean; failure: string | null }> = [];
+    const svc = new LocalControlService(engine, root, "dev", (st) => events.push(st));
+    services.push(svc);
+
+    // Hold the endpoint exclusively (named pipe on win32) or block <root>/control (POSIX)
+    // so LocalControlService.start() fails cleanly and reports the real failure.
+    let blocker: ReturnType<typeof createServer> | undefined;
+    if (process.platform === "win32") {
+      blocker = createServer(() => {});
+      await new Promise<void>((res, rej) => {
+        blocker!.on("error", rej);
+        blocker!.listen({ path: svc.endpoint, exclusive: true }, () => res());
+      });
+    } else {
+      writeFileSync(join(root, "control"), "not-a-dir");
+    }
+
+    await svc.refreshListening();
+    expect(svc.listening).toBe(false);
+    expect(svc.listenFailure).toBeTruthy();
+    expect(svc.status()).toEqual({
+      enabled: true,
+      listening: false,
+      failure: svc.listenFailure,
+    });
+    expect(events.at(-1)).toEqual(svc.status());
+    await expect(svc.handleExternal("info", {}, "local")).rejects.toMatchObject({
+      code: "disabled",
+    });
+
+    // Clear the blocker and retry via refreshListening() (mirrors control:retry).
+    if (blocker) {
+      await new Promise<void>((res) => blocker!.close(() => res()));
+    } else {
+      rmSync(join(root, "control"), { force: true });
+    }
+    await svc.refreshListening();
+    expect(svc.listening).toBe(true);
+    expect(svc.listenFailure).toBeUndefined();
+    expect(svc.status()).toEqual({ enabled: true, listening: true, failure: null });
+    const res = await call(svc.endpoint, svc.instance, "info");
+    expect((res.result as Record<string, unknown>).info).toBeTruthy();
+
+    // Disabling mid-bind never leaves listening=true.
+    const { engine: eng3, svc: svc3, sock: sock3 } = rig();
+    enabled(eng3);
+    const pendingBind = svc3.refreshListening();
+    eng3.setSettings({ externalControlEnabled: false });
+    await svc3.refreshListening();
+    await pendingBind;
+    expect(svc3.listening).toBe(false);
+    expect(existsSync(sock3)).toBe(false);
+
+    // Endpoint helper maps win32 to deterministic exclusive named pipes and POSIX to control.sock.
+    expect(localControlEndpoint("C:\\Users\\Synthetic\\AppData\\Tivano", "win32")).toBe(
+      localControlEndpoint("c:\\users\\synthetic\\appdata\\tivano\\", "win32"),
+    );
+    expect(localControlEndpoint("C:\\Users\\Synthetic\\AppData\\Tivano", "win32")).toMatch(
+      /^\\\\\.\\pipe\\tivano-control-[0-9a-f]{32}$/,
+    );
+    expect(localControlEndpoint("/tmp/tivano-data", "darwin")).toBe(
+      "/tmp/tivano-data/control/control.sock",
+    );
   });
 
   it("migrates older stores once by keeping (alphaEnabled && externalControlEnabled)", async () => {
@@ -182,17 +236,14 @@ describe("local control (F33)", () => {
       const engine = new Engine(store, new MockProvider({ tickMs: 1 }), root, "t");
       const svc = new LocalControlService(engine, root, "dev");
       services.push(svc);
-      const sock = join(root, "control", "control.sock");
-      svc.refreshListening();
+      const sock = svc.endpoint;
+      await svc.refreshListening();
 
       expect(store.state.settings.externalControlEnabled, c.name).toBe(c.expected);
       expect(store.state.settings.controlLeftAlpha, c.name).toBe(true);
       if (c.expected) {
         expect(svc.listening, c.name).toBe(true);
-        if (socketBindable) {
-          await wait(30);
-          expect(existsSync(sock), c.name).toBe(true);
-        }
+        expect(existsSync(sock), c.name).toBe(true);
       } else {
         expect(svc.listening, c.name).toBe(false);
         expect(existsSync(sock), c.name).toBe(false);
@@ -226,13 +277,10 @@ describe("local control (F33)", () => {
     const engine = new Engine(store, new MockProvider({ tickMs: 1 }), root, "t");
     const svc = new LocalControlService(engine, root, "dev");
     services.push(svc);
-    svc.refreshListening();
+    await svc.refreshListening();
     expect(store.state.settings.externalControlEnabled).toBe(true);
     expect(svc.listening).toBe(true);
-    if (socketBindable) {
-      await wait(30);
-      expect(existsSync(join(root, "control", "control.sock"))).toBe(true);
-    }
+    expect(existsSync(svc.endpoint)).toBe(true);
     svc.dispose();
     store.close();
   });
@@ -240,8 +288,7 @@ describe("local control (F33)", () => {
   it("handshake enforces version, edition and instance", async () => {
     const { engine, svc, sock } = rig();
     enabled(engine);
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     const ok = await hello(sock, { version: 1, edition: "dev" });
     const welcome = (ok.result as Record<string, unknown>).welcome as Record<string, unknown>;
     expect(welcome.version).toBe(1);
@@ -267,8 +314,7 @@ describe("local control (F33)", () => {
     engine.sendTurn(t.id, "hello");
     await wait(50);
     enabled(engine);
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     const info = await call(sock, svc.instance, "info");
     expect((info.result as Record<string, unknown>).info).toBeTruthy();
     const projects = await call(sock, svc.instance, "projects", { limit: 10 });
@@ -296,8 +342,7 @@ describe("local control (F33)", () => {
   it("rejects instance-mismatched and unknown-method requests", async () => {
     const { engine, svc, sock } = rig();
     enabled(engine);
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     const wrong = await call(sock, randomUUID(), "info");
     expect((wrong.error as Record<string, unknown>).code).toBe("instanceMismatch");
     const unknown = await call(sock, svc.instance, "approve");
@@ -309,8 +354,7 @@ describe("local control (F33)", () => {
   it("creates a local thread and refuses worktree + missing project", async () => {
     const { engine, svc, sock } = rig();
     enabled(engine);
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     const p = engine.createProject("p2");
     const created = await call(sock, svc.instance, "create", {
       ticket: ticket(svc),
@@ -341,8 +385,7 @@ describe("local control (F33)", () => {
     const { engine, svc, sock } = rig();
     const t = engine.createThread(null, "subj");
     enabled(engine);
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     const tk = ticket(svc);
     const sent = await call(sock, svc.instance, "submit", {
       ticket: tk,
@@ -403,12 +446,11 @@ describe("local control (F33)", () => {
     const engine = new Engine(store, new MockProvider({ tickMs: 400 }), root, "t");
     const svc = new LocalControlService(engine, root, "dev");
     services.push(svc);
-    const sock = join(root, "control", "control.sock");
+    const sock = svc.endpoint;
     const t = engine.createThread(null);
     const turn = engine.sendTurn(t.id, "slow work please");
     enabled(engine);
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     const res = await call(sock, svc.instance, "interrupt", {
       ticket: ticket(svc),
       threadId: t.id,
@@ -428,8 +470,7 @@ describe("local control (F33)", () => {
   it("settings get/set honor the bounded key set", async () => {
     const { engine, svc, sock } = rig();
     enabled(engine);
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     const got = await call(sock, svc.instance, "settingsGet");
     const list = (got.result as Record<string, unknown>).settings as { key: string }[];
     expect(list.map((s) => s.key)).toEqual(["textGeneration", "showsSkylight"]);
@@ -465,8 +506,7 @@ describe("local control (F33)", () => {
   it("a stale ticket is unknown and never executed", async () => {
     const { engine, svc, sock } = rig();
     enabled(engine);
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     const stale = `${svc.instance}/${randomUUID()}/${Date.now() - 60_000}`;
     const res = await call(sock, svc.instance, "submit", {
       ticket: stale,
@@ -476,12 +516,11 @@ describe("local control (F33)", () => {
     expect((res.error as Record<string, unknown>).code).toBe("unknown");
   });
 
-  describe.runIf(socketBindable)("F34 socket-level hydra control", () => {
+  describe("F34 socket-level hydra control", () => {
   it("create --hydra on needs the app-wide switch and a saved pair", async () => {
     const { engine, svc, sock } = rig();
     enabled(engine);
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     // Non-boolean hydra is a bad request.
     const bad = await call(sock, svc.instance, "create", {
       ticket: ticket(svc), workspace: "local", hydra: "yes",
@@ -515,8 +554,7 @@ describe("local control (F33)", () => {
   it("F34: --hydra on binds the saved pair; absent or off never inherits", async () => {
     const { engine, svc, sock } = rig();
     enabled(engine);
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     // The UI's own defaults exist — external create must not touch them.
     engine.setSettings({
       hydraEnabled: true,
@@ -586,10 +624,9 @@ describe("local control (F33)", () => {
     const engine = new Engine(store, new MockProvider({ tickMs: 300 }), root, "t");
     const svc = new LocalControlService(engine, root, "dev");
     services.push(svc);
-    const sock = join(root, "control", "control.sock");
+    const sock = svc.endpoint;
     enabled(engine);
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     const lead = engine.createThread(null, "lead");
     // A synthetic running head under the lead — no provider involved.
     const head = engine.createThread(null, "head");
@@ -694,8 +731,7 @@ describe("local control (F33)", () => {
   it("F34: failure kinds are stable across UI languages", async () => {
     const { engine, svc, sock } = rig();
     enabled(engine);
-    svc.refreshListening();
-    await wait(30);
+    await svc.refreshListening();
     // The wire carries constant codes — the main process never
     // localizes provider/control failures. Same calls under zh-Hans
     // must return the identical kinds as under English.

@@ -16,6 +16,7 @@ import {
   type CodexChooseResult,
   type CodexWriteResult,
   type LanguageId,
+  type LocalControlStatus,
   type Project,
   type Settings,
 } from "../../shared/types";
@@ -127,11 +128,7 @@ export function SettingsModal(props: {
   const [codexErr, setCodexErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<"load" | "choose" | "save" | "clear" | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
-  const [control, setControl] = useState<{
-    enabled: boolean;
-    listening: boolean;
-    failure: string | null;
-  } | null>(null);
+  const [control, setControl] = useState<LocalControlStatus | null>(null);
   const [cli, setCli] = useState<CliState | null>(null);
   const [cliErr, setCliErr] = useState<string | null>(null);
   const mounted = useRef(false);
@@ -211,10 +208,14 @@ export function SettingsModal(props: {
     void run("load");
     void refreshControl();
     void refreshCli();
+    const detach = api().onEvent((e) => {
+      if (e.type === "local-control-changed" && mounted.current) setControl(e.status);
+    });
     return () => {
       mounted.current = false;
       ++requestId.current;
       operationLocked.current = false;
+      detach();
     };
   }, [run, refreshControl, refreshCli]);
 
@@ -813,10 +814,15 @@ export function SettingsModal(props: {
                   {control?.enabled && !control.listening && (
                     <button
                       className="choice control-retry settings-btn-compact"
+                      data-testid="control-retry"
                       onClick={() =>
                         void api()
                           .invoke("control:retry", {})
-                          .then(() => refreshControl())
+                          .then((s) => {
+                            if (mounted.current && s && typeof s === "object") {
+                              setControl(s as LocalControlStatus);
+                            }
+                          })
                       }
                     >
                       {t("Retry")}
