@@ -15,9 +15,10 @@ below as *bounded*.
 
 - Endpoint: `<dataRoot>/control/control.sock` on macOS/Linux (directory created
   `0700`, socket `0600`, stale socket unlinked before bind, and only the socket
-  this instance created unlinked on stop) or an exclusive same-account Windows
-  named pipe `\\.\pipe\tivano-control-<hash>` derived from `<dataRoot>` on
-  Windows.
+  this instance created unlinked on stop) or a deterministic Windows named pipe
+  `\\.\pipe\tivano-control-<hash>` derived from `<dataRoot>` on Windows
+  (bounded: Node `net` uses the default Windows pipe DACL without a custom
+  security descriptor or accept-time peer check).
 - Frames are 4-byte big-endian lengths followed by JSON. The first frame
   is the `version`/`edition`/optional `expectedInstance` handshake; every
   later request also pins the negotiated `instance`.

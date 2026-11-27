@@ -1,7 +1,7 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-14.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F33 local control e2e — a real Electron instance and a real Node
-// Unix-socket client: the double gate, hello/welcome handshake, read
+// Unix-socket / Windows named-pipe client: the double gate, hello/welcome handshake, read
 // queries, create/submit/interrupt through the ticket ledger, and the
 // refusal surface. No CLI helper is installed (frozen helper install is
 // a signed-binary surface — out of this slice).
@@ -429,8 +429,8 @@ export async function runLocalControlChecks({ launch: launchApp, instances, snap
     (await cliStatusText())?.includes("Not installed") &&
     (await cliInstallLabel()) === "Install CLI",
     [existsSync(cliFile), existsSync(cliCmdFile)]);
-  // The real client binary answers against the live socket end to end —
-  // re-open the gate LC-25 shut, wait for the listener, then call.
+  // The real client binary answers against the live endpoint end to end —
+  // ensure the gate is open, wait for the listener, then call.
   await page.evaluate(() =>
     window.tivano.invoke("settings:set", { externalControlEnabled: true }));
   await wait(300);

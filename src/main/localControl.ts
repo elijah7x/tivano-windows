@@ -3,7 +3,9 @@
 // F33 local control — bounded port of the frozen AppControlService +
 // ControlSocket contract (docs/local-control.md). This slice implements:
 //   - same-account Unix socket under <dataRoot>/control/ (0700 dir,
-//     0600 socket, stale-socket unlink, owned unlink on stop)
+//     0600 socket, stale-socket unlink, owned unlink on stop) or a
+//     deterministic Windows named pipe \\.\pipe\tivano-control-<hash>
+//     (bounded: Node net uses the default Windows pipe DACL)
 //   - 4-byte big-endian length-prefixed frames (maxFrame 1 MiB,
 //     maxRequest 128 KiB — frozen LocalControl)
 //   - hello → welcome handshake with version/edition/instance checks
@@ -32,10 +34,11 @@ import type { ChatThread, LocalControlStatus } from "../shared/types";
 import { hydraPairForProvider, type HydraPair } from "../shared/hydra";
 import { resolveWeatherWindowMode } from "../shared/skylight";
 
-/** Same-account IPC endpoint for a dataRoot: POSIX AF_UNIX socket at
- *  `<dataRoot>/control/control.sock` or Windows exclusive Named Pipe
+/** IPC endpoint for a dataRoot: POSIX AF_UNIX socket at
+ *  `<dataRoot>/control/control.sock` or deterministic Windows Named Pipe
  *  `\\.\pipe\tivano-control-<hash>` (Node net.Server on win32 binds
- *  Named Pipes rather than filesystem AF_UNIX sockets). */
+ *  Named Pipes rather than filesystem AF_UNIX sockets; bounded: uses
+ *  Node's default pipe DACL without a custom ACL or peer check). */
 export function localControlEndpoint(
   dataRoot: string,
   platform: NodeJS.Platform = process.platform,

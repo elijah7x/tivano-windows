@@ -1,5 +1,5 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-30.
-// F33 / P2-23 local control — real Unix-socket round trips: the
+// F33 / P2-23 local control — real Unix-socket / Windows named-pipe round trips: the
 // externalControlEnabled gate (migrated out of Alpha), hello/welcome
 // handshake, read queries, the write trio with the ticket ledger
 // (dedupe/conflict/stale), and refusal surface.
@@ -183,13 +183,35 @@ describe("local control (F33)", () => {
     const { engine: eng3, svc: svc3, sock: sock3 } = rig();
     enabled(eng3);
     const pendingBind = svc3.refreshListening();
+    // Let the queued refreshListening() microtask enter start() and call server.listen()
+    // before Node's nextTick "listening" callback fires.
+    await Promise.resolve();
+    expect((svc3 as unknown as { server?: unknown }).server).toBeDefined();
+    expect(svc3.listening).toBe(false);
     eng3.setSettings({ externalControlEnabled: false });
-    await svc3.refreshListening();
-    await pendingBind;
+    const pendingStop = svc3.refreshListening();
+    await Promise.all([pendingBind, pendingStop]);
     expect(svc3.listening).toBe(false);
     expect(existsSync(sock3)).toBe(false);
 
-    // Endpoint helper maps win32 to deterministic exclusive named pipes and POSIX to control.sock.
+    // Calling stop() while server.listen() is in flight cancels the bind in the
+    // listening-callback guard and never transitions listening=true.
+    const { engine: eng4, root: root4 } = rig();
+    enabled(eng4);
+    const events4: Array<{ enabled: boolean; listening: boolean; failure: string | null }> = [];
+    const svc4 = new LocalControlService(eng4, root4, "dev", (st) => events4.push(st));
+    services.push(svc4);
+    const pendingStopBind = svc4.refreshListening();
+    await Promise.resolve();
+    expect((svc4 as unknown as { server?: unknown }).server).toBeDefined();
+    expect(svc4.listening).toBe(false);
+    svc4.stop();
+    await pendingStopBind;
+    expect(svc4.listening).toBe(false);
+    expect(events4.some((e) => e.listening)).toBe(false);
+    expect(existsSync(svc4.endpoint)).toBe(false);
+
+    // Endpoint helper maps win32 to deterministic named pipes and POSIX to control.sock.
     expect(localControlEndpoint("C:\\Users\\Synthetic\\AppData\\Tivano", "win32")).toBe(
       localControlEndpoint("c:\\users\\synthetic\\appdata\\tivano\\", "win32"),
     );
