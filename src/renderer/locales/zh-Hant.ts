@@ -216,7 +216,6 @@ export const zhHant: Record<string, string> = {
   "Thread actions": "對話操作",
   "Reveal folder": "在檔案管理員中顯示",
   "Reveal": "在 Finder 中顯示",
-  "Open in another app": "在其他應用程式中開啟",
   "Open in": "開啟方式",
   "File Explorer": "檔案總管",
   "Reveal in Finder": "在 Finder 中顯示",

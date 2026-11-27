@@ -216,7 +216,6 @@ export const fr: Record<string, string> = {
   "Thread actions": "Actions de la conversation",
   "Reveal folder": "Afficher le dossier",
   "Reveal": "Afficher dans le Finder",
-  "Open in another app": "Ouvrir dans une autre app",
   "Open in": "Ouvrir avec",
   "File Explorer": "Explorateur de fichiers",
   "Reveal in Finder": "Afficher dans le Finder",

@@ -238,7 +238,6 @@ const zhHans: Record<string, string> = {
   "Thread actions": "对话操作",
   "Reveal folder": "在文件管理器中显示",
   "Reveal": "显示位置",
-  "Open in another app": "在其他应用中打开",
   "Open in": "打开方式",
   "File Explorer": "文件资源管理器",
   "Reveal in Finder": "在 Finder 中显示",
