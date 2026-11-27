@@ -563,6 +563,7 @@ export function Sidebar(props: {
     <div
       key={th.id}
       data-thread-id={th.id}
+      data-thread-switch="true"
       className={`row${th.parentThreadId ? " helper-row" : ""}${snapshot.selectedThreadId === th.id ? " selected" : ""}${th.isPinned ? " pinned" : ""}${
         drag?.kind === "thread" && drag.id === th.id ? " dragging" : ""
       }${dropHint?.id === th.id ? (dropHint.after ? " drop-after" : " drop-before") : ""}`}

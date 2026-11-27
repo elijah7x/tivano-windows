@@ -3,7 +3,7 @@
 // Chat area: header with the labelled mock badge, message timeline with
 // streaming/approval/error/interruption states, and the composer.
 
-import { createElement, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { createElement, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { AppInfo, ChatThread, CheckpointRecordView, CodexInfo, Message, Project, Settings, Turn } from "../../shared/types";
 import { INTERRUPTED_MARKER } from "../../shared/types";
 import { AttachChip } from "./AttachChip";
@@ -270,6 +270,40 @@ function AutoPopPanels(props: {
   );
 }
 
+/** P2-51: dismiss More controls on outside press, except on controls whose
+ *  purpose is to switch threads; those presses must not erase the shell-owned
+ *  expanded state before the switch lands. */
+export function useMoreControlsDismiss(
+  moreRef: React.RefObject<HTMLDivElement | null>,
+  moreOpen: boolean,
+  setMoreOpen: (next: boolean | ((prev: boolean) => boolean)) => void,
+): void {
+  useEffect(() => {
+    if (!moreOpen) return;
+    const down = (e: MouseEvent): void => {
+      const target = e.target as Element | null;
+      if (
+        target &&
+        (moreRef.current?.contains(target) ||
+          target.closest(".sidebar") ||
+          target.closest("[data-thread-switch]"))
+      ) {
+        return;
+      }
+      setMoreOpen(false);
+    };
+    const key = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") setMoreOpen(false);
+    };
+    window.addEventListener("mousedown", down);
+    window.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("mousedown", down);
+      window.removeEventListener("keydown", key);
+    };
+  }, [moreOpen, moreRef, setMoreOpen]);
+}
+
 export function ChatView(props: {
   thread: ChatThread | null;
   /** F22: every thread — the Hydra panel resolves a lead's heads and a
@@ -327,10 +361,13 @@ export function ChatView(props: {
   const [scriptsOpen, setScriptsOpen] = useState(false);
   const [localMoreOpen, setLocalMoreOpen] = useState(false);
   const moreOpen = props.topControlsExpanded ?? localMoreOpen;
-  const setMoreOpen = (next: boolean | ((prev: boolean) => boolean)) => {
-    if (props.onSetTopControlsExpanded) props.onSetTopControlsExpanded(next);
-    else setLocalMoreOpen(next);
-  };
+  const setMoreOpen = useCallback(
+    (next: boolean | ((prev: boolean) => boolean)) => {
+      if (props.onSetTopControlsExpanded) props.onSetTopControlsExpanded(next);
+      else setLocalMoreOpen(next);
+    },
+    [props.onSetTopControlsExpanded],
+  );
   const moreRef = useRef<HTMLDivElement>(null);
   const [msgMenu, setMsgMenu] = useState<MessagePopoverState | null>(null);
   const ckptGen = useRef(0);
@@ -532,25 +569,7 @@ export function ChatView(props: {
     if (props.settings?.hydraAutoOpensPanels === false)
       setHydraPanelHidden(true);
   }, [props.settings?.hydraAutoOpensPanels]);
-  useEffect(() => {
-    if (!moreOpen) return;
-    const down = (e: MouseEvent): void => {
-      const target = e.target as Element | null;
-      if (target && (moreRef.current?.contains(target) || target.closest(".sidebar"))) {
-        return;
-      }
-      setMoreOpen(false);
-    };
-    const key = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") setMoreOpen(false);
-    };
-    window.addEventListener("mousedown", down);
-    window.addEventListener("keydown", key);
-    return () => {
-      window.removeEventListener("mousedown", down);
-      window.removeEventListener("keydown", key);
-    };
-  }, [moreOpen]);
+  useMoreControlsDismiss(moreRef, moreOpen, setMoreOpen);
   useEffect(() => {
     return subscribeMemoryPressure(() => {
       veilRef.current.clear();

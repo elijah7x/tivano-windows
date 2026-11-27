@@ -60,7 +60,7 @@ export async function runForwardChecks({
   const tempThread = await page.evaluate(() =>
     window.tivano.invoke("threads:create", { projectId: null, title: "fwd-temp" }),
   );
-  await page.evaluate((id) => window.tivano.invoke("threads:select", { id }), tempThread.id);
+  await page.locator(`[data-thread-id="${tempThread.id}"]`).click();
   await page.waitForFunction(
     () => document.querySelector(".chat-head h1")?.textContent === "fwd-temp",
     { timeout: 5000 },
