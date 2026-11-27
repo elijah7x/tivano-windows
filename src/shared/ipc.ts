@@ -579,7 +579,13 @@ export const requestValidators = {
     // P2-55: marks the current version's What's new banner as seen.
     whatsNewSeenVersion: vOptional(vNonEmptyString(80)),
   }),
-  "links:open-external": vObject({ url: vNonEmptyString(2048) }),
+  "links:open-external": vObject({
+    url: vNonEmptyString(2048),
+    // P2-31: the chat whose timeline held the link — its working
+    // directory resolves a relative local-file target (frozen
+    // markdownLinkBase).
+    threadId: vOptional(vId),
+  }),
   // Embedded terminal. No shell/command/path keys exist anywhere in these
   // schemas — main derives shell and cwd from the authorized grant alone.
   "terminals:list": vObject({ threadId: vId }),

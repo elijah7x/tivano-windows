@@ -102,7 +102,12 @@ export function LinkPopover(props: {
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => {
           onClose();
-          tryCall("links:open-external", { url: state.href });
+          // P2-31: the popover's chatId is the chat whose timeline held
+          // the link — its working directory resolves a relative file.
+          tryCall("links:open-external", {
+            url: state.href,
+            threadId: state.chatId,
+          });
         }}
       >
         <span className="dl-icon" aria-hidden="true">🌐</span>

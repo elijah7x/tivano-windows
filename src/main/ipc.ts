@@ -4,7 +4,7 @@
 // and its sender against the packaged frame before reaching the engine.
 
 import { clipboard, ipcMain, shell, type IpcMainInvokeEvent, type WebContents } from "electron";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import * as openIn from "./openIn";
 import { requestValidators, EVENT_CHANNEL, type AppEvent, type RequestChannel } from "../shared/ipc";
 import { recordExternalOpen, type ExternalOpenRecord } from "./externalOpen";
@@ -17,6 +17,7 @@ import type {
   OpenDirectoryResult,
 } from "../shared/types";
 import { isHttpUrl, isTrustedSender } from "./security";
+import { resolveMarkdownLinkTarget } from "./markdownLinkTarget";
 import { probeMcpServer } from "./mcpService";
 
 export interface IpcOptions {
@@ -435,17 +436,60 @@ export function registerIpc(opts: IpcOptions): () => void {
     return r;
   });
   handle("links:open-external", async (p) => {
-    if (!isHttpUrl(p.url)) throw new ValidationError("only http/https links may open externally");
+    // P2-31 (frozen MarkdownLinkOpener.open): the clicked URL resolves
+    // against the owning chat's working directory — an existing local
+    // path opens in its default app, a web URL in the browser, and a
+    // path that names nothing just beeps.
+    // A deleted or unknown threadId must not surface an engine error —
+    // absolute and web links still resolve baseless, and a relative
+    // name just beeps like a missing path.
+    let base: string | null = null;
+    if (p.threadId) {
+      try {
+        base = engine.threadDirectory(p.threadId);
+      } catch {
+        base = null;
+      }
+    }
+    const target = resolveMarkdownLinkTarget(p.url, base ?? undefined, (path) => {
+      try {
+        const st = statSync(path);
+        return st.isDirectory() ? "dir" : "file";
+      } catch {
+        return "none";
+      }
+    });
+    if (target.kind === "missing") {
+      shell.beep();
+      return;
+    }
+    if (target.kind === "file") {
+      if (openLogged({ action: "openPath", target: target.path })) return;
+      const failed = await shell.openPath(target.path);
+      // The quiet failure: an unreadable file beeps like a missing one
+      // (frozen never reports an error dialog either way).
+      if (failed !== "") shell.beep();
+      return;
+    }
+    // A resolved target that is neither a local path nor an http(s) URL
+    // (a missing bare name like `Foo.ts:12` lands here as kind "web")
+    // gets the same quiet beep as a missing file — frozen reports no
+    // error dialog, and a thrown ValidationError would raise the global
+    // banner instead.
+    if (!isHttpUrl(target.url)) {
+      shell.beep();
+      return;
+    }
     // Test seams (main-owned env, never renderer input): the unified
     // external-open recorder first, then the legacy URL line log — E2E
     // asserts the requested URL either way without a real browser.
-    if (openLogged({ action: "openExternal", target: p.url })) return;
+    if (openLogged({ action: "openExternal", target: target.url })) return;
     const log = process.env.TIVANO_TEST_OPEN_LOG;
     if (log) {
-      appendFileSync(log, p.url + "\n");
+      appendFileSync(log, target.url + "\n");
       return;
     }
-    await shell.openExternal(p.url);
+    await shell.openExternal(target.url);
   });
 
   const terminals = () => {

@@ -1,9 +1,12 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-23.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Safe markdown subset renderer: produces React elements directly (never
-// innerHTML), so every byte of source text is escaped by React itself. The
-// only URLs that become real anchors are http/https; script schemes, file:
-// paths, data: blobs and unknown syntax degrade to plain text.
+// innerHTML), so every byte of source text is escaped by React itself.
+// Anchors render for http/https URLs and for local-path candidates —
+// relative names, ~, drives, file:// and slash-less pseudo-schemes like
+// Foo.ts:12 (main's resolver decides whether one names a real file).
+// Dangerous schemes, data: blobs and non-http scheme:// URLs degrade to
+// plain text.
 
 import { createElement, type ReactNode } from "react";
 
@@ -20,6 +23,29 @@ function isSafeLink(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+// P2-31 (frozen MarkdownLinkTarget): a chat link may also name a LOCAL
+// file — `out/report.pdf`, `Foo.ts:12`, `~/x`, `C:\x`, `file:///x`. The
+// anchor renders so the click can reach main's resolver; dangerous
+// schemes and real `scheme://` URLs (http handled by isSafeLink above)
+// still degrade to text. A pseudo-scheme like `Foo.ts:12` has no `//`,
+// so it passes through like frozen's host==nil case.
+function isLocalLink(url: string): boolean {
+  const trimmed = url.trim();
+  if (trimmed.length === 0 || trimmed.length > 2048) return false;
+  // ASCII control chars can smuggle a second meaning past the scheme
+  // checks — never local.
+  if (/[\x00-\x1f\x7f]/.test(trimmed)) return false;
+  if (/^file:\/\//i.test(trimmed)) return true;
+  // An explicit non-file scheme URL is never a local path — and neither
+  // is a slash-less http/https form (`https:user@h`, `http:\h`), which
+  // the WHATWG parser still reads as web with host/userinfo semantics.
+  if (/^https?:/i.test(trimmed)) return false;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)) return false;
+  if (/^(javascript|data|vbscript|about|blob|chrome|view-source):/i.test(trimmed))
+    return false;
+  return true;
 }
 
 type Token =
@@ -105,7 +131,8 @@ function renderInline(
       case "code":
         return createElement("code", { key: k }, t.text);
       case "link":
-        if (!isSafeLink(t.url)) return createElement("span", { key: k }, t.text);
+        if (!isSafeLink(t.url) && !isLocalLink(t.url))
+          return createElement("span", { key: k }, t.text);
         return createElement(
           "a",
           { key: k, href: t.url, rel: "noreferrer", "data-md-link": "1" },
@@ -954,5 +981,5 @@ export class StreamingMarkdownCoordinator {
   }
 }
 
-/** Test helper: true when a URL would render as an anchor. */
-export { isSafeLink };
+/** Test helpers: true when a URL would render as an anchor. */
+export { isSafeLink, isLocalLink };

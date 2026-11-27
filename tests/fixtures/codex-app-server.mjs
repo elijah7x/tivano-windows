@@ -301,7 +301,7 @@ function runTurn(threadId, turnId, prompt, model, effort, serviceTier, policy, c
           "",
           "---",
           "",
-          "![cat](https://example.com/c.png) ![bad](file:///etc/passwd) [bad](file:///x)",
+          "![cat](https://example.com/c.png) ![bad](file:///etc/passwd) [bad](javascript:alert(1)) [local](file:///etc/passwd)",
         ].join("\n")
       : // "long" → a several-hundred-KB reply over many deltas, so the
         // renderer's incremental streaming path is exercised end to end.
