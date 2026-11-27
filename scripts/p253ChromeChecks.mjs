@@ -52,6 +52,34 @@ export async function runP253ChromeChecks({
   };
   const mod = process.platform === "darwin" ? "Meta" : "Control";
 
+  // Give the first chrome session a real user-selected project directory so
+  // the overflow menu's Open in actions are enabled and exercise the live IPC
+  // path instead of stopping at disabled menu items.
+  const storePath = join(dataRoot, "store.json");
+  if (!existsSync(storePath)) {
+    throw new Error("Expected store.json in dataRoot before P253 chrome checks");
+  }
+  const openinProjectId = randomUUID();
+  const openinProjectDir = realpathSync(mkdtempSync(join(workspaceRoot, "p253-openin-")));
+  const chromeDoc = JSON.parse(readFileSync(storePath, "utf8"));
+  chromeDoc.projects.push({
+    id: openinProjectId,
+    name: "P253 Chrome Project",
+    createdAt: Date.now(),
+    expanded: true,
+    directory: openinProjectDir,
+  });
+  writeFileSync(storePath, JSON.stringify(chromeDoc));
+  const chromeGrantsPath = join(dataRoot, "workspace-grants.json");
+  const chromeGrants = existsSync(chromeGrantsPath)
+    ? JSON.parse(readFileSync(chromeGrantsPath, "utf8"))
+    : { version: 1, grants: {}, userGrants: {} };
+  chromeGrants.version = 1;
+  chromeGrants.grants = chromeGrants.grants ?? {};
+  chromeGrants.userGrants = chromeGrants.userGrants ?? {};
+  chromeGrants.userGrants[openinProjectId] = openinProjectDir;
+  writeFileSync(chromeGrantsPath, JSON.stringify(chromeGrants));
+
   // --- Session 1: tray sidebar, lean top bar, empty-state popover, Settings ---
   const s1 = await launch({}, "p253-chrome");
   instances.push(s1);
@@ -111,13 +139,17 @@ export async function runP253ChromeChecks({
     trayGeom,
   );
 
-  // Ensure a project-backed thread exists so Scripts appears in the overflow menu.
-  const projName = "P253 Chrome Project";
-  await page.locator('button[title="New project"]').click();
-  await page.getByLabel("Project name").fill(projName);
-  await page.keyboard.press("Enter");
-  await waitSnapshot(page, (s) => s.projects.some((p) => p.name === projName));
-  await page.locator(`button[title="New thread in ${projName}"]`).click();
+  // Ensure a project-backed thread with an available directory exists so the
+  // Scripts and Open in overflow actions are both live.
+  const chromeThread = await page.evaluate(
+    (projectId) => window.tivano.invoke("threads:create", { projectId }),
+    openinProjectId,
+  );
+  await page.evaluate(
+    (threadId) => window.tivano.invoke("threads:select", { id: threadId }),
+    chromeThread.id,
+  );
+  await waitSnapshot(page, (s) => s.selectedThreadId === chromeThread.id);
   await page.waitForSelector(".chat-top-controls", { timeout: 10000 });
 
   await page.keyboard.press(`${mod}+b`);
@@ -140,7 +172,10 @@ export async function runP253ChromeChecks({
     moreBtn: document.querySelectorAll(".chat-top-controls .more-controls-btn").length,
     composerAnchor: document.querySelectorAll(".composer-changes-anchor").length,
     standaloneForward: document.querySelectorAll('.chat-top-controls > button[title="Forward to new thread"]').length,
-    standaloneOpenIn: document.querySelectorAll('.chat-top-controls > .openin:not(.more-controls)').length,
+    standaloneOpenIn: [...document.querySelectorAll(".chat-top-controls > .openin")].filter(
+      (el) => !el.classList.contains("more-controls") && !el.classList.contains("branch-menu"),
+    ).length,
+    openinClasses: [...document.querySelectorAll(".chat-top-controls > .openin")].map((el) => el.className),
   }));
   verify(
     "P253-E2E-02a top bar keeps only daily controls and removes standalone secondary buttons",
@@ -155,8 +190,14 @@ export async function runP253ChromeChecks({
     topBarCounts,
   );
 
-  await page.locator(".more-controls-btn").click();
-  await page.waitForSelector(".more-controls-menu", { timeout: 5000 });
+  const openMoreMenu = async () => {
+    if ((await page.locator(".more-controls-menu").count()) === 0) {
+      await page.locator(".more-controls-btn").click();
+      await page.waitForSelector(".more-controls-menu", { timeout: 5000 });
+    }
+  };
+
+  await openMoreMenu();
   const menuText = await page.locator(".more-controls-menu").innerText();
   const openInCount = await page.locator(".more-controls-menu [data-openin-item]").count();
   verify(
@@ -167,11 +208,47 @@ export async function runP253ChromeChecks({
       openInCount >= 2,
     { menuText, openInCount },
   );
-  // Exercise Scripts menu action and close the dialog cleanly.
+  // Exercise every overflow-menu action family. The dialog-opening items are
+  // closed without mutating the thread; Copy path uses the real clipboard IPC
+  // against the synthetic project directory, and Forward creates a real
+  // continuation thread in the same project.
+  await page.locator('.more-controls-menu [role="menuitem"]', { hasText: "Thread worktree" }).click();
+  await page.waitForSelector(".wt-dialog", { timeout: 5000 });
+  await page.locator('.wt-dialog .modal-actions button', { hasText: "Close" }).click();
+  await page.waitForSelector(".wt-dialog", { state: "detached", timeout: 5000 });
+
+  await openMoreMenu();
+  await page.locator('.more-controls-menu [role="menuitem"]', { hasText: "Copy path" }).click();
+  await page.waitForSelector(".more-controls-menu", { state: "detached", timeout: 5000 });
+  const copiedPath = await s1.app.evaluate(({ clipboard }) => clipboard.readText());
+
+  await openMoreMenu();
   await page.locator('.more-controls-menu [role="menuitem"]', { hasText: "Scripts" }).click();
   await page.waitForSelector(".scripts-dialog", { timeout: 5000 });
   await page.locator('.scripts-dialog .modal-actions button', { hasText: "Close" }).click();
   await page.waitForSelector(".scripts-dialog", { state: "detached", timeout: 5000 });
+
+  await openMoreMenu();
+  await page.locator('.more-controls-menu [role="menuitem"]', { hasText: "Forward to new thread" }).click();
+  const forwardedSnapshot = await waitSnapshot(page, (s) => {
+    const selected = s.threads.find((th) => th.id === s.selectedThreadId);
+    return Boolean(
+      s.selectedThreadId !== chromeThread.id &&
+        selected &&
+        selected.projectId === openinProjectId &&
+        selected.title.startsWith("Continued:"),
+    );
+  });
+  const forwardedSelected = forwardedSnapshot.threads.find(
+    (th) => th.id === forwardedSnapshot.selectedThreadId,
+  );
+  verify(
+    "P253-E2E-02c overflow menu exercises Thread worktree, Open in, Scripts, and Forward",
+    copiedPath === openinProjectDir &&
+      (await page.locator(".more-controls-menu").count()) === 0 &&
+      forwardedSelected?.projectId === openinProjectId,
+    { copiedPath, openinProjectDir, forwardedSelected },
+  );
 
   // P253-E2E-03 (empty state): Ctrl+D and Command Palette "Toggle changes".
   await page.keyboard.press(`${mod}+d`);
