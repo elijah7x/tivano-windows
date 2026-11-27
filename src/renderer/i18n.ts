@@ -2306,6 +2306,11 @@ const zhHans: Record<string, string> = {
   "Where Droppy Code began": "Droppy Code 的起源",
   "Responsive chat architecture": "对话流畅度架构参考",
   "Streaming text fade": "流式文字渐显",
+  // P2-80: Model/reasoning popover layout (v3.0.15 EffortSlider.swift).
+  "Standard": "标准",
+  "This model has one reasoning level.": "此模型只有一档推理强度。",
+  "Fast mode": "快速模式",
+  "Fast mode is on": "快速模式已开启",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
