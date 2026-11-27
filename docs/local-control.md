@@ -96,5 +96,5 @@ Wire errors are `error.code` plus an optional `detail`:
 does not exist as a command), `bounds`, `busy`, `notFound`,
 `missingProject`, `unsupported`, `archived`, `continuationUnavailable`,
 `conflict`, `providerFailure`, `internalError` and the rest declared in
-`src/main/localControl.ts`. Only `textGeneration` and `showsSkylight` are writable through
-`settings set`.
+`src/main/localControl.ts`. Only `textGeneration` and `showsSkylight` are
+writable through `settings set`.
