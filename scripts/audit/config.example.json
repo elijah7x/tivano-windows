@@ -9,7 +9,7 @@
   "arbiterModel": "claude-opus-5-5-xhigh",
   "arbiterTimeoutMinutes": 30,
   "arbiterDailyCap": 6,
-  "referenceRoot": "C:\\tivano\\reference\\tivano-v3.0.0",
+  "referenceRoot": "C:\\tivano\\reference\\tivano-v3.0.26",
   "workRoot": "C:\\tivano\\audit",
   "statusContext": "nyx/audit",
   "timeoutMinutes": 30

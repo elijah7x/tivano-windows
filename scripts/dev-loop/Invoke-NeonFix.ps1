@@ -11,7 +11,7 @@ param(
   [ValidatePattern('^[A-Za-z0-9._:/-]+$')][string]$Model = 'gemini-4-neon-high',
   [ValidateRange(1, 240)][int]$TimeoutMinutes = 45,
   [string]$RunRoot = 'C:\tivano\dev-loop\autopilot\neon',
-  [string]$ReferenceRoot = 'C:\tivano\reference\tivano-v3.0.0',
+  [string]$ReferenceRoot = 'C:\tivano\reference\tivano-v3.0.26',
   [string]$AgyPath = '',
   [ValidateRange(1, 1440)][int]$ShortCooldownMinutes = 30
 )

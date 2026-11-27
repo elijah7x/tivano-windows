@@ -7,7 +7,7 @@ param(
   [string]$Repo = 'elijah7x/tivano-windows',
   [string]$LaneRoot = 'C:\tivano\dev-loop\hydrogen',
   [string]$GateRoot = 'C:\tivano\dev-loop\autopilot\gate',
-  [string]$ReferenceRoot = 'C:\tivano\reference\tivano-v3.0.0',
+  [string]$ReferenceRoot = 'C:\tivano\reference\tivano-v3.0.26',
   [ValidatePattern('^[A-Za-z0-9._:/-]+$')][string]$Model = 'gemini-4-hydrogen-high',
   [ValidatePattern('^[A-Za-z0-9_.-]+$')][string]$Label = 'nyx-auto',
   [ValidateRange(1, 10)][int]$MaxOpenPrs = 2,
