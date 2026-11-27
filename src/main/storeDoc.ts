@@ -519,25 +519,24 @@ function stripRetiredSettings(raw: Record<string, unknown>): Record<string, unkn
   const rec = s as Record<string, unknown>;
   const hasRetired = RETIRED_SETTING_KEYS.some((k) => k in rec);
   const rawTheme = typeof rec.theme === "string" ? rec.theme : null;
-  const isLegacyTheme =
-    rawTheme !== null &&
-    !(THEME_IDS as readonly string[]).includes(rawTheme) &&
-    migrateLegacyTheme(rawTheme) !== null;
+  const migratedTheme = rawTheme !== null ? migrateLegacyTheme(rawTheme) : null;
+  const legacyAppearance = rawTheme !== null ? legacyAppearanceOfTheme(rawTheme) : null;
+  const isCurrentTheme =
+    rawTheme !== null && (THEME_IDS as readonly string[]).includes(rawTheme);
+  const needsThemeMigration =
+    migratedTheme !== null && (!isCurrentTheme || rec.appearanceMode === undefined);
   const needsControlLeftAlpha = rec.controlLeftAlpha !== true;
   const hasNullTextGen =
     rec.textGenerationModelID === null || rec.textGenerationEffort === null;
-  if (!hasRetired && !isLegacyTheme && !needsControlLeftAlpha && !hasNullTextGen) return raw;
+  if (!hasRetired && !needsThemeMigration && !needsControlLeftAlpha && !hasNullTextGen) return raw;
   const nextSettings = { ...rec };
   for (const k of RETIRED_SETTING_KEYS) delete nextSettings[k];
   if (nextSettings.textGenerationModelID === null) delete nextSettings.textGenerationModelID;
   if (nextSettings.textGenerationEffort === null) delete nextSettings.textGenerationEffort;
-  if (isLegacyTheme && rawTheme !== null) {
-    const migrated = migrateLegacyTheme(rawTheme);
-    if (migrated !== null) nextSettings.theme = migrated;
-    if (nextSettings.appearanceMode === undefined) {
-      const legacyMode = legacyAppearanceOfTheme(rawTheme);
-      if (legacyMode !== null) nextSettings.appearanceMode = legacyMode;
-    }
+  if (needsThemeMigration && rawTheme !== null && migratedTheme !== null) {
+    nextSettings.theme = migratedTheme;
+    if (nextSettings.appearanceMode === undefined)
+      nextSettings.appearanceMode = legacyAppearance ?? "system";
   }
   if (needsControlLeftAlpha) {
     nextSettings.externalControlEnabled =
