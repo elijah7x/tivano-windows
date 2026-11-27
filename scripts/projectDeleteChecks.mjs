@@ -76,20 +76,27 @@ export async function runProjectDeleteChecks({
     collapsedGeo,
   );
 
-  // PD-02: Tab cycles inside the popover and Escape dismisses while restoring focus to the trigger.
+  // PD-02: Tab and Shift+Tab cycle inside the popover, Escape restores trigger focus, and outside click dismisses without deleting.
   await page.keyboard.press("Tab");
   const focusedRemove = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? "");
+  await page.keyboard.press("Shift+Tab");
+  const focusedCancelBack = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? "");
   await page.keyboard.press("Escape");
   await page.waitForSelector("#project-delete-popover", { state: "detached", timeout: 8000 });
   const restoredFocus = await page.evaluate(
     () => document.activeElement?.getAttribute("aria-label") ?? "",
   );
+  await collapsedTrigger.click();
+  await page.waitForSelector("#project-delete-popover", { timeout: 8000 });
+  await page.mouse.click(700, 300);
+  await page.waitForSelector("#project-delete-popover", { state: "detached", timeout: 8000 });
   verify(
-    "PD-02 Tab moves inside dialog and Escape restores trigger focus without deleting",
+    "PD-02 Tab/Shift+Tab cycle inside dialog, Escape restores trigger focus, and outside click dismisses",
     focusedRemove === "Remove project" &&
+      focusedCancelBack === "Cancel" &&
       restoredFocus === "Delete project: P278 Proj 02" &&
       (await snap(page)).projects.some((p) => p.id === projectIds[1]),
-    { focusedRemove, restoredFocus },
+    { focusedRemove, focusedCancelBack, restoredFocus },
   );
 
   // PD-03: Multi-project switching moves the popover to the newly selected project row.
@@ -109,13 +116,18 @@ export async function runProjectDeleteChecks({
     switchedGeo,
   );
 
-  // Confirming deletes only project #3, leaving #1 and #2 intact.
+  // Confirming deletes only project #3, leaving #1 and #2 intact, and moves focus to adjacent project #4.
   await page.locator("#project-delete-popover").getByRole("button", { name: "Remove project", exact: true }).click();
   const afterDelete = await waitSnap(page, (st) => !st.projects.some((p) => p.id === projectIds[2]));
+  const adjacentFocus = await page.evaluate(
+    () => document.activeElement?.getAttribute("aria-label") ?? "",
+  );
   verify(
-    "PD-04 confirming Remove project deletes only the targeted project",
+    "PD-04 confirming Remove project deletes only the targeted project and focuses adjacent row",
     afterDelete.projects.some((p) => p.id === projectIds[0]) &&
-      afterDelete.projects.some((p) => p.id === projectIds[1]),
+      afterDelete.projects.some((p) => p.id === projectIds[1]) &&
+      adjacentFocus === "Delete project: P278 Proj 04",
+    { adjacentFocus },
   );
 
   // PD-05: Scrolling to the bottom-most project clamps the popover inside the bottom viewport edge.

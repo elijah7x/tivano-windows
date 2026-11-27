@@ -11,7 +11,7 @@ import { defaultSettings } from "../src/main/store";
 import { RemoveProjectPopover } from "../src/renderer/components/RemoveProjectPopover";
 import { Sidebar } from "../src/renderer/components/Sidebar";
 import { LanguageContext } from "../src/renderer/locale";
-import { anchorPopover, isAnchorVisibleInContainer } from "../src/shared/popoverAnchor";
+import { anchorPopover, isAnchorVisibleInContainer, sameAnchorRect } from "../src/shared/popoverAnchor";
 import type { ChatThread, LanguageId, Project, Snapshot } from "../src/shared/types";
 
 const prevWindow = (globalThis as { window?: unknown }).window;
@@ -107,6 +107,30 @@ describe("P2-78 shared popoverAnchor", () => {
     expect(isAnchorVisibleInContainer({ top: 40, bottom: 80, left: 8, right: 260 }, container)).toBe(false);
     expect(isAnchorVisibleInContainer({ top: 500, bottom: 532, left: 8, right: 260 }, container)).toBe(false);
   });
+
+  it("supports bottom/top preferred sides with flipping and compares anchor rects", () => {
+    const bottomFlip = anchorPopover({
+      anchor: { left: 20, right: 120, top: 700, bottom: 730, width: 100, height: 30 },
+      popover: { width: 220, height: 150 },
+      viewport: { width: 800, height: 760 },
+      preferredSide: "bottom",
+    });
+    expect(bottomFlip.side).toBe("top");
+    expect(bottomFlip.top).toBe(700 - 8 - 150);
+
+    const topFlip = anchorPopover({
+      anchor: { left: 20, right: 120, top: 40, bottom: 70, width: 100, height: 30 },
+      popover: { width: 220, height: 150 },
+      viewport: { width: 800, height: 760 },
+      preferredSide: "top",
+    });
+    expect(topFlip.side).toBe("bottom");
+    expect(topFlip.top).toBe(70 + 8);
+
+    const a = { left: 10, right: 250, top: 100, bottom: 132, width: 240, height: 32 };
+    expect(sameAnchorRect(a, { ...a, top: 100.2 })).toBe(true);
+    expect(sameAnchorRect(a, { ...a, top: 101 })).toBe(false);
+  });
 });
 
 describe("P2-78 RemoveProjectPopover & Sidebar", () => {
@@ -174,7 +198,7 @@ describe("P2-78 RemoveProjectPopover & Sidebar", () => {
         sessionGrants: [],
       },
     ];
-    const snapshot = {
+    const snapshot: Snapshot = {
       projects,
       threads,
       settings: { ...defaultSettings(), language: "en" },
@@ -194,7 +218,7 @@ describe("P2-78 RemoveProjectPopover & Sidebar", () => {
       },
       rev: 0,
       tokenActivity: {},
-    } as unknown as Snapshot;
+    };
 
     const html = renderToStaticMarkup(
       createElement(

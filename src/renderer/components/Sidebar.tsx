@@ -1,8 +1,9 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Sidebar: project groups, thread rows with status marks, search, Settings.
-// Electron has no window.prompt/confirm, so rename/create use inline fields
-// and delete uses a two-tap armed confirmation on the row itself.
+// Electron has no window.prompt/confirm, so rename/create use inline fields,
+// thread delete uses a two-tap armed confirmation on the row itself, and
+// project removal opens an anchored confirmation popover beside the project row.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -10,6 +11,7 @@ import type { ChatThread, OpenDirectoryResult, Snapshot } from "../../shared/typ
 import {
   isAnchorVisibleInContainer,
   rectToAnchor,
+  sameAnchorRect,
   type AnchorRect,
 } from "../../shared/popoverAnchor";
 import { compareThreads } from "../../shared/threadOrder";
@@ -408,15 +410,17 @@ export function Sidebar(props: {
   const confirmProjectDelete = useCallback((): void => {
     if (!pendingProject) return;
     const id = pendingProject.id;
-    const remainingIds = groups.projects
-      .map((g) => g.project.id)
-      .filter((pid) => pid !== id);
+    const projectIds = groups.projects.map((g) => g.project.id);
+    const idx = projectIds.indexOf(id);
+    const adjacentId =
+      idx >= 0
+        ? (projectIds[idx + 1] ?? projectIds[idx - 1])
+        : projectIds.find((pid) => pid !== id);
     setPendingProjectDelete(null);
     tryCall("projects:delete", { id });
     requestAnimationFrame(() => {
-      const fallbackId = remainingIds[0];
-      if (fallbackId) {
-        const nextBtn = projectDeleteBtnRefs.current.get(fallbackId);
+      if (adjacentId) {
+        const nextBtn = projectDeleteBtnRefs.current.get(adjacentId);
         if (nextBtn) {
           nextBtn.focus();
           return;
@@ -443,17 +447,9 @@ export function Sidebar(props: {
     }
     setPendingProjectDelete((prev) => {
       if (!prev || prev.projectId !== pendingProjectId) return prev;
-      const a = prev.anchor;
-      const b = next.anchor;
-      if (
-        Math.abs(a.left - b.left) < 0.5 &&
-        Math.abs(a.right - b.right) < 0.5 &&
-        Math.abs(a.top - b.top) < 0.5 &&
-        Math.abs(a.bottom - b.bottom) < 0.5
-      ) {
-        return prev;
-      }
-      return { projectId: pendingProjectId, anchor: b };
+      return sameAnchorRect(prev.anchor, next.anchor)
+        ? prev
+        : { projectId: pendingProjectId, anchor: next.anchor };
     });
   }, [pendingProjectId, pendingProject, groups.projects, q, readProjectAnchor]);
 

@@ -7,6 +7,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   anchorPopover,
+  sameAnchorRect,
   type AnchorRect,
   type PopoverSize,
   type ViewportBounds,
@@ -20,15 +21,6 @@ const ANCHOR_GAP = 8;
 function readViewport(): ViewportBounds {
   if (typeof window === "undefined") return { width: 1280, height: 800 };
   return { width: window.innerWidth, height: window.innerHeight };
-}
-
-function sameAnchor(a: AnchorRect, b: AnchorRect): boolean {
-  return (
-    Math.abs(a.left - b.left) < 0.5 &&
-    Math.abs(a.right - b.right) < 0.5 &&
-    Math.abs(a.top - b.top) < 0.5 &&
-    Math.abs(a.bottom - b.bottom) < 0.5
-  );
 }
 
 export interface RemoveProjectPopoverProps {
@@ -63,19 +55,27 @@ export function RemoveProjectPopover(
   }, [props.projectId, props.anchor]);
 
   // Measure actual rendered popover size for exact viewport edge clamping
-  // (e.g. multi-line localized descriptions near the bottom edge).
+  // (e.g. multi-line localized descriptions near the bottom edge) and watch
+  // for runtime font-size / language / layout changes while open.
   useLayoutEffect(() => {
     const el = popRef.current;
     if (!el) return;
-    const r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return;
-    setMeasuredSize((prev) =>
-      prev &&
-      Math.abs(prev.width - r.width) < 0.5 &&
-      Math.abs(prev.height - r.height) < 0.5
-        ? prev
-        : { width: r.width, height: r.height },
-    );
+    const measure = (): void => {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return;
+      setMeasuredSize((prev) =>
+        prev &&
+        Math.abs(prev.width - r.width) < 0.5 &&
+        Math.abs(prev.height - r.height) < 0.5
+          ? prev
+          : { width: r.width, height: r.height },
+      );
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [props.projectId, props.threadCount, liveAnchor, viewport]);
 
   // Move keyboard focus into the confirmation dialog (defaulting to Cancel
@@ -88,14 +88,17 @@ export function RemoveProjectPopover(
   // if the anchored project row scrolls completely out of the list viewport.
   useEffect(() => {
     const sync = (): void => {
-      setViewport(readViewport());
+      const vp = readViewport();
+      setViewport((prev) =>
+        prev.width === vp.width && prev.height === vp.height ? prev : vp,
+      );
       const next = props.getAnchorRect?.();
       if (next === undefined) return;
       if (!next || !next.visible) {
         props.onCancel(false);
         return;
       }
-      setLiveAnchor((prev) => (sameAnchor(prev, next.anchor) ? prev : next.anchor));
+      setLiveAnchor((prev) => (sameAnchorRect(prev, next.anchor) ? prev : next.anchor));
     };
     const scroller = props.scrollContainer;
     scroller?.addEventListener("scroll", sync, { passive: true });

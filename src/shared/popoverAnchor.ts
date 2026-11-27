@@ -61,6 +61,15 @@ export function rectToAnchor(
   };
 }
 
+export function sameAnchorRect(a: AnchorRect, b: AnchorRect): boolean {
+  return (
+    Math.abs(a.left - b.left) < 0.5 &&
+    Math.abs(a.right - b.right) < 0.5 &&
+    Math.abs(a.top - b.top) < 0.5 &&
+    Math.abs(a.bottom - b.bottom) < 0.5
+  );
+}
+
 export function isAnchorVisibleInContainer(
   anchor: Pick<AnchorRect, "top" | "bottom" | "left" | "right">,
   container: Pick<AnchorRect, "top" | "bottom" | "left" | "right">,
