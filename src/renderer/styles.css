@@ -5425,6 +5425,8 @@ html[data-paused="1"] .md-veil { animation: none !important; }
   flex: none;
 }
 .hydra-panel { align-items: flex-start; position: relative; }
+.hydra-panel:focus { outline: none; }
+.hydra-panel:focus-visible { outline: 2px solid var(--accent, #4c8dff); outline-offset: -2px; }
 .hydra-panel ul {
   display: flex;
   flex-wrap: wrap;
@@ -5541,6 +5543,7 @@ html[data-paused="1"] .md-veil { animation: none !important; }
   border-radius: 50%;
   border: 1px solid var(--line);
   background: var(--card, #1c2230);
+  color: var(--text);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -5549,6 +5552,8 @@ html[data-paused="1"] .md-veil { animation: none !important; }
 }
 .hydra-mark:hover { background: var(--hover); }
 .hydra-mark.off .hydra-mark-dots { opacity: 0.35; }
+.chimera-mark { display: inline-flex; align-items: center; justify-content: center; color: var(--text); }
+.chimera-mark-icon { display: block; }
 .hydra-mark-dots { display: inline-flex; }
 .hydra-mark-dots .hydra-dot { width: 6px; height: 6px; margin-left: -2px; }
 .hydra-mark-dots .hydra-dot:first-child { margin-left: 0; }
