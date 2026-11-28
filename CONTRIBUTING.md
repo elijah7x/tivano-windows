@@ -89,7 +89,7 @@ The current implementation is Electron + React + TypeScript. That is the present
 - Branch from `main`. External contributors work from a fork.
 - One PR does one thing. Split unrelated fixes.
 - `main` is set up for squash merges, so the PR title becomes the commit subject. Write it accordingly. Windows maintainers may change repository conventions like this one.
-- Update the matching row in `docs/parity.md` in the same PR. Set the status from what you verified, not what you intend. Contributors propose a status; a Windows maintainer confirms `done`.
+- Do not edit `docs/parity.md` in feature PRs. Instead, declare the proposed status in the PR body under `Related` with a `Parity: <ID> -> <status>` line (for example `Parity: P1-01 -> partial`, with an optional `Parity-Notes: ...` line). Set the status from what you verified, not what you intend, and never propose `done` or `deferred`. Parity statuses are batched onto `main` separately; a Windows maintainer confirms `done`.
 
 **Before you open it**
 

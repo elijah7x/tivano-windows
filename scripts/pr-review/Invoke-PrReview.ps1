@@ -134,14 +134,38 @@ function Invoke-WithNamedMutex {
 }
 
 function Test-BaseStepsReliable {
-  # Only a baseline whose install, build, typecheck and unit steps all passed is reused; a failing or partial base is rerun next time.
+  # Reuse a baseline when install, build, typecheck and e2e all passed and unit completed without timeout (124),
+  # even if unit exited non-zero, provided vitest.json parses with entries.
   param($Steps)
   if ($null -eq $Steps) { return $false }
-  foreach ($name in @('install', 'build', 'typecheck', 'unit')) {
+  foreach ($name in @('install', 'build', 'typecheck', 'e2e')) {
     $prop = $Steps.PSObject.Properties[$name]
     if (-not $prop -or $null -eq $prop.Value) { return $false }
     if ([int]$prop.Value -ne 0) { return $false }
   }
+  $unitProp = $Steps.PSObject.Properties['unit']
+  if (-not $unitProp -or $null -eq $unitProp.Value) { return $false }
+  try {
+    $unitCode = [int]$unitProp.Value
+  } catch {
+    return $false
+  }
+  if ($unitCode -eq 124) { return $false }
+  return $true
+}
+
+function Test-BaseSummaryReliable {
+  param($Summary)
+  if ($null -eq $Summary) { return $false }
+  $exitProp = $Summary.PSObject.Properties['exitCode']
+  if (-not $exitProp -or $null -eq $exitProp.Value) { return $false }
+  try {
+    if ([int]$exitProp.Value -ne 0) { return $false }
+  } catch {
+    return $false
+  }
+  $errProp = $Summary.PSObject.Properties['error']
+  if ($errProp -and -not [string]::IsNullOrWhiteSpace([string]$errProp.Value)) { return $false }
   return $true
 }
 
@@ -245,13 +269,17 @@ function Get-VitestReport {
   $text = Read-Text $Path
   if ([string]::IsNullOrWhiteSpace($text)) { return $null }
   try { $data = $text | ConvertFrom-Json } catch { return $null }
+  if ($data -isnot [pscustomobject] -or -not $data.PSObject.Properties['testResults']) { return $null }
   $map = @{}
-  $prefix = ($Root.TrimEnd('\') + '\').Replace('\', '/').ToLowerInvariant()
+  $prefix = $null
+  if (-not [string]::IsNullOrWhiteSpace($Root)) {
+    $prefix = ($Root.TrimEnd('\') + '\').Replace('\', '/').ToLowerInvariant()
+  }
   foreach ($file in @($data.testResults)) {
     if (-not $file) { continue }
     # Key by worktree-relative file and full name: the same name can occur in several files.
     $fileName = ([string]$file.name).Replace('\', '/')
-    if ($fileName.ToLowerInvariant().StartsWith($prefix)) {
+    if ($prefix -and $fileName.ToLowerInvariant().StartsWith($prefix)) {
       $fileName = $fileName.Substring($prefix.Length)
     } else {
       # Cached base results carry the original run's sandbox worktree path; normalize to repo-relative.
@@ -260,10 +288,34 @@ function Get-VitestReport {
         $fileName = $fileName.Substring($sandboxMatch.Index + $sandboxMatch.Length)
       }
     }
+    $failedAssertionCount = 0
     foreach ($result in @($file.assertionResults)) {
       if (-not $result) { continue }
       $fullName = [string]$result.fullName
-      if ($fullName) { $map[$fileName + ' > ' + $fullName] = [string]$result.status }
+      $status = [string]$result.status
+      if ($fullName) {
+        $map[$fileName + ' > ' + $fullName] = $status
+        if ($status -eq 'failed') { $failedAssertionCount++ }
+      }
+    }
+    if ($failedAssertionCount -eq 0 -and [string]$file.status -eq 'failed' -and $fileName) {
+      $firstLine = ''
+      $rawMsg = [string]$file.message
+      if (-not [string]::IsNullOrWhiteSpace($rawMsg)) {
+        $cleanMsg = [regex]::Replace($rawMsg, '\x1b\[[0-9;]*[A-Za-z]', '')
+        foreach ($msgLine in @($cleanMsg -split "`r?`n")) {
+          $trimmedLine = $msgLine.Trim()
+          if ($trimmedLine) { $firstLine = $trimmedLine; break }
+        }
+      }
+      if ($firstLine) {
+        # Normalize worktree/sandbox paths inside the error line so base and pr keys match.
+        $firstLine = [regex]::Replace($firstLine, '(?i)[A-Za-z]:[/\\][^"''\s]*[/\\]sandbox[/\\](?:base|pr)(?:-[^/\\]+)?[/\\]', '')
+        if ($firstLine.Length -gt 200) { $firstLine = $firstLine.Substring(0, 200).Trim() }
+      } else {
+        $firstLine = 'unknown error'
+      }
+      $map[$fileName + ' > (file failed: ' + $firstLine + ')'] = 'failed'
     }
   }
   $passed = 0
@@ -327,7 +379,9 @@ function Restore-BaseCache {
     if (-not (Test-Path -LiteralPath $cachedChecks -PathType Container)) { return $false }
     $cachedSteps = $null
     try { $cachedSteps = Get-Content -LiteralPath (Join-Path $cachedResults 'steps.json') -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
-    if (-not (Test-BaseStepsReliable $cachedSteps) -or -not (Test-Path -LiteralPath (Join-Path $cachedResults 'vitest.json') -PathType Leaf)) {
+    $cachedSummary = Get-StandardSummary $cachedChecks
+    $cachedVitest = Get-VitestReport (Join-Path $cachedResults 'vitest.json') ''
+    if (-not (Test-BaseStepsReliable $cachedSteps) -or -not (Test-BaseSummaryReliable $cachedSummary) -or $null -eq $cachedVitest -or $cachedVitest.map.Count -eq 0) {
       Remove-Item -LiteralPath $entryDir -Recurse -Force -ErrorAction SilentlyContinue
       return $false
     }
@@ -519,7 +573,7 @@ function Write-ChecksSummary {
     foreach ($name in $ReportPr.map.Keys) {
       if ($ReportPr.map[$name] -ne 'failed') { continue }
       if (-not $ReportBase.map.ContainsKey($name)) { $newFailures += ($name + ' (absent in base run)') }
-      elseif ($ReportBase.map[$name] -eq 'passed') { $newFailures += $name }
+      elseif ($ReportBase.map[$name] -ne 'failed') { $newFailures += $name }
     }
     foreach ($name in $ReportBase.map.Keys) {
       if ($ReportBase.map[$name] -ne 'failed') { continue }
@@ -1206,8 +1260,9 @@ try {
         }
         $standardBase.summary = Get-StandardSummary $checksBaseOut
         $stepsBase = Get-Steps (Join-Path $resultsBase 'steps.json')
-        if (-not $baseCacheHit -and $null -ne $standardBase.summary -and $null -ne $stepsBase -and
-            (Test-BaseStepsReliable $stepsBase) -and (Test-Path -LiteralPath (Join-Path $resultsBase 'vitest.json') -PathType Leaf)) {
+        $reportBase = Get-VitestReport (Join-Path $resultsBase 'vitest.json') $baseTree
+        if (-not $baseCacheHit -and (Test-BaseSummaryReliable $standardBase.summary) -and $null -ne $stepsBase -and
+            (Test-BaseStepsReliable $stepsBase) -and $null -ne $reportBase -and $reportBase.map.Count -gt 0) {
           Publish-BaseCache $resolvedBaseCacheRoot $mergeBase $resultsBase $checksBaseOut 20
         }
 
@@ -1220,7 +1275,6 @@ try {
         $standardPr.summary = Get-StandardSummary (Join-Path $runDir 'checks-pr')
 
         $stepsPr = Get-Steps (Join-Path $resultsPr 'steps.json')
-        $reportBase = Get-VitestReport (Join-Path $resultsBase 'vitest.json') $baseTree
         $reportPr = Get-VitestReport (Join-Path $resultsPr 'vitest.json') $prTree
         $checksSummaryPath = Join-Path $runDir 'checks-summary.md'
         $comparison = Write-ChecksSummary $checksSummaryPath $runDir 'base' 'pr' $stepsBase $stepsPr $reportBase $reportPr $standardBase $standardPr

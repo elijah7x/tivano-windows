@@ -325,6 +325,22 @@ function Ensure-AuditRepoClone {
   }
 }
 
+function Test-PrChangedFilesOnlyParityMd {
+  param($Config, [string]$Repo, [int]$PrNumber)
+  try {
+    $files = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $Repo + '/pulls/' + $PrNumber + '/files?per_page=100')
+    $items = @($files | Where-Object { $null -ne $_ })
+    if ($items.Count -ne 1) { return $false }
+    $prevName = [string](Get-Prop $items[0] 'previous_filename')
+    if (-not [string]::IsNullOrWhiteSpace($prevName)) { return $false }
+    $path = ([string](Get-Prop $items[0] 'filename')).Replace('\', '/').Trim()
+    return ($path -ceq 'docs/parity.md')
+  } catch {
+    Write-AuditLog ('warning: could not inspect changed files for parity-sync PR #' + $PrNumber + '; not skipping: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+    return $false
+  }
+}
+
 function Select-TargetPullRequests {
   param($Config, [string]$Repo, [int]$Hours, [int[]]$ExplicitNumbers, [string]$StateDir)
   $selected = New-Object Collections.Generic.List[object]
@@ -345,6 +361,15 @@ function Select-TargetPullRequests {
       if ([string]::IsNullOrWhiteSpace($mergedAt) -or [string]::IsNullOrWhiteSpace($mergeSha)) {
         Write-AuditLog ('skip PR #' + $num + ' (not merged or missing merge_commit_sha)')
         continue
+      }
+      $explicitHeadObj = Get-Prop $pr 'head'
+      $explicitHeadRef = [string](Get-Prop $explicitHeadObj 'ref')
+      if ($explicitHeadRef -like 'nyx/parity-sync-*') {
+        if (Test-PrChangedFilesOnlyParityMd -Config $Config -Repo $Repo -PrNumber $num) {
+          Write-AuditLog ('skip PR #' + $num + ' (parity-sync branch ' + $explicitHeadRef + ' changed only docs/parity.md)')
+          continue
+        }
+        Write-AuditLog ('keeping parity-sync PR #' + $num + ' for audit (changed files are not solely docs/parity.md)')
       }
       $null = $selected.Add($pr)
     }
@@ -388,6 +413,13 @@ function Select-TargetPullRequests {
       if (Test-PrStateDone $statePath) {
         Write-AuditLog ('skip PR #' + $num + ' (already done)')
         continue
+      }
+      if ($headRef -like 'nyx/parity-sync-*') {
+        if (Test-PrChangedFilesOnlyParityMd -Config $Config -Repo $Repo -PrNumber $num) {
+          Write-AuditLog ('skip PR #' + $num + ' (parity-sync branch ' + $headRef + ' changed only docs/parity.md)')
+          continue
+        }
+        Write-AuditLog ('keeping parity-sync PR #' + $num + ' for audit (changed files are not solely docs/parity.md)')
       }
       $null = $candidates.Add($pr)
     }

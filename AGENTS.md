@@ -31,3 +31,7 @@ Tivano Windows is an independent derivative of Tivano for macOS, currently imple
 - Mark this project clearly as a modified derivative version, with the modification date. Do not imply endorsement by the original authors.
 - Keep the attribution `Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app` in the About screen (or an equally visible place), in the README and in source-file copyright notices.
 - Keeping third-party notices does not mean the listed components are included. Check the license of every dependency, image, font and brand asset individually before introducing it.
+
+## Repositories
+
+Agents work only in this repository. Never create GitHub repositories, gists, forks, releases or Pages sites, and never push elsewhere. Keep evidence such as screenshots local and describe it in the pull request in words.

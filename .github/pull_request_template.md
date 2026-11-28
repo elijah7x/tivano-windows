@@ -4,7 +4,7 @@
 
 ## Related
 
-<!-- Parity row ID from docs/parity.md (for example P1-01 or W-01) and/or issue, for example "Closes #123". -->
+<!-- Include "Closes #123" and, if this PR changes a parity row, add "Parity: <ID> -> <status>" (for example "Parity: P1-01 -> partial", with an optional "Parity-Notes: ..." line; never "done" or "deferred"). Do not edit docs/parity.md directly; parity statuses are batched onto main separately. -->
 
 ## Verification
 
@@ -35,6 +35,6 @@ Tick a box once you have written its result, including `NOT RUN`. Results here a
 
 ## Checklist
 
-- [ ] I updated the matching row in docs/parity.md (or this change has no parity row).
+- [ ] I included a "Parity: <ID> -> <status>" line under Related (or this change has no parity row) and did not edit docs/parity.md.
 - [ ] New user-visible strings have English and Simplified Chinese.
 - [ ] New dependencies, images, fonts or other assets have had their licenses checked, or there are none.
