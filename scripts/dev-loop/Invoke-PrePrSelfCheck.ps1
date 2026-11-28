@@ -5,7 +5,7 @@
 # (conflicts, guarded paths including docs/parity.md, dependency changes, PR-body Parity: lines, missing zh-Hans, license headers, attribution, stray files)
 # before a head is pushed. Prints one line per check, then one compact JSON line. Exit 0 = no FAIL, 1 = any FAIL, 2 = bad parameters.
 # Never modifies the worktree, index or branches; it runs `git fetch origin` unless -NoFetch, and with -RunChecks it runs
-# typecheck and changed test files (Vitest capped via -MaxWorkers) and may add/remove one temporary detached merge-base worktree.
+# typecheck and the vitest unit suite (capped via -MaxWorkers), comparing failures against a cached merge-base baseline.
 
 param(
   [Parameter(Mandatory = $true)][string]$Worktree,
@@ -601,9 +601,181 @@ if ($e2eHits.Count -gt 0) {
   Add-Check 'e2e-selectors' 'WARN' ('e2e checks still target removed UI text/selectors; update them in the same PR: ' + (Join-Limited $e2eHits.ToArray()))
 }
 
-# ---- m. typecheck and changed tests (optional) -------------------------------
+# ---- m. typecheck and unit tests (optional) ----------------------------------
 
 $script:TmpDir = Join-Path $env:TEMP ('preprcheck-' + $PID)
+$script:BaselineRoot = 'C:\tivano\dev-loop\autopilot\selfcheck-baseline'
+$script:BaselineMutexName = 'Global\TivanoSelfCheckBaseline'
+
+function Get-JsonProp {
+  param($Obj, [string]$Name)
+  if ($null -eq $Obj) { return $null }
+  $prop = $Obj.PSObject.Properties[$Name]
+  if ($null -eq $prop) { return $null }
+  return $prop.Value
+}
+
+function ConvertTo-JsonStringArray {
+  param([string[]]$Items)
+  $arr = @($Items)
+  if ($arr.Count -eq 0) { return '[]' }
+  $encoded = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($item in $arr) {
+    $encoded.Add((ConvertTo-Json -InputObject ([string]$item) -Compress))
+  }
+  return ('[' + ($encoded.ToArray() -join ',') + ']')
+}
+
+function Write-Utf8Atomic {
+  param([string]$Path, [string]$Content)
+  $dir = Split-Path -Parent $Path
+  if ($dir) { [IO.Directory]::CreateDirectory($dir) | Out-Null }
+  $tmp = $Path + '.' + $PID + '.' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+  [IO.File]::WriteAllText($tmp, $Content, $script:Utf8)
+  $moved = $false
+  try {
+    for ($attempt = 1; $attempt -le 8; $attempt++) {
+      try {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+          [IO.File]::Replace($tmp, $Path, [NullString]::Value)
+        } else {
+          [IO.File]::Move($tmp, $Path)
+        }
+        $moved = $true
+        break
+      } catch {
+        if ($attempt -lt 8) { Start-Sleep -Milliseconds (250 * $attempt) }
+      }
+    }
+    if (-not $moved) {
+      [IO.File]::Copy($tmp, $Path, $true)
+    }
+  } finally {
+    if (Test-Path -LiteralPath $tmp -PathType Leaf) {
+      try { [IO.File]::Delete($tmp) } catch { }
+    }
+  }
+}
+
+function Read-BaselineCache {
+  param([string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+  try {
+    $raw = (Read-Utf8 $Path).TrimStart([char]0xFEFF).Trim()
+    if (-not $raw.StartsWith('[') -or -not $raw.EndsWith(']')) { return $null }
+    $keys = New-Object 'System.Collections.Generic.HashSet[string]'
+    if ($raw -notmatch '^\[\s*\]$') {
+      $parsed = @($raw | ConvertFrom-Json)
+      foreach ($item in $parsed) {
+        if ($null -eq $item -or $item -isnot [string]) { return $null }
+        if ($item) { $null = $keys.Add($item) }
+      }
+    }
+    return [pscustomobject]@{ ok = $true; keys = $keys; error = '' }
+  } catch {
+    return $null
+  }
+}
+
+function Get-FileSha256Hex {
+  param([string]$Path)
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+      $hash = $sha.ComputeHash($stream)
+    } finally {
+      $stream.Dispose()
+    }
+    return ([BitConverter]::ToString($hash).Replace('-', ''))
+  } finally {
+    $sha.Dispose()
+  }
+}
+
+function Test-FilesIdentical {
+  param([string]$PathA, [string]$PathB)
+  if (-not (Test-Path -LiteralPath $PathA -PathType Leaf)) { return $false }
+  if (-not (Test-Path -LiteralPath $PathB -PathType Leaf)) { return $false }
+  if ((Get-Item -LiteralPath $PathA).Length -ne (Get-Item -LiteralPath $PathB).Length) { return $false }
+  return ((Get-FileSha256Hex $PathA) -eq (Get-FileSha256Hex $PathB))
+}
+
+function Stop-WorktreeProcesses {
+  param([string]$Dir)
+  if ([string]::IsNullOrWhiteSpace($Dir)) { return }
+  try {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $keep = @{}
+    $id = $PID
+    while ($id -and -not $keep.ContainsKey($id)) {
+      $keep[$id] = $true
+      $proc = $all | Where-Object { $_.ProcessId -eq $id } | Select-Object -First 1
+      if ($proc) { $id = $proc.ParentProcessId } else { $id = 0 }
+    }
+    $prefix = $Dir.TrimEnd('\') + '\'
+    foreach ($proc in $all) {
+      if ($keep.ContainsKey($proc.ProcessId)) { continue }
+      $exeHit = ($null -ne $proc.ExecutablePath -and $proc.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))
+      $cmdHit = ($null -ne $proc.CommandLine -and $proc.CommandLine.IndexOf($Dir, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+      if ($exeHit -or $cmdHit) {
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+      }
+    }
+  } catch { }
+}
+
+function Remove-BaselineWorktree {
+  param([string]$WtPath)
+  if ([string]::IsNullOrWhiteSpace($WtPath)) { return $true }
+  Stop-WorktreeProcesses $WtPath
+  $nmPath = Join-Path $WtPath 'node_modules'
+  $nmItem = Get-Item -LiteralPath $nmPath -Force -ErrorAction SilentlyContinue
+  if ($null -ne $nmItem -and (($nmItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+    try {
+      [IO.Directory]::Delete($nmPath, $false)
+    } catch {
+      $oldEap = $ErrorActionPreference
+      $ErrorActionPreference = 'Continue'
+      try { $null = & $env:ComSpec /d /c ('rmdir "' + $nmPath + '"') 2>$null } finally { $ErrorActionPreference = $oldEap }
+    }
+    $stillThere = Get-Item -LiteralPath $nmPath -Force -ErrorAction SilentlyContinue
+    if ($null -ne $stillThere) {
+      # Never delete through the junction: that would remove the real node_modules.
+      Add-Check 'cleanup' 'WARN' ('could not remove the node_modules junction in ' + $WtPath + '; remove it with rmdir, then git worktree prune')
+      return $false
+    }
+  }
+  $null = Invoke-Git @('worktree', 'remove', '--force', $WtPath)
+  if (Test-Path -LiteralPath $WtPath) {
+    Remove-Item -LiteralPath $WtPath -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  $null = Invoke-Git @('worktree', 'prune')
+  return (-not (Test-Path -LiteralPath $WtPath))
+}
+
+function Invoke-WithNamedMutex {
+  param([string]$Name, [int]$TimeoutMs, [scriptblock]$Action)
+  $mutex = New-Object System.Threading.Mutex($false, $Name)
+  $acquired = $false
+  try {
+    try {
+      $acquired = $mutex.WaitOne($TimeoutMs)
+    } catch [System.Threading.AbandonedMutexException] {
+      # Previous holder terminated abnormally; ownership now belongs to this process.
+      $acquired = $true
+    }
+    if (-not $acquired) {
+      throw ('timed out waiting for mutex ' + $Name + ' after ' + [string]([int]($TimeoutMs / 60000)) + ' min')
+    }
+    return (& $Action)
+  } finally {
+    if ($acquired) {
+      try { $mutex.ReleaseMutex() } catch { }
+    }
+    $mutex.Dispose()
+  }
+}
 
 function Invoke-Capped {
   param([string]$Exe, [string]$Arguments, [string]$Tag, [string]$Dir, [int]$Minutes = 20)
@@ -634,39 +806,172 @@ function Invoke-Capped {
   return [pscustomobject]@{ code = $exitCode; tail = ($tailLines -join ' | ') }
 }
 
-function Invoke-VitestFiles {
-  # Runs vitest on the given repo-relative test files in $Dir with capped workers and returns
-  # @{ ok; code; tail; failures = [ @{ key; label } ] } where key = file > full test name.
-  param([string]$Dir, [string[]]$Files, [string]$Tag)
+function Resolve-VitestRelPath {
+  param([string]$RawPath, [string]$RootDir)
+  $rel = $RawPath.Replace('\', '/')
+  if (-not [string]::IsNullOrWhiteSpace($RootDir)) {
+    $fullRoot = [IO.Path]::GetFullPath($RootDir).TrimEnd('\', '/').Replace('\', '/') + '/'
+    if ($rel.StartsWith($fullRoot, [StringComparison]::OrdinalIgnoreCase)) {
+      $rel = $rel.Substring($fullRoot.Length)
+    } else {
+      $ix = $rel.IndexOf('/tests/', [StringComparison]::OrdinalIgnoreCase)
+      if ($ix -ge 0) {
+        $rel = $rel.Substring($ix + 1)
+      } else {
+        $ixSrc = $rel.IndexOf('/src/', [StringComparison]::OrdinalIgnoreCase)
+        if ($ixSrc -ge 0) { $rel = $rel.Substring($ixSrc + 1) }
+      }
+    }
+  }
+  while ($rel.StartsWith('./', [StringComparison]::Ordinal)) { $rel = $rel.Substring(2) }
+  return $rel
+}
+
+function Invoke-VitestSuite {
+  # Runs the full vitest unit suite in $Dir with capped workers and returns
+  # @{ ok; code; tail; testFileCount; failureKeys }.
+  param([string]$Dir, [string]$Tag)
+  $vitestEntry = Join-Path $Dir 'node_modules\vitest\vitest.mjs'
+  if (-not (Test-Path -LiteralPath $vitestEntry -PathType Leaf)) {
+    return [pscustomobject]@{ ok = $false; code = 1; tail = 'node_modules\vitest\vitest.mjs missing'; testFileCount = 0; failureKeys = [string[]]@() }
+  }
+  [IO.Directory]::CreateDirectory($script:TmpDir) | Out-Null
   $jsonOut = Join-Path $script:TmpDir ($Tag + '.vitest.json')
-  $argList = '"node_modules\vitest\vitest.mjs" run --maxWorkers=' + $MaxWorkers + ' --reporter=json "--outputFile.json=' + $jsonOut + '" ' + ((@($Files) | ForEach-Object { '"' + $_ + '"' }) -join ' ')
+  if (Test-Path -LiteralPath $jsonOut -PathType Leaf) {
+    Remove-Item -LiteralPath $jsonOut -Force -ErrorAction SilentlyContinue
+  }
+  $argList = '"node_modules\vitest\vitest.mjs" run --maxWorkers=' + $MaxWorkers + ' --reporter=default --reporter=json "--outputFile.json=' + $jsonOut + '"'
   $run = Invoke-Capped $script:NodeExe $argList $Tag $Dir
-  $fails = New-Object 'System.Collections.Generic.List[object]'
   if (-not (Test-Path -LiteralPath $jsonOut -PathType Leaf)) {
-    return [pscustomobject]@{ ok = $false; code = $run.code; tail = $run.tail; failures = $fails.ToArray() }
+    return [pscustomobject]@{ ok = $false; code = $run.code; tail = $run.tail; testFileCount = 0; failureKeys = [string[]]@() }
   }
   try {
-    $vj = (Read-Utf8 $jsonOut) | ConvertFrom-Json
+    $vj = ((Read-Utf8 $jsonOut).TrimStart([char]0xFEFF)) | ConvertFrom-Json
   } catch {
-    return [pscustomobject]@{ ok = $false; code = $run.code; tail = $run.tail; failures = $fails.ToArray() }
+    return [pscustomobject]@{ ok = $false; code = $run.code; tail = $run.tail; testFileCount = 0; failureKeys = [string[]]@() }
   }
-  foreach ($tr in @($vj.testResults)) {
-    $rel = ([string]$tr.name).Replace('\', '/')
-    $ix = $rel.IndexOf('/tests/')
-    if ($ix -ge 0) { $rel = $rel.Substring($ix + 1) }
-    $failedAsserts = @(@($tr.assertionResults) | Where-Object { $_.status -eq 'failed' })
-    if ($failedAsserts.Count -eq 0 -and [string]$tr.status -eq 'failed') {
-      $why = ([string]$tr.message -split "`n")[0]
-      $fails.Add([pscustomobject]@{ key = $rel + ' > (file)'; label = $rel + ' (file failed to run: ' + $why + ')' })
+  if ($null -eq $vj -or $vj -isnot [pscustomobject] -or -not $vj.PSObject.Properties['testResults']) {
+    return [pscustomobject]@{ ok = $false; code = $run.code; tail = $run.tail; testFileCount = 0; failureKeys = [string[]]@() }
+  }
+  $testResults = @($vj.testResults | Where-Object { $null -ne $_ })
+  $seenKeys = New-Object 'System.Collections.Generic.HashSet[string]'
+  $failKeys = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($tr in $testResults) {
+    $rawName = [string](Get-JsonProp $tr 'name')
+    if ([string]::IsNullOrWhiteSpace($rawName)) { continue }
+    $rel = Resolve-VitestRelPath $rawName $Dir
+    $trStatus = [string](Get-JsonProp $tr 'status')
+    $rawAssertions = Get-JsonProp $tr 'assertionResults'
+    $failedAsserts = New-Object 'System.Collections.Generic.List[object]'
+    if ($null -ne $rawAssertions) {
+      foreach ($a in @($rawAssertions)) {
+        if ($null -eq $a) { continue }
+        if ([string](Get-JsonProp $a 'status') -eq 'failed') { $failedAsserts.Add($a) }
+      }
     }
-    foreach ($a in $failedAsserts) {
-      $first = ((@($a.failureMessages) -join ' ') -split "`n")[0]
-      if ($first.Length -gt 160) { $first = $first.Substring(0, 160) }
-      $key = $rel + ' > ' + [string]$a.fullName
-      $fails.Add([pscustomobject]@{ key = $key; label = $key + ': ' + $first })
+    if ($failedAsserts.Count -eq 0 -and $trStatus -eq 'failed') {
+      $key = $rel + ' > (file failed)'
+      if ($seenKeys.Add($key)) { $failKeys.Add($key) }
+    } else {
+      foreach ($a in $failedAsserts) {
+        $fullName = [string](Get-JsonProp $a 'fullName')
+        if ([string]::IsNullOrWhiteSpace($fullName)) { $fullName = [string](Get-JsonProp $a 'title') }
+        $key = $rel + ' > ' + $fullName
+        if ($seenKeys.Add($key)) { $failKeys.Add($key) }
+      }
     }
   }
-  return [pscustomobject]@{ ok = $true; code = $run.code; tail = $run.tail; failures = $fails.ToArray() }
+  return [pscustomobject]@{
+    ok = $true
+    code = $run.code
+    tail = $run.tail
+    testFileCount = $testResults.Count
+    failureKeys = [string[]]$failKeys.ToArray()
+  }
+}
+
+function Get-UnitBaseline {
+  param([string]$MergeBaseSha, [string]$PrNodeModules)
+  if ([string]::IsNullOrWhiteSpace($MergeBaseSha) -or $MergeBaseSha -notmatch '^[0-9a-fA-F]{7,40}$') {
+    return [pscustomobject]@{ ok = $false; keys = $null; error = 'invalid merge-base sha: ' + $MergeBaseSha }
+  }
+  $cacheFile = Join-Path $script:BaselineRoot ($MergeBaseSha + '.json')
+  $cached = Read-BaselineCache $cacheFile
+  if ($null -ne $cached) { return $cached }
+
+  try {
+    return (Invoke-WithNamedMutex $script:BaselineMutexName 3600000 {
+      $cachedInside = Read-BaselineCache $cacheFile
+      if ($null -ne $cachedInside) { return $cachedInside }
+
+      [IO.Directory]::CreateDirectory($script:BaselineRoot) | Out-Null
+      $shortSha = $MergeBaseSha.Substring(0, [Math]::Min(8, $MergeBaseSha.Length))
+      $wtDir = Join-Path $script:BaselineRoot ('wt-' + $shortSha)
+      $wtAdded = $false
+      try {
+        if (Test-Path -LiteralPath $wtDir) {
+          if (-not (Remove-BaselineWorktree $wtDir)) {
+            throw ('could not clean existing baseline worktree: ' + $wtDir)
+          }
+        }
+        $wtAdd = Invoke-Git @('worktree', 'add', '--detach', '--quiet', $wtDir, $MergeBaseSha)
+        if ($wtAdd.code -ne 0) {
+          throw ('git worktree add --detach failed (exit ' + $wtAdd.code + ')')
+        }
+        $wtAdded = $true
+
+        $wtNodeModules = Join-Path $wtDir 'node_modules'
+        $linked = $false
+        if (Test-FilesIdentical (Join-Path $Worktree 'package-lock.json') (Join-Path $wtDir 'package-lock.json')) {
+          $prNmTrim = $PrNodeModules.TrimEnd('\')
+          $mk = Invoke-Capped $env:ComSpec ('/d /c mklink /J "' + $wtNodeModules + '" "' + $prNmTrim + '"') 'base-mklink' $wtDir 2
+          if ($mk.code -eq 0 -and (Test-Path -LiteralPath $wtNodeModules -PathType Container)) {
+            $linked = $true
+          }
+        }
+        if (-not $linked) {
+          $ci = Invoke-Capped $env:ComSpec '/d /c npm.cmd ci --no-audit --no-fund' 'base-ci' $wtDir 20
+          if ($ci.code -ne 0) {
+            throw ('npm ci failed (exit ' + $ci.code + '): ' + $ci.tail)
+          }
+        }
+
+        $bld = Invoke-Capped $env:ComSpec '/d /c npm.cmd run build' 'base-build' $wtDir 15
+        if ($bld.code -ne 0) {
+          throw ('npm run build failed (exit ' + $bld.code + '): ' + $bld.tail)
+        }
+
+        $baseRun = Invoke-VitestSuite $wtDir 'base-unit'
+        if (-not $baseRun.ok) {
+          throw ('vitest exit ' + $baseRun.code + ' with no readable vitest.json: ' + $baseRun.tail)
+        }
+        if ($baseRun.code -eq 124) {
+          throw ('vitest timed out: ' + $baseRun.tail)
+        }
+        if ($baseRun.testFileCount -eq 0) {
+          throw ('vitest recorded 0 test files (exit ' + $baseRun.code + '): ' + $baseRun.tail)
+        }
+        if ($baseRun.code -ne 0 -and @($baseRun.failureKeys).Count -eq 0) {
+          throw ('vitest exit ' + $baseRun.code + ' with no failed test recorded: ' + $baseRun.tail)
+        }
+
+        $keys = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($k in @($baseRun.failureKeys)) {
+          if ($k) { $null = $keys.Add($k) }
+        }
+        $sortedKeys = @($keys | Sort-Object)
+        $json = ConvertTo-JsonStringArray $sortedKeys
+        Write-Utf8Atomic $cacheFile ($json + "`n")
+        return [pscustomobject]@{ ok = $true; keys = $keys; error = '' }
+      } finally {
+        if ($wtAdded -or (Test-Path -LiteralPath $wtDir)) {
+          $null = Remove-BaselineWorktree $wtDir
+        }
+      }
+    })
+  } catch {
+    return [pscustomobject]@{ ok = $false; keys = $null; error = $_.Exception.Message }
+  }
 }
 
 if ($RunChecks) {
@@ -675,75 +980,52 @@ if ($RunChecks) {
   $nodeModules = Join-Path $Worktree 'node_modules'
   if (-not (Test-Path -LiteralPath $nodeModules -PathType Container) -or -not $nodeCmd -or -not $npmCmd) {
     Add-Check 'typecheck' 'FAIL' 'node_modules, node.exe or npm.cmd missing; run npm ci first'
-    Add-Check 'changed-tests' 'SKIP' 'node_modules missing'
+    Add-Check 'unit' 'SKIP' 'node_modules missing'
   } else {
     $script:NodeExe = $nodeCmd.Source
-    $baseTree = Join-Path $env:TEMP ('preprcheck-base-' + $PID)
-    $baseAdded = $false
     try {
       $tc = Invoke-Capped $env:ComSpec '/d /c npm.cmd run typecheck' 'typecheck' $Worktree
       if ($tc.code -eq 0) { Add-Check 'typecheck' 'PASS' 'npm run typecheck exit 0' } else { Add-Check 'typecheck' 'FAIL' ('exit ' + $tc.code + ': ' + $tc.tail) }
-      $tests = @($changed | Where-Object { $_ -like 'tests/*' -and $_ -match '\.test\.(ts|tsx|mjs|js)$' -and (Test-Path -LiteralPath (Join-Path $Worktree $_) -PathType Leaf) })
-      if ($tests.Count -eq 0) {
-        Add-Check 'changed-tests' 'SKIP' 'no changed test files'
-      } else {
-        $pr = Invoke-VitestFiles $Worktree $tests 'pr'
-        if (-not $pr.ok) {
-          Add-Check 'changed-tests' 'FAIL' ('vitest exit ' + $pr.code + ' and no readable vitest.json: ' + $pr.tail)
-        } elseif (@($pr.failures).Count -eq 0) {
-          if ($pr.code -eq 0) { Add-Check 'changed-tests' 'PASS' ([string]$tests.Count + ' changed test file(s) pass (maxWorkers=' + $MaxWorkers + ')') } else { Add-Check 'changed-tests' 'FAIL' ('vitest exit ' + $pr.code + ' with no failed test recorded: ' + $pr.tail) }
+
+      $pr = Invoke-VitestSuite $Worktree 'pr-unit'
+      if (-not $pr.ok) {
+        Add-Check 'unit' 'FAIL' ('vitest exit ' + $pr.code + ' and no readable vitest.json: ' + $pr.tail)
+      } elseif ($pr.code -eq 124) {
+        Add-Check 'unit' 'FAIL' ('vitest timed out: ' + $pr.tail)
+      } elseif (@($pr.failureKeys).Count -eq 0) {
+        if ($pr.code -eq 0) {
+          Add-Check 'unit' 'PASS' ('all unit tests pass (maxWorkers=' + $MaxWorkers + ')')
         } else {
-          # Compare with the merge base: a failure that also happens there is a host baseline failure, not this change.
-          $failedFiles = @(@($pr.failures) | ForEach-Object { ($_.key -split ' > ')[0] } | Sort-Object -Unique)
-          $baseFiles = New-Object 'System.Collections.Generic.List[string]'
-          foreach ($f in $failedFiles) {
-            $exists = Invoke-Git @('cat-file', '-e', ($mb + ':' + $f))
-            if ($exists.code -eq 0) { $baseFiles.Add($f) }
+          Add-Check 'unit' 'FAIL' ('vitest exit ' + $pr.code + ' with no failed test recorded: ' + $pr.tail)
+        }
+      } else {
+        $prKeys = @($pr.failureKeys | Sort-Object)
+        $base = Get-UnitBaseline $mb $nodeModules
+        if (-not $base.ok) {
+          Add-Check 'unit' 'FAIL' ([string]$prKeys.Count + ' unit failure(s) (baseline creation failed: ' + $base.error + '; falling back to failing on any unit failure): ' + (Join-Limited $prKeys 30))
+        } else {
+          $newFails = New-Object 'System.Collections.Generic.List[string]'
+          $knownCount = 0
+          foreach ($k in $prKeys) {
+            if ($base.keys.Contains($k)) { $knownCount++ } else { $newFails.Add($k) }
           }
-          $baseKeys = New-Object 'System.Collections.Generic.HashSet[string]'
-          $baseNote = ''
-          if ($baseFiles.Count -gt 0) {
-            $wtAdd = Invoke-Git @('worktree', 'add', '--detach', '--quiet', $baseTree, $mb)
-            if ($wtAdd.code -eq 0) {
-              $baseAdded = $true
-              $null = & $env:ComSpec /d /c mklink /J (Join-Path $baseTree 'node_modules') $nodeModules
-              $baseRun = Invoke-VitestFiles $baseTree $baseFiles.ToArray() 'base'
-              if ($baseRun.ok) { foreach ($bf in @($baseRun.failures)) { $null = $baseKeys.Add($bf.key) } } else { $baseNote = ' (base rerun failed: ' + $baseRun.tail + ')' }
-            } else {
-              $baseNote = ' (could not create a base worktree)'
-            }
-          }
-          $real = @(@($pr.failures) | Where-Object { -not $baseKeys.Contains($_.key) } | ForEach-Object { $_.label })
-          $known = @(@($pr.failures) | Where-Object { $baseKeys.Contains($_.key) } | ForEach-Object { $_.label })
-          if ($real.Count -gt 0) {
-            Add-Check 'changed-tests' 'FAIL' ([string]$real.Count + ' test(s) fail here but not on the merge base' + $baseNote + ': ' + (Join-Limited $real 10))
+          if ($newFails.Count -gt 0) {
+            Add-Check 'unit' 'FAIL' ([string]$newFails.Count + ' unit failure(s) not in ' + $Base + ' baseline: ' + (Join-Limited $newFails.ToArray() 30))
           } else {
-            Add-Check 'changed-tests' 'PASS' ([string]$tests.Count + ' changed test file(s): every failure also fails on the merge base')
+            Add-Check 'unit' 'PASS' ('no unit failures beyond ' + $Base + ' baseline (maxWorkers=' + $MaxWorkers + ')')
           }
-          if ($known.Count -gt 0) {
-            Add-Check 'baseline-tests' 'WARN' ([string]$known.Count + ' test(s) also fail on the merge base on this host (not caused by this change): ' + (Join-Limited $known 5))
+          if ($knownCount -gt 0) {
+            Add-Check 'unit-baseline' 'WARN' ([string]$knownCount + ' unit failures also fail on ' + $Base + '; not caused by this change')
           }
         }
       }
     } finally {
-      if ($baseAdded) {
-        $junction = Join-Path $baseTree 'node_modules'
-        if (Test-Path -LiteralPath $junction) { $null = & $env:ComSpec /d /c rmdir $junction }
-        if (Test-Path -LiteralPath $junction) {
-          # Never delete through the junction: that would remove the real node_modules.
-          Write-Output ('[WARN] cleanup: could not remove the node_modules junction in ' + $baseTree + '; remove it with rmdir, then git worktree prune')
-        } else {
-          $null = Invoke-Git @('worktree', 'remove', '--force', $baseTree)
-          if (Test-Path -LiteralPath $baseTree) { Remove-Item -LiteralPath $baseTree -Recurse -Force -ErrorAction SilentlyContinue }
-          $null = Invoke-Git @('worktree', 'prune')
-        }
-      }
       if (Test-Path -LiteralPath $script:TmpDir) { Remove-Item -LiteralPath $script:TmpDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
   }
 } else {
   Add-Check 'typecheck' 'SKIP' 'pass -RunChecks'
-  Add-Check 'changed-tests' 'SKIP' 'pass -RunChecks'
+  Add-Check 'unit' 'SKIP' 'pass -RunChecks'
 }
 
 # ---- report ------------------------------------------------------------------
