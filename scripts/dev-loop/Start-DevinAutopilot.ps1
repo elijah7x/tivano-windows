@@ -3301,18 +3301,46 @@ function Get-CliRunActivityUtc {
   if ($runDir -and (Test-Path -LiteralPath $runDir -PathType Container)) {
     $candidates += @(Get-ChildItem -LiteralPath $runDir -File -ErrorAction SilentlyContinue)
   }
-  $dp = [int]$State['devinPid']
-  if ($dp -gt 0 -and $env:APPDATA) {
-    $logDir = Join-Path $env:APPDATA 'Devin\cli\logs'
-    if (Test-Path -LiteralPath $logDir -PathType Container) {
-      $candidates += @(Get-ChildItem -LiteralPath $logDir -Filter ('devin_*_' + $dp + '.log') -File -ErrorAction SilentlyContinue)
-    }
-  }
   foreach ($c in $candidates) {
     $t = $c.LastWriteTimeUtc
     if ($null -eq $newest -or $t -gt $newest) { $newest = $t }
   }
+  # The agent works in a child 'devin.exe acp' process with its own log. NTFS updates an open
+  # file's directory timestamp lazily, so read the timestamp of the last log line instead.
+  $dp = [int]$State['devinPid']
+  if ($dp -gt 0 -and $env:APPDATA) {
+    $logDir = Join-Path $env:APPDATA 'Devin\cli\logs'
+    $pids = @($dp)
+    try {
+      $pids += @(Get-CimInstance Win32_Process -Filter ('ParentProcessId=' + $dp) -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.ProcessId })
+    } catch { }
+    foreach ($id in $pids) {
+      foreach ($log in @(Get-ChildItem -LiteralPath $logDir -Filter ('devin_*_' + $id + '.log') -File -ErrorAction SilentlyContinue)) {
+        $t = Get-LogTailTimestampUtc $log.FullName
+        if ($null -ne $t -and ($null -eq $newest -or $t -gt $newest)) { $newest = $t }
+      }
+    }
+  }
   return $newest
+}
+
+function Get-LogTailTimestampUtc {
+  param([string]$Path)
+  try {
+    $fs = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try {
+      $len = $fs.Length
+      if ($len -le 0) { return $null }
+      $take = [int][Math]::Min([long]8192, $len)
+      $null = $fs.Seek($len - $take, [IO.SeekOrigin]::Begin)
+      $buf = New-Object byte[] $take
+      $read = $fs.Read($buf, 0, [int]$take)
+      $text = [Text.Encoding]::UTF8.GetString($buf, 0, $read)
+    } finally { $fs.Dispose() }
+    $m = [regex]::Matches($text, '(?m)^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)')
+    if ($m.Count -eq 0) { return $null }
+    return (Parse-UtcTimestamp $m[$m.Count - 1].Groups[1].Value)
+  } catch { return $null }
 }
 
 function Complete-CliRun {
