@@ -3743,6 +3743,28 @@ select.runtime-mode:disabled {
 .limit-wait button:hover { background: var(--surface-2); }
 
 /* P1-35 failed/stopped-turn Continue row (frozen Continue affordance). */
+/* P1-44 branch provenance — a hairline divider under copied history. */
+.branch-origin-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.branch-origin-line {
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.branch-origin-open {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
 .continue-row {
   margin-top: 8px;
   display: flex;

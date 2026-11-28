@@ -219,6 +219,10 @@ export function registerIpc(opts: IpcOptions): () => void {
     engine.setInteractionMode(p.threadId, p.mode),
   );
   handle("threads:forward", (p) => ({ id: engine.forwardThread(p.threadId).id }));
+  handle("threads:branch", (p) => {
+    const made = engine.branchThread(p.threadId, p.turnId, p.point);
+    return { id: made.thread.id, ...(made.draft !== undefined ? { draft: made.draft } : {}) };
+  });
   handle("threads:compact", (p) => engine.compactThread(p.threadId));
   // F05 frozen recordCommand — the typed `/plan` path records here;
   // `/compact` records inside compactThread itself.

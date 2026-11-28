@@ -6,7 +6,8 @@
 // selection, or "Copy all" copying the whole message as Markdown (code
 // blocks keep their own copy button). Assistant replies also carry Add
 // to reply; user prompts carry the F09 rewind rows ("Edit from here" /
-// "Rewind to this turn", file changes kept).
+// "Rewind to this turn", file changes kept). Both carry P1-44 Branch
+// from here.
 //
 // Transient like the frozen NSPopover(.transient): outside mousedown,
 // Escape and scroll all close it; the rows take no focus. Action rows
@@ -15,7 +16,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../locale";
-import { api, clientStore, tryCall } from "../client";
+import { api, callApi, clientStore, tryCall } from "../client";
 
 /** Port of v3.0.0 `MessageText.markdown`: returns the markdown source
  *  without Hydra delegation fences (which render as cards), trimmed. */
@@ -211,6 +212,33 @@ export function MessagePopover(props: {
           <span className="suggest-name">
             {confirmed === "rewind" ? confirmLabel : t("Rewind to this turn")}
           </span>
+        </button>
+      )}
+      {state.turnId !== undefined && (
+        <button
+          role="menuitem"
+          className="suggest-row msg-row"
+          onMouseDown={(e) => e.preventDefault()}
+          disabled={confirmed !== null}
+          onClick={() => {
+            // P1-44: a reply keeps everything through it; a prompt keeps
+            // what came before and returns to the new chat's composer.
+            const point = state.role === "assistant" ? "through" : "before";
+            onClose();
+            void callApi("threads:branch", {
+              threadId: state.threadId,
+              turnId: state.turnId,
+              point,
+            })
+              .then((r) => {
+                const made = r as { id: string; draft?: string };
+                if (made.draft !== undefined) clientStore.setDraft(made.id, made.draft);
+              })
+              .catch(() => {});
+          }}
+        >
+          <span className="dl-icon" aria-hidden="true">⑂</span>
+          <span className="suggest-name">{t("Branch from here")}</span>
         </button>
       )}
     </div>
