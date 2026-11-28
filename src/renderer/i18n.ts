@@ -2332,6 +2332,21 @@ const zhHans: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "这将永久删除 %lld 个对话，包括关联到其他项目的子代理和助手。项目源文件不会被删除。",
   "Remove project": "移除项目",
+  // P1-41: Toolbox outputs panel (v3.0.26 UtilityChestPanel.swift).
+  "Toolbox": "百宝箱",
+  "Outputs": "产出物",
+  "Documents": "文档",
+  "Webpages": "网页",
+  "Images": "图片",
+  "Videos": "视频",
+  "No outputs yet": "暂无产出物",
+  "Documents, webpages, images and videos created in this chat appear here.":
+    "本对话中生成的文档、网页、图片和视频会收纳在这里。",
+  "Reference in chat": "引用到对话",
+  "Turn %d": "第 %d 轮",
+  "Close toolbox": "关闭百宝箱",
+  "Couldn't load outputs": "无法加载产出物",
+  "this output is no longer available": "这个产出物已不存在",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {

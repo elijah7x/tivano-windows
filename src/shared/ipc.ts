@@ -215,6 +215,9 @@ export const REQUEST_CHANNELS = [
   "downloads:list",
   "downloads:attach",
   "downloads:reveal",
+  "artifacts:list",
+  "artifacts:open",
+  "artifacts:reveal",
   "threads:reorder",
   "threads:move-affiliation",
   "projects:reorder",
@@ -442,6 +445,11 @@ export const requestValidators = {
     ids: vArray(vNonEmptyString(60), 15),
   }),
   "downloads:reveal": vObject({}),
+  // P1-41 Toolbox outputs: main lists files the thread named and acts on
+  // opaque ids from that listing only.
+  "artifacts:list": vObject({ threadId: vId }),
+  "artifacts:open": vObject({ threadId: vId, id: vNonEmptyString(60) }),
+  "artifacts:reveal": vObject({ threadId: vId, id: vNonEmptyString(60) }),
   "threads:reorder": vObject({ id: vId, targetId: vId, placeAfter: vBoolean }),
   "threads:move-affiliation": vObject({ id: vId, projectId: vNullable(vId) }),
   "projects:reorder": vObject({ id: vId, targetId: vId, placeAfter: vBoolean }),

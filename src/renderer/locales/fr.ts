@@ -2144,4 +2144,18 @@ export const fr: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "Cela supprime définitivement %lld discussions, y compris les sous-agents et assistants liés dans d’autres projets. Les fichiers sources du projet ne seront pas supprimés.",
   "Remove project": "Retirer le projet",
+  // P1-41: Toolbox outputs panel.
+  "Toolbox": "Boîte à outils",
+  "Outputs": "Productions",
+  "Documents": "Documents",
+  "Webpages": "Pages web",
+  "Images": "Images",
+  "Videos": "Vidéos",
+  "No outputs yet": "Aucune production pour l’instant",
+  "Documents, webpages, images and videos created in this chat appear here.": "Les documents, pages web, images et vidéos créés dans cette discussion apparaissent ici.",
+  "Reference in chat": "Référencer dans la discussion",
+  "Turn %d": "Tour %d",
+  "Close toolbox": "Fermer la boîte à outils",
+  "Couldn't load outputs": "Impossible de charger les productions",
+  "this output is no longer available": "cette production n’est plus disponible",
 };

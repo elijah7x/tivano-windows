@@ -2144,4 +2144,18 @@ export const ko: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "다른 프로젝트의 연결된 하위 에이전트 및 헬퍼를 포함하여 %lld개의 대화를 영구적으로 삭제합니다. 프로젝트 소스 파일은 삭제되지 않습니다.",
   "Remove project": "프로젝트 제거",
+  // P1-41: Toolbox outputs panel.
+  "Toolbox": "도구 상자",
+  "Outputs": "결과물",
+  "Documents": "문서",
+  "Webpages": "웹페이지",
+  "Images": "이미지",
+  "Videos": "동영상",
+  "No outputs yet": "아직 결과물이 없습니다",
+  "Documents, webpages, images and videos created in this chat appear here.": "이 대화에서 만든 문서, 웹페이지, 이미지, 동영상이 여기에 표시됩니다.",
+  "Reference in chat": "대화에서 참조",
+  "Turn %d": "%d번째 턴",
+  "Close toolbox": "도구 상자 닫기",
+  "Couldn't load outputs": "결과물을 불러올 수 없습니다",
+  "this output is no longer available": "이 결과물은 더 이상 없습니다",
 };
