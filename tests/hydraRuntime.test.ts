@@ -1557,7 +1557,7 @@ describe("P2-76 model-assignment waits as attention", () => {
       "Scout",
       "No pick",
     ]);
-    expect(attentionSignals).toContain(lead.id);
+    expect(attentionSignals.filter((id) => id === lead.id)).toHaveLength(1);
     expect(attentionStates.at(-1)).toBe(true);
     expect(
       finishSignals.filter((f) => f.threadId === lead.id && (f.chime || f.notify !== null)),
@@ -1695,5 +1695,60 @@ describe("P2-76 model-assignment waits as attention", () => {
     engine2.recoverInFlight();
     expect(thread(engine2, tBoot.id).chimeraCasting).toBeUndefined();
     store2.close();
+  });
+
+  it("clears pending chimeraCasting on cancelTurn (non-done endTurn) and user-authored sendTurn", async () => {
+    const { engine, store } = make();
+    const attentionStates: boolean[] = [];
+    engine.attachAttentionHook((active) => attentionStates.push(active));
+    engine.setSettings({ chimeraAutoDispatch: false });
+
+    // 1. User-authored sendTurn clears an existing chimeraCasting wait and its queued batch.
+    const leadUser = engine.createThread(null, "lead-user");
+    engine.setSubagentMode(leadUser.id, "adaptive");
+    engine.sendTurn(leadUser.id, "cast [mock:hydra-identity]");
+    await waitFor(
+      () =>
+        (thread(engine, leadUser.id).chimeraCasting?.rows.length ?? 0) === 2 &&
+        thread(engine, leadUser.id).turn?.status === "done",
+    );
+    expect(attentionStates.at(-1)).toBe(true);
+
+    engine.sendTurn(leadUser.id, "follow up directly");
+    expect(thread(engine, leadUser.id).chimeraCasting).toBeUndefined();
+    expect(attentionStates.at(-1)).toBe(false);
+    await waitFor(() => thread(engine, leadUser.id).turn?.status === "done");
+    expect(heads(engine, leadUser.id)).toHaveLength(0);
+    expect(
+      (thread(engine, leadUser.id).hydraJobs ?? []).every((j) => !j.isOpen),
+    ).toBe(true);
+
+    // 2. cancelTurn (non-done endTurn) clears chimeraCasting added mid-turn.
+    const leadCancel = engine.createThread(null, "lead-cancel");
+    engine.setSubagentMode(leadCancel.id, "adaptive");
+    let sawMidTurnCasting = false;
+    const unsub = engine.onEvent((ev) => {
+      if (
+        !sawMidTurnCasting &&
+        ev.type === "thread-updated" &&
+        ev.thread.id === leadCancel.id &&
+        (ev.thread.chimeraCasting?.rows.length ?? 0) >= 1 &&
+        ev.thread.turn?.status === "running"
+      ) {
+        sawMidTurnCasting = true;
+        expect(attentionStates.at(-1)).toBe(true);
+        engine.cancelTurn(leadCancel.id);
+      }
+    });
+    engine.sendTurn(leadCancel.id, "cast [mock:hydra-identity]");
+    await waitFor(
+      () => sawMidTurnCasting && thread(engine, leadCancel.id).turn?.status === "cancelled",
+    );
+    unsub();
+    expect(thread(engine, leadCancel.id).chimeraCasting).toBeUndefined();
+    expect(attentionStates.at(-1)).toBe(false);
+    expect(heads(engine, leadCancel.id)).toHaveLength(0);
+    expect(() => engine.setSubagentMode(leadCancel.id, "same")).not.toThrow();
+    store.close();
   });
 });

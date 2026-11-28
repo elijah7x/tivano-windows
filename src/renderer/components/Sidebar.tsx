@@ -348,34 +348,38 @@ export function Sidebar(props: {
         th.projectId !== null &&
         shelfIds.has(th.projectId),
     );
-    // P2-76 (frozen SidebarView.activityItems): standalone tasks needing
-    // user attention (approval, question, or adaptive casting) move into
-    // a "Needs attention" group at the top of the ungrouped tasks list.
-    const filteredUngrouped = frozenOrder(ungrouped.filter(matchThread));
-    const ungroupedIds = new Set(filteredUngrouped.map((x) => x.id));
-    const ungroupedByParent = new Map<string, ChatThread[]>();
-    const ungroupedMains: ChatThread[] = [];
-    for (const th of filteredUngrouped) {
-      if (q === "" && th.parentThreadId && ungroupedIds.has(th.parentThreadId)) {
-        ungroupedByParent.set(th.parentThreadId, [
-          ...(ungroupedByParent.get(th.parentThreadId) ?? []),
-          th,
-        ]);
-      } else {
-        ungroupedMains.push(th);
-      }
-    }
-    const attentionMains = ungroupedMains.filter((th) => threadNeedsAttention(th));
-    const restMains = ungroupedMains.filter((th) => !threadNeedsAttention(th));
-    const expandUngrouped = (xs: ChatThread[]): ChatThread[] =>
-      q === "" ? xs.flatMap((th) => [th, ...(ungroupedByParent.get(th.id) ?? [])]) : xs;
+    // P2-76 (frozen SidebarView.activityItems, adapted for collapsible project groups):
+    // non-archived, non-shelved threads needing user attention (approval, question,
+    // or adaptive casting) move into a top-level "Needs attention" section in
+    // .thread-list so project threads remain visible even when collapsed.
+    const activeNonShelved = [
+      ...snapshot.projects
+        .filter((p) => !p.isShelved)
+        .flatMap((p) => byProject.get(p.id) ?? []),
+      ...ungrouped,
+    ];
+    const attentionMainIds = new Set(
+      activeNonShelved.filter((th) => threadNeedsAttention(th)).map((th) => th.id),
+    );
+    const movedHelperIds = new Set(
+      q === ""
+        ? activeNonShelved
+            .filter((th) => th.parentThreadId && attentionMainIds.has(th.parentThreadId))
+            .map((th) => th.id)
+        : [],
+    );
+    const inAttentionSection = (th: ChatThread) =>
+      attentionMainIds.has(th.id) || movedHelperIds.has(th.id);
+    const attention = nestHelpers(
+      frozenOrder(activeNonShelved.filter((th) => inAttentionSection(th) && matchThread(th))),
+    );
     return {
       // A group stays visible while searching when the project name matches
       // (showing all its threads) or when any child thread matches.
       projects: snapshot.projects
         .filter((p) => !p.isShelved)
         .map((p) => {
-          const kids = byProject.get(p.id) ?? [];
+          const kids = (byProject.get(p.id) ?? []).filter((th) => !inAttentionSection(th));
           const nameMatch = !q || p.name.toLowerCase().includes(q);
           const threads = nestHelpers(
             frozenOrder(nameMatch ? kids : kids.filter(matchThread)),
@@ -390,8 +394,10 @@ export function Sidebar(props: {
         threads: nestHelpers(frozenOrder(byProject.get(p.id) ?? [])),
       })),
       shelfHasUnread,
-      attentionUngrouped: expandUngrouped(attentionMains),
-      ungrouped: expandUngrouped(restMains),
+      attention,
+      ungrouped: nestHelpers(
+        frozenOrder(ungrouped.filter((th) => !inAttentionSection(th) && matchThread(th))),
+      ),
       archived,
     };
   }, [snapshot, q]);
@@ -811,6 +817,12 @@ export function Sidebar(props: {
             <span>{t("No projects yet")}</span>
           </div>
         )}
+        {groups.attention.length > 0 && (
+          <div className="attention-group" role="group" aria-label={t("Needs attention")}>
+            <div className="sidebar-section-header">{t("Needs attention")}</div>
+            {groups.attention.map(threadRow)}
+          </div>
+        )}
         {groups.projects.map(({ project, threads }) => (
           <div key={project.id}>
             <div
@@ -1063,12 +1075,6 @@ export function Sidebar(props: {
           onDragLeave={() => setProjectHint((h) => (h?.id === "__ungrouped__" ? null : h))}
           onDrop={dropOnUngrouped}
         >
-          {groups.attentionUngrouped.length > 0 && (
-            <div className="attention-group" role="group" aria-label={t("Needs attention")}>
-              <div className="sidebar-section-header">{t("Needs attention")}</div>
-              {groups.attentionUngrouped.map(threadRow)}
-            </div>
-          )}
           {groups.ungrouped.map(threadRow)}
         </div>
       </div>

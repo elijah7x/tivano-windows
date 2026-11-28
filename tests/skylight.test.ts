@@ -861,4 +861,46 @@ describe("P2-76 model-assignment wait surfaces", () => {
       (globalThis as { Notification?: unknown }).Notification = origNotification;
     }
   });
+
+  it("surfaces project threads (even when collapsed) in top-level Needs attention without duplicating rows", () => {
+    const collapsedProj: Project = {
+      id: "proj-collapsed",
+      name: "Collapsed Project",
+      createdAt: 1,
+      expanded: false,
+    };
+    const waitingProjThread = thread({
+      id: "proj-wait",
+      projectId: collapsedProj.id,
+      title: "Project waiting thread",
+      updatedAt: 10,
+      chimeraCasting: {
+        batchId: "batch-proj",
+        rows: [{ id: "rp1", role: "Scout", task: "Check project" }],
+      },
+    });
+    const idleUngrouped = thread({ id: "idle-u", title: "Idle standalone", updatedAt: 5 });
+
+    const snap: Snapshot = {
+      projects: [collapsedProj],
+      threads: [waitingProjThread, idleUngrouped],
+      settings: { theme: "system", language: "en", alwaysAllow: [] },
+      selectedThreadId: null,
+      info: baseInfo,
+      rev: 1,
+      tokenActivity: {},
+    };
+    const html = renderInLang(
+      "en",
+      createElement(Sidebar, {
+        snapshot: snap,
+        onOpenSettings: () => {},
+        onOpenPalette: () => {},
+      }),
+    );
+    expect(html).toContain("attention-group");
+    expect(html).toContain("Needs attention");
+    expect(html.match(/data-thread-id="proj-wait"/g)?.length).toBe(1);
+    expect(html.indexOf("attention-group")).toBeLessThan(html.indexOf("Collapsed Project"));
+  });
 });

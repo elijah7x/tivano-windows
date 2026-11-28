@@ -1828,6 +1828,7 @@ export class Engine {
     };
     const needsTitle = thread.title === "New thread";
     this.store.update(() => {
+      if (opts?.authored !== false) this.clearPendingChimeraCasting(thread);
       thread.messages.push(userMsg, assistantMsg);
       thread.turn = turn;
       thread.updatedAt = now;
@@ -1838,6 +1839,7 @@ export class Engine {
     // continuation that really starts) never leaves a superseded wait
     // pinning the checkout until the old reset timer fires.
     this.clearLimitWait(threadId);
+    this.syncAttentionHook();
     this.emit({ type: "thread-updated", thread });
     this.emit({ type: "turn-status", threadId, turnId: turn.id, status: "running" });
     this.updateSleepGuard();
@@ -5152,6 +5154,7 @@ export class Engine {
       turn.question.status = "expired";
     }
     if (turn.approval) this.inflightDecisions.delete(turn.approval.id);
+    if (status !== "done") this.clearPendingChimeraCasting(thread);
     thread.updatedAt = Date.now();
     this.handles.delete(thread.id);
     this.toolItemsSeen.delete(turn.id);
@@ -5326,6 +5329,7 @@ export class Engine {
     parser: HydraDelegationStreamParser,
   ): void {
     if (this.readOnly) return;
+    const wasCasting = (thread.chimeraCasting?.rows.length ?? 0) > 0;
     const sent = this.hydraSent.get(key) ?? 0;
     const news = parser.delegations.slice(sent);
     let addedCasting = false;
@@ -5348,8 +5352,9 @@ export class Engine {
     }
     if (addedCasting) {
       this.store.update(() => {});
+      if (!wasCasting) this.notifyThreadNeedsAttention(thread, "casting");
+      else this.syncAttentionHook();
       this.emit({ type: "thread-updated", thread });
-      this.notifyThreadNeedsAttention(thread, "casting");
     }
     if (parser.isComplete && !parser.isSentBlock) {
       this.noteQueuedHeads(thread, [thread.turn?.id ?? "batch"]);
@@ -5977,30 +5982,7 @@ export class Engine {
       );
     }
 
-    const pendingReports = this.hydraPendingReports.get(threadId) ?? [];
-    let jobsChanged = false;
-    for (const batchId of batches) {
-      const hasWaiting = queue.some((q) => q.batchId === batchId);
-      if (hasWaiting) continue;
-      const hasActiveHead = this.store.state.threads.some(
-        (t) =>
-          t.hydraHead?.leadId === threadId &&
-          t.hydraHead.batchId === batchId &&
-          (t.hydraHead.status === "running" || t.hydraHead.landingPending === true),
-      );
-      const hasPendingReport = pendingReports.some((r) => r.batchId === batchId);
-      if (hasActiveHead || hasPendingReport) continue;
-      this.hydraBatchRequest.delete(batchId);
-      this.hydraBatchGen.delete(batchId);
-      this.hydraBatchJob.delete(batchId);
-      const job = thread.hydraJobs?.find((j) => j.id === batchId && j.isOpen);
-      if (job) {
-        job.isOpen = false;
-        job.ending = "stopped";
-        job.merge = "nothing";
-        jobsChanged = true;
-      }
-    }
+    const jobsChanged = this.closeEmptyHydraBatches(thread, batches);
     if (jobsChanged) {
       this.store.update(() => {});
       this.emit({ type: "thread-updated", thread });
@@ -7264,6 +7246,59 @@ export class Engine {
     );
   }
 
+  /** Close any open Hydra batch bookkeeping for `batchIds` that has no remaining
+   *  waiting items, active heads, or pending reports. */
+  private closeEmptyHydraBatches(lead: ChatThread | undefined, batchIds: string[]): boolean {
+    if (!lead || batchIds.length === 0) return false;
+    const queue = this.hydraWaiting.get(lead.id) ?? [];
+    const pendingReports = this.hydraPendingReports.get(lead.id) ?? [];
+    let jobsChanged = false;
+    for (const batchId of batchIds) {
+      if (queue.some((q) => q.batchId === batchId)) continue;
+      const hasActiveHead = this.store.state.threads.some(
+        (t) =>
+          t.hydraHead?.leadId === lead.id &&
+          t.hydraHead.batchId === batchId &&
+          (t.hydraHead.status === "running" || t.hydraHead.landingPending === true),
+      );
+      if (hasActiveHead || pendingReports.some((r) => r.batchId === batchId)) continue;
+      this.hydraBatchRequest.delete(batchId);
+      this.hydraBatchGen.delete(batchId);
+      this.hydraBatchJob.delete(batchId);
+      const job = lead.hydraJobs?.find((j) => j.id === batchId && j.isOpen);
+      if (job) {
+        job.isOpen = false;
+        job.ending = "stopped";
+        job.merge = "nothing";
+        jobsChanged = true;
+      }
+    }
+    return jobsChanged;
+  }
+
+  /** Clear pending `chimeraCasting` and its matching `castId` entries in `hydraWaiting`
+   *  (e.g. on turn cancellation/failure or a new user-authored turn). */
+  private clearPendingChimeraCasting(thread: ChatThread): boolean {
+    const casting = thread.chimeraCasting;
+    if (!casting) return false;
+    const castIds = new Set(casting.rows.map((r) => r.id));
+    delete thread.chimeraCasting;
+    const queue = this.hydraWaiting.get(thread.id);
+    if (queue && queue.length > 0) {
+      const removedBatches: string[] = [];
+      for (let i = queue.length - 1; i >= 0; i--) {
+        const item = queue[i]!;
+        if (item.castId !== undefined && castIds.has(item.castId)) {
+          if (!removedBatches.includes(item.batchId)) removedBatches.push(item.batchId);
+          queue.splice(i, 1);
+        }
+      }
+      if (queue.length === 0) this.hydraWaiting.delete(thread.id);
+      this.closeEmptyHydraBatches(thread, removedBatches);
+    }
+    return true;
+  }
+
   /** Frozen ThreadRuntime.clearQueuedHydraHeads: dropping unspawned
    *  cap-held entries is batch bookkeeping too, not just a queue delete.
    *  A batch with a head still out (or a report already waiting) keeps
@@ -7287,28 +7322,7 @@ export class Engine {
     }
     this.hydraWaiting.delete(leadId);
     const batchIds = [...new Set(queued.map((q) => q.batchId))];
-    const pendingReports = this.hydraPendingReports.get(leadId) ?? [];
-    let jobsChanged = false;
-    for (const batchId of batchIds) {
-      const hasActiveHead = this.store.state.threads.some(
-        (t) =>
-          t.hydraHead?.leadId === leadId &&
-          t.hydraHead.batchId === batchId &&
-          (t.hydraHead.status === "running" || t.hydraHead.landingPending === true),
-      );
-      const hasPendingReport = pendingReports.some((r) => r.batchId === batchId);
-      if (hasActiveHead || hasPendingReport) continue;
-      this.hydraBatchRequest.delete(batchId);
-      this.hydraBatchGen.delete(batchId);
-      this.hydraBatchJob.delete(batchId);
-      const job = lead?.hydraJobs?.find((j) => j.id === batchId && j.isOpen);
-      if (job) {
-        job.isOpen = false;
-        job.ending = "stopped";
-        job.merge = "nothing";
-        jobsChanged = true;
-      }
-    }
+    const jobsChanged = this.closeEmptyHydraBatches(lead, batchIds);
     if (jobsChanged || hadCasting) this.store.update(() => {});
     if (hadCasting && lead) {
       this.syncAttentionHook();
