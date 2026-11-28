@@ -8,6 +8,7 @@ import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import * as openIn from "./openIn";
 import { requestValidators, EVENT_CHANNEL, type AppEvent, type RequestChannel } from "../shared/ipc";
 import { recordExternalOpen, type ExternalOpenRecord } from "./externalOpen";
+import { ArtifactsService } from "./artifactsService";
 import { ValidationError } from "../shared/validate";
 import { EngineError, type Engine } from "./engine";
 import type {
@@ -264,6 +265,29 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("downloads:reveal", async () => {
     if (!opts.downloads) throw new Error("downloads are not available in this build");
     return opts.downloads.reveal();
+  });
+  const artifacts = new ArtifactsService();
+  const artifactPath = (threadId: string, id: string): string => {
+    const path = artifacts.resolve(threadId, id);
+    if (path === null) throw new EngineError("this output is no longer available");
+    return path;
+  };
+  handle("artifacts:list", (p) =>
+    artifacts.list(p.threadId, {
+      directory: engine.threadDirectory(p.threadId),
+      messages: engine.threadMessages(p.threadId),
+      turns: engine.listCheckpoints(p.threadId),
+    }),
+  );
+  handle("artifacts:open", async (p) => {
+    const path = artifactPath(p.threadId, p.id);
+    if (openLogged({ action: "openPath", target: path })) return;
+    const err = await shell.openPath(path);
+    if (err) throw new EngineError(err);
+  });
+  handle("artifacts:reveal", (p) => {
+    const path = artifactPath(p.threadId, p.id);
+    if (!openLogged({ action: "showItemInFolder", target: path })) shell.showItemInFolder(path);
   });
   handle("threads:reorder", (p) => ({ moved: engine.moveThread(p.id, p.targetId, p.placeAfter) }));
   handle("threads:move-affiliation", (p) => {

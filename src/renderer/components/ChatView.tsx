@@ -32,6 +32,7 @@ import { ScriptsDialog } from "./ScriptsDialog";
 import { Composer } from "./Composer";
 import { TimelineMinimap } from "./TimelineMinimap";
 import { ThreadChangesTab } from "./ThreadChangesTab";
+import { ToolboxPanel } from "./ToolboxPanel";
 import { HydraBriefPill } from "./HydraBriefPill";
 import { HydraStaveBar } from "./HydraStaveBar";
 import { MiniSpinner, WorkingSpinner } from "./SpinnerCells";
@@ -901,6 +902,11 @@ export function ChatView(props: {
               </div>
             )}
           </div>
+          <ToolboxPanel
+            threadId={thread.id}
+            refreshKey={`${thread.messages.length}:${turn?.id ?? ""}:${turn?.status ?? ""}`}
+            readOnly={props.readOnly === true}
+          />
         </div>
       </header>
       {thread && props.threads && (!hydraPanelHidden || !!thread.hydraHead) && (

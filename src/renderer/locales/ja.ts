@@ -2144,4 +2144,18 @@ export const ja: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "これにより %lld 件のチャット（他のプロジェクトの関連サブエージェントおよびヘルパーを含む）が完全に削除されます。プロジェクトのソースファイルは削除されません。",
   "Remove project": "プロジェクトを削除",
+  // P1-41: Toolbox outputs panel.
+  "Toolbox": "ツールボックス",
+  "Outputs": "成果物",
+  "Documents": "ドキュメント",
+  "Webpages": "Webページ",
+  "Images": "画像",
+  "Videos": "動画",
+  "No outputs yet": "成果物はまだありません",
+  "Documents, webpages, images and videos created in this chat appear here.": "このチャットで作成されたドキュメント、Webページ、画像、動画がここに表示されます。",
+  "Reference in chat": "チャットで参照",
+  "Turn %d": "ターン %d",
+  "Close toolbox": "ツールボックスを閉じる",
+  "Couldn't load outputs": "成果物を読み込めませんでした",
+  "this output is no longer available": "この成果物はもう存在しません",
 };

@@ -4656,6 +4656,11 @@ export class Engine {
       this.hydraTouched.delete(this.hydraTouched.keys().next().value!);
   }
 
+  /** P1-41 Toolbox outputs: one OWNED thread's timeline (read-only). */
+  threadMessages(threadId: string): readonly Message[] {
+    return this.mustThread(threadId).messages;
+  }
+
   /** Per-turn checkpoint records for one OWNED thread (IPC). */
   listCheckpoints(threadId: string) {
     this.mustThread(threadId);

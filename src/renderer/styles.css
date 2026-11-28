@@ -6728,3 +6728,122 @@ html[data-paused="1"] .welcome-strip-chev {
   color: var(--text-2);
   line-height: 1.4;
 }
+
+/* P1-41 Toolbox: fixed-size floating outputs panel anchored under the top
+   bar; it overlays the chat so the timeline never shifts. */
+.toolbox {
+  position: relative;
+  display: flex;
+}
+.toolbox-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(540px, calc(100vw - 24px));
+  height: min(490px, calc(100vh - 80px));
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+  z-index: 40;
+  overflow: hidden;
+}
+.toolbox-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: calc(12px + var(--fs-ui-off));
+  font-weight: 600;
+}
+.toolbox-outputs {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.toolbox-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+}
+.toolbox-filter {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  padding: 2px 10px;
+  font-size: calc(12px + var(--fs-ui-off));
+  cursor: pointer;
+}
+.toolbox-filter.on {
+  background: var(--accent-soft, rgba(127, 127, 127, 0.18));
+  font-weight: 600;
+}
+.toolbox-count {
+  opacity: 0.6;
+}
+.toolbox-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 8px;
+  overflow: auto;
+  flex: 1;
+}
+.toolbox-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+}
+.toolbox-row:hover {
+  background: rgba(127, 127, 127, 0.1);
+}
+.toolbox-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.toolbox-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.toolbox-name,
+.toolbox-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toolbox-sub {
+  font-size: calc(11px + var(--fs-ui-off));
+  opacity: 0.65;
+}
+.toolbox-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  text-align: center;
+  opacity: 0.75;
+}
+.toolbox-error {
+  margin: 0 12px 6px;
+  font-size: calc(12px + var(--fs-ui-off));
+  color: var(--danger, #d64545);
+}

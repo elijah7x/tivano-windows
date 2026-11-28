@@ -2144,4 +2144,18 @@ export const zhHant: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "這將永久刪除 %lld 個對話，包含關聯至其他專案的子代理與助手。專案原始檔不會被刪除。",
   "Remove project": "移除專案",
+  // P1-41: Toolbox outputs panel.
+  "Toolbox": "百寶箱",
+  "Outputs": "產出物",
+  "Documents": "文件",
+  "Webpages": "網頁",
+  "Images": "圖片",
+  "Videos": "影片",
+  "No outputs yet": "尚無產出物",
+  "Documents, webpages, images and videos created in this chat appear here.": "本對話中產生的文件、網頁、圖片和影片會收納在這裡。",
+  "Reference in chat": "引用到對話",
+  "Turn %d": "第 %d 輪",
+  "Close toolbox": "關閉百寶箱",
+  "Couldn't load outputs": "無法載入產出物",
+  "this output is no longer available": "這個產出物已不存在",
 };
