@@ -842,7 +842,20 @@ export function ChatView(props: {
               </button>
             </div>
           )}
-          <ThreadChangesTab threadId={thread.id} toggleSeq={props.changesToggleSeq} />
+          <ThreadChangesTab
+            threadId={thread.id}
+            toggleSeq={props.changesToggleSeq}
+            git={
+              hasDirectory && thread.projectId
+                ? {
+                    projectId: thread.projectId,
+                    worktree: thread.worktreeDir !== undefined,
+                    running: turn?.status === "running" || turn?.status === "waiting-approval",
+                    readOnly: props.readOnly === true,
+                  }
+                : undefined
+            }
+          />
           <div className="openin more-controls" ref={moreRef}>
             <button
               type="button"
