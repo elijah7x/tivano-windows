@@ -70,7 +70,7 @@ import {
 import {
   type McpServerConfig,
 } from "../shared/mcp";
-import { resolveCodexMcpServers } from "./mcpService";
+import { resolveCodexMcpServers, resolveCodexMcpServersAsync } from "./mcpService";
 import type {
   AdapterDisposeResult,
   ChildCleanupResult,
@@ -658,7 +658,7 @@ class CodexSession {
   ): Promise<unknown> {
     const servers = this.provider.mcpServersForThread();
     const { mcpServers: mcp, skipped } = servers?.length
-      ? this.provider.resolveMcpServersForThread(servers)
+      ? await this.provider.resolveMcpServersForThreadAsync(servers)
       : { mcpServers: undefined, skipped: [] };
     if (skipped.length > 0) {
       const note = `MCP servers skipped for this session because their command was not found on PATH: ${skipped.join(", ")}`;
@@ -3029,6 +3029,13 @@ export class CodexAppServerProvider implements ProviderAdapter {
     return this.opts.resolveMcpServers
       ? this.opts.resolveMcpServers(servers)
       : resolveCodexMcpServers(servers);
+  }
+
+  async resolveMcpServersForThreadAsync(
+    servers: readonly McpServerConfig[],
+  ): Promise<{ mcpServers: Record<string, Record<string, unknown>> | undefined; skipped: string[] }> {
+    if (this.opts.resolveMcpServers) return this.opts.resolveMcpServers(servers);
+    return resolveCodexMcpServersAsync(servers);
   }
 
   buildSpec(workspaceDir: string, opts: CodexLaunchOptions = {}): SpawnSpec {

@@ -9,6 +9,7 @@
 
 import { spawn } from "node:child_process";
 import { accessSync, constants as fsConstants, statSync } from "node:fs";
+import { access, stat } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 import {
   codexMcpServers,
@@ -104,6 +105,64 @@ function isExecutableFile(candidate: string, platform: NodeJS.Platform): boolean
   }
 }
 
+async function isExecutableFileAsync(
+  candidate: string,
+  platform: NodeJS.Platform,
+): Promise<boolean> {
+  if (!candidate || isUncOrRemotePath(candidate)) return false;
+  try {
+    const st = await stat(candidate);
+    if (!st.isFile()) return false;
+    if (platform !== "win32") await access(candidate, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function mcpCommandCandidates(
+  command: string,
+  serverEnv?: Record<string, string>,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const cmd = command.trim();
+  if (!cmd || cmd.includes("\0") || /[\r\n]/.test(cmd) || isUncOrRemotePath(cmd)) {
+    return [];
+  }
+  const pathMod = platform === "win32" ? win32 : posix;
+  const hasSep =
+    platform === "win32" ? /[/\\]/.test(cmd) || /^[a-zA-Z]:/.test(cmd) : cmd.includes("/");
+  if (hasSep) {
+    const out = [cmd];
+    if (platform === "win32" && pathMod.extname(cmd) === "") {
+      for (const ext of winPathExts(serverEnv, baseEnv)) out.push(cmd + ext);
+    }
+    return out;
+  }
+
+  const pathEnv =
+    (serverEnv ? getEnvCaseInsensitive(serverEnv, "PATH") : undefined) ??
+    getEnvCaseInsensitive(baseEnv, "PATH") ??
+    "";
+  const pathDelim = platform === "win32" ? ";" : ":";
+  const exts =
+    platform === "win32"
+      ? (() => {
+          const winExts = winPathExts(serverEnv, baseEnv);
+          return pathMod.extname(cmd) !== "" ? ["", ...winExts] : winExts;
+        })()
+      : [""];
+
+  const out: string[] = [];
+  for (const rawDir of pathEnv.split(pathDelim)) {
+    const dir = rawDir.trim();
+    if (!dir || isUncOrRemotePath(dir)) continue;
+    for (const ext of exts) out.push(pathMod.join(dir, cmd + ext));
+  }
+  return out;
+}
+
 function winPathExts(
   serverEnv?: Record<string, string>,
   baseEnv: NodeJS.ProcessEnv = process.env,
@@ -145,44 +204,24 @@ export function resolveMcpCommand(
   baseEnv: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): string | null {
-  const cmd = command.trim();
-  if (!cmd || cmd.includes("\0") || /[\r\n]/.test(cmd) || isUncOrRemotePath(cmd)) {
-    return null;
+  for (const candidate of mcpCommandCandidates(command, serverEnv, baseEnv, platform)) {
+    if (isExecutableFile(candidate, platform)) return candidate;
   }
-  const pathMod = platform === "win32" ? win32 : posix;
-  const hasSep =
-    platform === "win32" ? /[/\\]/.test(cmd) || /^[a-zA-Z]:/.test(cmd) : cmd.includes("/");
-  if (hasSep) {
-    if (isExecutableFile(cmd, platform)) return cmd;
-    if (platform === "win32" && pathMod.extname(cmd) === "") {
-      for (const ext of winPathExts(serverEnv, baseEnv)) {
-        const candidate = cmd + ext;
-        if (isExecutableFile(candidate, platform)) return candidate;
-      }
-    }
-    return null;
-  }
+  return null;
+}
 
-  const pathEnv =
-    (serverEnv ? getEnvCaseInsensitive(serverEnv, "PATH") : undefined) ??
-    getEnvCaseInsensitive(baseEnv, "PATH") ??
-    "";
-  const pathDelim = platform === "win32" ? ";" : ":";
-  const exts =
-    platform === "win32"
-      ? (() => {
-          const winExts = winPathExts(serverEnv, baseEnv);
-          return pathMod.extname(cmd) !== "" ? ["", ...winExts] : winExts;
-        })()
-      : [""];
-
-  for (const rawDir of pathEnv.split(pathDelim)) {
-    const dir = rawDir.trim();
-    if (!dir || isUncOrRemotePath(dir)) continue;
-    for (const ext of exts) {
-      const candidate = pathMod.join(dir, cmd + ext);
-      if (isExecutableFile(candidate, platform)) return candidate;
-    }
+/**
+ * P2-74: Async counterpart to `resolveMcpCommand` so MCP resolution does
+ * not run synchronous `statSync` / `accessSync` loops on the main thread.
+ */
+export async function resolveMcpCommandAsync(
+  command: string,
+  serverEnv?: Record<string, string>,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Promise<string | null> {
+  for (const candidate of mcpCommandCandidates(command, serverEnv, baseEnv, platform)) {
+    if (await isExecutableFileAsync(candidate, platform)) return candidate;
   }
   return null;
 }
@@ -206,6 +245,42 @@ export function resolveCodexMcpServers(
   return { mcpServers, skipped };
 }
 
+/**
+ * P2-74: Resolve all configured stdio MCP commands concurrently off the main thread
+ * before constructing Codex `config.mcp_servers`.
+ */
+export async function resolveCodexMcpServersAsync(
+  servers: readonly McpServerConfig[],
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ mcpServers: Record<string, Record<string, unknown>> | undefined; skipped: string[] }> {
+  const resolvedCommands = new Map<string, string | null>();
+  await Promise.all(
+    servers
+      .filter((s) => (s.transport ?? "stdio") === "stdio")
+      .map(async (s) => {
+        const path = await resolveMcpCommandAsync(s.command, s.env, baseEnv, platform);
+        resolvedCommands.set(s.id, path);
+      }),
+  );
+  const skipped: string[] = [];
+  let idx = 0;
+  const mcpServers = codexMcpServers(servers, {
+    resolveCommand: (command, serverEnv) => {
+      const server = servers.find(
+        (s, i) => i >= idx && (s.transport ?? "stdio") === "stdio" && s.command === command && s.env === serverEnv,
+      );
+      if (server) {
+        idx = servers.indexOf(server) + 1;
+        return resolvedCommands.get(server.id) ?? null;
+      }
+      return null;
+    },
+    skipped,
+  });
+  return { mcpServers, skipped };
+}
+
 function quoteCmdArg(arg: string): string {
   return `"${arg.replace(/"/g, '"^""')}"`;
 }
@@ -215,7 +290,7 @@ async function probeStdioServer(
   timeoutMs: number,
 ): Promise<McpProbeResult> {
   const env = mergeEnvCaseInsensitive(process.env, server.env);
-  const resolved = resolveMcpCommand(server.command, server.env, process.env);
+  const resolved = await resolveMcpCommandAsync(server.command, server.env, process.env);
   if (!resolved) {
     return { status: "missing", reason: `${server.command} isn't installed.` };
   }

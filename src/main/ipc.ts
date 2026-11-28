@@ -44,6 +44,8 @@ export interface IpcOptions {
     expand: (text: string) => void;
     isVisible: () => boolean;
   };
+  /** Optional hook to kick deferred post-window startup services early if IPC arrives first. */
+  ensurePostWindowServices?: () => void;
   /** F33 local control — absent only in builds without the slice. */
   localControl?: import("./localControl").LocalControlService;
   /** P2-25 Remote MCP — absent only in builds without the slice. */
@@ -155,8 +157,14 @@ export function registerIpc(opts: IpcOptions): () => void {
     return true;
   };
 
-  handle("state:get", () => engine.snapshot());
-  handle("app:info", () => engine.info);
+  handle("state:get", async () => {
+    await engine.whenReady();
+    return engine.snapshot();
+  });
+  handle("app:info", async () => {
+    await engine.whenReady();
+    return engine.info;
+  });
   handle("projects:create", (p) => {
     const project = engine.createProject(p.name);
     // Workspace binding failure must not leave a silently misbound project —
@@ -394,6 +402,7 @@ export function registerIpc(opts: IpcOptions): () => void {
   // in-flight bind/stop so the response always reflects the settled
   // socket/pipe state — never an optimistic flag.
   handle("control:status", async () => {
+    opts.ensurePostWindowServices?.();
     await opts.localControl?.whenSettled();
     if (opts.localControl) return opts.localControl.status();
     const s = engine.snapshot().settings;
@@ -404,6 +413,7 @@ export function registerIpc(opts: IpcOptions): () => void {
     };
   });
   handle("control:retry", async () => {
+    opts.ensurePostWindowServices?.();
     await opts.localControl?.refreshListening();
     if (opts.localControl) return opts.localControl.status();
     const s = engine.snapshot().settings;
@@ -413,8 +423,15 @@ export function registerIpc(opts: IpcOptions): () => void {
       failure: null,
     };
   });
-  handle("remoteMcp:status", () => opts.remoteMcp?.status() ?? null);
-  handle("remoteMcp:retry", async () => (await opts.remoteMcp?.retry()) ?? null);
+  handle("remoteMcp:status", async () => {
+    opts.ensurePostWindowServices?.();
+    await opts.remoteMcp?.whenSettled();
+    return opts.remoteMcp?.status() ?? null;
+  });
+  handle("remoteMcp:retry", async () => {
+    opts.ensurePostWindowServices?.();
+    return (await opts.remoteMcp?.retry()) ?? null;
+  });
   handle("remoteMcp:decide", (p) => opts.remoteMcp?.decide(p.id, p.decision) ?? null);
   handle("remoteMcp:revoke", (p) => opts.remoteMcp?.revoke(p.id) ?? null);
   handle("remoteMcp:revoke-all", () => opts.remoteMcp?.revokeAll() ?? null);

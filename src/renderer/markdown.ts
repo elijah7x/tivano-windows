@@ -154,28 +154,56 @@ const LINE_SPLIT = /\r\n|\r|\n|\u2028|\u2029/;
  * closers complete; `2*3`, `snake_case`, escaped markers and whitespace-only
  * spans stay literal. Synthetic closers insert before trailing whitespace.
  */
+function isWsChar(c: string): boolean {
+  return /\s/.test(c);
+}
+
+function charWidthAt(s: string, pos: number): number {
+  const c = s.charCodeAt(pos);
+  if (c >= 0xd800 && c <= 0xdbff && pos + 1 < s.length) {
+    const next = s.charCodeAt(pos + 1);
+    if (next >= 0xdc00 && next <= 0xdfff) return 2;
+  }
+  return 1;
+}
+
+function charBefore(s: string, pos: number): string | undefined {
+  if (pos <= 0) return undefined;
+  const c = s.charCodeAt(pos - 1);
+  if (c >= 0xdc00 && c <= 0xdfff && pos >= 2) {
+    const hi = s.charCodeAt(pos - 2);
+    if (hi >= 0xd800 && hi <= 0xdbff) return s.slice(pos - 2, pos);
+  }
+  return s[pos - 1];
+}
+
+function charAt(s: string, pos: number): string | undefined {
+  if (pos >= s.length) return undefined;
+  return s.slice(pos, pos + charWidthAt(s, pos));
+}
+
 export function streamMend(source: string): string {
   if (!/[*_~`]/.test(source)) return source;
-  const chars = [...source];
-  const ws = (c: string) => /\s/.test(c);
   const isAlphaNum = (c: string) => /[\p{L}\p{N}]/u.test(c);
   const run = (at: number): number => {
+    const ch = source[at];
     let n = 0;
-    while (at + n < chars.length && chars[at + n] === chars[at]) n++;
+    while (at + n < source.length && source[at + n] === ch) n++;
     return n;
   };
   // The display suffix belongs before whitespace, where emphasis can close.
-  let end = chars.length;
-  while (end > 0 && ws(chars[end - 1]!)) end--;
+  let end = source.length;
+  while (end > 0 && isWsChar(source[end - 1]!)) end--;
   let partial: { marker: string; missing: number } | undefined;
   let partialTicks = 0;
   const stack: { marker: string; length: number; contentStart: number }[] = [];
   let code: { ticks: number; contentStart: number } | undefined;
   let index = 0;
-  while (index < chars.length) {
-    const char = chars[index]!;
+  while (index < source.length) {
+    const char = source[index]!;
     if (char === "\\" && !code) {
-      index += 2;
+      index += 1;
+      if (index < source.length) index += charWidthAt(source, index);
       continue;
     }
     if (char === "`") {
@@ -190,18 +218,18 @@ export function streamMend(source: string): string {
       continue;
     }
     if (code || (char !== "*" && char !== "_" && char !== "~")) {
-      index += 1;
+      index += charWidthAt(source, index);
       continue;
     }
     const full = run(index);
     let rest = full;
-    const before = index > 0 ? chars[index - 1] : undefined;
-    const after = index + full < chars.length ? chars[index + full] : undefined;
+    const before = charBefore(source, index);
+    const after = charAt(source, index + full);
     if (char === "~" && rest < 2 && stack[stack.length - 1]?.marker !== char) {
       index += full;
       continue;
     }
-    if (before !== undefined && !ws(before)) {
+    if (before !== undefined && !isWsChar(before)) {
       let top = stack[stack.length - 1];
       while (rest > 0 && top && top.marker === char && rest >= top.length) {
         stack.pop();
@@ -219,14 +247,14 @@ export function streamMend(source: string): string {
       rest < top.length &&
       index + full === end &&
       before !== undefined &&
-      !ws(before)
+      !isWsChar(before)
     ) {
       partial = { marker: char, missing: top.length - rest };
       stack.pop();
       rest = 0;
     }
     const opens =
-      (after !== undefined && !ws(after)) && !(before !== undefined && isAlphaNum(before));
+      (after !== undefined && !isWsChar(after)) && !(before !== undefined && isAlphaNum(before));
     if (rest > 0 && opens) {
       while (rest > 0) {
         if (char === "~" && rest < 2) break;
@@ -239,25 +267,30 @@ export function streamMend(source: string): string {
   }
 
   // Closers go before any trailing whitespace: a closer after a space closes nothing.
-  const hasContent = (start: number) =>
-    start < end && chars.slice(start, end).some((c) => !ws(c));
+  const hasContent = (start: number) => {
+    for (let i = start; i < end; i++) {
+      if (!isWsChar(source[i]!)) return true;
+    }
+    return false;
+  };
   let closers = "";
   if (code) {
     if (!hasContent(code.contentStart)) return source;
     closers += "`".repeat(code.ticks - partialTicks);
   }
   if (partial) closers += partial.marker.repeat(partial.missing);
-  for (const open of [...stack].reverse()) {
+  for (let i = stack.length - 1; i >= 0; i--) {
+    const open = stack[i]!;
     if (hasContent(open.contentStart)) closers += open.marker.repeat(open.length);
   }
   if (!closers) return source;
   if (!code) {
     let slashStart = end;
-    while (slashStart > 0 && chars[slashStart - 1] === "\\") slashStart--;
+    while (slashStart > 0 && source[slashStart - 1] === "\\") slashStart--;
     // A dangling escape must not swallow the first synthetic closer.
     if ((end - slashStart) % 2 === 1) closers = "\\" + closers;
   }
-  return chars.slice(0, end).join("") + closers + chars.slice(end).join("");
+  return source.slice(0, end) + closers + source.slice(end);
 }
 
 // Block-start recognizers. Each consumer below uses the exact same regex
