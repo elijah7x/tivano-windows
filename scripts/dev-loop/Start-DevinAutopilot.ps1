@@ -4188,7 +4188,7 @@ function Complete-CloudRun {
     $prNumber = 0
     if (-not [string]::IsNullOrWhiteSpace([string]$prListRes.text)) {
       try {
-        $existingPrs = @($prListRes.text | ConvertFrom-Json | Where-Object { $null -ne $_ })
+        $existingPrs = @($prListRes.text | ConvertFrom-Json | Where-Object { $null -ne $_ -and ([string](Get-JsonProp $_ 'state')).Equals('OPEN', [StringComparison]::OrdinalIgnoreCase) })
         if ($existingPrs.Count -gt 0) {
           $prNumber = [int](Get-JsonProp $existingPrs[0] 'number')
         }
@@ -4267,7 +4267,8 @@ function Complete-CloudRun {
         $null = Invoke-Gh ('label create lane-devin -R ' + $Repo + ' --color 0E8A16 --description ' + (Quote-Argument 'Owned by local Devin lane'))
         $addLblRes = Invoke-Gh ('issue edit ' + $issueNum + ' -R ' + $Repo + ' --add-label lane-devin')
         if ($addLblRes.exitCode -ne 0) {
-          Write-Log ('cloud lane: warning: failed to add lane-devin to issue #' + $issueNum + ': ' + (ConvertTo-SingleLine (Get-ErrorSummary $addLblRes) 160))
+          Write-Log ('cloud lane: failed to add lane-devin to issue #' + $issueNum + ' (handoff retried next tick): ' + (ConvertTo-SingleLine (Get-ErrorSummary $addLblRes) 160))
+          return $false
         }
       }
       if ($createdPr -or ($issueLabels -notcontains 'lane-devin')) {
@@ -4304,19 +4305,19 @@ function Complete-CloudRun {
 function Start-CloudRun {
   param(
     [int]$IssueNumber,
-    [string]$Branch
+    [string]$Branch,
+    [string]$RunDir
   )
   $cli = Resolve-DevinCliPath
   $mission = $CloudMissionPath
   if ([string]::IsNullOrWhiteSpace($mission)) { $mission = Join-Path $PSScriptRoot 'devin-cloud-mission.md' }
   if (-not (Test-Path -LiteralPath $mission -PathType Leaf)) { throw 'devin-cloud-mission.md is missing next to this script.' }
 
-  $runsRoot = Join-Path $script:AutopilotDir 'cloud-runs'
-  $stamp = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
-  $runDir = Join-Path $runsRoot $stamp
-  if (Test-Path -LiteralPath $runDir) {
-    $runDir = $runDir + '-' + $IssueNumber
+  $runDir = $RunDir
+  if ([string]::IsNullOrWhiteSpace($runDir)) {
+    $runDir = Join-Path (Join-Path $script:AutopilotDir 'cloud-runs') ([DateTime]::Now.ToString('yyyyMMdd-HHmmss') + '-' + $IssueNumber)
   }
+  $stamp = Split-Path -Leaf $runDir
   [IO.Directory]::CreateDirectory($runDir) | Out-Null
 
   $templateText = Read-Text $mission
@@ -4382,8 +4383,8 @@ function Start-CloudRun {
 }
 
 function Invoke-CloudTick {
-  # (a) Respect STOP and disabled weekly cap.
-  if ((Test-Stop) -or $CloudWeeklyCap -le 0) { return }
+  # (a) Respect STOP. A disabled weekly cap only stops new launches; existing runs are still monitored below.
+  if (Test-Stop) { return }
 
   $state = Read-CloudState
   $runs = @($state['runs'])
@@ -4461,7 +4462,7 @@ function Invoke-CloudTick {
       $weekCount++
     }
   }
-  if ($weekCount -ge $CloudWeeklyCap) { return }
+  if ($CloudWeeklyCap -le 0 -or $weekCount -ge $CloudWeeklyCap) { return }
 
   if (-not (Ensure-CloudToolPaths)) {
     Write-Log 'cloud lane: skipped (gh or git not found on PATH)'
@@ -4469,7 +4470,7 @@ function Invoke-CloudTick {
   }
 
   # (e) Pick the oldest open eligible issue labelled lane-cloud.
-  $issListRes = Invoke-Gh ('issue list -R ' + $Repo + ' --state open --label lane-cloud --limit 100 --json number,title,labels,createdAt')
+  $issListRes = Invoke-Gh ('issue list -R ' + $Repo + ' --state open --label lane-cloud --label ' + $Label + ' --limit 100 --json number,title,labels,createdAt')
   if ($issListRes.exitCode -ne 0) {
     Write-Log ('cloud lane: gh issue list failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $issListRes) 180))
     return
@@ -4521,7 +4522,7 @@ function Invoke-CloudTick {
   }
   $remoteHeadArr = [string[]]$remoteHeads.ToArray()
 
-  $excludedLabels = @('lane-devin', 'lane-hydrogen', 'parked', 'nyx-blocked')
+  $excludedLabels = @('lane-devin', 'lane-hydrogen', 'parked', 'nyx-blocked', 'needs-human', 'audit-parked')
   $selectedIssue = $null
   foreach ($iss in $cloudIssues) {
     $candNum = 0
@@ -4574,19 +4575,38 @@ function Invoke-CloudTick {
   $selTitle = [string](Get-JsonProp $selectedIssue 'title')
   $slug = ConvertTo-CloudBranchSlug $selTitle
   $branch = 'nyx/' + $selNum + '-cloud-' + $slug
-  try {
-    $newRun = Start-CloudRun -IssueNumber $selNum -Branch $branch
-  } catch {
-    Remove-CloudClaimLock -IssueNumber $selNum
-    throw
+  # Persist a recoverable launch record before the process starts, so a watchdog exit in between
+  # still leaves a run that counts toward the weekly cap and is monitored (via runDir\meta.json) and finalized.
+  $runDir = Join-Path (Join-Path $script:AutopilotDir 'cloud-runs') ([DateTime]::Now.ToString('yyyyMMdd-HHmmss') + '-' + $selNum)
+  $launchRun = [ordered]@{
+    issue = [int]$selNum
+    branch = $branch
+    runDir = $runDir
+    pid = 0
+    startedUtc = [DateTime]::UtcNow.ToString('o')
+    endedUtc = ''
+    exitCode = $null
+    result = ''
+    prNumber = 0
   }
-
   $updatedRuns = New-Object Collections.Generic.List[object]
   foreach ($r in $runs) {
     if ($null -ne $r) { $null = $updatedRuns.Add($r) }
   }
-  $null = $updatedRuns.Add($newRun)
+  $null = $updatedRuns.Add($launchRun)
   $state['runs'] = [object[]]$updatedRuns.ToArray()
+  Save-CloudState $state
+
+  try {
+    $newRun = Start-CloudRun -IssueNumber $selNum -Branch $branch -RunDir $runDir
+  } catch {
+    $launchRun['endedUtc'] = [DateTime]::UtcNow.ToString('o')
+    $launchRun['result'] = 'launch failed: ' + (ConvertTo-SingleLine (Protect-PublicText ([string]$_.Exception.Message)) 160)
+    Save-CloudState $state
+    Remove-CloudClaimLock -IssueNumber $selNum
+    throw
+  }
+  $launchRun['pid'] = [int]$newRun['pid']
   Save-CloudState $state
 }
 
