@@ -412,7 +412,7 @@ export function ChatView(props: {
   const liveTurnId = thread?.turn?.id;
   const foldedTurnMeta = useMemo(() => {
     const map = new Map<
-      string,
+      TurnGroup,
       {
         steps: Message[];
         stepIds: Set<string>;
@@ -449,7 +449,7 @@ export function ChatView(props: {
         status === "error" ? "failed"
         : status === "cancelled" || status === "denied" || status === "interrupted" ? "stopped"
         : "completed";
-      map.set(item.turnId, { steps, stepIds, stateLabel, stepCount, staveStatus });
+      map.set(item, { steps, stepIds, stateLabel, stepCount, staveStatus });
     }
     return map;
   }, [windowedItems, liveTurnId, t]);
@@ -1311,7 +1311,7 @@ export function ChatView(props: {
           // page in on scroll-back (frozen TimelineWindow). The windowed
           // slice comes from the memoized items above.
           const renderTurnSteps = (g: TurnGroup): React.ReactNode => {
-            const meta = foldedTurnMeta.get(g.turnId);
+            const meta = foldedTurnMeta.get(g);
             if (!meta)
               return g.messages.map(renderMessage);
             const { steps, stepIds, stateLabel, stepCount, staveStatus } = meta;

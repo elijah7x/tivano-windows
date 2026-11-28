@@ -254,25 +254,30 @@ export async function resolveCodexMcpServersAsync(
   baseEnv: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): Promise<{ mcpServers: Record<string, Record<string, unknown>> | undefined; skipped: string[] }> {
-  const resolvedCommands = new Map<string, string | null>();
+  const resolvedCommands = new Map<number, string | null>();
   await Promise.all(
-    servers
-      .filter((s) => (s.transport ?? "stdio") === "stdio")
-      .map(async (s) => {
-        const path = await resolveMcpCommandAsync(s.command, s.env, baseEnv, platform);
-        resolvedCommands.set(s.id, path);
-      }),
+    servers.map(async (s, i) => {
+      if ((s.transport ?? "stdio") === "http") return;
+      const trimmed = s.command.trim();
+      if (!trimmed) return;
+      const path = await resolveMcpCommandAsync(trimmed, s.env, baseEnv, platform);
+      resolvedCommands.set(i, path);
+    }),
   );
   const skipped: string[] = [];
   let idx = 0;
   const mcpServers = codexMcpServers(servers, {
     resolveCommand: (command, serverEnv) => {
-      const server = servers.find(
-        (s, i) => i >= idx && (s.transport ?? "stdio") === "stdio" && s.command === command && s.env === serverEnv,
+      const matchIndex = servers.findIndex(
+        (s, i) =>
+          i >= idx &&
+          (s.transport ?? "stdio") !== "http" &&
+          s.command.trim() === command &&
+          s.env === serverEnv,
       );
-      if (server) {
-        idx = servers.indexOf(server) + 1;
-        return resolvedCommands.get(server.id) ?? null;
+      if (matchIndex >= 0) {
+        idx = matchIndex + 1;
+        return resolvedCommands.get(matchIndex) ?? null;
       }
       return null;
     },

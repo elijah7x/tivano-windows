@@ -146,8 +146,6 @@ export class TokenLedger {
           `corrupt token-activity could not be preserved aside (${(e as Error).message}); ` +
           "starting empty";
       }
-      this.daily = {};
-      this.codexLive = {};
     }
   }
 
@@ -172,8 +170,6 @@ export class TokenLedger {
               `corrupt token-activity could not be preserved aside (${(e as Error).message}); ` +
               "starting empty";
           }
-          this.daily = {};
-          this.codexLive = {};
         }
       } finally {
         this.loaded = true;

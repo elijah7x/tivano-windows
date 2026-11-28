@@ -251,6 +251,8 @@ export class RemoteMcpAuthority {
   private state: PersistedState = { clients: [], grants: [] };
   private loaded = false;
   private loadPromise: Promise<void> | null = null;
+  private loadInFlight = false;
+  private pendingPersistAfterLoad = false;
   private base = "";
   private pending = new Map<string, PendingEntry>();
   private codes = new Map<string, CodeEntry>();
@@ -275,13 +277,28 @@ export class RemoteMcpAuthority {
   ensureLoaded(): Promise<void> {
     if (this.loaded) return Promise.resolve();
     if (this.loadPromise) return this.loadPromise;
-    this.loadPromise = this.loadStateAsync().then((loaded) => {
-      if (!this.loaded) {
-        this.state = loaded;
-        this.loaded = true;
-      }
-    });
+    this.loadInFlight = true;
+    this.loadPromise = this.loadStateAsync()
+      .then((loaded) => {
+        if (!this.loaded) {
+          this.state = loaded;
+          this.loaded = true;
+        }
+      })
+      .finally(() => {
+        this.loadInFlight = false;
+        if (this.pendingPersistAfterLoad) {
+          this.pendingPersistAfterLoad = false;
+          this.persist();
+        }
+      });
     return this.loadPromise;
+  }
+
+  private ensureLoadedSync(): void {
+    if (this.loaded) return;
+    this.state = this.loadState();
+    this.loaded = true;
   }
 
   private get resourceUrl(): string {
@@ -320,6 +337,7 @@ export class RemoteMcpAuthority {
   }
 
   revoke(grantId: string): void {
+    this.ensureLoadedSync();
     this.state.grants = this.state.grants.filter((g) => g.id !== grantId);
     for (const [k, v] of this.accessTokens) {
       if (v.grantId === grantId) this.accessTokens.delete(k);
@@ -329,6 +347,7 @@ export class RemoteMcpAuthority {
   }
 
   revokeAll(): void {
+    this.ensureLoadedSync();
     this.state.grants = [];
     this.accessTokens.clear();
     this.codes.clear();
@@ -864,6 +883,10 @@ export class RemoteMcpAuthority {
   }
 
   private persist(): void {
+    if (this.loadInFlight) {
+      this.pendingPersistAfterLoad = true;
+      return;
+    }
     const tmp = `${this.statePath}.${randomUUID()}.tmp`;
     writeFileSync(tmp, JSON.stringify(this.state), { encoding: "utf8", mode: 0o600 });
     renameSync(tmp, this.statePath);

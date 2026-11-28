@@ -368,6 +368,7 @@ export class Engine {
 
   private changelogText: string | undefined;
   private changelogPromise: Promise<void> | null = null;
+  private readonly deferStartupReads: boolean;
   private whatsNewCache:
     | {
         text: string | undefined;
@@ -386,13 +387,14 @@ export class Engine {
     changelogMarkdown?: string,
     opts?: { deferStartupReads?: boolean },
   ) {
+    this.deferStartupReads = opts?.deferStartupReads === true;
     this.tokenLedger = new TokenLedger(this.dataRoot, {
-      deferLoad: opts?.deferStartupReads === true,
+      deferLoad: this.deferStartupReads,
     });
     this.changelogText =
       changelogMarkdown !== undefined
         ? changelogMarkdown
-        : opts?.deferStartupReads === true
+        : this.deferStartupReads
           ? undefined
           : readBundledChangelog();
     this.initWhatsNewLaunch();
@@ -420,6 +422,9 @@ export class Engine {
 
   /** Resolves once deferred startup reads (token ledger, changelog) have settled. */
   whenReady(): Promise<void> {
+    if (this.deferStartupReads && !this.changelogPromise && this.changelogText === undefined) {
+      return this.startDeferredReads();
+    }
     return Promise.all([
       this.tokenLedger.whenLoaded(),
       this.changelogPromise ?? Promise.resolve(),

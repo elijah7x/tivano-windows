@@ -432,9 +432,21 @@ export function registerIpc(opts: IpcOptions): () => void {
     opts.ensurePostWindowServices?.();
     return (await opts.remoteMcp?.retry()) ?? null;
   });
-  handle("remoteMcp:decide", (p) => opts.remoteMcp?.decide(p.id, p.decision) ?? null);
-  handle("remoteMcp:revoke", (p) => opts.remoteMcp?.revoke(p.id) ?? null);
-  handle("remoteMcp:revoke-all", () => opts.remoteMcp?.revokeAll() ?? null);
+  handle("remoteMcp:decide", async (p) => {
+    opts.ensurePostWindowServices?.();
+    await opts.remoteMcp?.whenSettled();
+    return opts.remoteMcp?.decide(p.id, p.decision) ?? null;
+  });
+  handle("remoteMcp:revoke", async (p) => {
+    opts.ensurePostWindowServices?.();
+    await opts.remoteMcp?.whenSettled();
+    return opts.remoteMcp?.revoke(p.id) ?? null;
+  });
+  handle("remoteMcp:revoke-all", async () => {
+    opts.ensurePostWindowServices?.();
+    await opts.remoteMcp?.whenSettled();
+    return opts.remoteMcp?.revokeAll() ?? null;
+  });
   // F33 frozen CLIInstallationSettings — install/uninstall on request
   // only; never enables local control; conflict refuses rather than
   // replacing a foreign command. The receipt lands in settings.

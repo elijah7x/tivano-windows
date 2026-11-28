@@ -70,14 +70,16 @@ describe("P2-74 TokenLedger deferred async load and background flush", () => {
     expect(reloaded.dailyTotals()[today]).toBe(150);
   });
 
-  it("quarantines corrupt token-activity.json asynchronously without throwing", async () => {
+  it("quarantines corrupt token-activity.json asynchronously and preserves pre-load live deltas", async () => {
     const root = freshRoot();
+    const today = dayKey(new Date());
     writeFileSync(join(root, "token-activity.json"), "{corrupt-json");
 
     const deferred = new TokenLedger(root, { deferLoad: true });
+    deferred.record(45);
     await deferred.loadAsync();
     expect(deferred.recoveryNote).toContain("corrupt token-activity preserved aside");
-    expect(deferred.dailyTotals()).toEqual({});
+    expect(deferred.dailyTotals()).toEqual({ [today]: 45 });
     expect(readdirSync(root).some((f) => f.startsWith("token-activity.corrupt-"))).toBe(true);
   });
 });
@@ -124,6 +126,26 @@ describe("P2-74 Engine startup deferral, WhatsNew cache, and badge deduplication
     expect(info1.whatsNew?.en.categories.refinements).toContain("Deferred startup reads.");
     // Cached WhatsNewInfo object is reused across consecutive info/snapshot reads.
     expect(info2.whatsNew).toBe(info1.whatsNew);
+
+    engine.shutdown();
+    store.close();
+  });
+
+  it("whenReady() kicks deferred token-ledger load when startDeferredReads() was not called first", async () => {
+    const root = freshRoot();
+    const today = dayKey(new Date());
+    const seedLedger = new TokenLedger(root);
+    seedLedger.record(42);
+    seedLedger.flush();
+
+    const store = new Store(root);
+    store.open();
+    const engine = new Engine(store, new MockProvider({ tickMs: 1 }), root, "0.2.0", undefined, undefined, {
+      deferStartupReads: true,
+    });
+    expect(engine.snapshot().tokenActivity).toEqual({});
+    await engine.whenReady();
+    expect(engine.snapshot().tokenActivity[today]).toBe(42);
 
     engine.shutdown();
     store.close();
@@ -181,8 +203,8 @@ describe("P2-74 Async MCP, Git, FileIndex, and RemoteMcpAuthority reads", () => 
     );
 
     const servers = [
-      { id: "s1", name: "demo", transport: "stdio" as const, command: "demo-mcp", args: ["--ok"], env: {} },
-      { id: "s2", name: "missing", transport: "stdio" as const, command: "no-such-mcp", args: [], env: {} },
+      { id: "dup", name: "demo", transport: "stdio" as const, command: "  demo-mcp  ", args: ["--ok"], env: {} },
+      { id: "dup", name: "missing", transport: "stdio" as const, command: "no-such-mcp", args: [], env: {} },
     ];
     const asyncRes = await resolveCodexMcpServersAsync(servers, env, "win32");
     const syncRes = resolveCodexMcpServers(servers, env, "win32");
@@ -256,6 +278,56 @@ describe("P2-74 Async MCP, Git, FileIndex, and RemoteMcpAuthority reads", () => 
     expect(auth.grants()).toEqual([]);
     await auth.ensureLoaded();
     expect(auth.grants().map((g) => g.id)).toEqual(["g1"]);
+  });
+
+  it("RemoteMcpAuthority revoke/revokeAll before ensureLoaded preserves clients/other grants and never resurrects", async () => {
+    const root = freshRoot();
+    writeFileSync(
+      join(root, "remote-mcp.json"),
+      JSON.stringify({
+        clients: [{ id: "c1", name: "Client", redirectURIs: ["http://127.0.0.1/cb"], source: "registered", createdAt: 1 }],
+        grants: [
+          {
+            id: "g1",
+            clientId: "c1",
+            clientName: "Client",
+            scopes: ["tivano.read"],
+            createdAt: 1,
+            refreshTokenHash: "abc",
+            refreshExpiresAt: Date.now() + 60_000,
+          },
+          {
+            id: "g2",
+            clientId: "c1",
+            clientName: "Client",
+            scopes: ["tivano.read"],
+            createdAt: 2,
+            refreshTokenHash: "def",
+            refreshExpiresAt: Date.now() + 60_000,
+          },
+        ],
+      }),
+    );
+
+    const auth = new RemoteMcpAuthority(root, () => {}, () => "en", { deferLoad: true });
+    const inFlight = auth.ensureLoaded();
+    auth.revoke("g1");
+    await inFlight;
+    expect(auth.grants().map((g) => g.id)).toEqual(["g2"]);
+
+    const auth2 = new RemoteMcpAuthority(root, () => {}, () => "en", { deferLoad: true });
+    await auth2.ensureLoaded();
+    expect(auth2.grants().map((g) => g.id)).toEqual(["g2"]);
+
+    const auth3 = new RemoteMcpAuthority(root, () => {}, () => "en", { deferLoad: true });
+    const inFlight3 = auth3.ensureLoaded();
+    auth3.revokeAll();
+    await inFlight3;
+    expect(auth3.grants()).toEqual([]);
+
+    const auth4 = new RemoteMcpAuthority(root, () => {}, () => "en", { deferLoad: true });
+    await auth4.ensureLoaded();
+    expect(auth4.grants()).toEqual([]);
   });
 });
 
