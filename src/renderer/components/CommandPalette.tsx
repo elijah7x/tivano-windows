@@ -200,6 +200,7 @@ export function CommandPalette(props: {
                 role="option"
                 aria-selected={i === selection}
                 className={`palette-item${i === selection ? " sel" : ""}`}
+                data-thread-switch={item.kind === "thread" ? "true" : undefined}
                 onMouseEnter={() => setSelection(i)}
                 onClick={() => {
                   setSelection(i);

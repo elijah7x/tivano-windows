@@ -350,6 +350,7 @@ export function HydraPanel(props: {
         {lead && (
           <button
             className="hydra-back"
+            data-thread-switch="true"
             onClick={() =>
               void callApi("threads:select", { id: lead.id }).catch(() => {})
             }
@@ -516,6 +517,7 @@ export function HydraPanel(props: {
             <li key={h.id} data-head={h.id} className={`hydra-row ${info.status}`}>
               <button
                 className="hydra-open"
+                data-thread-switch="true"
                 title={info.task}
                 onClick={() =>
                   void callApi("threads:select", { id: h.id }).catch(() => {})
@@ -630,6 +632,7 @@ export function HydraPanel(props: {
                 key={item}
                 role="menuitem"
                 className="suggest-row msg-row"
+                data-thread-switch={item === "open" ? "true" : undefined}
                 onClick={() => runMenu(item)}
               >
                 <span className="suggest-name">{menuLabel(item)}</span>

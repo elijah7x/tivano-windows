@@ -55,16 +55,15 @@ export async function runForwardChecks({
   await send(page, srcId, "FWD-SOURCE unique question text");
 
   // FWD-00: More controls (…) keeps its expanded state across chat switches.
-  await page.locator(".more-controls-btn").click();
-  await page.waitForSelector('.more-controls-menu [role="menuitem"]', { timeout: 5000 });
   const tempThread = await page.evaluate(() =>
     window.tivano.invoke("threads:create", { projectId: null, title: "fwd-temp" }),
   );
-  await page.evaluate((id) => window.tivano.invoke("threads:select", { id }), tempThread.id);
-  await page.waitForFunction(
-    () => document.querySelector(".chat-head h1")?.textContent === "fwd-temp",
-    { timeout: 5000 },
-  );
+  await page.evaluate((id) => window.tivano.invoke("threads:select", { id }), srcId);
+  await waitSnapshot(page, (x) => x.selectedThreadId === srcId);
+  await page.locator(".more-controls-btn").click();
+  await page.waitForSelector('.more-controls-menu [role="menuitem"]', { timeout: 5000 });
+  await page.locator(`[data-thread-id="${tempThread.id}"]`).click();
+  await waitSnapshot(page, (x) => x.selectedThreadId === tempThread.id);
   verify(
     "FWD-00 More controls stays expanded across chat switch",
     (await page.locator('.more-controls-btn[aria-expanded="true"]').count()) === 1 &&
