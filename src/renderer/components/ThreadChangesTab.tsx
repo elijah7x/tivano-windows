@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import type { CheckpointDiffView } from "../../shared/types";
 import { api, callApi } from "../client";
 import { useT } from "../locale";
+import { ToolboxChanges } from "./ToolboxChanges";
 
 type Summary = {
   files: {
@@ -30,6 +31,11 @@ type DiffState =
 export function ThreadChangesTab(props: {
   threadId: string;
   toggleSeq?: number | undefined;
+  /** P1-42: the chat's project, when its folder is available — adds the
+   *  inline Commit / Push / Create pull request row under the changes. */
+  git?:
+    | { projectId: string; worktree: boolean; running: boolean; readOnly: boolean }
+    | undefined;
 }): React.JSX.Element | null {
   const t = useT();
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -252,6 +258,14 @@ export function ThreadChangesTab(props: {
                 </li>
               ))}
             </ul>
+          )}
+          {props.git && (
+            <ToolboxChanges
+              projectId={props.git.projectId}
+              worktree={props.git.worktree}
+              running={props.git.running}
+              readOnly={props.git.readOnly}
+            />
           )}
         </div>
       )}

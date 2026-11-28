@@ -3558,6 +3558,23 @@ select.runtime-mode:disabled {
 }
 .tc-file-row:hover { background: var(--surface-2); }
 .tc-file-row .ckpt-path { flex: 1; font-family: var(--mono); font-size: calc(11.5px + var(--fs-code-off)); word-break: break-all; }
+/* P1-42 Toolbox inline Git actions under the chat's changes. */
+.toolbox-git {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 14px 10px;
+  border-top: 1px solid var(--border);
+}
+.toolbox-git-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.toolbox-git-btn { height: 28px; padding: 0 10px; border-radius: 8px; }
+.toolbox-git-note {
+  margin: 0;
+  font-size: calc(11.5px + var(--fs-ui-off));
+  color: var(--text-2);
+  word-break: break-word;
+}
+.toolbox-git-note.err { color: var(--danger, var(--text-2)); }
 .tc-file .ckpt-diff-wrap { padding: 0 14px 8px; }
 
 /* Frozen HydraReportRow/ReportsPopover — the report batch rides the
