@@ -32,6 +32,7 @@ Use the exact paths injected in your launch prompt (`LaneId`, `Lane clone`, `Wor
   - Hydrogen claims issues with label `lane-hydrogen` plus a short public-text-safe comment; Devin claims with `lane-devin`. Parallel Hydrogen lanes coordinate ownership via atomic claim locks managed by `Start-HydrogenWorker.ps1`.
   - Eligible issues are open `nyx-auto` issues with NONE of `needs-human`, `lane-devin`, `lane-hydrogen`, `audit-parked`, `parked`, or `audit-followup`, and no open PR whose body says `Closes #<n>`. Hydrogen picks from the highest issue number downward (`Start-HydrogenWorker.ps1` locks and claims before launching you).
   - On `implement issue #<n>`, verify `#<n>` is open, has `nyx-auto`, has none of `needs-human`, `lane-devin`, `audit-parked`, `parked`, or `audit-followup`, and has no conflicting open PR. If `lane-hydrogen` is missing, add it with a short comment; if the issue is no longer eligible, record `"state":"idle","step":"issue ineligible"` and exit.
+  - Never claim `lane-cloud` issues or touch `nyx/*-cloud-*` branches.
 - **WIP cap:** Each Hydrogen lane keeps at most 2 open non-parked `nyx/h-` PRs owned by that lane (enforced per lane by `Start-HydrogenWorker.ps1`). Never claim a second issue or open a second PR inside a session.
 
 ## 3. Progress file (`progress-hydrogen.json`)

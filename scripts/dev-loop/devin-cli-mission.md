@@ -19,11 +19,11 @@ The watchdog (`Start-DevinAutopilot.ps1 -DevinMode cli`) starts this mission wit
 Pick the first that applies:
 
 1. A one-off phase step that `solo-v3.md` still requires, for example the step 2a follow-up issues while `solo-v3.json` `rebaseline3026` is not `issues-opened`.
-2. One of this lane's open PRs (branch `nyx/<n>-...`, not `nyx/h-...`, not parked) whose newest gate verdict on its current head is `fail` or missing, or whose `nyx/audit` status is `failure`:
+2. One of this lane's open PRs (branch `nyx/<n>-...`, including cloud handoff branches `nyx/<n>-cloud-*`, not `nyx/h-...`, not parked) whose newest gate verdict on its current head is `fail` or missing, or whose `nyx/audit` status is `failure`:
    - merge `origin/main` into it first if it is behind;
-   - fix the cause;
-   - run the self-check, push, and re-run the gate.
-3. Otherwise, claim the next eligible issue under the queue rules, implement it, open the PR, and run the gate.
+   - for a `nyx/<n>-cloud-*` PR, finish it on Windows: complete the PR body if it says the cloud run produced none, run `Invoke-PrePrSelfCheck.ps1 -RunChecks`, fix Windows failures, push, and run `Invoke-AutopilotGate.ps1`;
+   - for other open PRs, fix the cause, run the self-check, push, and re-run the gate.
+3. Otherwise, claim the next eligible issue under the queue rules, implement it, open the PR, and run the gate. Never claim a `lane-cloud` issue that does not have the `lane-devin` label.
 
 ## Finish
 
