@@ -38,6 +38,21 @@ import { useT } from "../locale";
 import { translateError } from "../i18n";
 import { api, callApi, tryCall, clientStore } from "../client";
 
+/** Canonical effort key normalizing casing and Extra High aliases. */
+function canonicalEffortKey(effort: string): string {
+  const lower = effort.trim().toLowerCase();
+  if (
+    lower === "xhigh" ||
+    lower === "x-high" ||
+    lower === "extra-high" ||
+    lower === "extra_high" ||
+    lower === "extra high"
+  ) {
+    return "xhigh";
+  }
+  return lower;
+}
+
 /** Frozen Provider.swift effortRank — low to high ordering whatever
  *  order the agent lists levels in; unknown levels keep their place. */
 function effortRank(effort: string): number | undefined {
@@ -49,13 +64,21 @@ function effortRank(effort: string): number | undefined {
       medium: 3,
       high: 4,
       xhigh: 5,
-      "extra-high": 5,
-      extra_high: 5,
-      "extra high": 5,
       max: 6,
       ultra: 6,
     } as Record<string, number>
-  )[effort.toLowerCase()];
+  )[canonicalEffortKey(effort)];
+}
+function findEffortIndex(
+  efforts: readonly string[],
+  candidate: string | undefined | null,
+): number {
+  if (!candidate) return -1;
+  const exact = efforts.indexOf(candidate);
+  if (exact >= 0) return exact;
+  const canonical = canonicalEffortKey(candidate);
+  if (canonical === "") return -1;
+  return efforts.findIndex((e) => canonicalEffortKey(e) === canonical);
 }
 function orderedEfforts(values: string[]): string[] {
   const ranked = values.map((v, i) => ({ i, v, r: effortRank(v) }));
@@ -67,16 +90,14 @@ function orderedEfforts(values: string[]): string[] {
     .map((x) => x.v);
 }
 function effortTitle(effort: string): string {
-  const lower = effort.toLowerCase();
-  if (
-    lower === "xhigh" ||
-    lower === "extra-high" ||
-    lower === "extra_high" ||
-    lower === "extra high"
-  ) {
+  const canonical = canonicalEffortKey(effort);
+  if (canonical === "xhigh") {
     return "Extra High";
   }
-  if (effort === "") return "Default";
+  if (canonical === "") return "Default";
+  if (effortRank(canonical) !== undefined) {
+    return canonical.charAt(0).toUpperCase() + canonical.slice(1);
+  }
   return effort.charAt(0).toUpperCase() + effort.slice(1);
 }
 
@@ -297,17 +318,13 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   const selectedModel = models.find((m) => m.id === selected);
   const efforts = orderedEfforts(selectedModel?.efforts ?? []);
   const selectedEffort = thread.codexEffort ?? "";
+  const selectedEffortIndex = findEffortIndex(efforts, selectedEffort);
+  const defaultEffortIndex = findEffortIndex(efforts, selectedModel?.defaultEffort);
   const resolvedIndex = (() => {
     if (efforts.length === 0) return -1;
-    if (selectedEffort !== "") {
-      const idx = efforts.indexOf(selectedEffort);
-      if (idx >= 0) return idx;
-    }
-    if (selectedModel?.defaultEffort) {
-      const idx = efforts.indexOf(selectedModel.defaultEffort);
-      if (idx >= 0) return idx;
-    }
-    const medIdx = efforts.indexOf("medium");
+    if (selectedEffortIndex >= 0) return selectedEffortIndex;
+    if (defaultEffortIndex >= 0) return defaultEffortIndex;
+    const medIdx = findEffortIndex(efforts, "medium");
     return medIdx >= 0 ? medIdx : 0;
   })();
   const resolvedEffort =
@@ -316,6 +333,8 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       : selectedEffort !== ""
         ? selectedEffort
         : "";
+  const selectEffortValue =
+    selectedEffortIndex >= 0 ? efforts[selectedEffortIndex]! : selectedEffort;
   const reasoningLabel =
     resolvedEffort !== ""
       ? t(effortTitle(resolvedEffort))
@@ -1379,7 +1398,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         className="effort-select"
         aria-label={t("Effort")}
         title={t("Reasoning effort — applies to the next turn")}
-        value={selectedEffort}
+        value={selectEffortValue}
         disabled={!!props.readOnly || (efforts.length === 0 && selectedEffort === "")}
         onChange={(e) =>
           set(
@@ -1390,13 +1409,13 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
         }
       >
         <option value="">{t("Default effort")}</option>
-        {selectedEffort !== "" && !efforts.includes(selectedEffort) && (
+        {selectedEffort !== "" && selectedEffortIndex < 0 && (
           <option value={selectedEffort}>{`${t(effortTitle(selectedEffort))} (${t("saved")})`}</option>
         )}
-        {efforts.map((e) => (
+        {efforts.map((e, idx) => (
           <option key={e} value={e}>
             {t(effortTitle(e))}
-            {selectedModel?.defaultEffort === e ? ` (${t("model default")})` : ""}
+            {idx === defaultEffortIndex ? ` (${t("model default")})` : ""}
           </option>
         ))}
       </select>

@@ -1232,7 +1232,16 @@ describe("ModelPicker (P2-80 model/reasoning popover layout)", () => {
     expect(readyDefaultModelHtml).toContain("Applies to the next turn");
     expect(readyDefaultModelHtml).not.toContain("This model has one reasoning level.");
 
-    // Case/underscore effort variant ("extra_high") folds cleanly to Extra High.
+    // Case/underscore effort variants ("extra_high", "HIGH", reverse "xhigh"->"extra-high")
+    // resolve inside .effort-picker-btn, .effort-card, and .effort-select without false-positive
+    // fallback to defaultEffort or duplicate "(saved)" options.
+    const extractSubtree = (html: string, startMarker: string, endMarker: string) => {
+      const start = html.indexOf(startMarker);
+      expect(start).toBeGreaterThan(-1);
+      const end = html.indexOf(endMarker, start);
+      return end > start ? html.slice(start, end) : html.slice(start);
+    };
+
     const extraHighVariantHtml = renderLang(
       "en",
       createElement(ModelPicker, {
@@ -1242,7 +1251,122 @@ describe("ModelPicker (P2-80 model/reasoning popover layout)", () => {
         initialModelsExpanded: false,
       }),
     );
-    expect(extraHighVariantHtml).toContain(">Extra High<");
+    const extraHighTrigger = extractSubtree(
+      extraHighVariantHtml,
+      'class="effort-picker-btn"',
+      'class="model-picker-pop',
+    );
+    const extraHighCard = extractSubtree(
+      extraHighVariantHtml,
+      'class="effort-card"',
+      'class="effort-select"',
+    );
+    const extraHighSelect = extractSubtree(
+      extraHighVariantHtml,
+      'class="effort-select"',
+      "</select>",
+    );
+    expect(extraHighTrigger).toContain(">Extra High<");
+    expect(extraHighCard).toContain('data-effort-level="xhigh"');
+    expect(extraHighCard).toContain('data-max="true"');
+    expect(extraHighCard).toContain(">Extra High<");
+    expect(extraHighCard).toContain('value="3"');
+    expect(extraHighCard).toContain('aria-valuetext="Extra High"');
+    expect(extraHighCard).not.toContain(">Medium<");
+    expect(extraHighSelect).toContain('value="xhigh" selected=""');
+    expect(extraHighSelect).not.toContain("(saved)");
+
+    const upperHighVariantHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-multi", codexEffort: "HIGH" }),
+        initialCatalog: VARIANT_CATALOG,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    const upperHighTrigger = extractSubtree(
+      upperHighVariantHtml,
+      'class="effort-picker-btn"',
+      'class="model-picker-pop',
+    );
+    const upperHighCard = extractSubtree(
+      upperHighVariantHtml,
+      'class="effort-card"',
+      'class="effort-select"',
+    );
+    const upperHighSelect = extractSubtree(
+      upperHighVariantHtml,
+      'class="effort-select"',
+      "</select>",
+    );
+    expect(upperHighTrigger).toContain(">High<");
+    expect(upperHighCard).toContain('data-effort-level="high"');
+    expect(upperHighCard).toContain(">High<");
+    expect(upperHighCard).toContain('value="2"');
+    expect(upperHighSelect).toContain('value="high" selected=""');
+    expect(upperHighSelect).not.toContain("(saved)");
+
+    const reverseAliasHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-alias", codexEffort: "xhigh" }),
+        initialCatalog: {
+          state: "ready",
+          models: [
+            {
+              id: "gpt-alias",
+              name: "GPT-5.4 Alias",
+              efforts: ["low", "medium", "extra-high"],
+              defaultEffort: "medium",
+              isDefault: false,
+            },
+          ],
+        },
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    const reverseCard = extractSubtree(
+      reverseAliasHtml,
+      'class="effort-card"',
+      'class="effort-select"',
+    );
+    const reverseSelect = extractSubtree(
+      reverseAliasHtml,
+      'class="effort-select"',
+      "</select>",
+    );
+    expect(reverseCard).toContain('data-effort-level="extra-high"');
+    expect(reverseCard).toContain('data-max="true"');
+    expect(reverseCard).toContain(">Extra High<");
+    expect(reverseCard).toContain('value="2"');
+    expect(reverseSelect).toContain('value="extra-high" selected=""');
+    expect(reverseSelect).not.toContain("(saved)");
+
+    // Genuinely unsupported saved effort falls back to defaultEffort in the slider card while preserving "(saved)" in .effort-select.
+    const unsupportedSavedHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-multi", codexEffort: "minimal" }),
+        initialCatalog: VARIANT_CATALOG,
+        initialOpen: true,
+        initialModelsExpanded: false,
+      }),
+    );
+    const unsupportedCard = extractSubtree(
+      unsupportedSavedHtml,
+      'class="effort-card"',
+      'class="effort-select"',
+    );
+    const unsupportedSelect = extractSubtree(
+      unsupportedSavedHtml,
+      'class="effort-select"',
+      "</select>",
+    );
+    expect(unsupportedCard).toContain('data-effort-level="medium"');
+    expect(unsupportedCard).toContain('value="1"');
+    expect(unsupportedSelect).toContain("Minimal (saved)");
   });
 
   it("localizes P2-80 labels and preserves compact truncation classes across all 6 languages", () => {
