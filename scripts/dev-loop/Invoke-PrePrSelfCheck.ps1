@@ -1,11 +1,11 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-24.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-28.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
-# Usage: .\Invoke-PrePrSelfCheck.ps1 -Worktree <worktree> [-Issue <n>] [-BodyFile <pr-body.md>] [-Base origin/main] [-NoFetch] [-RunChecks]
+# Usage: .\Invoke-PrePrSelfCheck.ps1 -Worktree <worktree> [-Issue <n>] [-BodyFile <pr-body.md>] [-Base origin/main] [-NoFetch] [-RunChecks] [-MaxWorkers 2]
 # Mechanical pre-push self-check for implementer lanes. Catches the findings the merge gate and nyx/audit raise most often
-# (conflicts, guarded paths, dependency changes, parity done, missing zh-Hans, license headers, attribution, stray files)
+# (conflicts, guarded paths including docs/parity.md, dependency changes, PR-body Parity: lines, missing zh-Hans, license headers, attribution, stray files)
 # before a head is pushed. Prints one line per check, then one compact JSON line. Exit 0 = no FAIL, 1 = any FAIL, 2 = bad parameters.
-# Never modifies the worktree, index or branches; it runs `git fetch origin` unless -NoFetch, and with -RunChecks it may
-# add and remove one temporary detached worktree of the merge base to tell new test failures from host baseline ones.
+# Never modifies the worktree, index or branches; it runs `git fetch origin` unless -NoFetch, and with -RunChecks it runs
+# typecheck and changed test files (Vitest capped via -MaxWorkers) and may add/remove one temporary detached merge-base worktree.
 
 param(
   [Parameter(Mandatory = $true)][string]$Worktree,
@@ -13,7 +13,8 @@ param(
   [string]$BodyFile = '',
   [string]$Base = 'origin/main',
   [switch]$NoFetch,
-  [switch]$RunChecks
+  [switch]$RunChecks,
+  [ValidateRange(1, 32)][int]$MaxWorkers = 2
 )
 
 Set-StrictMode -Version Latest
@@ -81,6 +82,17 @@ $Worktree = (Resolve-Path -LiteralPath $Worktree).Path
 $top = Invoke-Git @('rev-parse', '--show-toplevel')
 if ($top.code -ne 0) { Write-Output '[FAIL] setup: not a git worktree'; exit 2 }
 if ($BodyFile -and -not (Test-Path -LiteralPath $BodyFile -PathType Leaf)) { Write-Output ('[FAIL] setup: body file not found: ' + $BodyFile); exit 2 }
+$bodyText = ''
+if ($BodyFile) { $bodyText = Read-Utf8 $BodyFile }
+
+$branchRes = Invoke-Git @('rev-parse', '--abbrev-ref', 'HEAD')
+$branchName = ''
+if ($branchRes.code -eq 0 -and @($branchRes.lines).Count -gt 0) {
+  $branchName = ([string]$branchRes.lines[0]).Trim()
+}
+$isRebaselinePr = ($branchName -like 'nyx/rebaseline-v*')
+$isParitySyncPr = ($branchName -like 'nyx/parity-sync-*')
+$allowParityMdEdit = ($isRebaselinePr -or $isParitySyncPr)
 
 if (-not $NoFetch) {
   $fetch = Invoke-Git @('fetch', 'origin', '--quiet')
@@ -164,11 +176,28 @@ if ($mt.code -eq 0) {
 
 # ---- b. guarded paths --------------------------------------------------------
 
-$guarded = @('scripts/audit/', 'scripts/dev-loop/', 'scripts/pr-review/', 'scripts/windows-acceptance/', '.github/',
-  'AGENTS.md', 'CONTRIBUTING.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'TRADEMARK.md', 'docs/source-baseline.json', 'package-lock.json')
+$guardedList = New-Object 'System.Collections.Generic.List[string]'
+foreach ($g in @('scripts/audit/', 'scripts/dev-loop/', 'scripts/pr-review/', 'scripts/windows-acceptance/', '.github/',
+    'AGENTS.md', 'CONTRIBUTING.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'TRADEMARK.md', 'package-lock.json')) {
+  $guardedList.Add($g)
+}
+if (-not $isRebaselinePr) { $guardedList.Add('docs/source-baseline.json') }
+if (-not $allowParityMdEdit) { $guardedList.Add('docs/parity.md') }
+$guarded = $guardedList.ToArray()
 $hitGuarded = @($changed | Where-Object { Test-UnderPrefix $_ $guarded })
-if ($hitGuarded.Count -gt 0) {
-  Add-Check 'guarded-paths' 'FAIL' ('issue PRs must not change: ' + (Join-Limited $hitGuarded) + ' (put new docs under docs/)')
+if ($isParitySyncPr) {
+  $nonParity = @($changed | Where-Object { -not [string]::Equals($_.Replace('\', '/'), 'docs/parity.md', [StringComparison]::OrdinalIgnoreCase) })
+  if ($nonParity.Count -gt 0) {
+    Add-Check 'guarded-paths' 'FAIL' ('parity-sync PRs may only change docs/parity.md: ' + (Join-Limited $nonParity))
+  } else {
+    Add-Check 'guarded-paths' 'PASS' 'parity-sync PR only touches docs/parity.md'
+  }
+} elseif ($hitGuarded.Count -gt 0) {
+  $hint = ' (put new docs under docs/)'
+  if (@($hitGuarded | Where-Object { [string]::Equals($_.Replace('\', '/'), 'docs/parity.md', [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
+    $hint = ' (feature PRs must not edit docs/parity.md; declare "Parity: <ID> -> <status>" in the PR body instead; put new docs under docs/)'
+  }
+  Add-Check 'guarded-paths' 'FAIL' ('issue PRs must not change: ' + (Join-Limited $hitGuarded) + $hint)
 } else {
   Add-Check 'guarded-paths' 'PASS' 'no guarded path changed'
 }
@@ -178,10 +207,17 @@ if ($hitGuarded.Count -gt 0) {
 function Get-DepMap {
   param($Json)
   $map = @{}
-  foreach ($section in @('dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies')) {
+  foreach ($section in @('dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'bundledDependencies', 'bundleDependencies', 'overrides')) {
     $prop = $Json.PSObject.Properties[$section]
     if (-not $prop -or $null -eq $prop.Value) { continue }
-    foreach ($p in $prop.Value.PSObject.Properties) { $map[$section + ':' + $p.Name] = [string]$p.Value }
+    if ($prop.Value -is [pscustomobject]) {
+      foreach ($p in $prop.Value.PSObject.Properties) {
+        $val = if ($p.Value -is [string] -or $p.Value -is [ValueType]) { [string]$p.Value } else { ConvertTo-Json -InputObject $p.Value -Depth 10 -Compress }
+        $map[$section + ':' + $p.Name] = $val
+      }
+    } else {
+      $map[$section] = ConvertTo-Json -InputObject $prop.Value -Depth 10 -Compress
+    }
   }
   return $map
 }
@@ -211,30 +247,184 @@ if ($changedSet.Contains('package.json')) {
 
 # ---- d. parity ---------------------------------------------------------------
 
-$parityPlus = @($plusAll | Where-Object { $_.file -eq 'docs/parity.md' })
-$rowRe = '^\s*\|\s*(P\d+-\d+)\s*\|.*\|\s*`?done`?\s*\|'
-$baseDone = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-foreach ($l in @((Invoke-Git @('show', ($mb + ':docs/parity.md'))).lines)) {
-  $m = [regex]::Match($l, $rowRe)
-  if ($m.Success) { $null = $baseDone.Add($m.Groups[1].Value) }
+function Get-ParityStatusMap {
+  param([string[]]$Lines)
+  $map = @{}
+  foreach ($line in @($Lines)) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    $m = [regex]::Match($line, '^\s*\|\s*(P\d+-\d+|W-\d+)\s*\|')
+    if (-not $m.Success) { continue }
+    $cells = [regex]::Split($line, '(?<!\\)\|')
+    if ($cells.Count -lt 5) { continue }
+    $id = $m.Groups[1].Value.Trim().ToUpperInvariant()
+    $map[$id] = $cells[3].Trim().Trim('`').Trim().ToLowerInvariant()
+  }
+  return $map
 }
-$newDone = New-Object 'System.Collections.Generic.List[string]'
-$rowIds = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-foreach ($p in $parityPlus) {
-  $m = [regex]::Match($p.text, $rowRe)
-  if ($m.Success -and -not $baseDone.Contains($m.Groups[1].Value)) { $newDone.Add($m.Groups[1].Value) }
-  $idm = [regex]::Match($p.text, '^\s*\|\s*(P\d+-\d+)\s*\|')
-  if ($idm.Success) { $null = $rowIds.Add($idm.Groups[1].Value) }
-}
-if ($newDone.Count -gt 0) {
-  Add-Check 'parity-done' 'FAIL' ('never set a parity row to done (use partial with Notes): ' + (Join-Limited $newDone.ToArray()))
+
+$baseParityRes = Invoke-Git @('show', ($mb + ':docs/parity.md'))
+$baseParityStatus = if ($baseParityRes.code -eq 0) { Get-ParityStatusMap $baseParityRes.lines } else { @{} }
+$parityMdChanged = $changedSet.Contains('docs/parity.md')
+
+if ($parityMdChanged -and -not $allowParityMdEdit) {
+  Add-Check 'parity-file' 'FAIL' 'feature PRs must not edit docs/parity.md directly; declare "Parity: <ID> -> <status>" (and optional "Parity-Notes: <text>") in the PR body instead'
+} elseif ($parityMdChanged) {
+  Add-Check 'parity-file' 'PASS' ('docs/parity.md edit allowed on ' + $branchName)
 } else {
-  Add-Check 'parity-done' 'PASS' 'no parity row newly set to done'
+  Add-Check 'parity-file' 'PASS' 'docs/parity.md unchanged'
 }
-if ($rowIds.Count -gt 1) {
-  Add-Check 'parity-rows' 'WARN' ('this change edits ' + $rowIds.Count + ' parity rows (' + (Join-Limited @($rowIds | Sort-Object)) + '); one change does one thing - split it or justify in the PR body')
+
+$docsRowIds = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+if ($parityMdChanged) {
+  foreach ($p in @($plusAll | Where-Object { $_.file -eq 'docs/parity.md' })) {
+    $idm = [regex]::Match($p.text, '^\s*\|\s*(P\d+-\d+|W-\d+)\s*\|')
+    if ($idm.Success) { $null = $docsRowIds.Add($idm.Groups[1].Value.Trim().ToUpperInvariant()) }
+  }
+  $parityPath = Join-Path $Worktree 'docs\parity.md'
+  $headParityLines = if (Test-Path -LiteralPath $parityPath -PathType Leaf) { @((Read-Utf8 $parityPath) -split "`r?`n") } else { @() }
+  $headParityStatus = Get-ParityStatusMap $headParityLines
+  $newDone = New-Object 'System.Collections.Generic.List[string]'
+  $newDeferred = New-Object 'System.Collections.Generic.List[string]'
+  $changedDeferred = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($id in @($headParityStatus.Keys | Sort-Object)) {
+    $headSt = [string]$headParityStatus[$id]
+    $baseSt = if ($baseParityStatus.ContainsKey($id)) { [string]$baseParityStatus[$id] } else { '' }
+    if ($headSt -match '^done\b' -and $baseSt -notmatch '^done\b') { $newDone.Add($id) }
+    if ($headSt -match '^deferred\b' -and $baseSt -notmatch '^deferred\b') { $newDeferred.Add($id) }
+  }
+  foreach ($id in @($baseParityStatus.Keys | Sort-Object)) {
+    $baseSt = [string]$baseParityStatus[$id]
+    if ($baseSt -notmatch '^deferred\b') { continue }
+    if (-not $headParityStatus.ContainsKey($id) -or [string]$headParityStatus[$id] -ne $baseSt) {
+      $changedDeferred.Add($id)
+    }
+  }
+  $parityDoneIssues = New-Object 'System.Collections.Generic.List[string]'
+  if ($newDone.Count -gt 0) { $parityDoneIssues.Add('newly set to done: ' + (Join-Limited $newDone.ToArray())) }
+  if ($newDeferred.Count -gt 0) { $parityDoneIssues.Add('newly set to deferred: ' + (Join-Limited $newDeferred.ToArray())) }
+  if ($changedDeferred.Count -gt 0) { $parityDoneIssues.Add('modified deferred row(s): ' + (Join-Limited $changedDeferred.ToArray())) }
+  if ($parityDoneIssues.Count -gt 0) {
+    Add-Check 'parity-done' 'FAIL' ('never set a parity row to done or change deferred rows: ' + ($parityDoneIssues.ToArray() -join '; '))
+  } else {
+    Add-Check 'parity-done' 'PASS' 'no parity row newly set to done or deferred'
+  }
 } else {
-  Add-Check 'parity-rows' 'PASS' ([string]$rowIds.Count + ' parity row(s) edited')
+  Add-Check 'parity-done' 'PASS' 'docs/parity.md unchanged'
+}
+
+$bodyRowIds = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+if ($BodyFile) {
+  $cleanBody = [regex]::Replace($bodyText, '<!--[\s\S]*?-->', '')
+  $parityBodyErrors = New-Object 'System.Collections.Generic.List[string]'
+  $parityBodyWarns = New-Object 'System.Collections.Generic.List[string]'
+  $allowedStatusRe = '(?i)^(?:partial|not started|blocked\s*\(\s*[^)\r\n\s][^)\r\n]*\)|n/a\s*\(\s*macOS-only:\s*[^)\r\n\s][^)\r\n]*\))$'
+  $validParityLines = 0
+  $hasLastValidParity = $false
+  foreach ($rawLine in ($cleanBody -split "`r?`n")) {
+    $line = $rawLine.TrimEnd("`r")
+    $pmLine = [regex]::Match($line, '(?i)^(\s*(?:[-*+]\s+)?)(Parity\s*:\s*)(.*)$')
+    if ($pmLine.Success) {
+      $lineBad = $false
+      $prefix = $pmLine.Groups[1].Value
+      $tag = $pmLine.Groups[2].Value
+      $rest = $pmLine.Groups[3].Value.Trim()
+      if (-not [string]::IsNullOrEmpty($prefix)) {
+        $parityBodyErrors.Add('Parity: line must start at column 0 without a bullet or indent: "' + $line.Trim() + '"')
+        $lineBad = $true
+      }
+      if ($tag -notmatch '(?i)^Parity:') {
+        $parityBodyErrors.Add('invalid Parity: prefix (no space before colon): "' + $line.Trim() + '"')
+        $lineBad = $true
+      }
+      $kv = [regex]::Match($rest, '(?i)^(P\d+-\d+|W-\d+)\s*->\s*(.+?)\s*$')
+      if (-not $kv.Success) {
+        $parityBodyErrors.Add('invalid Parity: format (expected "Parity: <ID> -> <status>"): "' + $line.Trim() + '"')
+        $hasLastValidParity = $false
+        continue
+      }
+      $parityId = $kv.Groups[1].Value.Trim().ToUpperInvariant()
+      $rawStatus = $kv.Groups[2].Value.Trim()
+      $null = $bodyRowIds.Add($parityId)
+      $unquotedStatus = $rawStatus.Trim('`').Trim()
+      if ($unquotedStatus -match '(?i)^(?:done|deferred)\b') {
+        $parityBodyErrors.Add('Parity: ' + $parityId + ' must not propose "' + $unquotedStatus + '" (never done or deferred; use partial with Parity-Notes:)')
+        $hasLastValidParity = $false
+        continue
+      }
+      if ($rawStatus.StartsWith('`') -or $rawStatus.EndsWith('`')) {
+        $parityBodyErrors.Add('Parity: ' + $parityId + ' status must not be wrapped in backticks: "' + $rawStatus + '"')
+        $hasLastValidParity = $false
+        continue
+      }
+      if ($rawStatus -notmatch $allowedStatusRe) {
+        $parityBodyErrors.Add('unsupported Parity: status for ' + $parityId + ' ("' + $rawStatus + '"); expected partial, not started, blocked (<reason>), or n/a (macOS-only: <reason>)')
+        $hasLastValidParity = $false
+        continue
+      }
+      if ($baseParityStatus.Count -gt 0) {
+        if (-not $baseParityStatus.ContainsKey($parityId)) {
+          $parityBodyErrors.Add('Parity: ' + $parityId + ' does not exist in docs/parity.md')
+          $hasLastValidParity = $false
+          continue
+        }
+        $baseRowSt = [string]$baseParityStatus[$parityId]
+        if ($baseRowSt -match '^deferred\b') {
+          $parityBodyErrors.Add('Parity: ' + $parityId + ' targets a deferred row in docs/parity.md; never touch deferred rows')
+          $hasLastValidParity = $false
+          continue
+        }
+        if ($baseRowSt -match '^done\b') {
+          $parityBodyWarns.Add('Parity: ' + $parityId + ' is already marked done in docs/parity.md; parity-sync will leave it unchanged')
+        }
+      }
+      if (-not $lineBad) {
+        $validParityLines++
+        $hasLastValidParity = $true
+      } else {
+        $hasLastValidParity = $false
+      }
+      continue
+    }
+
+    $nmLine = [regex]::Match($line, '(?i)^(\s*(?:[-*+]\s+)?)(Parity-Notes\s*:\s*)(.*)$')
+    if ($nmLine.Success) {
+      $prefix = $nmLine.Groups[1].Value
+      $tag = $nmLine.Groups[2].Value
+      $noteText = $nmLine.Groups[3].Value.Trim()
+      if (-not [string]::IsNullOrEmpty($prefix)) {
+        $parityBodyErrors.Add('Parity-Notes: line must start at column 0 without a bullet or indent: "' + $line.Trim() + '"')
+      }
+      if ($tag -notmatch '(?i)^Parity-Notes:') {
+        $parityBodyErrors.Add('invalid Parity-Notes: prefix (no space before colon): "' + $line.Trim() + '"')
+      }
+      if ([string]::IsNullOrWhiteSpace($noteText)) {
+        $parityBodyErrors.Add('Parity-Notes: line must not be empty')
+      } elseif (-not $hasLastValidParity) {
+        $parityBodyErrors.Add('Parity-Notes: line must follow a valid Parity: <ID> -> <status> line')
+      }
+    }
+  }
+  if ($parityBodyErrors.Count -gt 0) {
+    Add-Check 'parity-body' 'FAIL' (Join-Limited $parityBodyErrors.ToArray() 10)
+  } else {
+    Add-Check 'parity-body' 'PASS' ([string]$validParityLines + ' valid Parity: line(s) in PR body')
+  }
+  if ($parityBodyWarns.Count -gt 0) {
+    Add-Check 'parity-body-warn' 'WARN' (Join-Limited $parityBodyWarns.ToArray() 10)
+  }
+} else {
+  Add-Check 'parity-body' 'SKIP' 'needs -BodyFile'
+}
+
+$allRowIds = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+foreach ($id in $docsRowIds) { $null = $allRowIds.Add($id) }
+foreach ($id in $bodyRowIds) { $null = $allRowIds.Add($id) }
+if ($allowParityMdEdit) {
+  Add-Check 'parity-rows' 'PASS' ([string]$allRowIds.Count + ' parity row(s) touched (multi-row allowed on ' + $branchName + ')')
+} elseif ($allRowIds.Count -gt 1) {
+  Add-Check 'parity-rows' 'WARN' ('this PR covers ' + $allRowIds.Count + ' parity rows (' + (Join-Limited @($allRowIds | Sort-Object)) + '); one change does one thing - split it or justify in the PR body')
+} else {
+  Add-Check 'parity-rows' 'PASS' ([string]$allRowIds.Count + ' parity row(s) declared')
 }
 
 # ---- e. zh-Hans coverage -----------------------------------------------------
@@ -312,11 +502,10 @@ if ($commitAttr.Count -gt 0) {
   # Pushed commits are never rewritten; the watchdog squash-merges with its own message, so this cannot reach main.
   Add-Check 'commit-attribution' 'WARN' (($commitAttr.ToArray() -join '; ') + '; do not add it to new commits (the squash merge drops it)')
 }
-$bodyText = ''
 if ($BodyFile) {
-  $bodyText = Read-Utf8 $BodyFile
-  if ($bodyText -match '(?im)^\s*co-authored-by:') { $attr.Add('the PR body has a Co-authored-by: line') }
-  if ($bodyText -match '(?i)generated with \[') { $attr.Add('the PR body has a Generated with [..] footer') }
+  if ($bodyText -match '(?im)^\s*(?:[>*+-]\s*)?co-authored-by\s*:') { $attr.Add('the PR body has a Co-authored-by: line') }
+  if ($bodyText -match '(?i)\bgenerated (with|by) \[') { $attr.Add('the PR body has a Generated with/by [..] footer') }
+  if ($bodyText -match '(?i)devin-ai-integration') { $attr.Add('the PR body has a devin-ai-integration reference') }
 }
 if ($attr.Count -gt 0) {
   Add-Check 'attribution' 'FAIL' ('no AI attribution outside the template Coding agent use section: ' + ($attr.ToArray() -join '; '))
@@ -424,26 +613,33 @@ function Invoke-Capped {
   $p = Start-Process -FilePath $Exe -ArgumentList $Arguments -WorkingDirectory $Dir -NoNewWindow -PassThru `
     -RedirectStandardOutput $out -RedirectStandardError $err
   $null = $p.Handle
-  if (-not $p.WaitForExit($Minutes * 60000)) {
-    $oldEap = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try { & taskkill.exe /T /F /PID $p.Id 2>$null | Out-Null } finally { $ErrorActionPreference = $oldEap }
-    return [pscustomobject]@{ code = 124; tail = 'timed out after ' + $Minutes + ' min' }
+  $exitCode = 1
+  try {
+    if (-not $p.WaitForExit($Minutes * 60000)) {
+      $oldEap = $ErrorActionPreference
+      $ErrorActionPreference = 'Continue'
+      try { & taskkill.exe /T /F /PID $p.Id 2>$null | Out-Null } finally { $ErrorActionPreference = $oldEap }
+      $null = $p.WaitForExit(5000)
+      return [pscustomobject]@{ code = 124; tail = 'timed out after ' + $Minutes + ' min' }
+    }
+    $p.WaitForExit()
+    $exitCode = [int]$p.ExitCode
+  } finally {
+    try { $p.Dispose() } catch { }
   }
-  $p.WaitForExit()
   $text = ''
   foreach ($x in @($out, $err)) { if (Test-Path -LiteralPath $x) { $text += (Read-Utf8 $x) + "`n" } }
   $text = [regex]::Replace($text, '\x1b\[[0-9;]*m', '')
   $tailLines = @($text -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 25)
-  return [pscustomobject]@{ code = [int]$p.ExitCode; tail = ($tailLines -join ' | ') }
+  return [pscustomobject]@{ code = $exitCode; tail = ($tailLines -join ' | ') }
 }
 
 function Invoke-VitestFiles {
-  # Runs vitest on the given repo-relative test files in $Dir and returns
+  # Runs vitest on the given repo-relative test files in $Dir with capped workers and returns
   # @{ ok; code; tail; failures = [ @{ key; label } ] } where key = file > full test name.
   param([string]$Dir, [string[]]$Files, [string]$Tag)
   $jsonOut = Join-Path $script:TmpDir ($Tag + '.vitest.json')
-  $argList = '"node_modules\vitest\vitest.mjs" run --reporter=json "--outputFile.json=' + $jsonOut + '" ' + ((@($Files) | ForEach-Object { '"' + $_ + '"' }) -join ' ')
+  $argList = '"node_modules\vitest\vitest.mjs" run --maxWorkers=' + $MaxWorkers + ' --reporter=json "--outputFile.json=' + $jsonOut + '" ' + ((@($Files) | ForEach-Object { '"' + $_ + '"' }) -join ' ')
   $run = Invoke-Capped $script:NodeExe $argList $Tag $Dir
   $fails = New-Object 'System.Collections.Generic.List[object]'
   if (-not (Test-Path -LiteralPath $jsonOut -PathType Leaf)) {
@@ -495,7 +691,7 @@ if ($RunChecks) {
         if (-not $pr.ok) {
           Add-Check 'changed-tests' 'FAIL' ('vitest exit ' + $pr.code + ' and no readable vitest.json: ' + $pr.tail)
         } elseif (@($pr.failures).Count -eq 0) {
-          if ($pr.code -eq 0) { Add-Check 'changed-tests' 'PASS' ([string]$tests.Count + ' changed test file(s) pass') } else { Add-Check 'changed-tests' 'FAIL' ('vitest exit ' + $pr.code + ' with no failed test recorded: ' + $pr.tail) }
+          if ($pr.code -eq 0) { Add-Check 'changed-tests' 'PASS' ([string]$tests.Count + ' changed test file(s) pass (maxWorkers=' + $MaxWorkers + ')') } else { Add-Check 'changed-tests' 'FAIL' ('vitest exit ' + $pr.code + ' with no failed test recorded: ' + $pr.tail) }
         } else {
           # Compare with the merge base: a failure that also happens there is a host baseline failure, not this change.
           $failedFiles = @(@($pr.failures) | ForEach-Object { ($_.key -split ' > ')[0] } | Sort-Object -Unique)

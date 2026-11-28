@@ -15,7 +15,7 @@ param(
   [ValidatePattern('^[A-Za-z0-9._:/-]+$')][string]$DevinModel = 'swe-2-high',
   [ValidatePattern('^[A-Za-z0-9_.-]+$')][string]$Label = 'nyx-auto',
   [ValidateRange(1, 200)][int]$MaxIssuesPerRun = 50,
-  [ValidateRange(1, 200)][int]$MaxMergesPerDay = 40,
+  [ValidateRange(1, 200)][int]$MaxMergesPerDay = 150,
   [ValidateRange(0, 5)][int]$MaxFixRounds = 2,
   [ValidateRange(5, 480)][int]$DevinTimeoutMin = 90,
   # gui: the task is typed into a Devin Desktop chat on the signed-in desktop, so it can be watched and joined there.
@@ -43,7 +43,7 @@ $script:ReviewTimeoutMin = 240
 
 # The runner refuses to open a PR that touches these; they define how the loop itself is governed.
 $script:GuardedPrefixes = @('scripts/dev-loop/', 'scripts/pr-review/', 'scripts/windows-acceptance/', '.github/')
-$script:GuardedFiles = @('agents.md', 'contributing.md', 'license', 'third_party_notices.md', 'trademark.md', 'docs/source-baseline.json', 'package-lock.json')
+$script:GuardedFiles = @('agents.md', 'contributing.md', 'license', 'third_party_notices.md', 'trademark.md', 'docs/source-baseline.json', 'docs/parity.md', 'package-lock.json')
 $script:DependencySections = @('dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'bundledDependencies', 'bundleDependencies', 'overrides')
 
 $script:WorkRoot = $null

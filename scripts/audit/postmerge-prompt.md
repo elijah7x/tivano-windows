@@ -48,7 +48,7 @@ Inspect the actual changed files and their surrounding callers, IPC handlers, pr
    - Any test skipped on Windows (`win32`) in the changed area without a valid, explicitly documented platform impossibility is a blocking finding if it hides unverified behavior on Windows.
 
 3. **PR-body claim verification**:
-   - Extract concrete claims from `{{PR_BODY}}` (files wired, behaviors implemented, verification results, parity notes, skipped tests) and check each against the code and tests in this checkout.
+   - Extract concrete claims from `{{PR_BODY}}` (files wired, behaviors implemented, verification results, PR-body `Parity: <ID> -> <status>` / `Parity-Notes:` lines—never `done`, skipped tests) and check each against the code and tests in this checkout. Never flag a feature PR for not editing `docs/parity.md`.
    - Record every checked claim in `claims` with `holds: true` or `holds: false` and `file:line` evidence. Any materially false or overstated claim is a blocking finding.
 
 4. **Seams and cross-PR wiring**:
@@ -56,9 +56,9 @@ Inspect the actual changed files and their surrounding callers, IPC handlers, pr
    - Verify real runtime entrypoints (menus, shortcuts, settings, IPC handlers, renderer components) actually reach the new code under default configuration.
 
 5. **Repo rules and regressions**:
-   - Guarded paths (`scripts/audit/`, `scripts/dev-loop/`, `scripts/pr-review/`, `scripts/windows-acceptance/`, `.github/`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `TRADEMARK.md`, `docs/source-baseline.json`, `package-lock.json`, or `package.json` dependency edits) unless explicitly authorized (e.g., baseline PR).
+   - Guarded paths (`scripts/audit/`, `scripts/dev-loop/`, `scripts/pr-review/`, `scripts/windows-acceptance/`, `.github/`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `TRADEMARK.md`, `docs/source-baseline.json`, `package-lock.json`, or `package.json` dependency edits) unless explicitly authorized (e.g., baseline PR). Feature PRs report parity via PR-body `Parity:` lines rather than editing `docs/parity.md`; a direct `docs/parity.md` edit in a feature PR is advisory only (unless it marks a row `done`).
    - Missing `en` + `zh-Hans` strings in `src/renderer/i18n.ts` for new user-visible text.
-   - `docs/parity.md` rows marked `done` (agents may only set `partial`).
+   - Parity status set or proposed as `done` (in `docs/parity.md` or a PR-body `Parity:` line; feature PRs report parity via PR-body `Parity: <ID> -> <status>` lines, never `done`, and direct `docs/parity.md` edits in feature PRs are advisory).
    - Windows path/process/quoting/encoding bugs, unhandled errors, security or data-loss issues, missing license headers on new source files, or non-synthetic/real data.
 
 ## Verdict and follow-ups
