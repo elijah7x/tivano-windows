@@ -4,15 +4,21 @@
 // fetch (honest pending/unavailable), provider-reported echo, engine
 // persistence and IPC-facing validation.
 
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexAppServerProvider } from "../src/main/codexAppServerProvider";
-import type { CodexRuntimeConfig } from "../src/main/codexRuntimeConfig";
+import {
+  CODEX_ONE_SHOT_CONFIG_ARGS,
+  type CodexRuntimeConfig,
+} from "../src/main/codexRuntimeConfig";
 import type { ProviderCallbacks, TurnContext, WorkspaceGrant } from "../src/main/provider";
-import type { ProviderThreadBinding } from "../src/shared/types";
+import type { CodexModelOption, ProviderThreadBinding } from "../src/shared/types";
 import { Store } from "../src/main/store";
 import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
@@ -67,6 +73,68 @@ async function waitFor(cond: () => boolean, ms = 10_000): Promise<void> {
   while (!cond()) {
     if (Date.now() - start > ms) throw new Error("waitFor timed out");
     await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+class ScriptedChild extends EventEmitter {
+  stdin = new PassThrough();
+  stdout = new PassThrough();
+  stderr = new PassThrough();
+  pid = 889;
+  killed: string[] = [];
+  private buf = "";
+  private inbox: Array<Record<string, unknown>> = [];
+  private waiters: Array<(m: Record<string, unknown>) => void> = [];
+
+  constructor() {
+    super();
+    this.stdin.on("data", (d: Buffer) => {
+      this.buf += d.toString("utf8");
+      let idx: number;
+      while ((idx = this.buf.indexOf("\n")) >= 0) {
+        const line = this.buf.slice(0, idx);
+        this.buf = this.buf.slice(idx + 1);
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as Record<string, unknown>;
+          const waiter = this.waiters.shift();
+          if (waiter) waiter(parsed);
+          else this.inbox.push(parsed);
+        } catch {
+          /* ignore malformed line */
+        }
+      }
+    });
+  }
+
+  next(ms = 5000): Promise<Record<string, unknown>> {
+    const have = this.inbox.shift();
+    if (have) return Promise.resolve(have);
+    return new Promise((res, rej) => {
+      const timer = setTimeout(() => rej(new Error("scripted next() timeout")), ms);
+      this.waiters.push((m) => {
+        clearTimeout(timer);
+        res(m);
+      });
+    });
+  }
+
+  write(line: Record<string, unknown>): void {
+    this.stdout.write(JSON.stringify(line) + "\n");
+  }
+
+  close(code = 0): void {
+    this.emit("exit", code, null);
+    this.stdin.end();
+    this.stdout.end();
+    this.stderr.end();
+    this.emit("close", code, null);
+  }
+
+  kill(signal?: string): boolean {
+    this.killed.push(signal ?? "SIGTERM");
+    setTimeout(() => this.close(143), 3);
+    return true;
   }
 }
 
@@ -244,16 +312,8 @@ describe("Codex model/effort overrides (F17)", () => {
     await p.dispose();
   });
 
-  it("modelCatalog returns the provider-owned list — hidden rows filtered", async () => {
+  it("modelCatalog returns the provider-owned list before any chat — hidden rows filtered", async () => {
     const { p } = provider();
-    // No session yet → null (engine maps to "pending"), never a fake list.
-    await expect(p.modelCatalog()).resolves.toBeNull();
-    const { cb, c } = cbCollect();
-    p.start(
-      { prompt: "hello", threadId: "local-1", turnId: "t-1", workspace: grant() },
-      cb,
-    );
-    await waitFor(() => c.done || c.errors.length > 0);
     const models = await p.modelCatalog();
     expect(models).not.toBeNull();
     const ids = models!.map((m) => m.id);
@@ -329,7 +389,172 @@ describe("engine model selection (F17)", () => {
     store.close();
   });
 
-  it("codexModels reports pending before a session binds, ready after", async () => {
+  it("engine models:list uses one lightweight one-shot before chat and dedupes concurrent reads", async () => {
+    const root = tmp("tivano-engmodel-");
+    const store = new Store(root);
+    store.open();
+    const bindings = new Map<string, ProviderThreadBinding>();
+    const spawnedArgs: string[][] = [];
+    const childClosed: boolean[] = [];
+    const codex = new CodexAppServerProvider({
+      config: cfg(),
+      lookupBinding: (t) => bindings.get(t),
+      bindThread: async (t, b) => {
+        bindings.set(t, b);
+      },
+      spawnImpl: (spec) => {
+        spawnedArgs.push([...spec.args]);
+        const child = spawn(spec.executable, spec.args, {
+          cwd: spec.cwd,
+          env: spec.env,
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+        });
+        const idx = childClosed.length;
+        childClosed.push(false);
+        child.once("close", () => {
+          childClosed[idx] = true;
+        });
+        return child;
+      },
+    });
+    const paths = new ProjectRuntimePaths([], join(root, "grants.json"), root);
+    const engine = new Engine(store, codex, root, "0.0.0-test", paths);
+
+    const [first, second] = await Promise.all([engine.codexModels(), engine.codexModels()]);
+    expect(first.state).toBe("ready");
+    expect(second.state).toBe("ready");
+    if (first.state === "ready") expect(first.models.map((m) => m.id)).toContain("fixture-model");
+    expect(spawnedArgs).toHaveLength(1);
+    expect(spawnedArgs[0]).toEqual([FIXTURE, ...CODEX_ONE_SHOT_CONFIG_ARGS]);
+
+    const cached = await engine.codexModels();
+    expect(cached.state).toBe("ready");
+    expect(spawnedArgs).toHaveLength(1);
+    await waitFor(() => childClosed[0] === true);
+
+    engine.shutdown();
+    const disposed = await codex.dispose();
+    expect(disposed.orphanedPending).toBe(0);
+    expect(disposed.children).toEqual([]);
+    store.close();
+  });
+
+  it("modelCatalog reuses a fresh catalog and keeps it when a forced refresh fails", async () => {
+    const { p } = provider();
+    const delivered: CodexModelOption[] = [
+      { id: "cached-model", name: "Cached model", efforts: [], isDefault: false },
+    ];
+    const spy = vi.spyOn(p, "fetchModelCatalogOneShot");
+    spy.mockImplementationOnce(async () => {
+      p.cacheCatalog(delivered);
+      return delivered;
+    });
+
+    await expect(p.modelCatalog()).resolves.toEqual(delivered);
+    expect(spy).toHaveBeenCalledTimes(1);
+    await expect(p.modelCatalog()).resolves.toEqual(delivered);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    spy.mockRejectedValueOnce(new Error("refresh failed"));
+    await expect(p.modelCatalog(true)).resolves.toEqual(delivered);
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+    await p.dispose();
+  });
+
+  it("modelCatalog propagates an initial probe failure and retries after the flight clears", async () => {
+    const { p } = provider();
+    const delivered: CodexModelOption[] = [
+      { id: "retried-model", name: "Retried model", efforts: [], isDefault: false },
+    ];
+    const spy = vi.spyOn(p, "fetchModelCatalogOneShot");
+    spy.mockRejectedValueOnce(new Error("probe failed"));
+    await expect(p.modelCatalog()).rejects.toThrow("probe failed");
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    spy.mockImplementationOnce(async () => {
+      p.cacheCatalog(delivered);
+      return delivered;
+    });
+    await expect(p.modelCatalog()).resolves.toEqual(delivered);
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+    await p.dispose();
+  });
+
+  it("modelCatalog falls back to codexHome tmp when the OS temp directory is unsafe", async () => {
+    const { p } = provider();
+    const oldTemp = process.env.TEMP;
+    const oldTmp = process.env.TMP;
+    const oldTmpdir = process.env.TMPDIR;
+    const seen: string[] = [];
+    const spy = vi.spyOn(p, "fetchModelCatalogOneShot").mockImplementation(async (workspaceDir) => {
+      seen.push(workspaceDir);
+      return [];
+    });
+    process.env.TEMP = "\\\\example.invalid\\share";
+    process.env.TMP = "\\\\example.invalid\\share";
+    process.env.TMPDIR = "\\\\example.invalid\\share";
+    try {
+      await expect(p.modelCatalog()).resolves.toEqual([]);
+    } finally {
+      if (oldTemp === undefined) delete process.env.TEMP;
+      else process.env.TEMP = oldTemp;
+      if (oldTmp === undefined) delete process.env.TMP;
+      else process.env.TMP = oldTmp;
+      if (oldTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = oldTmpdir;
+    }
+    expect(seen).toEqual([join(p.config.codexHome, "tmp")]);
+    spy.mockRestore();
+    await p.dispose();
+  });
+
+  it("engine models:list disposal interrupts an unanswered one-shot model/list", async () => {
+    const root = tmp("tivano-engmodel-");
+    const store = new Store(root);
+    store.open();
+    const bindings = new Map<string, ProviderThreadBinding>();
+    const child = new ScriptedChild();
+    const spawnedArgs: string[][] = [];
+    const codex = new CodexAppServerProvider({
+      config: cfg(),
+      lookupBinding: (t) => bindings.get(t),
+      bindThread: async (t, b) => {
+        bindings.set(t, b);
+      },
+      spawnImpl: (spec) => {
+        spawnedArgs.push([...spec.args]);
+        return child as unknown as ChildProcess;
+      },
+    });
+    const paths = new ProjectRuntimePaths([], join(root, "grants.json"), root);
+    const engine = new Engine(store, codex, root, "0.0.0-test", paths);
+
+    const pending = engine.codexModels();
+    const init = await child.next();
+    expect(init.method).toBe("initialize");
+    child.write({
+      id: init.id as number,
+      result: { codexHome: codex.config.codexHome, userAgent: "fixture" },
+    });
+    expect((await child.next()).method).toBe("initialized");
+    const list = await child.next();
+    expect(list.method).toBe("model/list");
+    expect(spawnedArgs[0]).toEqual([FIXTURE, ...CODEX_ONE_SHOT_CONFIG_ARGS]);
+
+    const [cat, disposed] = await Promise.all([pending, codex.dispose()]);
+    expect(cat.state).toBe("unavailable");
+    expect(disposed.orphanedPending).toBe(0);
+    expect(disposed.children).toHaveLength(1);
+    expect(disposed.children[0]!.confirmed).toBe(true);
+    expect(child.killed.length).toBeGreaterThan(0);
+    engine.shutdown();
+    store.close();
+  });
+
+  it("codexModels reports ready before any chat session and remains ready after one", async () => {
     const root = tmp("tivano-engmodel-");
     const store = new Store(root);
     store.open();
@@ -349,7 +574,9 @@ describe("engine model selection (F17)", () => {
     });
     const paths = new ProjectRuntimePaths([], join(root, "grants.json"), root);
     const engine = new Engine(store, codex, root, "0.0.0-test", paths);
-    expect((await engine.codexModels()).state).toBe("pending");
+    const before = await engine.codexModels();
+    expect(before.state).toBe("ready");
+    if (before.state === "ready") expect(before.models.map((m) => m.id)).toContain("fixture-max");
 
     const ws = tmp("tivano-codex-ws-");
     const proj = engine.createProject("p1");

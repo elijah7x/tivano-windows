@@ -1,7 +1,7 @@
 // Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-10-28.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F17 model/effort picker e2e checks — against the OFFLINE Codex fixture
-// only: catalog pending→ready, UI select persists on the thread, the
+// only: catalog is ready before the first turn, UI select persists on the thread, the
 // override reaches turn/start verbatim (fixture echoes it into the
 // assistant text), thread/start|resume binds with the model, and the
 // selection survives a restart. Nothing here proves a real provider.
@@ -79,21 +79,24 @@ export async function runCodexModelChecks({
   await page.evaluate(() => window.tivano.invoke("settings:set", { language: "en" }));
   const threadId = await newCodexThread(page, "Model Proj");
 
-  // The picker exists only for codex mode and the catalog is honestly
-  // pending before any session binds — never a fabricated list.
+  // The picker exists only for codex mode and the production catalog is
+  // a lightweight one-shot probe even before any session binds.
   await page.waitForSelector(".model-picker", { timeout: 10000 });
-  const pending = await modelsList(page);
+  const before = await modelsList(page);
   verify(
-    "models:list pending before first turn (no fabricated catalog)",
-    pending.state === "pending",
-    pending,
+    "models:list ready before first turn (no fabricated catalog)",
+    before.state === "ready" &&
+      before.models.some((m) => m.id === "fixture-model") &&
+      before.models.some((m) => m.id === "fixture-max") &&
+      !before.models.some((m) => m.id === "fixture-hidden"),
+    before.state === "ready" ? before.models.map((m) => m.id) : before,
   );
 
-  // Turn 1 binds the session — the picker may now serve the real catalog.
+  // Turn 1 binds the session — the picker still serves the provider catalog.
   await sendAndWaitDone(page, threadId, "hello");
   let cat = await modelsList(page);
   verify(
-    "models:list ready after session binds; hidden rows filtered",
+    "models:list remains ready after session binds; hidden rows filtered",
     cat.state === "ready" &&
       cat.models.some((m) => m.id === "fixture-model") &&
       cat.models.some((m) => m.id === "fixture-max") &&
@@ -209,7 +212,7 @@ export async function runCodexModelChecks({
       tier: restored.codexServiceTier,
     },
   );
-  // Give the picker a moment to fetch its (pending) catalog and settle.
+  // Give the picker a moment to fetch its one-shot catalog and settle.
   await page.waitForTimeout(300);
   const selDebug = await page.evaluate(() => {
     const el = document.querySelector(".model-select");

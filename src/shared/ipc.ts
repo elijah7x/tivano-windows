@@ -704,11 +704,12 @@ export const requestValidators = {
   "codex:choose": vObject({}),
   "codex:save": vObject({}),
   "codex:clear": vObject({}),
-  // Per-thread model/effort overrides (F17). Deliberately EMPTY for the
-  // catalog read — the list is provider-owned state, never callable with
-  // renderer-supplied filters. set-model carries bounded string-or-null
-  // ids only; usability is the provider's call, never guessed locally.
-  "models:list": vObject({}),
+  // Per-thread model/effort overrides (F17). The catalog read is provider-owned
+  // state, never callable with renderer-supplied filters; `force` only asks the
+  // provider to refresh its own catalog freshness cache. set-model carries
+  // bounded string-or-null ids only; usability is the provider's call, never
+  // guessed locally.
+  "models:list": vObject({ force: vOptional(vBoolean) }),
   // F18: probe an MCP server config (saved or draft) — real stdio spawn.
   "mcp:probe": vObject({
     transport: vOptional(vEnum(["stdio", "http"] as const)),

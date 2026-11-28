@@ -77,7 +77,7 @@ export async function runModelListChecks({
   await page.waitForSelector(".chat-head h1");
   const threadId = (await snap(page)).selectedThreadId;
 
-  // Bind a Codex session so models:list serves the fixture catalog.
+  // Exercise a bound Codex session as well; the lightweight one-shot path keeps models:list available even before binding.
   await page.locator(".composer textarea").fill("bind session");
   await page.keyboard.press("Enter");
   await waitSnapshot(page, (st) => {
@@ -449,8 +449,9 @@ export async function runModelListChecks({
   // picker and the Settings catalog keep the three newest fixture
   // versions; versionless rows always stay, "… High" folds behind its
   // base, search still lists the full catalog, off restores it.
-  // The restarted app has no bound session yet, so models:list is still
-  // pending — run a turn to bind one (same path as the first session).
+  // The restarted app has no bound session yet; the lightweight one-shot
+  // catalog path should still recover readiness. This turn additionally
+  // exercises the normal post-bind path.
   await page.locator(".composer textarea").fill("bind session again");
   await page.keyboard.press("Enter");
   await waitSnapshot(page, (st) => {

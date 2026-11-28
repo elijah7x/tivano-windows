@@ -515,10 +515,9 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("codex:save", () => codexSetup().save());
   handle("codex:clear", () => codexSetup().clear());
 
-  // Per-thread model/effort overrides (F17). The catalog read takes no
-  // payload — provider-owned state only; set-model resolves ids from the
-  // caller but never guesses usability.
-  handle("models:list", () => engine.codexModels());
+  // Per-thread model/effort overrides (F17). The catalog read is provider-owned
+  // state only; set-model resolves ids from the caller but never guesses usability.
+  handle("models:list", (p) => engine.codexModels(p.force === true));
   // F18: real stdio probe — spawns the configured command, MCP
   // initialize + tools/list, child always killed before returning.
   handle("mcp:probe", (p) => probeMcpServer(p));

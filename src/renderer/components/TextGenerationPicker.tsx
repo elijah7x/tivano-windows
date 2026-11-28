@@ -41,11 +41,11 @@ export function TextGenerationPicker(
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const gen = useRef(0);
 
-  const refresh = useCallback(() => {
+  const refresh = useCallback((force = false) => {
     if (props.initialCatalog !== undefined) return;
     const g = ++gen.current;
     api()
-      .invoke("models:list", {})
+      .invoke("models:list", force ? { force: true } : {})
       .then((c) => {
         if (gen.current === g) setCatalog(c as CodexModelCatalog);
       })
@@ -292,7 +292,7 @@ export function TextGenerationPicker(
                     <button
                       type="button"
                       className="choice settings-btn-compact"
-                      onClick={refresh}
+                      onClick={() => refresh(true)}
                     >
                       {t("Refresh")}
                     </button>
