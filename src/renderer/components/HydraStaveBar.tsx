@@ -45,7 +45,10 @@ export function stavesOf(messages: Message[], repliedLabel: string): Stave[] {
         ts: m.ts,
       });
     } else if (m.role === "assistant") {
-      const words = m.content.split("\n")[0]!.trim().slice(0, 60);
+      // P2-74: read only a bounded prefix so long replies are not split whole.
+      const head = m.content.slice(0, 600);
+      const nl = head.indexOf("\n");
+      const words = (nl >= 0 ? head.slice(0, nl) : head).trim().slice(0, 60);
       out.push({
         id: m.id,
         kind: "reply",

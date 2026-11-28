@@ -28,7 +28,7 @@ import {
   shell,
   systemPreferences,
 } from "electron";
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
@@ -72,7 +72,7 @@ import {
 } from "./gitExec";
 import { FileIndexService } from "./fileIndex";
 import { DownloadsService } from "./downloadsService";
-import { GIT_POSIX_EXECUTABLE, resolveGitExecutable } from "./gitRuntimeConfig";
+import { GIT_POSIX_EXECUTABLE, resolveGitExecutableAsync } from "./gitRuntimeConfig";
 import { CheckpointService } from "./checkpointService";
 import { WallpaperService } from "./wallpaperService";
 import { LocalControlService } from "./localControl";
@@ -207,7 +207,7 @@ let gitBootstrap: GitBootstrap | null = null;
 async function resolveGitBootstrap(): Promise<GitBootstrap> {
   if (gitBootstrap) return gitBootstrap;
   const platform = process.platform;
-  const resolved = resolveGitExecutable(process.env, { platform });
+  const resolved = await resolveGitExecutableAsync(process.env, { platform });
   if (resolved.kind !== "resolved") {
     gitBootstrap = { platform, gitExe: "", unavailableReason: resolved.reason };
     return gitBootstrap;
@@ -457,14 +457,9 @@ bootstrap = app.whenReady().then(async () => {
   // helper attestation (started at module load) — everything downstream
   // (store recovery, grants restore, IPC) only exists after this.
   adapter = await makeProvider();
-  const changelogMarkdown = (() => {
-    try {
-      return readFileSync(join(app.getAppPath(), "CHANGELOG.md"), "utf8");
-    } catch {
-      return undefined;
-    }
-  })();
-  engine = new Engine(store, adapter, store.root, app.getVersion(), paths, changelogMarkdown);
+  engine = new Engine(store, adapter, store.root, app.getVersion(), paths, undefined, {
+    deferStartupReads: true,
+  });
   // F20 test hook: shrink the post-reset margin so e2e/vitest can watch a
   // real auto-resume inside seconds — the frozen 5s floor never moves.
   if (process.env.TIVANO_LIMIT_MARGIN_MS)
@@ -817,7 +812,6 @@ bootstrap = app.whenReady().then(async () => {
   localControl = new LocalControlService(eng, dataRoot, "dev", (status) =>
     broadcast({ type: "local-control-changed", status }),
   );
-  void localControl.refreshListening().catch(() => {});
   // P2-25 Remote MCP: loopback HTTP + OAuth 2.1 outside Alpha.
   remoteMcp = new RemoteMcpService({
     engine: eng,
@@ -825,9 +819,9 @@ bootstrap = app.whenReady().then(async () => {
     dataRoot,
     appVersion: app.getVersion(),
     onChanged: (status) => broadcast({ type: "remote-mcp-changed", status }),
+    deferLoad: true,
   });
   localControl.setRemoteListeningCheck(() => remoteMcp?.listening === true);
-  void remoteMcp.refresh().catch(() => {});
   eng.onEvent((e) => {
     if (e.type === "settings-changed") {
       void localControl?.refreshListening().catch(() => {});
@@ -925,7 +919,15 @@ bootstrap = app.whenReady().then(async () => {
     // A failed register (chord already held by another app) leaves the
     // feature simply inactive — honest, no retry storm.
   };
-  refreshQuickChord();
+
+  let postWindowStarted = false;
+  const startPostWindowServices = (): void => {
+    if (postWindowStarted || bootstrapClosing) return;
+    postWindowStarted = true;
+    void localControl?.refreshListening().catch(() => {});
+    void remoteMcp?.refresh().catch(() => {});
+    refreshQuickChord();
+  };
 
   // F33 CLI command surface (frozen ControlCLIInstaller): the bundled
   // client is cli/tivano.mjs next to the app root (unbundled) or under
@@ -957,6 +959,7 @@ bootstrap = app.whenReady().then(async () => {
     broadcast,
     terminals,
     git,
+    ensurePostWindowServices: startPostWindowServices,
     localControl,
     remoteMcp,
     cli: cliSurface,
@@ -1052,7 +1055,7 @@ bootstrap = app.whenReady().then(async () => {
       return {
         search: async (threadId: string, query: string) => {
           const dir = eng.threadDirectory(threadId);
-          if (dir === null || !FileIndexService.exists(dir))
+          if (dir === null || !(await FileIndexService.existsAsync(dir)))
             return { paths: [] };
           return { paths: await index.search(dir, query) };
         },
@@ -1156,8 +1159,17 @@ bootstrap = app.whenReady().then(async () => {
       : {}),
   });
 
+  win.webContents.once("did-finish-load", () => {
+    startPostWindowServices();
+  });
   void win.loadFile(indexFile);
+  // P2-74: read CHANGELOG.md + token ledger off the pre-window path, and
+  // start background services after first load (with a fallback if load delays).
+  void eng.startDeferredReads(join(app.getAppPath(), "CHANGELOG.md")).catch(() => {});
+  const postWindowFallback = setTimeout(startPostWindowServices, 150);
+  postWindowFallback.unref?.();
   win.on("closed", () => {
+    clearTimeout(postWindowFallback);
     win = null;
   });
 

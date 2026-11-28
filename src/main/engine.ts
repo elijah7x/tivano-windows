@@ -366,7 +366,17 @@ export class Engine {
   private readonly threadAccessOrder = new Map<string, number>();
   private accessTick = 0;
 
-  private readonly changelogText: string | undefined;
+  private changelogText: string | undefined;
+  private changelogPromise: Promise<void> | null = null;
+  private readonly deferStartupReads: boolean;
+  private whatsNewCache:
+    | {
+        text: string | undefined;
+        version: string;
+        prev: string | undefined;
+        info: ReturnType<typeof buildWhatsNewInfo>;
+      }
+    | null = null;
 
   constructor(
     private readonly store: Store,
@@ -375,12 +385,50 @@ export class Engine {
     private readonly appVersion: string = "0.1.0",
     private readonly paths?: ProjectRuntimePaths,
     changelogMarkdown?: string,
+    opts?: { deferStartupReads?: boolean },
   ) {
-    this.tokenLedger = new TokenLedger(this.dataRoot);
+    this.deferStartupReads = opts?.deferStartupReads === true;
+    this.tokenLedger = new TokenLedger(this.dataRoot, {
+      deferLoad: this.deferStartupReads,
+    });
     this.changelogText =
-      changelogMarkdown !== undefined ? changelogMarkdown : readBundledChangelog();
+      changelogMarkdown !== undefined
+        ? changelogMarkdown
+        : this.deferStartupReads
+          ? undefined
+          : readBundledChangelog();
     this.initWhatsNewLaunch();
     this.armShelveSweep();
+  }
+
+  /** P2-74: load CHANGELOG.md and token ledger off the critical pre-window path. */
+  startDeferredReads(changelogPath?: string): Promise<void> {
+    const tokenTask = this.tokenLedger.loadAsync();
+    const changelogTask =
+      this.changelogText !== undefined
+        ? Promise.resolve()
+        : (this.changelogPromise ??= (async () => {
+            try {
+              const { readFile } = await import("node:fs/promises");
+              const target = changelogPath ?? join(__dirname, "..", "..", "CHANGELOG.md");
+              this.changelogText = await readFile(target, "utf8");
+              this.whatsNewCache = null;
+            } catch {
+              /* missing CHANGELOG.md degrades to no whatsNew section */
+            }
+          })());
+    return Promise.all([tokenTask, changelogTask]).then(() => {});
+  }
+
+  /** Resolves once deferred startup reads (token ledger, changelog) have settled. */
+  whenReady(): Promise<void> {
+    if (this.deferStartupReads && !this.changelogPromise && this.changelogText === undefined) {
+      return this.startDeferredReads();
+    }
+    return Promise.all([
+      this.tokenLedger.whenLoaded(),
+      this.changelogPromise ?? Promise.resolve(),
+    ]).then(() => {});
   }
 
   private initWhatsNewLaunch(): void {
@@ -598,17 +646,24 @@ export class Engine {
   /** F28: dock/taskbar badge — injected OS hook (app.setBadgeCount on
    *  platforms that support it, a no-op shim elsewhere). */
   private badgeUpdater?: (count: number) => void;
+  private lastBadgeCount: number | null = null;
   attachBadgeUpdater(u: (count: number) => void): void {
     this.badgeUpdater = u;
+    this.lastBadgeCount = null;
     this.syncBadge();
   }
 
   /** Frozen AppModel.updateDockBadge: count unread non-archived
    *  threads; the Mac "panel" exclusion has no single-window analogue. */
   syncBadge(): void {
-    this.badgeUpdater?.(
-      this.store.state.threads.filter((t) => t.hasUnread && !t.isArchived).length,
-    );
+    if (!this.badgeUpdater) return;
+    let count = 0;
+    for (const t of this.store.state.threads) {
+      if (t.hasUnread && !t.isArchived) count += 1;
+    }
+    if (count === this.lastBadgeCount) return;
+    this.lastBadgeCount = count;
+    this.badgeUpdater(count);
   }
 
   /** v2.2.34 quick chat expand: the draft rides a stamped event into
@@ -622,8 +677,8 @@ export class Engine {
     for (const fn of this.listeners) fn(stamped);
     // Unread state only ever changes through an emitted mutation, so one
     // central resync can never miss a site (selectThread, endTurn,
-    // archive, delete, move — all covered).
-    this.syncBadge();
+    // archive, delete, move — all covered); turn-chunk never alters unread.
+    if (e.type !== "turn-chunk") this.syncBadge();
   }
 
   /** Record a recovered-from-corruption backup path so it surfaces in info. */
@@ -645,11 +700,24 @@ export class Engine {
 
   get info(): AppInfo {
     const desc = this.provider.descriptor;
-    const whatsNew = buildWhatsNewInfo(
-      this.changelogText,
-      this.appVersion,
-      this.store.state.settings.whatsNewPreviousVersion,
-    );
+    const prev = this.store.state.settings.whatsNewPreviousVersion;
+    let whatsNew: ReturnType<typeof buildWhatsNewInfo>;
+    if (
+      this.whatsNewCache &&
+      this.whatsNewCache.text === this.changelogText &&
+      this.whatsNewCache.version === this.appVersion &&
+      this.whatsNewCache.prev === prev
+    ) {
+      whatsNew = this.whatsNewCache.info;
+    } else {
+      whatsNew = buildWhatsNewInfo(this.changelogText, this.appVersion, prev);
+      this.whatsNewCache = {
+        text: this.changelogText,
+        version: this.appVersion,
+        prev,
+        info: whatsNew,
+      };
+    }
     return {
       appVersion: this.appVersion,
       baselineTag: "v3.0.26",

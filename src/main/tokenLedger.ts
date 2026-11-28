@@ -9,6 +9,7 @@
 // and the history feed is honestly absent, not faked.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -64,6 +65,28 @@ interface LedgerFile {
 const FILE_NAME = "token-activity.json";
 const FLUSH_MS = 120;
 
+function parseLedgerPayload(rawText: string): {
+  daily: Record<string, number>;
+  codexLive: Record<string, number>;
+} {
+  const raw = JSON.parse(rawText) as Partial<LedgerFile>;
+  if (raw?.v !== 1 || typeof raw.liveDaily !== "object" || raw.liveDaily === null)
+    throw new Error("bad shape");
+  const daily: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw.liveDaily)) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(k) && Number.isFinite(v) && (v as number) > 0)
+      daily[k] = Math.floor(v as number);
+  }
+  const codexLive: Record<string, number> = {};
+  if (typeof raw.codexLive === "object" && raw.codexLive !== null) {
+    for (const [k, v] of Object.entries(raw.codexLive)) {
+      if (Number.isFinite(v) && (v as number) > 0)
+        codexLive[k] = Math.floor(v as number);
+    }
+  }
+  return { daily, codexLive };
+}
+
 /** Persisted daily AI-token spend across providers, feeding the Token
  *  activity heatmap. Mirrors the frozen ledger's live feed: one file,
  *  atomic replace, a corrupt file is preserved aside and starts empty. */
@@ -72,32 +95,49 @@ export class TokenLedger {
   private daily: Record<string, number> = {};
   private codexLive: Record<string, number> = {};
   private flushTimer: NodeJS.Timeout | null = null;
+  private loaded = false;
+  private loadPromise: Promise<void> | null = null;
+  private writeQueue: Promise<void> = Promise.resolve();
+  private writeSeq = 0;
   /** Set when the loaded file was preserved aside (honest recovery note). */
   recoveryNote: string | null = null;
 
-  constructor(private readonly root: string) {
+  constructor(private readonly root: string, opts?: { deferLoad?: boolean }) {
     this.file = join(root, FILE_NAME);
+    if (!opts?.deferLoad) this.loadSync();
+  }
+
+  private mergeLoaded(parsed: {
+    daily: Record<string, number>;
+    codexLive: Record<string, number>;
+  }): void {
+    const mergedDaily: Record<string, number> = { ...parsed.daily };
+    for (const [k, v] of Object.entries(this.daily)) {
+      mergedDaily[k] = (mergedDaily[k] ?? 0) + v;
+    }
+    const mergedCodex: Record<string, number> = { ...parsed.codexLive };
+    for (const [k, v] of Object.entries(this.codexLive)) {
+      mergedCodex[k] = (mergedCodex[k] ?? 0) + v;
+    }
+    this.daily = mergedDaily;
+    this.codexLive = mergedCodex;
+  }
+
+  private corruptAsidePath(): string {
+    return join(
+      this.root,
+      `token-activity.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+    );
+  }
+
+  private loadSync(): void {
+    if (this.loaded) return;
+    this.loaded = true;
     if (!existsSync(this.file)) return;
     try {
-      const raw = JSON.parse(readFileSync(this.file, "utf8")) as Partial<LedgerFile>;
-      if (raw?.v !== 1 || typeof raw.liveDaily !== "object" || raw.liveDaily === null)
-        throw new Error("bad shape");
-      this.daily = {};
-      for (const [k, v] of Object.entries(raw.liveDaily)) {
-        if (/^\d{4}-\d{2}-\d{2}$/.test(k) && Number.isFinite(v) && (v as number) > 0)
-          this.daily[k] = Math.floor(v as number);
-      }
-      if (typeof raw.codexLive === "object" && raw.codexLive !== null) {
-        for (const [k, v] of Object.entries(raw.codexLive)) {
-          if (Number.isFinite(v) && (v as number) > 0)
-            this.codexLive[k] = Math.floor(v as number);
-        }
-      }
+      this.mergeLoaded(parseLedgerPayload(readFileSync(this.file, "utf8")));
     } catch {
-      const aside = join(
-        root,
-        `token-activity.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
-      );
+      const aside = this.corruptAsidePath();
       try {
         renameSync(this.file, aside);
         this.recoveryNote = `corrupt token-activity preserved aside as ${aside}`;
@@ -106,9 +146,40 @@ export class TokenLedger {
           `corrupt token-activity could not be preserved aside (${(e as Error).message}); ` +
           "starting empty";
       }
-      this.daily = {};
-      this.codexLive = {};
     }
+  }
+
+  /** P2-74: load persisted token activity off the main thread after startup. */
+  loadAsync(): Promise<void> {
+    if (this.loaded) return Promise.resolve();
+    if (this.loadPromise) return this.loadPromise;
+    this.loadPromise = (async () => {
+      try {
+        const rawText = await readFile(this.file, "utf8");
+        if (this.loaded) return;
+        this.mergeLoaded(parseLedgerPayload(rawText));
+      } catch (err) {
+        if (this.loaded) return;
+        if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+          const aside = this.corruptAsidePath();
+          try {
+            await rename(this.file, aside);
+            this.recoveryNote = `corrupt token-activity preserved aside as ${aside}`;
+          } catch (e) {
+            this.recoveryNote =
+              `corrupt token-activity could not be preserved aside (${(e as Error).message}); ` +
+              "starting empty";
+          }
+        }
+      } finally {
+        this.loaded = true;
+      }
+    })();
+    return this.loadPromise;
+  }
+
+  whenLoaded(): Promise<void> {
+    return this.loaded ? Promise.resolve() : this.loadAsync();
   }
 
   /** Merged totals keyed by local day — the grid's only input. */
@@ -145,9 +216,38 @@ export class TokenLedger {
     if (this.flushTimer) return;
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
-      this.flush();
+      void this.flushAsync().catch(() => {});
     }, FLUSH_MS);
     this.flushTimer.unref?.();
+  }
+
+  /** P2-74: background atomic write so live turn spend never blocks the main thread. */
+  flushAsync(): Promise<void> {
+    const run = async () => {
+      await this.whenLoaded();
+      const seq = ++this.writeSeq;
+      const body = JSON.stringify(
+        { v: 1, liveDaily: { ...this.daily }, codexLive: { ...this.codexLive } } satisfies LedgerFile,
+        null,
+        2,
+      );
+      await mkdir(this.root, { recursive: true, mode: 0o700 });
+      const tmp = join(this.root, `.token-activity-${process.pid}-${randomUUID()}.tmp`);
+      try {
+        await writeFile(tmp, body);
+        if (seq !== this.writeSeq) {
+          await rm(tmp, { force: true }).catch(() => {});
+          return;
+        }
+        await rename(tmp, this.file);
+      } catch (err) {
+        await rm(tmp, { force: true }).catch(() => {});
+        throw err;
+      }
+    };
+    const next = this.writeQueue.then(run, run);
+    this.writeQueue = next.catch(() => {});
+    return next;
   }
 
   /** Synchronous atomic write — tmp + rename, like the store's flush. */
@@ -156,6 +256,8 @@ export class TokenLedger {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
+    this.loadSync();
+    this.writeSeq += 1;
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
     const body = JSON.stringify(
       { v: 1, liveDaily: this.daily, codexLive: this.codexLive } satisfies LedgerFile,
