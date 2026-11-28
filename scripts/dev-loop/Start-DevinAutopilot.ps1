@@ -27,7 +27,12 @@ param(
   [ValidateRange(1, 10080)][int]$OrphanMinutes = 120,
   [ValidateSet(0, 1)][int]$ReapOrphanedTestApps = 1,
   [string]$SyncSource = 'C:\tivano\audit\tool',
-  [string]$SyncTarget = 'C:\tivano\pr-bot\tool\scripts'
+  [string]$SyncTarget = 'C:\tivano\pr-bot\tool\scripts',
+  [ValidateSet('desktop', 'cli')][string]$DevinMode = 'desktop',
+  [string]$DevinCliPath = '',
+  [ValidatePattern('^[A-Za-z0-9._-]+$')][string]$DevinModel = 'swe-2-1-max',
+  [ValidateRange(15, 480)][int]$CliMaxRunMinutes = 150,
+  [string]$CliMissionPath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -1406,6 +1411,21 @@ function Get-ProtectedProcessIds {
     } else {
       break
     }
+  }
+  # A live headless Devin CLI run (wrapper, devin.exe and everything under them) outlives the tick
+  # that started it; it must never be reaped as an orphan.
+  $cliRoots = @(Get-CliTrackedPids)
+  if ($cliRoots.Count -gt 0) {
+    $cliSet = New-Object 'Collections.Generic.HashSet[int]'
+    foreach ($r in $cliRoots) { if ($parentByPid.ContainsKey([int]$r)) { $null = $cliSet.Add([int]$r) } }
+    $grew = $true
+    while ($grew) {
+      $grew = $false
+      foreach ($k in @($parentByPid.Keys)) {
+        if (-not $cliSet.Contains([int]$k) -and $cliSet.Contains([int]$parentByPid[$k])) { $null = $cliSet.Add([int]$k); $grew = $true }
+      }
+    }
+    foreach ($id in $cliSet) { $null = $protectedIds.Add([int]$id) }
   }
   return ,$protectedIds
 }
@@ -3196,6 +3216,273 @@ function Invoke-AutoMerge {
   }
 }
 
+function Get-CliStatePath { return (Join-Path $script:AutopilotDir 'cli-state.json') }
+
+function Read-CliState {
+  $state = [ordered]@{
+    runDir = ''; wrapperPid = 0; wrapperStartUtc = ''; devinPid = 0; startedAtUtc = ''
+    finalized = $true; endReason = ''; lastActivityUtc = ''; runs = 0; consecutiveFastExits = 0
+    backoffUntilUtc = ''; desktopStopped = $false
+  }
+  if ($null -eq $script:AutopilotDir) { return $state }
+  $data = Read-JsonFile (Get-CliStatePath)
+  if (-not $data) { return $state }
+  foreach ($key in @('runDir', 'wrapperStartUtc', 'startedAtUtc', 'endReason', 'lastActivityUtc', 'backoffUntilUtc')) {
+    $val = Get-JsonProp $data $key
+    if ($null -ne $val) { $state[$key] = [string]$val }
+  }
+  foreach ($key in @('wrapperPid', 'devinPid', 'runs', 'consecutiveFastExits')) {
+    $val = Get-JsonProp $data $key
+    if ($null -ne $val) { try { $state[$key] = [int]$val } catch { } }
+  }
+  foreach ($key in @('finalized', 'desktopStopped')) {
+    $val = Get-JsonProp $data $key
+    if ($null -ne $val) { $state[$key] = [bool]$val }
+  }
+  return $state
+}
+
+function Save-CliState {
+  param($State)
+  $path = Get-CliStatePath
+  $tmp = $path + '.' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp'
+  Write-Text $tmp ((ConvertTo-Json -InputObject $State -Depth 4) + "`n")
+  if (Test-Path -LiteralPath $path -PathType Leaf) {
+    [IO.File]::Replace($tmp, $path, [NullString]::Value)
+  } else {
+    [IO.File]::Move($tmp, $path)
+  }
+}
+
+function Get-CliTrackedPids {
+  try {
+    $st = Read-CliState
+    if ([bool]$st['finalized']) { return @() }
+    $ids = @()
+    if ([int]$st['wrapperPid'] -gt 0) { $ids += [int]$st['wrapperPid'] }
+    if ([int]$st['devinPid'] -gt 0) { $ids += [int]$st['devinPid'] }
+    return $ids
+  } catch { return @() }
+}
+
+function Resolve-DevinCliPath {
+  if (-not [string]::IsNullOrWhiteSpace($DevinCliPath)) {
+    if (Test-Path -LiteralPath $DevinCliPath -PathType Leaf) { return $DevinCliPath }
+    throw '-DevinCliPath does not exist'
+  }
+  $candidate = Join-Path $env:LOCALAPPDATA 'Programs\Devin\resources\app\extensions\windsurf\devin\bin\devin.exe'
+  if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+  $cmd = Get-Command -Name 'devin' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($cmd) { return $cmd.Source }
+  throw 'Devin CLI (devin.exe) was not found.'
+}
+
+function Test-CliRunAlive {
+  param($State)
+  $wp = [int]$State['wrapperPid']
+  if ($wp -le 0) { return $false }
+  $proc = Get-Process -Id $wp -ErrorAction SilentlyContinue
+  if ($null -eq $proc) { return $false }
+  $expected = Parse-UtcTimestamp ([string]$State['wrapperStartUtc'])
+  if ($null -ne $expected) {
+    try {
+      $actual = $proc.StartTime.ToUniversalTime()
+      if ([Math]::Abs(($actual - $expected).TotalSeconds) -gt 5) { return $false }
+    } catch { }
+  }
+  return $true
+}
+
+function Get-CliRunActivityUtc {
+  param($State)
+  $newest = Parse-UtcTimestamp ([string]$State['startedAtUtc'])
+  $candidates = @()
+  $runDir = [string]$State['runDir']
+  if ($runDir -and (Test-Path -LiteralPath $runDir -PathType Container)) {
+    $candidates += @(Get-ChildItem -LiteralPath $runDir -File -ErrorAction SilentlyContinue)
+  }
+  foreach ($c in $candidates) {
+    $t = $c.LastWriteTimeUtc
+    if ($null -eq $newest -or $t -gt $newest) { $newest = $t }
+  }
+  # The agent works in a child 'devin.exe acp' process with its own log. NTFS updates an open
+  # file's directory timestamp lazily, so read the timestamp of the last log line instead.
+  $dp = [int]$State['devinPid']
+  if ($dp -gt 0 -and $env:APPDATA) {
+    $logDir = Join-Path $env:APPDATA 'Devin\cli\logs'
+    $pids = @($dp)
+    try {
+      $pids += @(Get-CimInstance Win32_Process -Filter ('ParentProcessId=' + $dp) -ErrorAction SilentlyContinue | ForEach-Object { [int]$_.ProcessId })
+    } catch { }
+    foreach ($id in $pids) {
+      foreach ($log in @(Get-ChildItem -LiteralPath $logDir -Filter ('devin_*_' + $id + '.log') -File -ErrorAction SilentlyContinue)) {
+        $t = Get-LogTailTimestampUtc $log.FullName
+        if ($null -ne $t -and ($null -eq $newest -or $t -gt $newest)) { $newest = $t }
+      }
+    }
+  }
+  return $newest
+}
+
+function Get-LogTailTimestampUtc {
+  param([string]$Path)
+  try {
+    $fs = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try {
+      $len = $fs.Length
+      if ($len -le 0) { return $null }
+      $take = [int][Math]::Min([long]8192, $len)
+      $null = $fs.Seek($len - $take, [IO.SeekOrigin]::Begin)
+      $buf = New-Object byte[] $take
+      $read = $fs.Read($buf, 0, [int]$take)
+      $text = [Text.Encoding]::UTF8.GetString($buf, 0, $read)
+    } finally { $fs.Dispose() }
+    $m = [regex]::Matches($text, '(?m)^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)')
+    if ($m.Count -eq 0) { return $null }
+    return (Parse-UtcTimestamp $m[$m.Count - 1].Groups[1].Value)
+  } catch { return $null }
+}
+
+function Complete-CliRun {
+  param($State, [string]$Reason)
+  $runDir = [string]$State['runDir']
+  $exitCode = ''
+  if ($runDir) {
+    $ex = Read-JsonFile (Join-Path $runDir 'exit.json')
+    if ($ex) { $exitCode = [string](Get-JsonProp $ex 'exitCode') }
+  }
+  $started = Parse-UtcTimestamp ([string]$State['startedAtUtc'])
+  $minutes = 0
+  if ($null -ne $started) { $minutes = [Math]::Round(([DateTime]::UtcNow - $started).TotalMinutes, 1) }
+  $tail = ''
+  if ($runDir) {
+    $outText = Read-Text (Join-Path $runDir 'stdout.log')
+    if ($outText) {
+      $m = [regex]::Matches($outText, '(?m)^RESULT:.*$')
+      if ($m.Count -gt 0) { $tail = $m[$m.Count - 1].Value } else { $tail = $outText.Substring([Math]::Max(0, $outText.Length - 200)) }
+    }
+  }
+  Write-Log ('devin cli run ended (' + $Reason + ', exit ' + $exitCode + ', ' + $minutes + ' min): ' + (ConvertTo-SingleLine (Protect-PublicText $tail) 200))
+  $State['finalized'] = $true
+  $State['endReason'] = $Reason
+  if ($minutes -lt 3) {
+    $State['consecutiveFastExits'] = [int]$State['consecutiveFastExits'] + 1
+    if ([int]$State['consecutiveFastExits'] -ge 3) {
+      $State['backoffUntilUtc'] = [DateTime]::UtcNow.AddMinutes(30).ToString('o')
+      Write-Log ('devin cli: ' + $State['consecutiveFastExits'] + ' runs in a row ended within 3 minutes; backing off 30 minutes')
+    }
+  } else {
+    $State['consecutiveFastExits'] = 0
+  }
+  $workDir = Join-Path $script:WorkRoot 'work'
+  try {
+    foreach ($leftover in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+          $_.CommandLine -and $_.CommandLine.IndexOf($workDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+          $_.CommandLine -notmatch $script:IdentifiedTaskPattern })) {
+      $null = & taskkill.exe /T /F /PID ([int]$leftover.ProcessId) 2>&1
+    }
+  } catch { }
+}
+
+function ConvertTo-PsLiteral {
+  param([AllowEmptyString()][string]$Value)
+  return ("'" + ([string]$Value).Replace("'", "''") + "'")
+}
+
+function Start-CliRun {
+  param($State)
+  $cli = Resolve-DevinCliPath
+  $mission = $CliMissionPath
+  if ([string]::IsNullOrWhiteSpace($mission)) { $mission = Join-Path $PSScriptRoot 'devin-cli-mission.md' }
+  if (-not (Test-Path -LiteralPath $mission -PathType Leaf)) { throw 'devin-cli-mission.md is missing next to this script.' }
+  $runsRoot = Join-Path $script:AutopilotDir 'cli-runs'
+  $stamp = [DateTime]::Now.ToString('yyyyMMddTHHmmss')
+  $runDir = Join-Path $runsRoot $stamp
+  [IO.Directory]::CreateDirectory($runDir) | Out-Null
+  $promptPath = Join-Path $runDir 'prompt.md'
+  $header = '# Devin lane run ' + $stamp + "`n`n" +
+    'You are the Devin lane on a Windows test machine, running headless with no human present. ' +
+    'This is one bounded run (at most ' + $CliMaxRunMinutes + ' minutes): do one unit of work as the mission below describes, then end.' + "`n`n"
+  Write-Text $promptPath ($header + (Read-Text $mission))
+  $exportPath = Join-Path $runDir 'export.json'
+  $lines = New-Object Collections.Generic.List[string]
+  $null = $lines.Add('$ErrorActionPreference = ' + (ConvertTo-PsLiteral 'Continue'))
+  $null = $lines.Add('$env:GIT_TERMINAL_PROMPT = ' + (ConvertTo-PsLiteral '0') + '; $env:GH_PROMPT_DISABLED = ' + (ConvertTo-PsLiteral '1') + '; $env:GIT_EDITOR = ' + (ConvertTo-PsLiteral 'true') + '; $env:CI = ' + (ConvertTo-PsLiteral '1') + '; $env:npm_config_yes = ' + (ConvertTo-PsLiteral 'true'))
+  $null = $lines.Add('$runDir = ' + (ConvertTo-PsLiteral $runDir))
+  $null = $lines.Add('$argsList = @(' + ((@('-p', '--prompt-file', ('"' + $promptPath + '"'), '--permission-mode', 'dangerous', '--respect-workspace-trust', 'false', '--model', $DevinModel, '--export', ('"' + $exportPath + '"')) | ForEach-Object { ConvertTo-PsLiteral $_ }) -join ', ') + ')')
+  $null = $lines.Add('$p = Start-Process -FilePath ' + (ConvertTo-PsLiteral $cli) + ' -ArgumentList $argsList -WorkingDirectory ' + (ConvertTo-PsLiteral $script:WorkspacePath) + ' -RedirectStandardOutput (Join-Path $runDir ' + (ConvertTo-PsLiteral 'stdout.log') + ') -RedirectStandardError (Join-Path $runDir ' + (ConvertTo-PsLiteral 'stderr.log') + ') -WindowStyle Hidden -PassThru')
+  $null = $lines.Add('$null = $p.Handle')
+  $null = $lines.Add('[IO.File]::WriteAllText((Join-Path $runDir ' + (ConvertTo-PsLiteral 'meta.json') + '), (ConvertTo-Json @{ devinPid = $p.Id; startedAtUtc = [DateTime]::UtcNow.ToString(' + (ConvertTo-PsLiteral 'o') + ') }))')
+  $null = $lines.Add('$p.WaitForExit()')
+  $null = $lines.Add('[IO.File]::WriteAllText((Join-Path $runDir ' + (ConvertTo-PsLiteral 'exit.json') + '), (ConvertTo-Json @{ exitCode = $p.ExitCode; endedAtUtc = [DateTime]::UtcNow.ToString(' + (ConvertTo-PsLiteral 'o') + ') }))')
+  $wrapperPath = Join-Path $runDir 'wrapper.ps1'
+  Write-Text $wrapperPath (($lines.ToArray() -join "`r`n") + "`r`n")
+  $proc = Start-Process -FilePath $script:PowerShellExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ('"' + $wrapperPath + '"')) -WorkingDirectory $script:WorkspacePath -WindowStyle Hidden -PassThru
+  $State['runDir'] = $runDir
+  $State['wrapperPid'] = [int]$proc.Id
+  $wStart = [DateTime]::UtcNow
+  try { $wStart = $proc.StartTime.ToUniversalTime() } catch { }
+  $State['wrapperStartUtc'] = $wStart.ToString('o')
+  $State['devinPid'] = 0
+  $State['startedAtUtc'] = [DateTime]::UtcNow.ToString('o')
+  $State['lastActivityUtc'] = $State['startedAtUtc']
+  $State['finalized'] = $false
+  $State['endReason'] = ''
+  $State['runs'] = [int]$State['runs'] + 1
+  Write-Log ('devin cli run started: ' + $stamp + ' model=' + $DevinModel + ' wrapperPid=' + $proc.Id)
+}
+
+function Invoke-CliTick {
+  $state = Read-CliState
+  if (-not [bool]$state['desktopStopped']) {
+    try { $null = Stop-DevinDesktop } catch { Write-Log ('devin cli: could not stop Devin Desktop: ' + (ConvertTo-SingleLine $_.Exception.Message 160)) }
+    $state['desktopStopped'] = $true
+    Save-CliState $state
+  }
+  $nowUtc = [DateTime]::UtcNow
+  if (-not [bool]$state['finalized']) {
+    if ([int]$state['devinPid'] -le 0 -and $state['runDir']) {
+      $meta = Read-JsonFile (Join-Path ([string]$state['runDir']) 'meta.json')
+      if ($meta) { try { $state['devinPid'] = [int](Get-JsonProp $meta 'devinPid') } catch { } }
+    }
+    if (Test-CliRunAlive $state) {
+      $activity = Get-CliRunActivityUtc $state
+      if ($null -ne $activity) { $state['lastActivityUtc'] = $activity.ToString('o') }
+      $started = Parse-UtcTimestamp ([string]$state['startedAtUtc'])
+      $ageMin = 0
+      if ($null -ne $started) { $ageMin = ($nowUtc - $started).TotalMinutes }
+      $idleMin = 0
+      if ($null -ne $activity) { $idleMin = ($nowUtc - $activity).TotalMinutes }
+      $reason = ''
+      if ($ageMin -ge $CliMaxRunMinutes) {
+        $reason = 'timeout'
+      } elseif ($idleMin -ge $IdleMinutes -and @(Get-BusyAutopilotProcesses).Count -eq 0) {
+        $reason = 'idle'
+      }
+      if (-not $reason) {
+        Save-CliState $state
+        return
+      }
+      $null = & taskkill.exe /T /F /PID ([int]$state['wrapperPid']) 2>&1
+      Start-Sleep -Seconds 2
+      Complete-CliRun -State $state -Reason $reason
+    } else {
+      Complete-CliRun -State $state -Reason 'exited'
+    }
+    Save-CliState $state
+  }
+  if (Test-Stop) { return }
+  $backoff = Parse-UtcTimestamp ([string]$state['backoffUntilUtc'])
+  if ($null -ne $backoff -and $backoff -gt $nowUtc) { return }
+  $merged = Get-TodayMergedNyxPrCount
+  if ($null -ne $merged -and $merged -ge $script:AutoMergeDailyCap) {
+    Write-Log ('devin cli: daily merge cap reached (' + $merged + '); not starting a run')
+    return
+  }
+  Start-CliRun -State $state
+  Save-CliState $state
+}
+
 function Invoke-WatchTick {
   try { Initialize-GuiTypes } catch { }
   $healthSample = Write-HealthSample
@@ -3269,6 +3556,12 @@ function Invoke-WatchTick {
   if (-not (Test-Path -LiteralPath $script:PromptPath -PathType Leaf)) { throw 'autopilot.md is missing next to this script.' }
   if (-not (Test-Path -LiteralPath $script:WorkspacePath -PathType Container)) { throw '-Workspace does not exist.' }
   if (-not $script:GhPath) { throw 'GitHub CLI (gh) was not found on PATH.' }
+
+  if ($DevinMode -eq 'cli') {
+    Save-WatchdogState $watchdog
+    Invoke-CliTick
+    return
+  }
 
   $nowUtc = [DateTime]::UtcNow
   $sinceUtc = Parse-UtcTimestamp ([string]$watchdog['lastKickoffUtc'])
@@ -3595,6 +3888,11 @@ function Invoke-RegisterTask {
   )
 
   if (-not [string]::IsNullOrWhiteSpace($HydrogenLaneRoot)) { $watchArgs += @('-HydrogenLaneRoot', (Quote-Argument $HydrogenLaneRoot)) }
+  if ($DevinMode -eq 'cli') {
+    $watchArgs += @('-DevinMode', 'cli', '-DevinModel', (Quote-Argument $DevinModel), '-CliMaxRunMinutes', [string]$CliMaxRunMinutes)
+    if (-not [string]::IsNullOrWhiteSpace($DevinCliPath)) { $watchArgs += @('-DevinCliPath', (Quote-Argument $DevinCliPath)) }
+    if (-not [string]::IsNullOrWhiteSpace($CliMissionPath)) { $watchArgs += @('-CliMissionPath', (Quote-Argument $CliMissionPath)) }
+  }
   Initialize-TaskFolder
   $action = New-ScheduledTaskAction -Execute $script:PowerShellExe -WorkingDirectory $script:WorkRoot -Argument ($watchArgs -join ' ')
   $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
@@ -3683,6 +3981,10 @@ try {
 
   if ($Register) {
     Invoke-RegisterTask
+    exit 0
+  }
+  if ($Kickoff -and $DevinMode -eq 'cli') {
+    Invoke-CliTick
     exit 0
   }
   if ($Kickoff) {
