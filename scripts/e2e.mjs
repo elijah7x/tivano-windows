@@ -96,6 +96,7 @@ import { runWelcomeChecks } from "./welcomeChecks.mjs";
 import { runP253ChromeChecks } from "./p253ChromeChecks.mjs";
 import { runPredictionChecks } from "./predictionChecks.mjs";
 import { runProjectDeleteChecks } from "./projectDeleteChecks.mjs";
+import { runP271PopoverStabilityChecks } from "./p271PopoverStabilityChecks.mjs";
 
 const onlySuite = process.argv.find((a) => a.startsWith("--only="))?.slice("--only=".length);
 if (onlySuite) {
@@ -2207,6 +2208,17 @@ try {
     launch,
     instances,
     snap,
+    check,
+    boundedClose,
+  });
+
+  // ---- session 37: P2-71 Popover anchor stability -----------------------
+  await runP271PopoverStabilityChecks({
+    launch,
+    instances,
+    snap,
+    codexFixture,
+    workspaceRoot,
     check,
     boundedClose,
   });

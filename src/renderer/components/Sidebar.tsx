@@ -10,10 +10,12 @@ import { createPortal } from "react-dom";
 import type { ChatThread, OpenDirectoryResult, Snapshot } from "../../shared/types";
 import {
   isAnchorVisibleInContainer,
+  pointToAnchor,
   rectToAnchor,
   sameAnchorRect,
   type AnchorRect,
 } from "../../shared/popoverAnchor";
+import { anchoredPopoverStyle, useAnchoredPopover } from "../useAnchoredPopover";
 import { compareThreads } from "../../shared/threadOrder";
 import { useT } from "../locale";
 import { api, callApi, clientStore, tryCall, type WeatherFlashStatus } from "../client";
@@ -102,15 +104,64 @@ export function Sidebar(props: {
   const [shelfRename, setShelfRename] = useState<string | null>(null);
   const { snapshot } = props;
   const q = search.trim().toLowerCase();
-  // P2-34: the thread-row ⋯/context menu (frozen RowActionsButton +
-  // contextMenu). Stores the thread snapshot; handlers run against its id.
+  // P2-34 / P2-71: the thread-row ⋯/context menu (frozen RowActionsButton +
+  // contextMenu). Captures anchor + optional trigger element so React
+  // re-renders, async layout settling, and constrained viewports never jump.
   const [threadMenu, setThreadMenu] = useState<{
     th: ChatThread;
-    x: number;
-    y: number;
+    anchor: AnchorRect;
     alignEnd: boolean;
+    triggerEl: HTMLElement | null;
+    rowEl: HTMLElement | null;
+    rowTopAtOpen: number;
   } | null>(null);
-  const threadMenuRef = useRef<HTMLDivElement>(null);
+  const getThreadMenuAnchor = useCallback((): AnchorRect | null => {
+    if (!threadMenu) return null;
+    if (!threadMenu.triggerEl) return threadMenu.anchor;
+    if (!threadMenu.triggerEl.isConnected) return null;
+    const btnRect = threadMenu.triggerEl.getBoundingClientRect();
+    const listEl = threadListRef.current;
+    if (btnRect.width > 0 && btnRect.height > 0) {
+      const anchor = rectToAnchor(btnRect);
+      if (listEl && !isAnchorVisibleInContainer(anchor, rectToAnchor(listEl.getBoundingClientRect()))) {
+        return null;
+      }
+      return anchor;
+    }
+    // .row-actions switches to display:none once hover/focus leaves the row;
+    // preserve the horizontal button anchor and track the visible owning row.
+    const rowEl = threadMenu.rowEl;
+    if (!rowEl || !rowEl.isConnected) return null;
+    const rowRect = rowEl.getBoundingClientRect();
+    if (rowRect.width <= 0 || rowRect.height <= 0) return null;
+    if (listEl && !isAnchorVisibleInContainer(rectToAnchor(rowRect), rectToAnchor(listEl.getBoundingClientRect()))) {
+      return null;
+    }
+    const dy = rowRect.top - threadMenu.rowTopAtOpen;
+    if (Math.abs(dy) < 0.5) return threadMenu.anchor;
+    return {
+      ...threadMenu.anchor,
+      top: threadMenu.anchor.top + dy,
+      bottom: threadMenu.anchor.bottom + dy,
+    };
+  }, [threadMenu]);
+  const closeThreadMenu = useCallback(() => setThreadMenu(null), []);
+  const { popRef: threadMenuRef, position: threadMenuPos } = useAnchoredPopover<HTMLDivElement>({
+    open: threadMenu !== null,
+    targetKey: threadMenu
+      ? `${threadMenu.th.id}:${threadMenu.anchor.left}:${threadMenu.anchor.top}:${threadMenu.alignEnd}`
+      : null,
+    initialAnchor: threadMenu?.anchor ?? null,
+    getAnchorRect: getThreadMenuAnchor,
+    estimatedSize: { width: 190, height: 210 },
+    preferredSide: "bottom",
+    align: threadMenu?.alignEnd ? "end" : "start",
+    constrainSideHeight: true,
+    gap: threadMenu?.triggerEl ? 4 : 0,
+    scrollContainer: threadListRef.current,
+    onAnchorLost: closeThreadMenu,
+    layoutKey: threadMenu ? `${threadMenu.th.id}:${!!threadMenu.th.worktreeDir}:${!!threadMenu.th.parentThreadId}` : null,
+  });
   useEffect(() => {
     if (!threadMenu) return;
     const down = (e: MouseEvent): void => {
@@ -125,18 +176,7 @@ export function Sidebar(props: {
       window.removeEventListener("mousedown", down);
       window.removeEventListener("keydown", key);
     };
-  }, [threadMenu]);
-  // The align-end transform can push the painted left edge off-screen on
-  // a narrow sidebar or a wide menu — clamp after mount using the real
-  // rect, like HydraPanel's menu does.
-  useLayoutEffect(() => {
-    const el = threadMenuRef.current;
-    if (!threadMenu || !el) return;
-    const r = el.getBoundingClientRect();
-    if (r.left < 8) el.style.left = `${parseFloat(el.style.left) + (8 - r.left)}px`;
-    const overY = r.bottom - window.innerHeight;
-    if (overY > 0) el.style.top = `${Math.max(8, threadMenu.y - overY - 8)}px`;
-  }, [threadMenu]);
+  }, [threadMenu, threadMenuRef]);
   // F15: frozen "Reveal in Finder" — the platform's file manager name.
   const fileManagerReveal =
     api().platform === "win32" ? t("Reveal in File Explorer") : t("Reveal in Finder");
@@ -250,8 +290,16 @@ export function Sidebar(props: {
             aria-label={`${t("Thread actions")}: ${th.title}`}
             onClick={(e) => {
               e.stopPropagation();
-              const r = e.currentTarget.getBoundingClientRect();
-              setThreadMenu({ th, x: r.right, y: r.bottom + 4, alignEnd: true });
+              const btn = e.currentTarget;
+              const rowEl = btn.closest<HTMLElement>(".row");
+              setThreadMenu({
+                th,
+                anchor: rectToAnchor(btn.getBoundingClientRect()),
+                alignEnd: true,
+                triggerEl: btn,
+                rowEl,
+                rowTopAtOpen: rowEl ? rowEl.getBoundingClientRect().top : 0,
+              });
             }}
           >
             ⋯
@@ -590,7 +638,14 @@ export function Sidebar(props: {
       onContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        setThreadMenu({ th, x: e.clientX, y: e.clientY, alignEnd: false });
+        setThreadMenu({
+          th,
+          anchor: pointToAnchor(e.clientX, e.clientY),
+          alignEnd: false,
+          triggerEl: null,
+          rowEl: null,
+          rowTopAtOpen: 0,
+        });
       }}
     >
       {statusMark(th)}
@@ -1107,12 +1162,7 @@ export function Sidebar(props: {
           ref={threadMenuRef}
           className={`row-menu${threadMenu.alignEnd ? " align-end" : ""}`}
           role="menu"
-          // Keep every item reachable: bottom rows' menus would run off
-          // the viewport edge otherwise (same clamp as MessagePopover).
-          style={{
-            left: Math.min(threadMenu.x, Math.max(8, window.innerWidth - 190)),
-            top: Math.min(threadMenu.y, Math.max(8, window.innerHeight - 210)),
-          }}
+          style={anchoredPopoverStyle(threadMenuPos)}
         >
           {threadRowMenuItems({
             isHelper: !!threadMenu.th.parentThreadId,

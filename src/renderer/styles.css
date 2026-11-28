@@ -591,6 +591,8 @@ button.primary:hover {
 .row-menu {
   position: fixed;
   min-width: 190px;
+  box-sizing: border-box;
+  overflow-y: auto;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -600,9 +602,6 @@ button.primary:hover {
   gap: 1px;
   z-index: 60;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
-}
-.row-menu.align-end {
-  transform: translateX(-100%);
 }
 .row-menu [role="menuitem"] {
   text-align: left;
@@ -2015,6 +2014,8 @@ select.runtime-mode:disabled {
   left: 0;
   width: 390px;
   max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+  overflow-y: auto;
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -5130,7 +5131,7 @@ html[data-paused="1"] .md-veil { animation: none !important; }
   user-select: none;
 }
 /* Frozen EffortSliderCard. */
-.effort-pop { min-width: 260px; max-width: 330px; gap: 2px; }
+.effort-pop { min-width: 260px; max-width: 330px; gap: 2px; box-sizing: border-box; overflow-y: auto; }
 .effort-title { padding: 6px 10px; font-weight: 600; font-size: calc(13px + var(--fs-ui-off)); }
 .effort-pop .msg-row.chosen { color: var(--accent); }
 .effort-fast {
