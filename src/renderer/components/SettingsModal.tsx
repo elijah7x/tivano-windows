@@ -48,6 +48,7 @@ import {
   RUNTIME_MODE_TITLE,
   RUNTIME_MODE_SUMMARY,
 } from "./RuntimeModePicker";
+import { RuntimeModeIcon } from "./StatusIcons";
 import {
   fontSizesAreDefault,
   resolveFontSizes,
@@ -429,6 +430,7 @@ export function SettingsModal(props: {
                   title={t(RUNTIME_MODE_SUMMARY[m])}
                   onClick={() => tryCall("settings:set", { defaultRuntimeMode: m })}
                 >
+                  <RuntimeModeIcon mode={m} />
                   {t(RUNTIME_MODE_TITLE[m])}
                 </button>
               ))}
