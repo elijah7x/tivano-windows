@@ -10,7 +10,7 @@ The owner does **not** participate during development, review, or audit, and ent
 
 - **No human pauses or escalations:** the loop never stops to ask questions, wait for confirmation, consult a person, or wait on manual audit overrides. Only creating `<Root>\state\STOP` stops it.
 - **Automatic arbitration & non-blocking audit waits:** `nyx/audit` disputes are arbitrated automatically by the independent auditor (which never asks a person to intervene). While a PR's `nyx/audit` status is `pending` or `arbitration pending`, autopilot records it in `progress.json` (`awaitingAudit`) and works on another issue instead of idling.
-- **Daily merge cap auto-resume:** when the cap of 40 merges per local calendar day is reached, autopilot sleeps in 5-minute intervals (checking `STOP`) until the next local calendar day and resumes automatically.
+- **Daily merge cap auto-resume:** when the cap of 150 merges per local calendar day is reached, autopilot sleeps in 5-minute intervals (checking `STOP`) until the next local calendar day and resumes automatically.
 - **Queue priority:** open eligible `nyx-auto` issues (skipping permanently `parked` ones) are worked in strict order:
   1. `audit-followup` issues (and `build-break` issues opened by the milestone), lowest number first;
   2. reopened issues (`state_reason == "reopened"`), lowest number first;
@@ -26,7 +26,7 @@ The owner does **not** participate during development, review, or audit, and ent
 | Quality gate: escalation fixer | Gemini 4 Neon (`agy`) | Fixes escalations via `Invoke-NeonFix.ps1` inside the PR worktree when an audit block survives Devin's fix round, when the gate fails after Devin's first fix round, or at the start of a parked-issue revisit. Never commits or pushes. |
 | Final arbiter | Claude Opus | Settles post-rebuttal `nyx/audit` disputes inside the independent auditor. |
 
-Both implementers run `Invoke-PrePrSelfCheck.ps1` (the trusted copy under `C:\tivano\audit\tool`) before every push: it checks conflicts with `origin/main`, guarded paths, dependency changes, parity status, missing zh-Hans strings, license headers, attribution, `Closes #<n>` and stray files, and with `-RunChecks` runs typecheck and the changed test files. It never changes the worktree; exit 0 means no `FAIL`, 1 means at least one `FAIL`, 2 means bad parameters.
+Both implementers run `Invoke-PrePrSelfCheck.ps1` (the trusted copy under `C:\tivano\audit\tool`) before every push: it checks conflicts with `origin/main`, guarded paths (including `docs/parity.md`), dependency changes, PR-body `Parity:` lines (never `done` or `deferred`, instead of editing `docs/parity.md` directly), missing zh-Hans strings, license headers, attribution, `Closes #<n>` and stray files, and with `-RunChecks` runs typecheck and the changed test files. It never changes the worktree; exit 0 means no `FAIL`, 1 means at least one `FAIL`, 2 means bad parameters.
 
 The watchdog remains the only merger. Implementers are Devin (SWE) and Gemini 4 Hydrogen; quality gates are GLM-5.4 and Gemini 4 Neon; Claude Opus is the final arbiter for `nyx/audit` disputes.
 
@@ -50,7 +50,7 @@ Stuck work never blocks the queue or waits for a person:
 
 Once no open `nyx-auto` issue remains outside permanently `parked` ones (and `origin/main` has commits newer than the last hands-on build):
 
-1. **Verify `main`:** in a clean detached worktree of `origin/main`, autopilot runs `npm run build`, `npm run typecheck`, and `npm test` (pre-existing documented baseline unit failures are allowed).
+1. **Verify `main`:** in a clean detached worktree of `origin/main`, autopilot runs `npm run build`, `npm run typecheck`, and `node .\node_modules\vitest\vitest.mjs run --maxWorkers=2` (pre-existing documented baseline unit failures are allowed).
 2. **Package and smoke-test:** autopilot runs `npm run package:windows -- --output <fresh external dir>` followed by `npm run smoke:packaged -- --exe <unpacked exe> --evidence <fresh external dir>` (under `<Root>\autopilot\builds\<tag>\`, never inside the worktree) and stops leftover processes afterward.
 3. **Fix breakage via normal PRs:** if build, typecheck, unit tests, packaging, or packaged smoke fails, autopilot opens an issue labelled `nyx-auto` and `build-break`, works it through the normal branch -> verify -> PR -> gate -> `nyx/audit` -> merge flow, and re-runs the milestone.
 4. **Publish prerelease and hands-on issue:** once `smoke:packaged` passes, autopilot uploads the unsigned per-user NSIS installer (`Tivano-Windows-Dev-<version>-x64-setup.exe`) as a GitHub Release asset via `gh release create v<version>-nyx.<n> <installer> --prerelease`, and opens **one** issue titled `Ready for hands-on testing: <version>` assigned to `elijah7x` and labelled `hands-on`. Its body includes:
@@ -156,7 +156,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Get-Loo
 
 ### Guarded paths and trust model
 
-- **Guarded paths:** issue PRs must never modify `scripts/audit/`, `scripts/dev-loop/`, `scripts/pr-review/`, `scripts/windows-acceptance/`, `.github/`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `TRADEMARK.md`, `docs/source-baseline.json` (exempt only in `solo-v3.md` Phase 1), or `package-lock.json`, must never alter dependencies in `package.json`, and must never set a `docs/parity.md` row to `done`.
+- **Guarded paths:** issue PRs must never modify `scripts/audit/`, `scripts/dev-loop/`, `scripts/pr-review/`, `scripts/windows-acceptance/`, `.github/`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `TRADEMARK.md`, `docs/source-baseline.json` (exempt only in `solo-v3.md` Phase 1 and step 2a), `docs/parity.md` (exempt only in `solo-v3.md` Phase 1 / step 2a / Phase 4 and dedicated `nyx/parity-sync-*` batch-sync PRs), or `package-lock.json`, and must never alter dependencies in `package.json`. Feature PRs declare proposed parity status in the PR body under `Related` via `Parity: <ID> -> <status>` (with optional `Parity-Notes:`, never `done` or `deferred`), which is batched onto `main` separately.
 - **Devin runs with full permissions** in bypass mode on the operating account. Keep `-Root` private to that account, keep the `gh` token scoped appropriately, and keep the scripts mirrored from `C:\tivano\audit\tool` into `C:\tivano\pr-bot\tool\scripts` rather than running from the working clone.
 - **Branch protection enforces `nyx/audit`:** `main` requires the independent GitHub App's `nyx/audit` status check; `--admin` is never used.
 - **Public text hygiene:** no machine names, user names, local paths, tokens, or secrets in issues, PRs, releases, commits, or comments; refer to the host only as `a Windows test machine`.

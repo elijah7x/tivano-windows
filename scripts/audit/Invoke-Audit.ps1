@@ -1242,6 +1242,161 @@ function Test-IsMergeCommit {
   return $false
 }
 
+function Normalize-ParityCellStatus {
+  param([AllowEmptyString()][string]$CellText)
+  $s = ([string]$CellText).Trim()
+  $prev = $null
+  while ($s -ne $prev) {
+    $prev = $s
+    $s = $s.Trim().Trim('`').Trim('*').Trim('_').Trim()
+  }
+  return $s.ToLowerInvariant()
+}
+
+function Get-ParityRowMap {
+  param([string]$Text)
+  $rows = @{}
+  $byLineIndex = @{}
+  $duplicates = New-Object Collections.Generic.List[string]
+  if ($null -eq $Text) { $Text = '' }
+  $lines = [string[]]($Text -split "`n")
+  for ($i = 0; $i -lt $lines.Count; $i++) {
+    $lineNoCr = $lines[$i].TrimEnd("`r")
+    $match = [regex]::Match($lineNoCr, '(?i)^\s*\|\s*([A-Z]+[0-9]*-[0-9]+)\s*\|')
+    if (-not $match.Success) { continue }
+    $cells = [regex]::Split($lineNoCr, '(?<!\\)\|')
+    if ($cells.Count -lt 5) { continue }
+    $id = $match.Groups[1].Value.Trim().ToUpperInvariant()
+    if ($rows.ContainsKey($id)) {
+      if (-not ($duplicates -contains $id)) { $null = $duplicates.Add($id) }
+    }
+    $rowInfo = [pscustomobject]@{
+      id = $id
+      lineIndex = $i
+      columnCount = $cells.Count
+      status = (Normalize-ParityCellStatus $cells[3])
+      line = $lines[$i]
+    }
+    $rows[$id] = $rowInfo
+    $byLineIndex[$i] = $rowInfo
+  }
+  return [pscustomobject]@{
+    rows = $rows
+    byLineIndex = $byLineIndex
+    duplicates = @($duplicates.ToArray())
+    lines = $lines
+  }
+}
+
+function Test-ParitySyncFastPath {
+  param(
+    $Config,
+    [string]$Worktree,
+    [string]$BaseRef,
+    [string[]]$ChangedFiles,
+    [string]$PrBody,
+    [string]$TempBase,
+    $DeterministicFindings
+  )
+  foreach ($df in @($DeterministicFindings)) {
+    if ($null -eq $df) { continue }
+    if (([string](Get-JsonProp $df 'severity')).Trim().ToLowerInvariant() -eq 'blocking') {
+      return [pscustomobject]@{ ok = $false; reason = ('blocking deterministic finding: ' + [string](Get-JsonProp $df 'title')); verifiedPrs = @() }
+    }
+  }
+
+  $normFiles = @($ChangedFiles | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Replace('\', '/').Trim() })
+  if ($normFiles.Count -ne 1 -or $normFiles[0] -cne 'docs/parity.md') {
+    return [pscustomobject]@{ ok = $false; reason = ('changed files are not exactly docs/parity.md (' + ($normFiles -join ', ') + ')'); verifiedPrs = @() }
+  }
+
+  $beforeRes = Invoke-Git -Directory $Worktree -Arguments ('show ' + $BaseRef + ':docs/parity.md') -TempBase $TempBase
+  if ($beforeRes.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$beforeRes.text)) {
+    return [pscustomobject]@{ ok = $false; reason = 'could not read base docs/parity.md'; verifiedPrs = @() }
+  }
+  $afterText = Read-Text (Join-Path $Worktree 'docs\parity.md')
+  if ([string]::IsNullOrWhiteSpace($afterText)) {
+    return [pscustomobject]@{ ok = $false; reason = 'could not read updated docs/parity.md'; verifiedPrs = @() }
+  }
+
+  $beforeMap = Get-ParityRowMap ([string]$beforeRes.text)
+  $afterMap = Get-ParityRowMap $afterText
+
+  if ($beforeMap.duplicates.Count -gt 0) {
+    return [pscustomobject]@{ ok = $false; reason = ('duplicate row ID(s) in base docs/parity.md: ' + ($beforeMap.duplicates -join ', ')); verifiedPrs = @() }
+  }
+  if ($afterMap.duplicates.Count -gt 0) {
+    return [pscustomobject]@{ ok = $false; reason = ('duplicate row ID(s) in updated docs/parity.md: ' + ($afterMap.duplicates -join ', ')); verifiedPrs = @() }
+  }
+
+  $beforeLines = $beforeMap.lines
+  $afterLines = $afterMap.lines
+  if ($beforeLines.Count -ne $afterLines.Count) {
+    return [pscustomobject]@{ ok = $false; reason = ('line count changed (' + $beforeLines.Count + ' -> ' + $afterLines.Count + ')'); verifiedPrs = @() }
+  }
+
+  $allowedStatusPattern = '^(?:partial|not started|blocked\s*\([^)\r\n]+\)|n/a\s*\([^)\r\n]+\))$'
+  $modifiedRowCount = 0
+  for ($i = 0; $i -lt $beforeLines.Count; $i++) {
+    if ($beforeLines[$i] -ceq $afterLines[$i]) { continue }
+    if (-not $beforeMap.byLineIndex.ContainsKey($i)) {
+      return [pscustomobject]@{ ok = $false; reason = ('non-table line modified at line ' + ($i + 1)); verifiedPrs = @() }
+    }
+    if (-not $afterMap.byLineIndex.ContainsKey($i)) {
+      return [pscustomobject]@{ ok = $false; reason = ('modified table row invalid at line ' + ($i + 1)); verifiedPrs = @() }
+    }
+    $bRow = $beforeMap.byLineIndex[$i]
+    $aRow = $afterMap.byLineIndex[$i]
+    if ($bRow.status -match '^(?:done|deferred)\b') {
+      return [pscustomobject]@{ ok = $false; reason = ('protected done/deferred row changed: ' + $bRow.id); verifiedPrs = @() }
+    }
+    if ($aRow.id -cne $bRow.id) {
+      return [pscustomobject]@{ ok = $false; reason = ('row ID changed at line ' + ($i + 1) + ': ' + $bRow.id + ' -> ' + $aRow.id); verifiedPrs = @() }
+    }
+    if ($aRow.columnCount -ne $bRow.columnCount) {
+      return [pscustomobject]@{ ok = $false; reason = ('column count changed for row ' + $bRow.id); verifiedPrs = @() }
+    }
+    if ($aRow.status -notmatch $allowedStatusPattern) {
+      return [pscustomobject]@{ ok = $false; reason = ('disallowed status for row ' + $bRow.id + ': ' + $aRow.status); verifiedPrs = @() }
+    }
+    $modifiedRowCount++
+  }
+
+  if ($modifiedRowCount -eq 0) {
+    return [pscustomobject]@{ ok = $false; reason = 'no parity table rows modified'; verifiedPrs = @() }
+  }
+
+  $refNums = New-Object Collections.Generic.List[int]
+  $refSeen = @{}
+  if (-not [string]::IsNullOrWhiteSpace($PrBody)) {
+    foreach ($m in [regex]::Matches($PrBody, '(?<!&)#([0-9]+)\b')) {
+      $n = 0
+      if ([int]::TryParse($m.Groups[1].Value, [ref]$n) -and $n -gt 0 -and -not $refSeen.ContainsKey($n)) {
+        $refSeen[$n] = $true
+        $null = $refNums.Add($n)
+      }
+    }
+  }
+  if ($refNums.Count -eq 0) {
+    return [pscustomobject]@{ ok = $false; reason = 'PR body lists no #<n> merged PR references'; verifiedPrs = @() }
+  }
+
+  foreach ($refNum in $refNums) {
+    try {
+      $refPr = Invoke-AuditApi -Config $Config -Method 'GET' -Path ('/repos/' + $Config.repo + '/pulls/' + $refNum)
+      $isMerged = [bool](Get-JsonProp $refPr 'merged')
+      $mergedAt = [string](Get-JsonProp $refPr 'merged_at')
+      if (-not $isMerged -and [string]::IsNullOrWhiteSpace($mergedAt)) {
+        return [pscustomobject]@{ ok = $false; reason = ('referenced PR #' + $refNum + ' is not merged'); verifiedPrs = @() }
+      }
+    } catch {
+      return [pscustomobject]@{ ok = $false; reason = ('referenced #' + $refNum + ' could not be verified as a merged PR'); verifiedPrs = @() }
+    }
+  }
+
+  return [pscustomobject]@{ ok = $true; reason = ''; verifiedPrs = @($refNums.ToArray()) }
+}
+
 function Get-DeterministicFindings {
   param(
     [string]$Worktree,
@@ -1259,8 +1414,24 @@ function Get-DeterministicFindings {
   $findings = New-Object Collections.Generic.List[object]
   $seq = 1
   $isRebaselinePr = ($HeadRef -like 'nyx/rebaseline-v*')
+  $isParitySyncPr = ($HeadRef -like 'nyx/parity-sync-*')
+  $normChangedForSync = @($ChangedFiles | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Replace('\', '/').Trim() })
+  $isParitySyncOnly = ($isParitySyncPr -and $normChangedForSync.Count -eq 1 -and $normChangedForSync[0] -ceq 'docs/parity.md')
 
-  if ($IssueNumber -le 0 -and -not $isRebaselinePr) {
+  if ($isParitySyncPr -and -not $isParitySyncOnly) {
+    $otherSyncFiles = @($normChangedForSync | Where-Object { $_ -cne 'docs/parity.md' })
+    $shownOther = if ($otherSyncFiles.Count -gt 0) { (($otherSyncFiles | Select-Object -First 8) -join ', ') } else { '(no changed files)' }
+    $null = $findings.Add([pscustomobject]@{
+      id = ('D' + $seq)
+      severity = 'blocking'
+      title = 'parity-sync branch changes files other than docs/parity.md'
+      evidence = $shownOther
+      why = 'Branches matching nyx/parity-sync-* may only modify docs/parity.md.'
+    })
+    $seq++
+  }
+
+  if ($IssueNumber -le 0 -and -not $isRebaselinePr -and -not $isParitySyncOnly) {
     $null = $findings.Add([pscustomobject]@{
       id = ('D' + $seq)
       severity = 'blocking'
@@ -1290,7 +1461,7 @@ function Get-DeterministicFindings {
       }
     }
   }
-  if (-not $isRebaselinePr -and $IssueNumber -gt 0 -and $branchIssueNumber -gt 0) {
+  if (-not $isRebaselinePr -and -not $isParitySyncOnly -and $IssueNumber -gt 0 -and $branchIssueNumber -gt 0) {
     $closingPattern = '(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#' + $branchIssueNumber + '\b'
     $hasClosingKeyword = (-not [string]::IsNullOrWhiteSpace($PrBody)) -and [regex]::IsMatch($PrBody, $closingPattern)
     if (-not $hasClosingKeyword) {
@@ -1537,6 +1708,16 @@ function Get-DeterministicFindings {
         title = ('sets docs/parity.md row(s) to done: ' + ($promoted -join ', '))
         evidence = 'docs/parity.md'
         why = 'Autopilot PRs must not set docs/parity.md rows to done; only maintainers mark parity rows done.'
+      })
+      $seq++
+    }
+    if (-not $isParitySyncOnly) {
+      $null = $findings.Add([pscustomobject]@{
+        id = ('D' + $seq)
+        severity = 'advisory'
+        title = 'feature PR edits docs/parity.md directly'
+        evidence = 'docs/parity.md'
+        why = 'Feature PRs should carry Parity: <ID> -> <status> lines in the PR body for batch sync instead of editing docs/parity.md directly (advisory only).'
       })
       $seq++
     }
@@ -2818,6 +2999,9 @@ function Invoke-SinglePrAudit {
     $finalVerdict = 'block'
     $diffStat = '(merge conflict with origin/main)'
 
+    $isRebaselinePr = ($headRef -like 'nyx/rebaseline-v*')
+    $isParitySyncPr = ($headRef -like 'nyx/parity-sync-*')
+
     if ($hasMergeConflict) {
       $null = $allFindings.Add([pscustomobject]@{
         id = 'D1'
@@ -2826,9 +3010,31 @@ function Invoke-SinglePrAudit {
         evidence = ('merge origin/main + ' + $sha7)
         why = 'Trial merge of PR head onto origin/main produced merge conflicts.'
       })
-      if ($issueNumber -le 0) {
+      $conflictSeq = 2
+      $isConflictParitySyncOnly = $false
+      if ($isParitySyncPr) {
+        $conflictFilesRes = Invoke-Git -Directory $worktreeDir -Arguments ('-c core.quotepath=false diff --no-renames --name-only -z ' + $baseRef + '...' + $headSha) -TempBase $runDir
+        $conflictPrFiles = @()
+        if ($conflictFilesRes.exitCode -eq 0 -and -not [string]::IsNullOrEmpty([string]$conflictFilesRes.text)) {
+          $conflictPrFiles = @(([string]$conflictFilesRes.text) -split "`0" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Replace('\', '/').Trim() })
+        }
+        $isConflictParitySyncOnly = ($conflictFilesRes.exitCode -eq 0 -and $conflictPrFiles.Count -eq 1 -and $conflictPrFiles[0] -ceq 'docs/parity.md')
+        if (-not $isConflictParitySyncOnly) {
+          $otherConflictFiles = @($conflictPrFiles | Where-Object { $_ -cne 'docs/parity.md' })
+          $shownConflictOther = if ($otherConflictFiles.Count -gt 0) { (($otherConflictFiles | Select-Object -First 8) -join ', ') } else { '(unable to verify changed files)' }
+          $null = $allFindings.Add([pscustomobject]@{
+            id = ('D' + $conflictSeq)
+            severity = 'blocking'
+            title = 'parity-sync branch changes files other than docs/parity.md'
+            evidence = $shownConflictOther
+            why = 'Branches matching nyx/parity-sync-* may only modify docs/parity.md.'
+          })
+          $conflictSeq++
+        }
+      }
+      if ($issueNumber -le 0 -and -not $isRebaselinePr -and -not $isConflictParitySyncOnly) {
         $null = $allFindings.Add([pscustomobject]@{
-          id = 'D2'
+          id = ('D' + $conflictSeq)
           severity = 'blocking'
           title = 'no linked issue'
           evidence = ('branch ' + $headRef)
@@ -2863,6 +3069,26 @@ function Invoke-SinglePrAudit {
       $detFindings = @(Get-DeterministicFindings -Worktree $worktreeDir -HeadRef $headRef -ChangedFiles $changedFiles -IssueNumber $issueNumber -IssueError $issueError -TempBase $runDir -PrBody $prBody -PrCommits $prCommits -MainCompare $mainCompare -MainCommits $MainCommitsCache['commits'] -BaseRef $baseRef)
       foreach ($df in $detFindings) { $null = $allFindings.Add($df) }
 
+      $usedParityFastPath = $false
+      if ($isParitySyncPr) {
+        $fastPath = Test-ParitySyncFastPath -Config $Config -Worktree $worktreeDir -BaseRef $baseRef -ChangedFiles $changedFiles -PrBody $prBody -TempBase $runDir -DeterministicFindings $detFindings
+        if ($fastPath.ok) {
+          $usedParityFastPath = $true
+          $finalVerdict = 'pass'
+          $auditModel = 'deterministic-parity-sync'
+          $verifiedLabels = @($fastPath.verifiedPrs | ForEach-Object { '#' + $_ })
+          $claims = @([pscustomobject]@{
+            claim = ('Parity sync updates docs/parity.md only for merged PR(s): ' + ($verifiedLabels -join ', '))
+            holds = $true
+            evidence = 'docs/parity.md'
+          })
+          Write-Log ('PR #' + $num + ' head ' + $sha7 + ' passed deterministic parity-sync fast path (' + $verifiedLabels.Count + ' merged PR(s) verified); skipping LLM audit')
+        } else {
+          Write-Log ('PR #' + $num + ' head ' + $sha7 + ' parity-sync fast path declined (' + $fastPath.reason + '); falling through to normal audit')
+        }
+      }
+
+      if (-not $usedParityFastPath) {
       $values = @{
         PR_NUMBER = [string]$num
         PR_TITLE = $prTitle
@@ -2996,6 +3222,7 @@ function Invoke-SinglePrAudit {
         $finalVerdict = 'block'
       } else {
         $finalVerdict = 'pass'
+      }
       }
     }
 

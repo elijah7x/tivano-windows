@@ -55,7 +55,7 @@ $script:DevinPath = $null
 $script:Redactions = @()
 $script:GuiTypesLoaded = $false
 $script:LastFreshSessionDeferred = $false
-$script:AutoMergeDailyCap = 40
+$script:AutoMergeDailyCap = 150
 $script:IdentifiedTaskPattern = 'Invoke-AutopilotGate|Invoke-PrReview|Invoke-GlmReview|package-windows|packaged-smoke'
 $script:AttributionLinePattern = '(?i)co-authored-by|generated (with|by) \[?devin|devin\.ai'
 
@@ -1457,8 +1457,18 @@ function Get-OrphanedLoopRoots {
     }
     if (-not $isTarget) { continue }
 
-    if ($cmd.IndexOf('C:\tivano', [StringComparison]::OrdinalIgnoreCase) -lt 0 -and
-        $exe.IndexOf('C:\tivano', [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+    $inLoopPath = (
+      $cmd.IndexOf('C:\tivano', [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+      $exe.IndexOf('C:\tivano', [StringComparison]::OrdinalIgnoreCase) -ge 0
+    )
+    if (-not $inLoopPath -and -not [string]::IsNullOrWhiteSpace($HydrogenLaneRoot)) {
+      $hRootClean = $HydrogenLaneRoot.TrimEnd('\')
+      $inLoopPath = (
+        $cmd.IndexOf($hRootClean, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+        $exe.IndexOf($hRootClean, [StringComparison]::OrdinalIgnoreCase) -ge 0
+      )
+    }
+    if (-not $inLoopPath) { continue }
     # An identified task (gate, reviews, packaging, smoke) keeps its busy protection even after its
     # launcher exits, so its tree is never treated as orphaned while it runs.
     if ($cmd -match $script:IdentifiedTaskPattern) { continue }
@@ -1960,8 +1970,8 @@ function Get-LatestPrGateSummary {
 
 function Get-TodayMergedNyxPrCount {
   $today = [DateTime]::Now.ToString('yyyy-MM-dd')
-  $sinceDate = [DateTime]::UtcNow.AddDays(-2).ToString('yyyy-MM-dd')
-  $res = Invoke-Gh ('pr list -R ' + $Repo + ' --state merged --search ' + (Quote-Argument ('merged:>=' + $sinceDate)) + ' --limit 100 --json number,headRefName,mergedAt')
+  $sinceUtc = ([DateTime]::Today).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
+  $res = Invoke-Gh ('pr list -R ' + $Repo + ' --state merged --search ' + (Quote-Argument ('merged:>=' + $sinceUtc)) + ' --limit 500 --json number,headRefName,mergedAt')
   if ($res.exitCode -ne 0) {
     Write-Log ('auto-merge: gh pr list --state merged failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $res) 200))
     return $null
@@ -1981,6 +1991,7 @@ function Get-TodayMergedNyxPrCount {
   foreach ($item in $items) {
     $headRef = [string](Get-JsonProp $item 'headRefName')
     if (-not $headRef.StartsWith('nyx/', [StringComparison]::Ordinal)) { continue }
+    if ($headRef -like 'nyx/parity-sync-*') { continue }
     $mergedAt = [string](Get-JsonProp $item 'mergedAt')
     if ([string]::IsNullOrWhiteSpace($mergedAt)) { continue }
     $parsedDto = [DateTimeOffset]::MinValue
@@ -2322,6 +2333,37 @@ function Send-AutoParkTrackingComment {
   }
 }
 
+function Resolve-HydrogenProgressPath {
+  param(
+    [string]$HydrogenRoot,
+    [int]$IssueNumber,
+    [string]$Branch = ''
+  )
+  $legacyPath = Join-Path (Join-Path $HydrogenRoot 'state') 'progress-hydrogen.json'
+  $lockIssueNum = $IssueNumber
+  if ($lockIssueNum -le 0 -and -not [string]::IsNullOrWhiteSpace($Branch)) {
+    $bm = [regex]::Match($Branch, '^nyx/h-([0-9]+)-')
+    if ($bm.Success) {
+      try { $lockIssueNum = [int]$bm.Groups[1].Value } catch { $lockIssueNum = 0 }
+    }
+  }
+  if ($lockIssueNum -le 0) { return $legacyPath }
+
+  $lockPath = Join-Path (Join-Path $HydrogenRoot 'claims') ('issue-' + $lockIssueNum + '.lock')
+  if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+    return $legacyPath
+  }
+  $lockRead = Read-JsonFileChecked $lockPath
+  if (-not $lockRead.ok -or $null -eq $lockRead.data) {
+    return $legacyPath
+  }
+  $laneId = ([string](Get-JsonProp $lockRead.data 'laneId')).Trim()
+  if ([string]::IsNullOrWhiteSpace($laneId) -or $laneId -cnotmatch '^[a-z0-9][a-z0-9_-]{0,15}$') {
+    return $legacyPath
+  }
+  return (Join-Path (Join-Path (Join-Path (Join-Path $HydrogenRoot 'lanes') $laneId) 'state') 'progress-hydrogen.json')
+}
+
 function Write-StalePrReport {
   # Lists open nyx/ PRs that have been open for at least $StalePrHours hours and have used at least
   # $StalePrGateRuns gate runs, in <autopilot>\stale-prs.json, and returns the list for
@@ -2333,6 +2375,7 @@ function Write-StalePrReport {
   foreach ($pr in @($OpenPrs)) {
     $head = [string](Get-JsonProp $pr 'headRefName')
     if (-not $head.StartsWith('nyx/')) { continue }
+    if ($head -like 'nyx/parity-sync-*') { continue }
     $num = [int](Get-JsonProp $pr 'number')
     $created = Parse-UtcTimestamp ([string](Get-JsonProp $pr 'createdAt'))
     if ($null -eq $created) { continue }
@@ -2380,7 +2423,6 @@ function Invoke-AutoParkStale {
   $parkedPath = Join-Path $script:AutopilotDir 'parked.json'
   $hLane = $HydrogenLaneRoot
   if ([string]::IsNullOrWhiteSpace($hLane)) { $hLane = Join-Path $script:WorkRoot 'hydrogen' }
-  $hydrogenProgressPath = Join-Path (Join-Path $hLane 'state') 'progress-hydrogen.json'
   $maxPerTick = 5
   $parkedThisTick = 0
 
@@ -2401,6 +2443,7 @@ function Invoke-AutoParkStale {
     }
     $branch = [string](Get-JsonProp $staleItem 'branch')
     if ($prNum -le 0 -or [string]::IsNullOrWhiteSpace($branch)) { continue }
+    if ($branch -like 'nyx/parity-sync-*') { continue }
 
     $isHydrogen = $branch.StartsWith('nyx/h-', [StringComparison]::Ordinal)
     $isDevin = $branch.StartsWith('nyx/', [StringComparison]::Ordinal) -and (-not $isHydrogen)
@@ -2538,6 +2581,7 @@ function Invoke-AutoParkStale {
         Write-Log ('auto-parked PR #' + $prNum + ' (issue #' + $issueNum + ', attempt ' + $newAttempt + '): ' + $hoursInt + 'h, ' + $runsInt + ' gate runs')
         $parkedThisTick++
       } elseif ($isHydrogen) {
+        $hydrogenProgressPath = Resolve-HydrogenProgressPath -HydrogenRoot $hLane -IssueNumber $issueNum -Branch $branch
         if (-not (Test-Path -LiteralPath $hydrogenProgressPath -PathType Leaf)) {
           Write-Log ('auto-park PR #' + $prNum + ' (issue #' + $issueNum + '): skipped (no Hydrogen progress file under the lane root; set -HydrogenLaneRoot)')
           continue
@@ -2614,6 +2658,145 @@ function Invoke-AutoParkStale {
     } catch {
       Write-Log ('auto-park PR #' + $prNum + ': skipped (unexpected error: ' + (ConvertTo-SingleLine $_.Exception.Message 180) + ')')
     }
+  }
+}
+
+function Normalize-ParityPendingStatus {
+  param([AllowEmptyString()][string]$Status)
+  $trimmed = ([string]$Status).Trim()
+  if ($trimmed -match '(?i)^partial$') { return 'partial' }
+  if ($trimmed -match '(?i)^not\s+started$') { return 'not started' }
+  $bm = [regex]::Match($trimmed, '(?i)^blocked\s*(\([^)\r\n]+\))$')
+  if ($bm.Success) { return ('blocked ' + $bm.Groups[1].Value.Trim()) }
+  $nm = [regex]::Match($trimmed, '(?i)^n/a\s*(\([^)\r\n]+\))$')
+  if ($nm.Success) { return ('n/a ' + $nm.Groups[1].Value.Trim()) }
+  return $trimmed
+}
+
+function Get-ParityPendingEntriesFromPrBody {
+  param(
+    [AllowEmptyString()][string]$PrBody,
+    [int]$PrNumber,
+    [AllowEmptyString()][string]$MergeSha
+  )
+  $entries = New-Object Collections.Generic.List[object]
+  if ([string]::IsNullOrWhiteSpace($PrBody)) { return @() }
+  $allowedPattern = '(?i)^Parity:\s*(P\d+-\d+|W-\d+)\s*->\s*(partial|not started|blocked\s*\([^)\r\n]+\)|n/a\s*\([^)\r\n]+\))\s*$'
+  $anyParityPattern = '(?i)^Parity:\s*(P\d+-\d+|W-\d+)\s*->\s*(.+?)\s*$'
+  $notesPattern = '(?i)^Parity-Notes:\s*(.+?)\s*$'
+  $mergedAtUtc = [DateTime]::UtcNow.ToString('o')
+  $lastEntry = $null
+
+  foreach ($rawLine in ($PrBody -split "`r?`n")) {
+    $line = $rawLine.TrimEnd("`r")
+    $anyMatch = [regex]::Match($line, $anyParityPattern)
+    if ($anyMatch.Success) {
+      $id = $anyMatch.Groups[1].Value.Trim().ToUpperInvariant()
+      $rawStatus = $anyMatch.Groups[2].Value.Trim()
+      if ($rawStatus -match '(?i)^(?:done|deferred)\b') {
+        Write-Log ('auto-merge PR #' + $PrNumber + ': warning: rejecting Parity line for ' + $id + ' with disallowed status "' + (ConvertTo-SingleLine $rawStatus 80) + '"')
+        $lastEntry = $null
+        continue
+      }
+      $okMatch = [regex]::Match($line, $allowedPattern)
+      if (-not $okMatch.Success) {
+        Write-Log ('auto-merge PR #' + $PrNumber + ': warning: ignoring Parity line for ' + $id + ' with unsupported status "' + (ConvertTo-SingleLine $rawStatus 80) + '"')
+        $lastEntry = $null
+        continue
+      }
+      $normStatus = Normalize-ParityPendingStatus $okMatch.Groups[2].Value
+      $entry = [ordered]@{
+        pr = $PrNumber
+        sha = ([string]$MergeSha).Trim()
+        id = $id
+        status = $normStatus
+        notes = ''
+        mergedAtUtc = $mergedAtUtc
+      }
+      $null = $entries.Add($entry)
+      $lastEntry = $entry
+      continue
+    }
+
+    $notesMatch = [regex]::Match($line, $notesPattern)
+    if ($notesMatch.Success -and $null -ne $lastEntry) {
+      $noteText = $notesMatch.Groups[1].Value.Trim()
+      if (-not [string]::IsNullOrWhiteSpace($noteText)) {
+        if ([string]::IsNullOrWhiteSpace([string]$lastEntry['notes'])) {
+          $lastEntry['notes'] = $noteText
+        } else {
+          $lastEntry['notes'] = ([string]$lastEntry['notes']) + ' ' + $noteText
+        }
+      }
+    }
+  }
+
+  return @($entries.ToArray())
+}
+
+function Add-ParityPendingEntries {
+  param($Entries)
+  $toAdd = @($Entries | Where-Object { $null -ne $_ })
+  if ($toAdd.Count -eq 0) { return }
+  $pendingPath = Join-Path $script:AutopilotDir 'parity-pending.json'
+  $read = Read-JsonFileChecked $pendingPath
+  if ($read.exists -and -not $read.ok) {
+    Write-Log ('auto-merge: warning: unreadable parity-pending.json; cannot append entries: ' + (ConvertTo-SingleLine $read.error 160))
+    return
+  }
+  $list = New-Object Collections.Generic.List[object]
+  $seen = @{}
+  if ($null -ne $read.data) {
+    foreach ($existing in @($read.data | Where-Object { $null -ne $_ })) {
+      $null = $list.Add($existing)
+      $ePr = 0
+      try { $ePr = [int](Get-JsonProp $existing 'pr') } catch { $ePr = 0 }
+      $eId = ([string](Get-JsonProp $existing 'id')).Trim().ToUpperInvariant()
+      if ($ePr -gt 0 -and -not [string]::IsNullOrWhiteSpace($eId)) {
+        $seen[($ePr.ToString() + '|' + $eId)] = $true
+      }
+    }
+  }
+  foreach ($item in $toAdd) {
+    $nPr = [int](Get-JsonProp $item 'pr')
+    $nId = ([string](Get-JsonProp $item 'id')).Trim().ToUpperInvariant()
+    $dedupeKey = $nPr.ToString() + '|' + $nId
+    if ($nPr -gt 0 -and -not [string]::IsNullOrWhiteSpace($nId) -and $seen.ContainsKey($dedupeKey)) {
+      continue
+    }
+    $seen[$dedupeKey] = $true
+    $null = $list.Add($item)
+  }
+  Save-JsonAtomic -Path $pendingPath -Object ([object[]]$list.ToArray()) -Depth 6
+}
+
+function Remove-ParityPendingEntriesBySyncPr {
+  param([int]$SyncPr)
+  if ($SyncPr -le 0) { return }
+  $pendingPath = Join-Path $script:AutopilotDir 'parity-pending.json'
+  $read = Read-JsonFileChecked $pendingPath
+  if (-not $read.exists -or $null -eq $read.data) { return }
+  if (-not $read.ok) {
+    Write-Log ('auto-merge: warning: unreadable parity-pending.json; cannot prune syncPr #' + $SyncPr + ': ' + (ConvertTo-SingleLine $read.error 160))
+    return
+  }
+  $kept = New-Object Collections.Generic.List[object]
+  $removed = 0
+  foreach ($existing in @($read.data | Where-Object { $null -ne $_ })) {
+    $sp = 0
+    $rawSp = Get-JsonProp $existing 'syncPr'
+    if ($null -ne $rawSp) {
+      try { $sp = [int]$rawSp } catch { $sp = 0 }
+    }
+    if ($sp -eq $SyncPr) {
+      $removed++
+      continue
+    }
+    $null = $kept.Add($existing)
+  }
+  if ($removed -gt 0) {
+    Save-JsonAtomic -Path $pendingPath -Object ([object[]]$kept.ToArray()) -Depth 6
+    Write-Log ('auto-merge PR #' + $SyncPr + ': removed ' + $removed + ' synced entry(s) from parity-pending.json')
   }
 }
 
@@ -2706,7 +2889,12 @@ function Invoke-AutoMerge {
       $sha7 = $headSha
       if ($sha7.Length -gt 7) { $sha7 = $sha7.Substring(0, 7) }
 
+      $isRebaselinePr = ($headRef -like 'nyx/rebaseline-v*')
+      $isParitySyncPr = ($headRef -like 'nyx/parity-sync-*')
+
       # (a) Newest gate summary.json has verdict 'pass' and headSha equal to live headRefOid.
+      # Parity-sync PRs edit only docs/parity.md and skip the gate-summary check.
+      if (-not $isParitySyncPr) {
       $gateSummary = Get-LatestPrGateSummary -PrNumber $prNum
       if ($null -eq $gateSummary) {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (no gate summary.json found)')
@@ -2731,15 +2919,15 @@ function Invoke-AutoMerge {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (gate headSha ' + $gateSha7 + ' does not match live head ' + $sha7 + ')')
         continue
       }
+      }
 
       # (c) PR body contains a closing keyword for the issue number parsed from nyx/<n>-...
-      # A parity re-baseline PR (nyx/rebaseline-v*, solo-v3.md) has no linked issue: the gate and
-      # audit apply their guarded-file exemption only to that branch, so it skips the issue checks.
+      # Parity re-baseline PRs (nyx/rebaseline-v*) and parity-sync PRs (nyx/parity-sync-*)
+      # have no linked issue and skip the linked-issue checks.
       $prBody = [string](Get-JsonProp $pr 'body')
       $issueNum = 0
       $closingPattern = ''
-      $isRebaselinePr = ($headRef -like 'nyx/rebaseline-v*')
-      if (-not $isRebaselinePr) {
+      if (-not $isRebaselinePr -and -not $isParitySyncPr) {
       $branchMatch = [regex]::Match($headRef, '^nyx/(?:h-)?([0-9]+)-')
       if (-not $branchMatch.Success) {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (branch ' + $headRef + ' does not match nyx/<issue>-...)')
@@ -2820,8 +3008,10 @@ function Invoke-AutoMerge {
         continue
       }
 
-      # (d) mergeable is MERGEABLE and mergeStateStatus is not DIRTY.
-      $viewRes = Invoke-Gh ('pr view ' + $prNum + ' -R ' + $Repo + ' --json mergeable,mergeStateStatus')
+      # (d) mergeable is MERGEABLE and mergeStateStatus is not DIRTY (plus files == @('docs/parity.md') for parity-sync).
+      $viewFields = 'mergeable,mergeStateStatus'
+      if ($isParitySyncPr) { $viewFields = 'mergeable,mergeStateStatus,files' }
+      $viewRes = Invoke-Gh ('pr view ' + $prNum + ' -R ' + $Repo + ' --json ' + $viewFields)
       if ($viewRes.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$viewRes.text)) {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (gh pr view failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $viewRes) 180) + ')')
         continue
@@ -2847,19 +3037,32 @@ function Invoke-AutoMerge {
         Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (mergeStateStatus is DIRTY)')
         continue
       }
+      if ($isParitySyncPr) {
+        $filesRaw = Get-JsonProp $viewObj 'files'
+        $changedPaths = @()
+        if ($null -ne $filesRaw) {
+          $changedPaths = @($filesRaw | Where-Object { $null -ne $_ } | ForEach-Object { ([string](Get-JsonProp $_ 'path')).Replace('\', '/').Trim() } | Where-Object { $_ })
+        }
+        if ($changedPaths.Count -ne 1 -or $changedPaths[0] -cne 'docs/parity.md') {
+          Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (parity-sync PR changed files must be exactly docs/parity.md; got: ' + ($changedPaths -join ', ') + ')')
+          continue
+        }
+      }
 
-      # (e) Today's merges are under the daily cap (40).
-      if (-not $mergedTodayLoaded) {
-        $mergedToday = Get-TodayMergedNyxPrCount
-        $mergedTodayLoaded = $true
-      }
-      if ($null -eq $mergedToday) {
-        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (could not count today merged nyx/ PRs)')
-        continue
-      }
-      if ($mergedToday -ge $script:AutoMergeDailyCap) {
-        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (daily merge cap reached: ' + $mergedToday + '/' + $script:AutoMergeDailyCap + ')')
-        continue
+      # (e) Today's merges are under the daily cap (150); parity-sync PRs are excluded from the daily cap.
+      if (-not $isParitySyncPr) {
+        if (-not $mergedTodayLoaded) {
+          $mergedToday = Get-TodayMergedNyxPrCount
+          $mergedTodayLoaded = $true
+        }
+        if ($null -eq $mergedToday) {
+          Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (could not count today merged nyx/ PRs)')
+          continue
+        }
+        if ($mergedToday -ge $script:AutoMergeDailyCap) {
+          Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): skipped (daily merge cap reached: ' + $mergedToday + '/' + $script:AutoMergeDailyCap + ')')
+          continue
+        }
       }
 
       $prTitle = [regex]::Replace(([string](Get-JsonProp $pr 'title')), '[\r\n]+', ' ').Trim()
@@ -2897,7 +3100,9 @@ function Invoke-AutoMerge {
         continue
       }
 
-      $mergedToday++
+      if (-not $isParitySyncPr) {
+        $mergedToday++
+      }
 
       # Verify the merge commit message on main contains no agent attribution line.
       $mergeSha = ''
@@ -2944,9 +3149,27 @@ function Invoke-AutoMerge {
         Write-Log ('auto-merge PR #' + $prNum + ': warning: merge_commit_sha unavailable after merge; could not verify commit message on main')
       }
 
-      Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): merged (issue #' + $issueNum + ', mergeCommit ' + $mergeSha7 + ', today ' + $mergedToday + '/' + $script:AutoMergeDailyCap + ')')
+      if ($isParitySyncPr) {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): merged (parity-sync, mergeCommit ' + $mergeSha7 + ')')
+        try {
+          Remove-ParityPendingEntriesBySyncPr -SyncPr $prNum
+        } catch {
+          Write-Log ('auto-merge PR #' + $prNum + ': warning: failed to prune parity-pending.json: ' + (ConvertTo-SingleLine $_.Exception.Message 180))
+        }
+      } else {
+        Write-Log ('auto-merge PR #' + $prNum + ' (' + $sha7 + '): merged (issue #' + $issueNum + ', mergeCommit ' + $mergeSha7 + ', today ' + $mergedToday + '/' + $script:AutoMergeDailyCap + ')')
+        try {
+          $parityEntries = @(Get-ParityPendingEntriesFromPrBody -PrBody $prBody -PrNumber $prNum -MergeSha $mergeSha)
+          if ($parityEntries.Count -gt 0) {
+            Add-ParityPendingEntries -Entries $parityEntries
+            Write-Log ('auto-merge PR #' + $prNum + ': recorded ' + $parityEntries.Count + ' parity pending entry(s)')
+          }
+        } catch {
+          Write-Log ('auto-merge PR #' + $prNum + ': warning: failed to record parity pending entries: ' + (ConvertTo-SingleLine $_.Exception.Message 180))
+        }
+      }
 
-      # Close the linked issue with a comment if it is still open (re-baseline PRs have none).
+      # Close the linked issue with a comment if it is still open (re-baseline and parity-sync PRs have none).
       if ($issueNum -le 0) { continue }
       $issueViewRes = Invoke-Gh ('issue view ' + $issueNum + ' -R ' + $Repo + ' --json state')
       if ($issueViewRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$issueViewRes.text)) {
@@ -3015,6 +3238,29 @@ function Invoke-WatchTick {
       Invoke-AutoMerge -Watchdog $watchdog
     } catch {
       Write-Log ('auto-merge error: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
+    }
+    if (-not (Test-Stop)) {
+      $syncScript = Join-Path $PSScriptRoot 'Sync-ParityChecklist.ps1'
+      if (Test-Path -LiteralPath $syncScript -PathType Leaf) {
+        try {
+          $syncOut = Join-Path $script:AutopilotDir '.parity-sync.out.tmp'
+          $syncErr = Join-Path $script:AutopilotDir '.parity-sync.err.tmp'
+          $syncArgs = '-NoProfile -ExecutionPolicy Bypass -File ' + (Quote-Argument $syncScript) +
+            ' -Repo ' + (Quote-Argument $Repo) +
+            ' -Root ' + (Quote-Argument $script:WorkRoot)
+          $syncCode = Invoke-Tool $script:PowerShellExe $syncArgs $syncOut $syncErr $script:WorkRoot
+          if ($syncCode -ne 0) {
+            $syncErrText = ConvertTo-SingleLine (Get-ErrorSummary ([pscustomobject]@{ text = (Read-Text $syncOut); error = (Read-Text $syncErr) })) 200
+            if ([string]::IsNullOrWhiteSpace($syncErrText)) {
+              Write-Log ('parity-sync exited with code ' + $syncCode)
+            } else {
+              Write-Log ('parity-sync exited with code ' + $syncCode + ': ' + $syncErrText)
+            }
+          }
+        } catch {
+          Write-Log ('parity-sync error: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
+        }
+      }
     }
   } else {
     Write-Log 'auto-merge: skipped (gh was not found on PATH)'
