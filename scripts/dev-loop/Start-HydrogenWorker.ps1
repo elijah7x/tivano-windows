@@ -1209,7 +1209,7 @@ function Sweep-ClaimLocks {
 
     $issuePrs = @()
     if ($HydrogenPrsByIssue.ContainsKey($lockIssue)) {
-      $issuePrs = @($HydrogenPrsByIssue[$lockIssue])
+      $issuePrs = @($HydrogenPrsByIssue[$lockIssue].ToArray())
     }
 
     $hasOpenIssueBranchPr = $false
@@ -1765,7 +1765,7 @@ try {
       $isParked = $true
     }
     if (-not $isParked -and $progressParked.prs.ContainsKey($prNum)) {
-      foreach ($parkedSha in @($progressParked.prs[$prNum])) {
+      foreach ($parkedSha in $progressParked.prs[$prNum]) {
         if ([string]::IsNullOrWhiteSpace($parkedSha) -or $parkedSha.Equals($headSha, [StringComparison]::OrdinalIgnoreCase)) {
           $isParked = $true
           break
@@ -2171,7 +2171,9 @@ try {
     }
   }
   $errMsg = ConvertTo-SingleLine $_.Exception.Message 300
-  Write-Log ('hydrogen worker error: ' + $errMsg)
+  $errWhere = ''
+  try { $errWhere = ' [' + $_.Exception.GetType().FullName + ' at line ' + $_.InvocationInfo.ScriptLineNumber + ': ' + (ConvertTo-SingleLine ([string]$_.InvocationInfo.Line) 160) + ']' } catch { }
+  Write-Log ('hydrogen worker error: ' + $errMsg + $errWhere)
   [Console]::Error.WriteLine('Start-HydrogenWorker failed: ' + $errMsg)
   exit 1
 } finally {
