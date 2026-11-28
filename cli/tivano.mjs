@@ -18,6 +18,10 @@
 //   tivano interrupt <uuid> --turn <uuid>
 //   tivano operation <ticket>
 //   tivano settings [get [KEY]] [set KEY=BOOL|automatic|off]...
+//   tivano agent models [--json]
+//   tivano agent run [--json] --cwd DIR [--model ID] [--session SID]
+//     (P1-45 agent bridge: prompt on stdin, JSON-line events on stdout;
+//     its own endpoint, no Local control switch needed)
 //
 // Socket/pipe lookup order:
 //   TIVANO_CONTROL_SOCKET env → explicit socket or pipe path
@@ -33,7 +37,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { connect } from "node:net";
 import { homedir, platform } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const VERSION = 1;
 const EDITION = "dev";
@@ -59,6 +63,167 @@ function sockPath() {
   return join(root, "control", "control.sock");
 }
 
+/** P1-45 agent endpoint: TIVANO_AGENT_SOCKET, else derived from the data
+ *  root like the control endpoint (tivano-agent-<hash> / agent.sock). */
+function agentSockPath() {
+  if (process.env.TIVANO_AGENT_SOCKET) return process.env.TIVANO_AGENT_SOCKET;
+  const control = sockPath();
+  return /[\\/]pipe[\\/]/.test(control)
+    ? control.replace("tivano-control-", "tivano-agent-")
+    : join(dirname(control), "agent.sock");
+}
+
+const MAX_AGENT_PROMPT = 900_000;
+const agentLine = (e) => process.stdout.write(JSON.stringify(e) + "\n");
+const agentError = (code, message) => agentLine({ type: "error", code, message });
+
+/** tivano agent models|run — exit 0 on success/done, 1 on error, 130/143 on signal. */
+async function runAgent(args) {
+  const [sub, ...rest] = args;
+  if (sub !== "models" && sub !== "run") {
+    agentError("bad_request", sub ? `Unknown agent subcommand '${sub}'. Expected 'models' or 'run'.` : "Missing agent subcommand. Expected 'models' or 'run'.");
+    return 1;
+  }
+  const opts = {};
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i];
+    const key = t.slice(2);
+    if (t === "--json") {
+      if (opts.json) return badAgent(sub, "Duplicate flag '--json'.");
+      opts.json = true;
+    } else if (sub === "run" && ["--cwd", "--model", "--session"].includes(t)) {
+      if (opts[key] !== undefined) return badAgent(sub, `Duplicate flag '${t}'.`);
+      const v = rest[++i];
+      if (v === undefined) return badAgent(sub, `Missing value for '${t}'.`);
+      if (!v || v.startsWith("--")) return badAgent(sub, `Invalid value for '${t}'.`);
+      opts[key] = v;
+    } else return badAgent(sub, `Unexpected argument '${t}'.`);
+  }
+  if (sub === "models") {
+    try {
+      const reply = await agentExchange({ method: "agentModels" });
+      if (reply.error) return badAgent(sub, reply.error.code ?? "error", "internal");
+      process.stdout.write(JSON.stringify(reply.result?.agentModels ?? { version: 1, models: [] }) + "\n");
+      return 0;
+    } catch (e) {
+      return badAgent(sub, e.message, "app_unavailable");
+    }
+  }
+  if (!opts.cwd) return badAgent(sub, "Missing required '--cwd' option.");
+  if (process.stdin.isTTY) return badAgent(sub, "Prompt must be piped on stdin.");
+  const chunks = [];
+  let size = 0;
+  for await (const c of process.stdin) {
+    size += c.length;
+    if (size > MAX_AGENT_PROMPT) return badAgent(sub, `Prompt exceeds the ${MAX_AGENT_PROMPT}-byte limit.`);
+    chunks.push(c);
+  }
+  let prompt;
+  try {
+    prompt = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+  } catch {
+    return badAgent(sub, "Prompt is not valid UTF-8.");
+  }
+  const params = { cwd: resolve(opts.cwd), prompt, ...(opts.model ? { model: opts.model } : {}), ...(opts.session ? { session: opts.session } : {}) };
+  let terminal;
+  let signaled;
+  let live;
+  for (const [sig, code] of [["SIGINT", 130], ["SIGTERM", 143]])
+    process.once(sig, () => {
+      signaled = code;
+      if (!live) process.exit(code);
+      live.destroy();
+    });
+  try {
+    await agentExchange({ method: "agentRun", params }, Object.assign((msg) => {
+      const ev = msg.result?.agentEvent;
+      if (msg.error || !ev) {
+        agentError(msg.error ? "app_unavailable" : "internal", msg.error?.code ?? "Unexpected response from Tivano.");
+        terminal = 1;
+        return false;
+      }
+      process.stdout.write(ev.json + "\n");
+      if (ev.type === "done" || ev.type === "error") {
+        terminal = ev.type === "done" ? 0 : 1;
+        return false;
+      }
+      return true;
+    }, { attach: (sock) => (live = sock) }));
+  } catch (e) {
+    if (signaled) return signaled;
+    agentError("app_unavailable", e.message);
+    return 1;
+  }
+  if (terminal !== undefined) return terminal;
+  if (signaled) return signaled;
+  agentError("internal", "connection closed");
+  return 1;
+}
+
+function badAgent(sub, message, code = "bad_request") {
+  if (sub === "models") process.stdout.write(JSON.stringify({ version: 1, models: [], error: { code, message } }) + "\n");
+  else agentError(code, message);
+  return 1;
+}
+
+/** hello → welcome → one command. Without `onStream` resolves the single
+ *  reply; with it, feeds frames until it returns false or the app closes. */
+function agentExchange(command, onStream) {
+  return new Promise((resolvePromise, reject) => {
+    const path = agentSockPath();
+    const sock = connect(path);
+    let buf = Buffer.alloc(0);
+    let welcomed = false;
+    let done = false;
+    const finish = (fn) => {
+      if (done) return;
+      done = true;
+      sock.setTimeout(0);
+      sock.destroy();
+      fn();
+    };
+    const frame = (body) => {
+      const p = Buffer.from(JSON.stringify(body), "utf8");
+      const h = Buffer.alloc(4);
+      h.writeUInt32BE(p.length, 0);
+      sock.write(Buffer.concat([h, p]));
+    };
+    sock.on("error", (e) =>
+      finish(() => reject(new Error(e.code === "ENOENT" || e.code === "ECONNREFUSED" ? "Tivano is not running. Open Tivano and try again." : `cannot connect to the Tivano agent endpoint: ${e.code ?? e.message}`))));
+    sock.on("close", () => finish(() => (onStream ? resolvePromise() : reject(new Error("connection closed")))));
+    sock.on("connect", () => frame({ version: VERSION, edition: EDITION }));
+    sock.setTimeout(15_000, () => finish(() => reject(new Error("Tivano did not answer within 15 seconds."))));
+    sock.on("data", (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      while (buf.length >= 4) {
+        const size = buf.readUInt32BE(0);
+        if (size <= 0 || size > MAX_FRAME) return finish(() => reject(new Error("bad frame")));
+        if (buf.length < 4 + size) return;
+        let msg;
+        try {
+          msg = JSON.parse(buf.subarray(4, 4 + size).toString("utf8"));
+        } catch {
+          return finish(() => reject(new Error("invalid reply")));
+        }
+        buf = buf.subarray(4 + size);
+        if (!welcomed) {
+          if (msg.error || !msg.result?.welcome?.methods?.includes(command.method))
+            return finish(() => reject(new Error(msg.error?.code ?? "This Tivano version has no agent bridge; update Tivano.")));
+          welcomed = true;
+          if (onStream) {
+            sock.setTimeout(0);
+            onStream.attach?.(sock);
+          }
+          frame({ id: "a0", instance: msg.result.welcome.instance, command });
+          continue;
+        }
+        if (!onStream) return finish(() => resolvePromise(msg));
+        if (!onStream(msg, sock)) return finish(() => resolvePromise());
+      }
+    });
+  });
+}
+
 const out = (v) => process.stdout.write(JSON.stringify(v, null, 2) + "\n");
 
 function usage(stream = process.stderr, code = 2) {
@@ -70,7 +235,10 @@ usage: tivano info|providers|projects|threads
        tivano send <uuid> --text TEXT|--stdin [--continuation automatic|providerSession|fresh|transcript]
        tivano interrupt <uuid> --turn <uuid>
        tivano operation <ticket>
-       tivano settings [get [KEY]] [set KEY=VALUE]...\n`,
+       tivano settings [get [KEY]] [set KEY=VALUE]...
+Agent bridge (no Local control switch needed; Tivano must be running):
+       tivano agent models [--json]
+       tivano agent run [--json] --cwd DIR [--model ID] [--session SID]   (prompt from stdin, NDJSON events on stdout)\n`,
   );
   process.exit(code);
 }
@@ -167,6 +335,7 @@ async function main() {
   const [verb, ...rest] = process.argv.slice(2);
   if (!verb) usage();
   if (verb === "--help" || verb === "-h" || verb === "help") usage(process.stdout, 0);
+  if (verb === "agent") process.exit(await runAgent(rest));
   // Commands may be built lazily once the welcome arrives — write ops
   // need the instance for their idempotency ticket.
   let build;

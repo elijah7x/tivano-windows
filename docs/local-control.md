@@ -98,3 +98,36 @@ does not exist as a command), `bounds`, `busy`, `notFound`,
 `conflict`, `providerFailure`, `internalError` and the rest declared in
 `src/main/localControl.ts`. Only `textGeneration` and `showsSkylight` are
 writable through `settings set`.
+
+## Agent bridge (`P1-45`)
+
+`tivano agent` serves reader apps one agent turn at a time with the
+app's bound provider. It does **not** need the Local control switch: the
+app listens on its own agent endpoint while it runs —
+`<dataRoot>/control/agent.sock` on macOS/Linux or
+`\\.\pipe\tivano-agent-<hash>` on Windows (`TIVANO_AGENT_SOCKET`
+overrides it) — and that endpoint only answers `agentModels` and
+`agentRun`.
+
+```sh
+tivano agent models [--json]
+tivano agent run [--json] --cwd DIR [--model ID] [--session SID]   # prompt on stdin
+```
+
+- `agent models` prints `{"version":1,"models":[{id,label,providerName,isDefault}]}`
+  with exactly one default; errors keep the envelope and add `error`.
+- `agent run` prints one JSON object per line: `session`, `text`,
+  `thinking`, `tool_start`, `tool_end`, `file` (absolute changed path),
+  then `done` or `error` (`app_unavailable`, `model_unavailable`,
+  `bad_request`, `internal`; messages are sanitized and ≤300 chars).
+  Exit codes: 0 on `done`, 1 on `error`, 130/143 on SIGINT/SIGTERM.
+  A client disconnect cancels the turn.
+- Turns run in `autoAcceptEdits`: file edits are approved automatically;
+  command, plan and permission approvals are declined (Codex may still
+  run commands inside its own sandbox) and questions get empty answers.
+- No chat is created, so nothing appears in the sidebar. A `--session`
+  from an earlier `session` event continues that provider session while
+  model and cwd match; idle sessions are released after 30 minutes.
+- Bounded: prompts up to 900,000 bytes; only the app's bound provider is
+  listed; the CLI does not start the app yet — when Tivano is not running
+  it reports `app_unavailable`.

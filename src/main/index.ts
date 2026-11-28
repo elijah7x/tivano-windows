@@ -76,6 +76,7 @@ import { GIT_POSIX_EXECUTABLE, resolveGitExecutable } from "./gitRuntimeConfig";
 import { CheckpointService } from "./checkpointService";
 import { WallpaperService } from "./wallpaperService";
 import { LocalControlService } from "./localControl";
+import { AgentBridgeService, EphemeralAgentRunner } from "./agentBridge";
 import { RemoteMcpService } from "./remoteMcp";
 import { externalOpenLogPath, recordExternalOpen } from "./externalOpen";
 import { cliBinDir, cliStatus, installCli, uninstallCli } from "./cliInstall";
@@ -383,6 +384,7 @@ let git: GitService | null = null;
 let checkpoints: CheckpointCoordinator | null = null;
 let localControl: LocalControlService | null = null;
 let remoteMcp: RemoteMcpService | null = null;
+let agentBridge: AgentBridgeService | null = null;
 
 const coordinator = new CloseCoordinator({
   blockNewWork: () => { bootstrapClosing = true; engine?.shutdown(); },
@@ -408,6 +410,7 @@ const coordinator = new CloseCoordinator({
     // instance that minted its tickets.
     localControl?.dispose();
     remoteMcp?.dispose();
+    agentBridge?.dispose();
     for (const c of result.children) {
       if (!c.confirmed)
         problems.push(`child pid ${c.pid ?? "?"}: ${c.problem ?? "close unconfirmed"}`);
@@ -818,6 +821,10 @@ bootstrap = app.whenReady().then(async () => {
     broadcast({ type: "local-control-changed", status }),
   );
   void localControl.refreshListening().catch(() => {});
+  // P1-45 agent bridge: its own endpoint, listening whenever the app runs
+  // regardless of the Local control switch; ephemeral turns, no chats.
+  agentBridge = new AgentBridgeService(new EphemeralAgentRunner(eng, () => adapter), dataRoot, "dev");
+  void agentBridge.start().catch(() => {});
   // P2-25 Remote MCP: loopback HTTP + OAuth 2.1 outside Alpha.
   remoteMcp = new RemoteMcpService({
     engine: eng,
