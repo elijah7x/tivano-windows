@@ -42,6 +42,8 @@ $script:CheckoutPath = $null
 $script:RunDir = $null
 $script:LogPath = $null
 $script:Redactions = @()
+$script:BaselinePr = $false
+$script:ParitySyncPr = $false
 
 function Write-Text {
   param([string]$Path, [AllowEmptyString()][string]$Text)
@@ -467,10 +469,11 @@ function Build-ReviewPrompt {
     '- Security or data-loss risks (injection, traversal, leaked credentials, secrets or real user data).'
     '- Broken tests or broken build / TypeScript errors.'
     '- Missing English + Simplified Chinese (`src/renderer/i18n.ts`) strings for new user-visible text.'
-    '- Edits to guarded paths (`scripts/dev-loop/`, `scripts/pr-review/`, `scripts/windows-acceptance/`, `.github/`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `TRADEMARK.md`, `docs/source-baseline.json`, `package-lock.json`, or dependency sections in `package.json`).'
+    '- Edits to guarded paths (`scripts/dev-loop/`, `scripts/pr-review/`, `scripts/windows-acceptance/`, `.github/`, `AGENTS.md`, `CONTRIBUTING.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `TRADEMARK.md`, `docs/source-baseline.json`, `package-lock.json`, or dependency sections in `package.json`). Note: `docs/parity.md` is also guarded for feature PRs, but under the transition rule an existing edit to `docs/parity.md` in a feature PR is `advisory` only (marking any row `done` stays `blocking`).'
     ''
+    'Feature PRs report parity status in the PR body via `Parity: <ID> -> <status>` (with optional `Parity-Notes:`, never `done` or `deferred`) for batch sync onto `main`; reviewers MUST NOT block a feature PR for not editing `docs/parity.md`.'
     'Everything else (code style, naming, minor structure, refactor ideas, optional improvements) MUST go in `advisory`, NOT `blocking`.'
-    $(if ($script:BaselinePr) { 'Exception for this PR only: its scoped goal is retargeting the parity baseline, so edits to `docs/source-baseline.json` and `docs/parity.md` are expected and not blocking; edits to any other guarded path still block.' } else { '' })
+    $(if ($script:BaselinePr) { 'Exception for this PR only: its scoped goal is retargeting the parity baseline, so edits to `docs/source-baseline.json` and `docs/parity.md` are expected and not blocking; edits to any other guarded path still block.' } elseif ($script:ParitySyncPr) { 'Exception for this PR only: its scoped goal is batch-syncing parity statuses (`nyx/parity-sync-*`), so edits to `docs/parity.md` are expected and not blocking (still never mark rows `done`); edits to any other guarded path still block.' } else { '' })
     'Each blocking item MUST cite `file:line` and explain how to fix it in one line (`"file:line - problem - fix"`).'
     ''
     '## Output format'
@@ -910,8 +913,10 @@ try {
     throw ('cannot read PR #' + $PrNumber + ': ' + (Get-ErrorSummary $prView))
   }
   $prData = $prView.text | ConvertFrom-Json
-  # The re-baseline PR exists to edit the recorded baseline; that one guarded file is expected there.
-  $script:BaselinePr = ([string](Get-JsonProp $prData 'headRefName')) -like 'nyx/rebaseline-v*'
+  # The re-baseline and parity-sync PRs exist to edit baseline/parity files; exempt those guarded files there.
+  $prHeadRef = [string](Get-JsonProp $prData 'headRefName')
+  $script:BaselinePr = $prHeadRef -like 'nyx/rebaseline-v*'
+  $script:ParitySyncPr = $prHeadRef -like 'nyx/parity-sync-*'
   $headShaOut = [string](Get-JsonProp $prData 'headRefOid')
   if ([string]::IsNullOrWhiteSpace($headShaOut) -or $headShaOut.Length -lt 7) {
     throw ('PR #' + $PrNumber + ' returned no valid head SHA.')

@@ -72,7 +72,7 @@ Inspect all new and modified tests and check scripts. Flag any test that:
 Check EVERY factual claim in the PR body against the actual code and diff, including:
 - the five `AGENTS.md` verification categories (`Synthetic replay`, `Real Windows`, `Real provider`, `Desktop interaction`, `Install/update`) and whether any category was misclassified or substituted for another (for example claiming `Real Windows: checks ran` or `Real provider` when only synthetic/mock checks exist),
 - claims about which tests ran and which items were `NOT RUN`,
-- claims in the checklist (such as English + Simplified Chinese strings in `src/renderer/i18n.ts`, `docs/parity.md` status, license headers on new files, and dependency/asset declarations), and
+- claims in the checklist (such as English + Simplified Chinese strings in `src/renderer/i18n.ts`, the PR body's `Parity: <ID> -> <status>` line and optional `Parity-Notes:` instead of `docs/parity.md` status, license headers on new files, and dependency/asset declarations); never block a feature PR for not editing `docs/parity.md` (parity statuses are batched onto `main` separately), and
 - behavioral claims in the summary.
 
 Record each checked claim in `claims` with `"holds": true` or `"holds": false` and `file:line` (or PR-section) evidence. Reserve `"holds": false` strictly for material false claims:

@@ -800,48 +800,162 @@ function Get-FlakeFailureInfo {
   }
 }
 
+function Test-PointCitesFile {
+  param([string]$Point, [string]$FilePath)
+  if ([string]::IsNullOrWhiteSpace($Point) -or [string]::IsNullOrWhiteSpace($FilePath)) { return $false }
+  if ($Point.IndexOf($FilePath, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+  $backPath = $FilePath.Replace('/', '\')
+  if ($Point.IndexOf($backPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+  $leaf = Split-Path -Leaf $FilePath
+  if (-not [string]::IsNullOrWhiteSpace($leaf)) {
+    $pattern = '(?i)(?:^|[^A-Za-z0-9_.-])' + [regex]::Escape($leaf) + '(?:$|[^A-Za-z0-9_.-])'
+    if ([regex]::IsMatch($Point, $pattern)) { return $true }
+  }
+  return $false
+}
+
 function Test-ReviewerBlockingOnlyFlake {
   param($Gate, [string[]]$FailingFiles, [string[]]$ChangedFiles)
   $verdict = Get-JsonProp $Gate 'verdict'
   if ($null -eq $verdict) { return $false }
-  $rec = ([string](Get-JsonProp $verdict 'recommendation')).Trim().ToLowerInvariant()
   $blocking = @(ConvertTo-StringList (Get-JsonProp $verdict 'blocking'))
-  if ($rec -eq 'merge' -and $blocking.Count -eq 0) { return $true }
-  if ($blocking.Count -eq 0) { return $false }
+  if ($blocking.Count -eq 0) { return $true }
 
-  $failingTokens = New-Object Collections.Generic.List[string]
-  foreach ($f in @($FailingFiles)) {
-    if ([string]::IsNullOrWhiteSpace($f)) { continue }
-    $null = $failingTokens.Add($f)
-    $null = $failingTokens.Add($f.Replace('/', '\'))
-    $leaf = Split-Path -Leaf $f
-    if ($leaf) { $null = $failingTokens.Add($leaf) }
-  }
-  $failingTokenArr = [string[]]$failingTokens.ToArray()
-
-  $changedTokens = New-Object Collections.Generic.List[string]
-  foreach ($c in @($ChangedFiles)) {
-    $null = $changedTokens.Add($c)
-    $null = $changedTokens.Add($c.Replace('/', '\'))
-  }
-  $changedTokenArr = [string[]]$changedTokens.ToArray()
-
+  # Only refuse the flake rerun when a blocking point ties a PR-changed file (full path or basename)
+  # to a failing test file (import mapping is not present here, so unrelated blocking points keep the rerun eligible).
   foreach ($point in $blocking) {
-    foreach ($ct in $changedTokenArr) {
-      if ($ct -and $point.IndexOf($ct, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-        return $false
-      }
-    }
-    $matchesFlake = $false
-    foreach ($ft in $failingTokenArr) {
-      if ($ft -and $point.IndexOf($ft, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-        $matchesFlake = $true
+    $citesChanged = $false
+    foreach ($c in @($ChangedFiles)) {
+      if (Test-PointCitesFile $point $c) {
+        $citesChanged = $true
         break
       }
     }
-    if (-not $matchesFlake) { return $false }
+    $citesFailing = $false
+    foreach ($f in @($FailingFiles)) {
+      if (Test-PointCitesFile $point $f) {
+        $citesFailing = $true
+        break
+      }
+    }
+    if ($citesChanged -and $citesFailing) {
+      return $false
+    }
   }
   return $true
+}
+
+function Test-BlockingPointIsOnlyFlake {
+  param([string]$Point, [string[]]$FailingFiles, [object[]]$FailingTests, [string[]]$ChangedFiles)
+  if ([string]::IsNullOrWhiteSpace($Point)) { return $false }
+  foreach ($c in @($ChangedFiles)) {
+    if (Test-PointCitesFile $Point $c) { return $false }
+  }
+  $citesRetried = $false
+  $remainder = $Point
+  foreach ($f in @($FailingFiles)) {
+    if ([string]::IsNullOrWhiteSpace($f)) { continue }
+    if (Test-PointCitesFile $Point $f) {
+      $citesRetried = $true
+      $remainder = [regex]::Replace($remainder, [regex]::Escape($f), ' ', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+      $remainder = [regex]::Replace($remainder, [regex]::Escape($f.Replace('/', '\')), ' ', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+      $leaf = Split-Path -Leaf $f
+      if (-not [string]::IsNullOrWhiteSpace($leaf)) {
+        $leafPattern = '(?i)(?:(?<=^)|(?<=[^A-Za-z0-9_.-]))' + [regex]::Escape($leaf) + '(?:(?=$)|(?=[^A-Za-z0-9_.-]))'
+        $remainder = [regex]::Replace($remainder, $leafPattern, ' ')
+      }
+    }
+  }
+  foreach ($t in @($FailingTests)) {
+    if ($null -eq $t) { continue }
+    $fullName = ([string](Get-JsonProp $t 'fullName')).Trim()
+    if ($fullName.Length -ge 8 -and $Point.IndexOf($fullName, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      $citesRetried = $true
+      $remainder = [regex]::Replace($remainder, [regex]::Escape($fullName), ' ', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+  }
+  if (-not $citesRetried) { return $false }
+
+  # Keep blocking if the point also cites any file outside the retried failing test set
+  # (ignoring check-report artifacts such as checks-summary.md and vitest.json).
+  $otherFileMatches = [regex]::Matches($remainder, '(?i)(?:[A-Za-z0-9_.-]+[/\\])*[A-Za-z0-9_.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|ps1|cmd|md|css|html|yml|yaml)')
+  foreach ($m in $otherFileMatches) {
+    $token = $m.Value.Replace('\', '/')
+    $tokenLeaf = (Split-Path -Leaf $token).ToLowerInvariant()
+    if ($tokenLeaf -eq 'checks-summary.md' -or $tokenLeaf -eq 'vitest.json' -or $tokenLeaf -eq 'steps.json' -or $tokenLeaf -eq 'unit.log') {
+      continue
+    }
+    return $false
+  }
+
+  # Keep blocking if the remaining text mentions another check failure or non-flake review issue.
+  if ($remainder -match '(?i)(?:\b(?:install|build|typecheck|tsc|e2e|playwright|electron|i18n|zh-hans|translation|localiz(?:e|ation)|license|attribution|secret|credential|screenshot|parity)\b|;\s*also\b|\band\s+also\b|\badditionally\b|\bseparately\b|\bin\s+addition\b)') {
+    return $false
+  }
+  # Conservative: drop the point only when what remains, after removing the retried tests, is just
+  # a short statement about that test failing. Any longer description may name another defect
+  # in prose, so the point stays blocking.
+  $flakeWords = @('the','a','an','this','that','these','it','its','is','are','was','were','be','been','in','on','at','of','to','for','with','by','and','or','due','when','under','from','test','tests','case','cases','spec','suite','file','unit','vitest','fail','fails','failed','failing','failure','failures','flaky','flake','flakes','intermittent','intermittently','timeout','timeouts','timed','out','times','rerun','retry','passes','pass','passed','pr','gate','run','runs','ci','windows','assertion','assertions','expected','received','error','errors','still','now','again','currently','because','so','must','should','fix','fixed','green','red','not','no')
+  $otherWords = 0
+  foreach ($wm in [regex]::Matches($remainder, '[A-Za-z][A-Za-z\-]{2,}')) {
+    if ($flakeWords -notcontains $wm.Value.ToLowerInvariant()) { $otherWords++ }
+  }
+  if ($otherWords -gt 6) { return $false }
+  return $true
+}
+
+function Get-RemainingReviewerContent {
+  param($Gate, [string[]]$FailingFiles, [object[]]$FailingTests, [string[]]$ChangedFiles)
+  $remaining = New-Object Collections.Generic.List[string]
+  $verdict = Get-JsonProp $Gate 'verdict'
+  if ($null -eq $verdict) { return [string[]]@() }
+  $blocking = @(ConvertTo-StringList (Get-JsonProp $verdict 'blocking'))
+  $recommendation = ([string](Get-JsonProp $verdict 'recommendation')).Trim().ToLowerInvariant()
+  if ($blocking.Count -eq 0) {
+    if ($recommendation -ne 'merge') { $null = $remaining.Add('the reviewer recommends changes') }
+    return [string[]]$remaining.ToArray()
+  }
+  $keptBlocking = New-Object Collections.Generic.List[string]
+  foreach ($point in $blocking) {
+    if (-not (Test-BlockingPointIsOnlyFlake -Point $point -FailingFiles $FailingFiles -FailingTests $FailingTests -ChangedFiles $ChangedFiles)) {
+      $null = $keptBlocking.Add($point)
+    }
+  }
+  if ($keptBlocking.Count -eq 0) {
+    return [string[]]@()
+  }
+  if ($recommendation -ne 'merge') { $null = $remaining.Add('the reviewer recommends changes') }
+  else { $null = $remaining.Add('the reviewer says merge but lists blocking points') }
+  $shown = 0
+  foreach ($point in $keptBlocking) {
+    if ($shown -ge 20) { break }
+    $null = $remaining.Add('blocking: ' + $point)
+    $shown++
+  }
+  return [string[]]$remaining.ToArray()
+}
+
+function Invoke-WithGitLock {
+  param([scriptblock]$Action)
+  $mutex = New-Object System.Threading.Mutex($false, 'Global\TivanoPrReviewGit')
+  $acquired = $false
+  try {
+    try {
+      $acquired = $mutex.WaitOne(120000)
+    } catch [System.Threading.AbandonedMutexException] {
+      # Previous holder terminated abnormally; ownership now belongs to this process.
+      $acquired = $true
+    }
+    if (-not $acquired) {
+      throw 'Timed out waiting for mutex Global\TivanoPrReviewGit after 120s.'
+    }
+    return (& $Action)
+  } finally {
+    if ($acquired) {
+      try { $mutex.ReleaseMutex() } catch { }
+    }
+    $mutex.Dispose()
+  }
 }
 
 function Invoke-FlakeRerun {
@@ -881,12 +995,18 @@ function Invoke-FlakeRerun {
     $standardScriptPath = Get-AcceptancePath $script:StandardScript
     Assert-CmdSafePath 'Invoke-AsStandardUser.ps1' $standardScriptPath
 
-    $verifyHead = Invoke-Git $script:ReviewCheckoutPath ('rev-parse --verify --quiet ' + $HeadSha + '^{commit}')
-    if ($verifyHead.exitCode -ne 0) {
-      $fetchRes = Invoke-Git $script:ReviewCheckoutPath ('fetch --no-tags origin main +refs/pull/' + $PrNumber + '/head:refs/remotes/origin/pr-' + $PrNumber)
-      if ($fetchRes.exitCode -ne 0) {
-        return [pscustomobject]@{ passed = $false; reason = ('git fetch failed: ' + (Get-ErrorSummary $fetchRes)); command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
+    $fetchErr = Invoke-WithGitLock {
+      $verifyHead = Invoke-Git $script:ReviewCheckoutPath ('rev-parse --verify --quiet ' + $HeadSha + '^{commit}')
+      if ($verifyHead.exitCode -ne 0) {
+        $fetchRes = Invoke-Git $script:ReviewCheckoutPath ('fetch --no-tags origin main +refs/pull/' + $PrNumber + '/head:refs/remotes/origin/pr-' + $PrNumber)
+        if ($fetchRes.exitCode -ne 0) {
+          return ('git fetch failed: ' + (Get-ErrorSummary $fetchRes))
+        }
       }
+      return $null
+    }
+    if ($fetchErr) {
+      return [pscustomobject]@{ passed = $false; reason = $fetchErr; command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
     }
 
     [IO.Directory]::CreateDirectory($flakeDir) | Out-Null
@@ -894,7 +1014,9 @@ function Invoke-FlakeRerun {
     [IO.Directory]::CreateDirectory($sandbox) | Out-Null
 
     $treeCreated = $true
-    $wtAdd = Invoke-Git $script:ReviewCheckoutPath ('worktree add --detach ' + (Quote-Argument $prTree) + ' ' + $HeadSha)
+    $wtAdd = Invoke-WithGitLock {
+      Invoke-Git $script:ReviewCheckoutPath ('worktree add --detach ' + (Quote-Argument $prTree) + ' ' + $HeadSha)
+    }
     if ($wtAdd.exitCode -ne 0) {
       return [pscustomobject]@{ passed = $false; reason = ('git worktree add failed: ' + (Get-ErrorSummary $wtAdd)); command = $vitestCmdLine; unitLogPath = ''; vitestJsonPath = '' }
     }
@@ -1067,13 +1189,19 @@ function Invoke-FlakeRerun {
     if ($treeCreated) {
       Stop-TreeProcesses $prTree
       if ($script:GitPath -and $script:ReviewCheckoutPath) {
-        if (Test-Path -LiteralPath $prTree) {
-          $null = Invoke-Git $script:ReviewCheckoutPath ('worktree remove --force ' + (Quote-Argument $prTree))
+        try {
+          $null = Invoke-WithGitLock {
+            if (Test-Path -LiteralPath $prTree) {
+              $null = Invoke-Git $script:ReviewCheckoutPath ('worktree remove --force ' + (Quote-Argument $prTree))
+            }
+            if (Test-Path -LiteralPath $prTree) {
+              $null = Invoke-Tool $script:CmdExe ('/d /c rmdir /s /q ' + (Quote-Argument $prTree)) (Join-Path $flakeDir '.rmdir.out.tmp') (Join-Path $flakeDir '.rmdir.err.tmp') $script:WorkRoot
+            }
+            $null = Invoke-Git $script:ReviewCheckoutPath 'worktree prune'
+          }
+        } catch {
+          Write-Log ('flake rerun worktree cleanup failed: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
         }
-        if (Test-Path -LiteralPath $prTree) {
-          $null = Invoke-Tool $script:CmdExe ('/d /c rmdir /s /q ' + (Quote-Argument $prTree)) (Join-Path $flakeDir '.rmdir.out.tmp') (Join-Path $flakeDir '.rmdir.err.tmp') $script:WorkRoot
-        }
-        $null = Invoke-Git $script:ReviewCheckoutPath 'worktree prune'
       }
     }
   }
@@ -1095,12 +1223,12 @@ function Invoke-FlakeRetryIfEligible {
   $failureInfo = Get-FlakeFailureInfo -NewFailures @($Evaluation.newFailures) -ReviewDir $reviewDir
   if (-not $failureInfo.ok) {
     Write-Log ('flake retry skipped: ' + $failureInfo.reason)
-    return [pscustomobject]@{ attempted = $false; passed = $false; reason = $failureInfo.reason; files = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
+    return [pscustomobject]@{ attempted = $false; passed = $false; reason = $failureInfo.reason; files = [string[]]@(); tests = [string[]]@(); failingTests = [object[]]@(); changedFiles = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
   }
   $changedInfo = Get-PrChangedFiles -Gate $Gate -ReviewDir $reviewDir -HeadSha $HeadSha
   if (-not $changedInfo.ok) {
     Write-Log 'flake retry skipped: could not determine PR changed files'
-    return [pscustomobject]@{ attempted = $false; passed = $false; reason = 'could not determine PR changed files'; files = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
+    return [pscustomobject]@{ attempted = $false; passed = $false; reason = 'could not determine PR changed files'; files = [string[]]@(); tests = [string[]]@(); failingTests = [object[]]@(); changedFiles = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
   }
   $changedSet = @{}
   foreach ($cf in @($changedInfo.files)) {
@@ -1115,11 +1243,17 @@ function Invoke-FlakeRetryIfEligible {
   if ($overlap.Count -gt 0) {
     $msg = 'failing test file(s) are part of the PR diff: ' + ($overlap.ToArray() -join ', ')
     Write-Log ('flake retry skipped: ' + $msg)
-    return [pscustomobject]@{ attempted = $false; passed = $false; reason = $msg; files = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
+    return [pscustomobject]@{ attempted = $false; passed = $false; reason = $msg; files = [string[]]@(); tests = [string[]]@(); failingTests = [object[]]@(); changedFiles = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
   }
   if (-not (Test-ReviewerBlockingOnlyFlake -Gate $Gate -FailingFiles @($failureInfo.files) -ChangedFiles @($changedInfo.files))) {
-    Write-Log 'flake retry skipped: reviewer verdict has blocking points beyond the unrelated failing unit tests'
-    return [pscustomobject]@{ attempted = $false; passed = $false; reason = 'reviewer verdict has non-flake blocking points'; files = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
+    Write-Log 'flake retry skipped: reviewer verdict links PR changes to the failing unit test file(s)'
+    return [pscustomobject]@{ attempted = $false; passed = $false; reason = 'reviewer verdict links PR changes to failing unit test file(s)'; files = [string[]]@(); tests = [string[]]@(); failingTests = [object[]]@(); changedFiles = [string[]]@(); firstFailures = [object[]]@(); command = ''; unitLogPath = ''; vitestJsonPath = '' }
+  }
+
+  $testNames = New-Object Collections.Generic.List[string]
+  foreach ($t in @($failureInfo.tests)) {
+    if ($null -eq $t) { continue }
+    $null = $testNames.Add(([string]$t.file) + ' > ' + ([string]$t.fullName).Trim())
   }
 
   # PR code runs under one shared standard account, so the rerun waits for any other PR's checks (same lock as Invoke-PrReview.ps1).
@@ -1138,6 +1272,9 @@ function Invoke-FlakeRetryIfEligible {
     passed = [bool]$rerun.passed
     reason = [string]$rerun.reason
     files = [string[]]$failureInfo.files
+    tests = [string[]]$testNames.ToArray()
+    failingTests = [object[]]$failureInfo.tests
+    changedFiles = [string[]]$changedInfo.files
     firstFailures = [object[]]$failureInfo.firstFailures
     command = [string]$rerun.command
     unitLogPath = [string]$rerun.unitLogPath
@@ -1463,28 +1600,28 @@ try {
         foreach ($item in $evaluation.infra) { $null = $failuresOut.Add($item) }
         Write-Log ('gate infra unavailable: ' + ($evaluation.infra -join '; '))
       } else {
-        $flakePassed = $false
         if ($evaluation.content.Count -gt 0 -and $extra.Count -eq 0 -and $evaluation.flakeCandidate) {
           # Any error in the optional flake retry falls back to the ordinary gate failure.
-          $flakeRetry = [pscustomobject]@{ passed = $false }
+          $flakeRetry = [pscustomobject]@{ attempted = $false; passed = $false; reason = '' }
           try {
             $flakeRetry = Invoke-FlakeRetryIfEligible -Gate $review.gate -GatePath $gatePathOut -Evaluation $evaluation -HeadSha $headShaOut -PrNumber $PrNumber -RunDir $script:RunDir
           } catch {
             Write-Log ('flake retry failed, keeping the gate failure: ' + $_.Exception.Message)
-            $flakeRetry = [pscustomobject]@{ passed = $false }
+            $flakeRetry = [pscustomobject]@{ attempted = $false; passed = $false; reason = '' }
           }
           if ($flakeRetry.passed) {
-            $flakePassed = $true
             $flakeRetriedOut = [ordered]@{
               files = [string[]]$flakeRetry.files
+              tests = [string[]]$flakeRetry.tests
               firstFailures = [object[]]$flakeRetry.firstFailures
               command = [string]$flakeRetry.command
               rerunVitestJson = [string]$flakeRetry.vitestJsonPath
               rerunUnitLog = [string]$flakeRetry.unitLogPath
             }
+            $remainingContent = @(Get-RemainingReviewerContent -Gate $review.gate -FailingFiles @($flakeRetry.files) -FailingTests @($flakeRetry.failingTests) -ChangedFiles @($flakeRetry.changedFiles))
             $evaluation = [pscustomobject]@{
               infra = [string[]]@()
-              content = [string[]]@()
+              content = [string[]]$remainingContent
               newFailures = [string[]]@()
               flakeCandidate = $false
             }
@@ -1501,7 +1638,7 @@ try {
           }
         }
 
-        if (-not $flakePassed -and ($evaluation.content.Count -gt 0 -or $extra.Count -gt 0)) {
+        if ($evaluation.content.Count -gt 0 -or $extra.Count -gt 0) {
           $verdictOut = 'fail'
           $exitCode = 1
           foreach ($item in @($extra) + @($evaluation.content)) {

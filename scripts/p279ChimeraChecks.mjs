@@ -60,6 +60,23 @@ export async function runP279ChimeraChecks({
   };
   const teamOf = (st, leadId) =>
     st.threads.filter((t) => t.hydraHead?.leadId === leadId && !t.isArchived);
+  const waitLeadSettled = (leadId, minReports) =>
+    waitSnap((st) => {
+      const lead = st.threads.find((t) => t.id === leadId);
+      const busy =
+        lead?.turn?.status === "running" ||
+        lead?.turn?.status === "waiting-approval" ||
+        lead?.turn?.status === "stopping";
+      const reports =
+        lead?.messages.filter((m) => m.content.includes("Hydra reports:")).length ?? 0;
+      return (
+        !busy &&
+        teamOf(st, leadId).every(
+          (t) => t.hydraHead.status !== "running" && t.hydraHead.landingPending !== true,
+        ) &&
+        reports >= minReports
+      );
+    });
 
   try {
   await page.locator('button[title="New thread"]').click();
@@ -154,18 +171,7 @@ export async function runP279ChimeraChecks({
     (id) => window.tivano.invoke("hydra:stop", { threadId: id }),
     head1Id,
   );
-  await waitSnap((st) => {
-    const lead = st.threads.find((t) => t.id === leadId);
-    const busy =
-      lead?.turn?.status === "running" ||
-      lead?.turn?.status === "waiting-approval" ||
-      lead?.turn?.status === "stopping";
-    return (
-      !busy &&
-      teamOf(st, leadId).every((t) => t.hydraHead.status !== "running") &&
-      (lead?.messages.some((m) => m.content.includes("Hydra reports:")) ?? false)
-    );
-  });
+  await waitLeadSettled(leadId, 1);
   await page.locator(".composer textarea").focus();
   await page.evaluate(
     (a) => window.tivano.invoke("turns:send", a),
@@ -222,6 +228,9 @@ export async function runP279ChimeraChecks({
     (await page.locator(".hydra-mark.chimera").count()) === 1 &&
       (await page.locator(".hydra-mark .hydra-mark-badge").count()) === 0,
   );
+
+  // Switching out of adaptive mode requires the lead's pending head report to settle first.
+  if (head2Id) await waitLeadSettled(leadId, 2);
 
   await page.evaluate(
     (id) =>

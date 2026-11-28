@@ -38,7 +38,8 @@ $script:GuardedFiles = @(
   'license',
   'third_party_notices.md',
   'trademark.md',
-  'docs/source-baseline.json'
+  'docs/source-baseline.json',
+  'docs/parity.md'
 )
 $script:DependencySections = @(
   'dependencies',
@@ -50,7 +51,6 @@ $script:DependencySections = @(
   'overrides'
 )
 $script:AllowedTrackedFiles = @(
-  'docs/parity.md',
   'index.html',
   'tsconfig.json',
   'vitest.config.ts',
