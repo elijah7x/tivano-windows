@@ -77,6 +77,12 @@ export async function runRuntimeModeChecks({
     "mode picker defaults to fullAccess (frozen absent default)",
     (await page.locator("select.runtime-mode").inputValue()) === "fullAccess",
   );
+  verify(
+    "fullAccess renders exclamationmark.shield icon with accessible label",
+    (await page
+      .locator('.runtime-mode-picker [data-icon="exclamationmark.shield"][aria-label="Full access"]')
+      .count()) === 1,
+  );
   const echo1 = await sendAndCollect(page, tid, "default mode");
   verify(
     "default fullAccess policy reached turn/start verbatim",
@@ -164,6 +170,12 @@ export async function runRuntimeModeChecks({
   await page.waitForSelector("select.runtime-mode", { timeout: 10000 });
   const zhValue = await page.locator("select.runtime-mode option:checked").innerText();
   verify("zh-Hans mode label renders", zhValue.trim() === "完全访问", zhValue);
+  verify(
+    "zh-Hans fullAccess icon keeps localized aria-label",
+    (await page
+      .locator('.runtime-mode-picker [data-icon="exclamationmark.shield"][aria-label="完全访问"]')
+      .count()) === 1,
+  );
   await page.screenshot({ path: join(outDir, "82-runtime-mode-zh.png") });
   c = await boundedClose(app, proc);
   ledger.exited = c.exited;

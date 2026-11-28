@@ -9,6 +9,9 @@
 import type { ChatThread, RuntimeMode } from "../../shared/types";
 import { useT } from "../locale";
 import { tryCall } from "../client";
+import { RUNTIME_MODE_SYMBOL, RuntimeModeIcon } from "./StatusIcons";
+
+export { RUNTIME_MODE_SYMBOL };
 
 export const RUNTIME_MODES: readonly RuntimeMode[] = [
   "supervised",
@@ -37,24 +40,27 @@ export function RuntimeModePicker(props: {
   const t = useT();
   const mode = props.thread.runtimeMode ?? "supervised";
   return (
-    <select
-      className="runtime-mode"
-      aria-label={t("Runtime mode")}
-      title={`${t("Runtime mode")} — ${t(RUNTIME_MODE_SUMMARY[mode])}`}
-      value={mode}
-      disabled={props.readOnly}
-      onChange={(e) =>
-        tryCall("threads:set-runtime-mode", {
-          threadId: props.thread.id,
-          mode: e.target.value as RuntimeMode,
-        })
-      }
-    >
-      {RUNTIME_MODES.map((m) => (
-        <option key={m} value={m}>
-          {t(RUNTIME_MODE_TITLE[m])}
-        </option>
-      ))}
-    </select>
+    <span className="runtime-mode-picker" data-runtime-mode={mode}>
+      <RuntimeModeIcon mode={mode} label={t(RUNTIME_MODE_TITLE[mode])} />
+      <select
+        className="runtime-mode"
+        aria-label={t("Runtime mode")}
+        title={`${t("Runtime mode")} — ${t(RUNTIME_MODE_SUMMARY[mode])}`}
+        value={mode}
+        disabled={props.readOnly}
+        onChange={(e) =>
+          tryCall("threads:set-runtime-mode", {
+            threadId: props.thread.id,
+            mode: e.target.value as RuntimeMode,
+          })
+        }
+      >
+        {RUNTIME_MODES.map((m) => (
+          <option key={m} value={m}>
+            {t(RUNTIME_MODE_TITLE[m])}
+          </option>
+        ))}
+      </select>
+    </span>
   );
 }

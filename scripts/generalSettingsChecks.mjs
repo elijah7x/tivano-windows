@@ -119,7 +119,10 @@ export async function runGeneralSettingsChecks({
     .innerText();
   verify(
     "GEN-01c Permissions defaults to Full access (frozen)",
-    permActive.trim() === "Full access",
+    permActive.trim() === "Full access" &&
+      (await page
+        .locator('div[aria-label="Permissions"] .choice.active [data-icon="exclamationmark.shield"]')
+        .count()) === 1,
     permActive,
   );
   const wlActive = await page
