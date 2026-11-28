@@ -11,6 +11,8 @@ import type {
   CodexModelCatalog,
   CodexModelOption,
 } from "../../shared/types";
+import { rectToAnchor, type AnchorRect, type PopoverAlign } from "../../shared/popoverAnchor";
+import { anchoredPopoverStyle, useAnchoredPopover } from "../useAnchoredPopover";
 import {
   MODEL_LIST_LIMIT,
   addPin,
@@ -128,6 +130,9 @@ interface EffortState {
   pin: ModelPin;
   x: number;
   y: number;
+  anchor?: AnchorRect;
+  align?: PopoverAlign;
+  triggerEl?: HTMLElement | null;
 }
 
 export interface PendingSectionRename {
@@ -667,6 +672,9 @@ export function ModelListSettings(props: ModelListSettingsProps): React.JSX.Elem
             pin,
             x: Math.min(rect.right - 330, window.innerWidth - 340),
             y: rect.bottom + 4,
+            anchor: rectToAnchor(rect),
+            align: "end",
+            triggerEl: e.currentTarget,
           });
         }}
         onContextMenu={(e) => {
@@ -690,6 +698,9 @@ export function ModelListSettings(props: ModelListSettingsProps): React.JSX.Elem
               pin,
               x: Math.min(rect.left, window.innerWidth - 340),
               y: rect.bottom + 4,
+              anchor: rectToAnchor(rect),
+              align: "start",
+              triggerEl: e.currentTarget,
             });
           }}
         >
@@ -1346,6 +1357,9 @@ export function ModelListSettings(props: ModelListSettingsProps): React.JSX.Elem
           option={optionById.get(effortPop.pin.modelID)}
           x={Math.max(8, effortPop.x)}
           y={effortPop.y}
+          anchor={effortPop.anchor}
+          align={effortPop.align}
+          triggerEl={effortPop.triggerEl}
           pref={prefs[prefKey(effortPop.pin.provider, effortPop.pin.modelID)]}
           onPref={(p) => ctrl.updatePref(effortPop.pin, p)}
           onClose={() => setEffortPop(null)}
@@ -1364,6 +1378,9 @@ function EffortCard(props: {
   option: CodexModelOption | undefined;
   x: number;
   y: number;
+  anchor?: AnchorRect | undefined;
+  align?: PopoverAlign | undefined;
+  triggerEl?: HTMLElement | null | undefined;
   pref: ModelPreference | undefined;
   onPref: (p: ModelPreference) => void;
   onClose: () => void;
@@ -1373,8 +1390,45 @@ function EffortCard(props: {
   const efforts = orderedEfforts(opt?.efforts ?? []);
   const effort = props.pref?.effort;
   const fast = props.pref?.fastMode === true;
+  const { popRef, position } = useAnchoredPopover<HTMLDivElement>({
+    open: true,
+    targetKey: `${props.pin.provider}/${props.pin.modelID}`,
+    initialAnchor: props.anchor ?? {
+      left: props.x,
+      right: props.x,
+      top: props.y,
+      bottom: props.y,
+      width: 0,
+      height: 0,
+    },
+    getAnchorRect: () => {
+      const el = props.triggerEl;
+      if (el && el.isConnected) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return rectToAnchor(r);
+      }
+      return props.anchor ?? {
+        left: props.x,
+        right: props.x,
+        top: props.y,
+        bottom: props.y,
+        width: 0,
+        height: 0,
+      };
+    },
+    estimatedSize: { width: 300, height: 240 },
+    preferredSide: "bottom",
+    align: props.align ?? "start",
+    constrainSideHeight: true,
+    gap: 4,
+    layoutKey: `${efforts.length}:${!!opt?.fastTier}`,
+  });
   return (
-    <div className="link-pop effort-pop" style={{ left: props.x, top: props.y }}>
+    <div
+      ref={popRef}
+      className="link-pop effort-pop"
+      style={anchoredPopoverStyle(position, { left: props.x, top: props.y })}
+    >
       <div className="effort-title">{opt?.name ?? props.pin.modelID}</div>
       <button
         role="radio"

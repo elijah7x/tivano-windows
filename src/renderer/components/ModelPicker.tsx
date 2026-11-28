@@ -7,8 +7,17 @@
 // popover when user groups exist. Selections persist on the thread and
 // apply to the NEXT turn only; a running turn is never retargeted.
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import type { ChatThread, CodexModelCatalog, CodexModelOption } from "../../shared/types";
+import { rectToAnchor, type AnchorRect } from "../../shared/popoverAnchor";
+import { anchoredPopoverStyle, useAnchoredPopover } from "../useAnchoredPopover";
 import {
   pairCustomName,
   pairHeadsProvider,
@@ -132,12 +141,17 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   const [selectedCategory, setSelectedCategory] = useState<PickerCategory | null>(null);
   const [activeLeftKey, setActiveLeftKey] = useState<string | null>(null);
   const [activeRightKey, setActiveRightKey] = useState<string | null>(null);
+  const [popTrigger, setPopTrigger] = useState<"model" | "effort">("model");
+  const [openAnchor, setOpenAnchor] = useState<AnchorRect | null>(null);
   const gen = useRef(0);
   const popRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const effortTriggerRef = useRef<HTMLButtonElement | null>(null);
   const lastTriggerRef = useRef<"model" | "effort">("model");
-  const prevExpandedRef = useRef(modelsExpanded);
+  const prevOpenExpandedRef = useRef(
+    (props.initialOpen ?? false) &&
+      (props.initialModelsExpanded ?? ((props.initialOpen ?? false) ? true : false)),
+  );
   const searchRef = useRef<HTMLInputElement | null>(null);
   const leftColRef = useRef<HTMLDivElement | null>(null);
   const rightColRef = useRef<HTMLDivElement | null>(null);
@@ -184,13 +198,6 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
       document.removeEventListener("mousedown", onDown, true);
     };
   }, [popOpen]);
-
-  useEffect(() => {
-    if (popOpen && modelsExpanded && !prevExpandedRef.current) {
-      searchRef.current?.focus();
-    }
-    prevExpandedRef.current = modelsExpanded;
-  }, [popOpen, modelsExpanded]);
 
   const models: CodexModelOption[] =
     catalog?.state === "ready" ? catalog.models : EMPTY_MODELS;
@@ -267,6 +274,39 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
   });
   const activeCategory =
     resolvePickerCategory(selectedCategory, partition, { hasPairs: showsPairs }) ?? initialCat;
+
+  const activeTriggerRef = popTrigger === "effort" ? effortTriggerRef : triggerRef;
+  const pickerEstimatedSize = useMemo(
+    () =>
+      !modelsExpanded
+        ? { width: 310, height: 140 }
+        : hasUserGroups
+          ? { width: 390, height: 400 }
+          : twoColumns
+            ? { width: 520, height: 420 }
+            : { width: 320, height: 400 },
+    [modelsExpanded, hasUserGroups, twoColumns],
+  );
+  const { popRef: dialogRef, position: dialogPos } = useAnchoredPopover<HTMLDivElement>({
+    open: popOpen,
+    targetKey: popOpen ? `${thread.id}:${popTrigger}` : null,
+    initialAnchor: openAnchor,
+    anchorRef: activeTriggerRef,
+    estimatedSize: pickerEstimatedSize,
+    preferredSide: "top",
+    align: "start",
+    constrainSideHeight: true,
+    gap: 6,
+    layoutKey: `${modelsExpanded}:${hasUserGroups}:${twoColumns}:${models.length}:${pairs.length}:${pickerQuery}:${pickerCategoryKey(activeCategory)}:${catalog?.state ?? "null"}`,
+  });
+
+  const isOpenExpanded = popOpen && modelsExpanded;
+  useLayoutEffect(() => {
+    if (isOpenExpanded && !prevOpenExpandedRef.current) {
+      searchRef.current?.focus({ preventScroll: true });
+    }
+    prevOpenExpandedRef.current = isOpenExpanded;
+  }, [isOpenExpanded]);
   const currentGroupMatch = partition.groups.find((g) =>
     g.items.some((i) => i.modelId === selected),
   );
@@ -1007,6 +1047,9 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
 
   const openPopover = (expanded: boolean, source: "model" | "effort") => {
     lastTriggerRef.current = source;
+    const triggerEl = source === "effort" ? effortTriggerRef.current : triggerRef.current;
+    setPopTrigger(source);
+    setOpenAnchor(triggerEl ? rectToAnchor(triggerEl.getBoundingClientRect()) : null);
     refresh();
     setPickerQuery("");
     setActiveLeftKey(null);
@@ -1107,6 +1150,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
 
         {popOpen && (
           <div
+            ref={dialogRef}
             className={`model-picker-pop${
               !modelsExpanded
                 ? " effort-only"
@@ -1116,6 +1160,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
                     ? " two-col"
                     : " single-col"
             }`}
+            style={anchoredPopoverStyle(dialogPos)}
             role="dialog"
             aria-label={modelsExpanded ? popTriggerAria : t("Reasoning effort")}
             onKeyDown={onPopKeyDown}
@@ -1260,7 +1305,6 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
                 placeholder={t("Search models")}
                 aria-label={t("Search models")}
                 value={pickerQuery}
-                autoFocus
                 onChange={(e) => setPickerQuery(e.target.value)}
               />
               {pickerQuery !== "" && (
@@ -1271,7 +1315,7 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
                   title={t("Clear search")}
                   onClick={() => {
                     setPickerQuery("");
-                    searchRef.current?.focus();
+                    searchRef.current?.focus({ preventScroll: true });
                   }}
                 >
                   ×

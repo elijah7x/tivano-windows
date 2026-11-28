@@ -2,7 +2,7 @@
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Shared popover anchoring and viewport clamping helper. Keeps transient
 // popovers adjacent to their owning row/trigger while clamping within
-// the viewport across scroll, resize and edge rows.
+// the viewport across scroll, resize, async layout settling and edge rows.
 
 export interface AnchorRect {
   left: number;
@@ -24,6 +24,7 @@ export interface ViewportBounds {
 }
 
 export type PopoverSide = "trailing" | "leading" | "bottom" | "top";
+export type PopoverAlign = "start" | "end" | "center";
 
 export interface AnchorPopoverOptions {
   anchor: AnchorRect;
@@ -31,6 +32,13 @@ export interface AnchorPopoverOptions {
   viewport: ViewportBounds;
   /** Preferred side relative to the anchor rect (default: "trailing"). */
   preferredSide?: PopoverSide | undefined;
+  /** Cross-axis alignment for "top"/"bottom" placement (default: "start"). */
+  align?: PopoverAlign | undefined;
+  /** Cap maxHeight to available space on the chosen top/bottom side so tall
+   *  popovers scroll instead of covering the trigger in constrained windows. */
+  constrainSideHeight?: boolean | undefined;
+  /** Keep the open popover on its current side unless constrained. */
+  stickySide?: PopoverSide | undefined;
   /** Gap in px between anchor edge and popover edge (default: 8). */
   gap?: number | undefined;
   /** Minimum inset from viewport edges in px (default: 8). */
@@ -44,6 +52,27 @@ export interface AnchoredPopoverPosition {
   maxHeight: number;
   side: PopoverSide;
 }
+
+export interface StablePopoverState {
+  anchor: AnchorRect;
+  popover: PopoverSize;
+  viewport: ViewportBounds;
+  position: AnchoredPopoverPosition;
+}
+
+export interface StepPopoverInput {
+  anchor: AnchorRect;
+  popover: PopoverSize;
+  viewport: ViewportBounds;
+  preferredSide?: PopoverSide | undefined;
+  align?: PopoverAlign | undefined;
+  constrainSideHeight?: boolean | undefined;
+  gap?: number | undefined;
+  margin?: number | undefined;
+}
+
+const EPSILON_PX = 0.5;
+const MIN_CONSTRAINED_SIDE_PX = 120;
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(Math.max(value, min), Math.max(min, max));
@@ -61,12 +90,43 @@ export function rectToAnchor(
   };
 }
 
+export function pointToAnchor(x: number, y: number): AnchorRect {
+  return { left: x, right: x, top: y, bottom: y, width: 0, height: 0 };
+}
+
 export function sameAnchorRect(a: AnchorRect, b: AnchorRect): boolean {
   return (
-    Math.abs(a.left - b.left) < 0.5 &&
-    Math.abs(a.right - b.right) < 0.5 &&
-    Math.abs(a.top - b.top) < 0.5 &&
-    Math.abs(a.bottom - b.bottom) < 0.5
+    Math.abs(a.left - b.left) < EPSILON_PX &&
+    Math.abs(a.right - b.right) < EPSILON_PX &&
+    Math.abs(a.top - b.top) < EPSILON_PX &&
+    Math.abs(a.bottom - b.bottom) < EPSILON_PX
+  );
+}
+
+export function samePopoverSize(a: PopoverSize, b: PopoverSize): boolean {
+  return (
+    Math.abs(a.width - b.width) < EPSILON_PX &&
+    Math.abs(a.height - b.height) < EPSILON_PX
+  );
+}
+
+export function sameViewportBounds(a: ViewportBounds, b: ViewportBounds): boolean {
+  return (
+    Math.abs(a.width - b.width) < EPSILON_PX &&
+    Math.abs(a.height - b.height) < EPSILON_PX
+  );
+}
+
+export function samePopoverPosition(
+  a: AnchoredPopoverPosition,
+  b: AnchoredPopoverPosition,
+): boolean {
+  return (
+    a.left === b.left &&
+    a.top === b.top &&
+    a.maxWidth === b.maxWidth &&
+    a.maxHeight === b.maxHeight &&
+    a.side === b.side
   );
 }
 
@@ -118,26 +178,129 @@ export function anchorPopover(opts: AnchorPopoverOptions): AnchoredPopoverPositi
     };
   }
 
-  const bottomTop = opts.anchor.bottom + gap;
-  const topTop = opts.anchor.top - gap - effectiveH;
-  const bottomFits = bottomTop + effectiveH <= opts.viewport.height - margin;
-  const topFits = topTop >= margin;
+  const bottomSpace = Math.max(0, opts.viewport.height - margin - (opts.anchor.bottom + gap));
+  const topSpace = Math.max(0, opts.anchor.top - gap - margin);
+  const bottomFits = effectiveH <= bottomSpace;
+  const topFits = effectiveH <= topSpace;
 
   let side: PopoverSide = preferredSide;
-  let rawTop = preferredSide === "bottom" ? bottomTop : topTop;
-  if (preferredSide === "bottom" && !bottomFits && topFits) {
+  if (opts.stickySide === "top" || opts.stickySide === "bottom") {
+    if (opts.stickySide === "bottom") {
+      const shouldFlip =
+        !bottomFits &&
+        (topFits ||
+          (opts.constrainSideHeight === true &&
+            bottomSpace < MIN_CONSTRAINED_SIDE_PX &&
+            topSpace > bottomSpace));
+      side = shouldFlip ? "top" : "bottom";
+    } else {
+      const shouldFlip =
+        !topFits &&
+        (bottomFits ||
+          (opts.constrainSideHeight === true &&
+            topSpace < MIN_CONSTRAINED_SIDE_PX &&
+            bottomSpace > topSpace));
+      side = shouldFlip ? "bottom" : "top";
+    }
+  } else if (preferredSide === "bottom" && !bottomFits && topFits) {
     side = "top";
-    rawTop = topTop;
   } else if (preferredSide === "top" && !topFits && bottomFits) {
     side = "bottom";
-    rawTop = bottomTop;
+  } else if (opts.constrainSideHeight && !bottomFits && !topFits) {
+    if (preferredSide === "top" && topSpace < MIN_CONSTRAINED_SIDE_PX && bottomSpace > topSpace) {
+      side = "bottom";
+    } else if (
+      preferredSide === "bottom" &&
+      bottomSpace < MIN_CONSTRAINED_SIDE_PX &&
+      topSpace > bottomSpace
+    ) {
+      side = "top";
+    }
   }
 
+  let sideMaxHeight = maxHeight;
+  if (opts.constrainSideHeight) {
+    const availableOnSide = Math.floor(side === "top" ? topSpace : bottomSpace);
+    if (availableOnSide >= Math.min(MIN_CONSTRAINED_SIDE_PX, maxHeight)) {
+      sideMaxHeight = Math.min(maxHeight, availableOnSide);
+    }
+  }
+  const sideEffectiveH = Math.min(Math.max(0, Math.ceil(opts.popover.height)), sideMaxHeight);
+  const sideMaxTop = Math.max(margin, Math.floor(opts.viewport.height - sideEffectiveH - margin));
+  const rawTop =
+    side === "bottom"
+      ? opts.anchor.bottom + gap
+      : opts.anchor.top - gap - sideEffectiveH;
+
+  const align = opts.align ?? "start";
+  const rawLeft =
+    align === "end"
+      ? opts.anchor.right - effectiveW
+      : align === "center"
+        ? opts.anchor.left + opts.anchor.width / 2 - effectiveW / 2
+        : opts.anchor.left;
+
   return {
-    left: Math.round(clamp(opts.anchor.left, margin, maxLeft)),
-    top: Math.round(clamp(rawTop, margin, maxTop)),
+    left: Math.round(clamp(rawLeft, margin, maxLeft)),
+    top: Math.round(clamp(rawTop, margin, sideMaxTop)),
     maxWidth,
-    maxHeight,
+    maxHeight: sideMaxHeight,
     side,
+  };
+}
+
+/** Captures initial popover placement and only updates coordinates for real
+ *  anchor movement, viewport resize, or size/constraint changes >= 0.5px. */
+export function stepAnchoredPopover(
+  prev: StablePopoverState | null,
+  input: StepPopoverInput,
+): StablePopoverState {
+  if (prev === null) {
+    const position = anchorPopover({
+      anchor: input.anchor,
+      popover: input.popover,
+      viewport: input.viewport,
+      preferredSide: input.preferredSide,
+      align: input.align,
+      constrainSideHeight: input.constrainSideHeight,
+      gap: input.gap,
+      margin: input.margin,
+    });
+    return {
+      anchor: input.anchor,
+      popover: input.popover,
+      viewport: input.viewport,
+      position,
+    };
+  }
+
+  const anchorMoved = !sameAnchorRect(prev.anchor, input.anchor);
+  const viewportChanged = !sameViewportBounds(prev.viewport, input.viewport);
+  const sizeChanged = !samePopoverSize(prev.popover, input.popover);
+  if (!anchorMoved && !viewportChanged && !sizeChanged) return prev;
+
+  const nextAnchor = anchorMoved ? input.anchor : prev.anchor;
+  const nextViewport = viewportChanged ? input.viewport : prev.viewport;
+  const nextPopover = sizeChanged ? input.popover : prev.popover;
+
+  const nextPosition = anchorPopover({
+    anchor: nextAnchor,
+    popover: nextPopover,
+    viewport: nextViewport,
+    preferredSide: input.preferredSide,
+    align: input.align,
+    constrainSideHeight: input.constrainSideHeight,
+    stickySide: !anchorMoved && !viewportChanged ? prev.position.side : undefined,
+    gap: input.gap,
+    margin: input.margin,
+  });
+
+  return {
+    anchor: nextAnchor,
+    popover: nextPopover,
+    viewport: nextViewport,
+    position: samePopoverPosition(prev.position, nextPosition)
+      ? prev.position
+      : nextPosition,
   };
 }

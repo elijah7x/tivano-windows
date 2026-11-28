@@ -5,6 +5,8 @@
 
 import { createElement, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { AppInfo, ChatThread, CheckpointRecordView, CodexInfo, Message, Project, Settings, Turn } from "../../shared/types";
+import { rectToAnchor, type AnchorRect } from "../../shared/popoverAnchor";
+import { anchoredPopoverStyle, useAnchoredPopover } from "../useAnchoredPopover";
 import { INTERRUPTED_MARKER } from "../../shared/types";
 import { AttachChip } from "./AttachChip";
 import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
@@ -373,9 +375,23 @@ export function ChatView(props: {
     else setLocalMoreOpen(next);
   };
   const moreRef = useRef<HTMLDivElement>(null);
+  const moreBtnRef = useRef<HTMLButtonElement>(null);
+  const [moreAnchor, setMoreAnchor] = useState<AnchorRect | null>(null);
   const [msgMenu, setMsgMenu] = useState<MessagePopoverState | null>(null);
   const ckptGen = useRef(0);
   const threadId = thread?.id ?? null;
+  const { popRef: moreMenuRef, position: moreMenuPos } = useAnchoredPopover<HTMLDivElement>({
+    open: moreOpen && thread !== null,
+    targetKey: moreOpen ? "more-controls" : null,
+    initialAnchor: moreAnchor,
+    anchorRef: moreBtnRef,
+    estimatedSize: { width: 210, height: 200 },
+    preferredSide: "bottom",
+    align: "end",
+    constrainSideHeight: true,
+    gap: 4,
+    layoutKey: `${threadId ?? ""}:${!!props.project}:${!!thread?.worktreeDir}`,
+  });
   // P1-26 (frozen TimelineWindow): the rendered tail — opens on firstPaint,
   // grows to initial a beat later, pages back while the reader scrolls up,
   // and collapses to initial when the live tail outgrows eagerLimit.
@@ -845,6 +861,7 @@ export function ChatView(props: {
           <ThreadChangesTab threadId={thread.id} toggleSeq={props.changesToggleSeq} />
           <div className="openin more-controls" ref={moreRef}>
             <button
+              ref={moreBtnRef}
               type="button"
               className={`head-action more-controls-btn${moreOpen ? " active" : ""}`}
               aria-haspopup="menu"
@@ -852,12 +869,23 @@ export function ChatView(props: {
               aria-label={t("More controls")}
               title={t("More controls")}
               disabled={props.readOnly === true}
-              onClick={() => setMoreOpen((o) => !o)}
+              onClick={(e) => {
+                if (!moreOpen) {
+                  setMoreAnchor(rectToAnchor(e.currentTarget.getBoundingClientRect()));
+                }
+                setMoreOpen((o) => !o);
+              }}
             >
               ⋯
             </button>
             {moreOpen && (
-              <div className="openin-menu more-controls-menu" role="menu" aria-label={t("More controls")}>
+              <div
+                ref={moreMenuRef}
+                className="openin-menu more-controls-menu"
+                role="menu"
+                aria-label={t("More controls")}
+                style={anchoredPopoverStyle(moreMenuPos)}
+              >
                 <button
                   type="button"
                   role="menuitem"
