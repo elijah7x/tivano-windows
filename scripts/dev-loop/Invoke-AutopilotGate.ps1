@@ -1,4 +1,4 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-23.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-28.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 # Usage: .\Invoke-AutopilotGate.ps1 -PrNumber <n> -ReviewRoot <pr-review state root> -StandardCredentialFile <file> [-ReviewCheckout <clone>] [-ReviewTokenFile <file>] [-Reference <macOS baseline clone>] [-Repo <owner/name>] [-Root <state root>] [-DevinModel <model>] [-ReviewTimeoutMin <min>] [-GlmTimeoutMin <min>] [-SkipGlm]
 # Runs Invoke-PrReview.ps1 (with posting enabled and -Force) for one PR, evaluates gate.json with the dev-loop merge gate rules, optionally runs Invoke-GlmReview.ps1 -Mode review for a second review, and emits one compact JSON summary line to stdout.
@@ -274,7 +274,16 @@ function Start-ReviewTask {
   $doneFile = Join-Path $RunDir ('review-' + $Tag + '.done')
   $cmdFile = Join-Path $RunDir ('review-' + $Tag + '.cmd')
   Remove-Item -LiteralPath $doneFile -Force -ErrorAction SilentlyContinue
-  Write-Text $cmdFile ('@echo off' + "`r`n" + 'cd /d ' + (Quote-Argument $script:WorkRoot) + "`r`n" + $inner + "`r`n" + 'echo %ERRORLEVEL%> ' + (Quote-Argument $doneFile) + "`r`n")
+  $envPrefix = ''
+  $rawSlots = $env:TIVANO_GATE_CHECK_SLOTS
+  if (-not [string]::IsNullOrWhiteSpace($rawSlots) -and $rawSlots.Trim() -match '^[12]$') {
+    $envPrefix += 'set "TIVANO_GATE_CHECK_SLOTS=' + $rawSlots.Trim() + '"' + "`r`n"
+  }
+  $rawWorkers = $env:TIVANO_GATE_VITEST_WORKERS
+  if (-not [string]::IsNullOrWhiteSpace($rawWorkers) -and $rawWorkers.Trim() -match '^[1-9][0-9]*$') {
+    $envPrefix += 'set "TIVANO_GATE_VITEST_WORKERS=' + $rawWorkers.Trim() + '"' + "`r`n"
+  }
+  Write-Text $cmdFile ('@echo off' + "`r`n" + $envPrefix + 'cd /d ' + (Quote-Argument $script:WorkRoot) + "`r`n" + $inner + "`r`n" + 'echo %ERRORLEVEL%> ' + (Quote-Argument $doneFile) + "`r`n")
   $taskName = 'gate-pr-' + $Pr + '-' + $Tag + '-' + $PID
   $action = New-ScheduledTaskAction -Execute $script:CmdExe -Argument ('/d /c "' + $cmdFile + '"') -WorkingDirectory $script:WorkRoot
   $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
@@ -958,6 +967,76 @@ function Invoke-WithGitLock {
   }
 }
 
+function Invoke-WithCheckSlot {
+  param([scriptblock]$Action, [int]$TimeoutMs = 7200000)
+  # One slot by default: concurrent untrusted checks share one standard account and could tamper with each other.
+  $slotCount = 1
+  $rawSlots = $env:TIVANO_GATE_CHECK_SLOTS
+  if (-not [string]::IsNullOrWhiteSpace($rawSlots)) {
+    $parsedSlots = 0
+    if ([int]::TryParse($rawSlots.Trim(), [ref]$parsedSlots) -and ($parsedSlots -eq 1 -or $parsedSlots -eq 2)) {
+      $slotCount = $parsedSlots
+    }
+  }
+  $mutexes = New-Object Collections.Generic.List[System.Threading.Mutex]
+  $acquiredIndex = -1
+  try {
+    for ($slot = 1; $slot -le $slotCount; $slot++) {
+      $null = $mutexes.Add((New-Object System.Threading.Mutex($false, ('Global\TivanoUntrustedChecks-' + $slot))))
+    }
+    for ($i = 0; $i -lt $mutexes.Count; $i++) {
+      try {
+        if ($mutexes[$i].WaitOne(0)) {
+          $acquiredIndex = $i
+          break
+        }
+      } catch [System.Threading.AbandonedMutexException] {
+        # Previous holder terminated abnormally; ownership now belongs to this process.
+        $acquiredIndex = $i
+        break
+      }
+    }
+    if ($acquiredIndex -lt 0) {
+      [System.Threading.WaitHandle[]]$handles = $mutexes.ToArray()
+      try {
+        $waitIndex = [System.Threading.WaitHandle]::WaitAny($handles, $TimeoutMs)
+        if ($waitIndex -ne [System.Threading.WaitHandle]::WaitTimeout -and $waitIndex -ge 0 -and $waitIndex -lt $handles.Length) {
+          $acquiredIndex = $waitIndex
+        }
+      } catch [System.Threading.AbandonedMutexException] {
+        # Previous holder terminated abnormally; ownership of the abandoned slot now belongs to this process.
+        $abandoned = $_.Exception
+        while ($null -ne $abandoned -and $abandoned -isnot [System.Threading.AbandonedMutexException]) {
+          $abandoned = $abandoned.InnerException
+        }
+        if ($null -ne $abandoned -and $abandoned.MutexIndex -ge 0 -and $abandoned.MutexIndex -lt $handles.Length) {
+          $acquiredIndex = $abandoned.MutexIndex
+        } elseif ($null -ne $abandoned -and $null -ne $abandoned.Mutex) {
+          for ($j = 0; $j -lt $handles.Length; $j++) {
+            if ([object]::ReferenceEquals($handles[$j], $abandoned.Mutex)) {
+              $acquiredIndex = $j
+              break
+            }
+          }
+        }
+      }
+    }
+    if ($acquiredIndex -lt 0) {
+      throw ('Timed out waiting for a check slot (slots=' + $slotCount + ') after ' + [string]([int]($TimeoutMs / 1000)) + 's.')
+    }
+    return (& $Action)
+  } finally {
+    if ($acquiredIndex -ge 0 -and $acquiredIndex -lt $mutexes.Count) {
+      try { $mutexes[$acquiredIndex].ReleaseMutex() } catch { }
+    }
+    foreach ($m in $mutexes) {
+      if ($null -ne $m) {
+        try { $m.Dispose() } catch { }
+      }
+    }
+  }
+}
+
 function Invoke-FlakeRerun {
   param(
     [int]$PrNumber,
@@ -982,7 +1061,7 @@ function Invoke-FlakeRerun {
     $null = $fileArgParts.Add((Quote-Argument $relFile))
   }
   $fileArgsJoined = $fileArgParts.ToArray() -join ' '
-  $vitestCmdLine = 'node.exe ".\node_modules\vitest\vitest.mjs" run --reporter=default --reporter=json "--outputFile.json=%RES%\vitest.json" ' + $fileArgsJoined
+  $vitestCmdLine = 'node.exe ".\node_modules\vitest\vitest.mjs" run --maxWorkers=%TIVANO_GATE_VITEST_WORKERS% --reporter=default --reporter=json "--outputFile.json=%RES%\vitest.json" ' + $fileArgsJoined
 
   $treeCreated = $false
   try {
@@ -1040,6 +1119,12 @@ function Invoke-FlakeRerun {
     $null = $cmdLines.Add('if not exist "%WT%\" exit /b 2')
     $null = $cmdLines.Add('if not exist "%RES%\" mkdir "%RES%"')
     $null = $cmdLines.Add('if not exist "%RES%\" exit /b 2')
+    $rawWorkers = $env:TIVANO_GATE_VITEST_WORKERS
+    if (-not [string]::IsNullOrWhiteSpace($rawWorkers) -and $rawWorkers.Trim() -match '^[1-9][0-9]*$') {
+      $null = $cmdLines.Add('set "TIVANO_GATE_VITEST_WORKERS=' + $rawWorkers.Trim() + '"')
+    }
+    $null = $cmdLines.Add('if not defined TIVANO_GATE_VITEST_WORKERS set "TIVANO_GATE_VITEST_WORKERS=4"')
+    $null = $cmdLines.Add('if "%TIVANO_GATE_VITEST_WORKERS%"=="" set "TIVANO_GATE_VITEST_WORKERS=4"')
     $null = $cmdLines.Add('set "STEP_INSTALL=null"')
     $null = $cmdLines.Add('set "STEP_BUILD=null"')
     $null = $cmdLines.Add('set "STEP_UNIT=null"')
@@ -1090,7 +1175,7 @@ function Invoke-FlakeRerun {
 
     $wrapperPath = Join-Path $flakeDir 'standard-flake.ps1'
     $wrapperLines = New-Object Collections.Generic.List[string]
-    $null = $wrapperLines.Add('# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-23.')
+    $null = $wrapperLines.Add('# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-28.')
     $null = $wrapperLines.Add('# Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app')
     $null = $wrapperLines.Add('# Generated for one flake rerun by Invoke-AutopilotGate.ps1.')
     $null = $wrapperLines.Add('$ErrorActionPreference = ''Stop''')
@@ -1256,16 +1341,9 @@ function Invoke-FlakeRetryIfEligible {
     $null = $testNames.Add(([string]$t.file) + ' > ' + ([string]$t.fullName).Trim())
   }
 
-  # PR code runs under one shared standard account, so the rerun waits for any other PR's checks (same lock as Invoke-PrReview.ps1).
-  $checksMutex = New-Object System.Threading.Mutex($false, 'Global\TivanoUntrustedChecks')
-  $checksLocked = $false
-  try {
-    try { $checksLocked = $checksMutex.WaitOne(7200000) } catch [System.Threading.AbandonedMutexException] { $checksLocked = $true }
-    if (-not $checksLocked) { throw 'Timed out waiting for the untrusted-checks lock.' }
-    $rerun = Invoke-FlakeRerun -PrNumber $PrNumber -HeadSha $HeadSha -FailingFiles @($failureInfo.files) -FailingTests @($failureInfo.tests) -RunDir $RunDir
-  } finally {
-    if ($checksLocked) { try { $checksMutex.ReleaseMutex() } catch { } }
-    $checksMutex.Dispose()
+  # Cap concurrent untrusted check runs via named slot mutexes (same helper contract as Invoke-PrReview.ps1).
+  $rerun = Invoke-WithCheckSlot -TimeoutMs 7200000 -Action {
+    Invoke-FlakeRerun -PrNumber $PrNumber -HeadSha $HeadSha -FailingFiles @($failureInfo.files) -FailingTests @($failureInfo.tests) -RunDir $RunDir
   }
   return [pscustomobject]@{
     attempted = $true
@@ -1588,6 +1666,12 @@ try {
       Write-Log ('review unavailable: ' + $msg)
     } else {
       $gatePathOut = [string]$review.gatePath
+      $prStepsGate = Get-JsonProp $review.gate 'pr'
+      if ((Get-JsonProp $review.gate 'e2eSkipped') -eq $true -or (Get-JsonProp $prStepsGate 'e2eSkipped') -eq $true) {
+        $e2eSkipNote = 'e2e skipped (docs/tests-only change)'
+        $null = $notesOut.Add($e2eSkipNote)
+        Write-Log $e2eSkipNote
+      }
       $evaluation = Test-GateResult $review.gate $true
       $extra = @()
       if ($info.mergeable -eq 'CONFLICTING') {

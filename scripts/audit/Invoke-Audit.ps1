@@ -1319,8 +1319,12 @@ function Test-ParitySyncFastPath {
     return [pscustomobject]@{ ok = $false; reason = 'could not read updated docs/parity.md'; verifiedPrs = @() }
   }
 
-  $beforeMap = Get-ParityRowMap ([string]$beforeRes.text)
-  $afterMap = Get-ParityRowMap $afterText
+  # The base comes from 'git show' (LF, captured through a redirected stream) and the head from the
+  # worktree file (may be CRLF under autocrlf, or carry a BOM); compare the content, not the encoding.
+  $beforeNorm = ([string]$beforeRes.text).TrimStart([char]0xFEFF).Replace("`r`n", "`n").Replace("`r", "`n").TrimEnd("`n")
+  $afterNorm = ([string]$afterText).TrimStart([char]0xFEFF).Replace("`r`n", "`n").Replace("`r", "`n").TrimEnd("`n")
+  $beforeMap = Get-ParityRowMap $beforeNorm
+  $afterMap = Get-ParityRowMap $afterNorm
 
   if ($beforeMap.duplicates.Count -gt 0) {
     return [pscustomobject]@{ ok = $false; reason = ('duplicate row ID(s) in base docs/parity.md: ' + ($beforeMap.duplicates -join ', ')); verifiedPrs = @() }
