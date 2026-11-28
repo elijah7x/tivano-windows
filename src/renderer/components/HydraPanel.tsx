@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-22.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-28.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // F22: Hydra head strip — frozen HydraPanel parity, bounded. A lead
 // thread lists its heads (roster colour, name, task, status); a head
@@ -196,6 +196,9 @@ export function HydraPanel(props: {
    *  the store; this strip is how they are reached. */
   threads: ChatThread[];
   readOnly?: boolean;
+  /** Incremented when the user opens the panel from a toggle button so
+   *  keyboard focus moves into the panel without stealing focus on auto-open. */
+  focusSeq?: number | undefined;
   /** P1-31: the frozen Dismiss menu row — hides the docked panel while
    *  the heads keep working (ChatView owns the flag). */
   onDismiss?: () => void;
@@ -219,7 +222,7 @@ export function HydraPanel(props: {
   const heads = useMemo(
     () =>
       props.threads
-        .filter((x) => x.hydraHead?.leadId === thread.id)
+        .filter((x) => x.hydraHead?.leadId === thread.id && !x.isArchived)
         .slice()
         .sort((a, b) => a.hydraHead!.spawnedAt - b.hydraHead!.spawnedAt),
     [props.threads, thread.id],
@@ -306,11 +309,20 @@ export function HydraPanel(props: {
   // A floated position and open menu belong to the thread they were
   // created on; a thread switch starts docked with no menu.
   const lastThreadRef = useRef(thread.id);
+  const lastFocusSeq = useRef(0);
   if (lastThreadRef.current !== thread.id) {
     lastThreadRef.current = thread.id;
+    lastFocusSeq.current = 0;
     setFloatPos(null);
     setMenu(null);
   }
+  useEffect(() => {
+    const seq = props.focusSeq ?? 0;
+    if (seq > lastFocusSeq.current) {
+      lastFocusSeq.current = seq;
+      panelRef.current?.focus({ preventScroll: true });
+    }
+  }, [props.focusSeq]);
 
   // Re-clamp on window resize so a floated panel cannot be stranded
   // off-screen by the viewport shrinking under it.
@@ -484,12 +496,20 @@ export function HydraPanel(props: {
       <div
         ref={panelRef}
         className={`hydra-panel${floatPos ? " floating" : ""}`}
+        tabIndex={-1}
       style={
         floatPos
           ? { position: "fixed", left: floatPos.x, top: floatPos.y, width: floatPos.w, zIndex: 60 }
           : undefined
       }
       aria-label={t("Heads")}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && !menu && props.onDismiss) {
+          e.preventDefault();
+          e.stopPropagation();
+          props.onDismiss();
+        }
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
         const el = e.target as HTMLElement;
