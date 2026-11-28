@@ -2810,10 +2810,13 @@ select.runtime-mode:disabled {
   line-height: 1;
 }
 
-/* The theme picker, shortcut chord and full-width model-group action keep
-   their own shapes, but use the same 28px regular control height. */
+/* The theme picker, appearance picker, shortcut chord and full-width
+   model-group action keep their own shapes, but use the same 28px regular
+   control height. */
 .settings-modal .theme-btn,
+.settings-modal .appearance-btn,
 .settings-modal .shortcut-chord,
+.settings-modal .shortcut-recording,
 .settings-modal .ml-newgroup-rail {
   display: inline-flex;
   align-items: center;
@@ -5070,7 +5073,7 @@ html[data-paused="1"] .md-veil { animation: none !important; }
 /* Dense Models-row icon actions intentionally stay square rather than
    becoming pills; their explicit compact size is the same 24px secondary
    control size used elsewhere in Settings. */
-.ml-tune, .ml-remove, .ml-add {
+.ml-tune, .ml-remove, .ml-add, .ml-icobtn {
   flex: none;
   border: 0;
   background: transparent;
@@ -5102,7 +5105,7 @@ html[data-paused="1"] .md-veil { animation: none !important; }
 .ml-group-head:hover .ml-group-actions { opacity: 1; }
 .ml-icobtn {
   border: 0; background: transparent; color: var(--text-2);
-  width: 22px; height: 22px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  border-radius: 6px; cursor: pointer; font-size: 12px;
 }
 .ml-icobtn:hover { background: var(--hover); color: var(--text); }
 .ml-rename {

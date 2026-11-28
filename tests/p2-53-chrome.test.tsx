@@ -511,7 +511,9 @@ describe("P2-53 window chrome simplification", () => {
     expect(regularRule).toContain("height: 28px");
 
     const regularHeightRule = ruleBlock(".settings-modal .theme-btn");
+    expect(regularHeightRule).toContain(".settings-modal .appearance-btn");
     expect(regularHeightRule).toContain(".settings-modal .shortcut-chord");
+    expect(regularHeightRule).toContain(".settings-modal .shortcut-recording");
     expect(regularHeightRule).toContain(".settings-modal .ml-newgroup-rail");
     expect(regularHeightRule).toContain("min-height: 28px");
     expect(regularHeightRule).toContain("height: 28px");
@@ -519,6 +521,7 @@ describe("P2-53 window chrome simplification", () => {
     expect(regularHeightRule).toContain("padding-bottom: 0");
 
     const modelIconRule = ruleBlock(".ml-tune, .ml-remove, .ml-add");
+    expect(modelIconRule).toContain(".ml-icobtn");
     expect(modelIconRule).toContain("width: 24px");
     expect(modelIconRule).toContain("min-width: 24px");
     expect(modelIconRule).toContain("height: 24px");
