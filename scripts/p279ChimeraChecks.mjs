@@ -45,6 +45,7 @@ export async function runP279ChimeraChecks({
       hydraEnabled: true,
       hydraDefaultEnabled: true,
       hydraAutoOpensPanels: true,
+      chimeraAutoDispatch: true,
     }),
   );
 
@@ -261,6 +262,7 @@ export async function runP279ChimeraChecks({
           hydraEnabled: priorSettings.hydraEnabled !== false,
           hydraDefaultEnabled: priorSettings.hydraDefaultEnabled !== false,
           hydraAutoOpensPanels: priorSettings.hydraAutoOpensPanels !== false,
+          chimeraAutoDispatch: priorSettings.chimeraAutoDispatch === true,
         },
       );
     } catch {
