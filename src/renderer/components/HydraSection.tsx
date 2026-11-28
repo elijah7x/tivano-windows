@@ -47,6 +47,7 @@ import {
 } from "../../shared/chimera";
 import { useT } from "../locale";
 import { api, tryCall } from "../client";
+import { CheckmarkSealIcon } from "./StatusIcons";
 
 type T = (key: string, ...vars: string[]) => string;
 
@@ -508,6 +509,7 @@ function ToggleRow(props: {
   on: boolean;
   onFlip: (next: boolean) => void;
   blockedBy?: string | undefined;
+  icon?: React.ReactNode;
 }): React.JSX.Element {
   const t = useT();
   return (
@@ -520,6 +522,7 @@ function ToggleRow(props: {
           disabled={!!props.blockedBy}
           onClick={() => props.onFlip(!props.on)}
         >
+          {props.icon}
           {t(props.title)}
         </button>
       </div>
@@ -1447,6 +1450,7 @@ export function HydraSection(props: { settings: Settings }): React.JSX.Element {
       <div className="hydra-sub">
         <ToggleRow
           title="Independent review"
+          icon={<CheckmarkSealIcon />}
           detail="Once the lead and sub-agents finish, the model you choose reviews the team's changes and sends any findings to the lead, before auto-merge when that is on."
           on={on(settings.hydraReviewEnabled, true)}
           onFlip={(v) => toggle("hydraReviewEnabled", v)}

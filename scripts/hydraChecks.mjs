@@ -112,6 +112,10 @@ export async function runHydraChecks({
     /lands its changes back/.test(status ?? "") && /not wired in this build/.test(status ?? ""),
     status,
   );
+  verify(
+    "HY-02b Independent review uses checkmark.seal icon",
+    (await page.locator('.hydra-section [data-icon="checkmark.seal"]').count()) === 1,
+  );
 
   // HY-03: master switch persists to the store.
   await page.locator('.hydra-section button[role="switch"]').first().click();

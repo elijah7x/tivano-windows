@@ -33,6 +33,7 @@ $script:ExcludedIssueLabels = @(
   'needs-human',
   'lane-devin',
   'lane-hydrogen',
+  'lane-cloud',
   'audit-parked',
   'parked',
   'audit-followup'
@@ -1032,6 +1033,7 @@ function Test-LockOwnedByLane {
   )
   if ($null -eq $Lock -or (-not [bool]$Lock.valid)) { return $false }
   if ([string]::IsNullOrWhiteSpace($Lock.laneId) -or [string]::IsNullOrWhiteSpace($LaneId)) { return $false }
+  if ($Lock.laneId.Equals('cloud', [StringComparison]::OrdinalIgnoreCase)) { return $false }
   return $Lock.laneId.Equals($LaneId, [StringComparison]::OrdinalIgnoreCase)
 }
 
@@ -1206,6 +1208,18 @@ function Sweep-ClaimLocks {
     $lockIssue = $fileIssue
     if ($lock.issue -gt 0) { $lockIssue = [int]$lock.issue }
     $ownerLane = [string]$lock.laneId
+
+    if ($ownerLane.Equals('cloud', [StringComparison]::OrdinalIgnoreCase)) {
+      $cloudLastActiveDt = Parse-UtcTimestamp $lock.lastActiveUtc
+      if ($null -eq $cloudLastActiveDt) { $cloudLastActiveDt = Parse-UtcTimestamp $lock.claimedAtUtc }
+      if ($null -eq $cloudLastActiveDt) { $cloudLastActiveDt = $file.LastWriteTimeUtc }
+      $cloudAgeHours = ([DateTime]::UtcNow - $cloudLastActiveDt).TotalHours
+      if ($cloudAgeHours -le 4.0) { continue }
+      if (Remove-LockIfUnchanged -Path $file.FullName -ExpectedLaneId $ownerLane -ExpectedClaimedAt $lock.claimedAtUtc -ExpectedLastActive $lock.lastActiveUtc) {
+        Write-Log ('swept stale cloud claim lock for issue #' + $lockIssue + ' (lastActive ' + [Math]::Round($cloudAgeHours, 1) + 'h ago)')
+      }
+      continue
+    }
 
     $issuePrs = @()
     if ($HydrogenPrsByIssue.ContainsKey($lockIssue)) {
@@ -1439,9 +1453,10 @@ function Invoke-ClaimIssue {
       Write-Log ('warning: could not parse recheck labels JSON for issue #' + $IssueNumber + ': ' + $_.Exception.Message)
       $nowLabels = @()
     }
-    if ($nowLabels -contains 'lane-devin') {
+    if ($nowLabels -contains 'lane-devin' -or $nowLabels -contains 'lane-cloud') {
+      $otherLane = if ($nowLabels -contains 'lane-cloud') { 'cloud' } else { 'Devin' }
       $null = Invoke-Gh ('issue edit ' + $IssueNumber + ' -R ' + $Repo + ' --remove-label lane-hydrogen')
-      Write-Log ('issue #' + $IssueNumber + ' was claimed by the Devin lane at the same time; backed off')
+      Write-Log ('issue #' + $IssueNumber + ' was claimed by the ' + $otherLane + ' lane at the same time; backed off')
       return $false
     }
   }
@@ -1746,6 +1761,13 @@ try {
       }
     }
 
+    $cloudBranchMatch = [regex]::Match($headRef, '^nyx/([0-9]+)-cloud-', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if ($cloudBranchMatch.Success) {
+      $cloudIssue = [int]$cloudBranchMatch.Groups[1].Value
+      if ($cloudIssue -gt 0) { $issuesWithOpenPr[$cloudIssue] = $true }
+      continue
+    }
+
     if ($prNum -le 0 -or -not $headRef.StartsWith('nyx/h-', [StringComparison]::Ordinal)) {
       continue
     }
@@ -1918,7 +1940,7 @@ try {
       if ($orphanNum -le 0) { continue }
       $orphanLabels = @(Get-LabelNames (Get-JsonProp $iss 'labels'))
       if ($orphanLabels -notcontains 'lane-hydrogen') { continue }
-      if ($orphanLabels -contains 'parked' -or $orphanLabels -contains 'audit-parked' -or $orphanLabels -contains 'needs-human') { continue }
+      if ($orphanLabels -contains 'parked' -or $orphanLabels -contains 'audit-parked' -or $orphanLabels -contains 'needs-human' -or $orphanLabels -contains 'lane-cloud') { continue }
       if ($issuesWithOpenPr.ContainsKey($orphanNum)) { continue }
       if ($progressParked.issues.ContainsKey($orphanNum)) { continue }
 

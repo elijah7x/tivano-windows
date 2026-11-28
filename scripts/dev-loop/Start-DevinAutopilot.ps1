@@ -32,7 +32,10 @@ param(
   [string]$DevinCliPath = '',
   [ValidatePattern('^[A-Za-z0-9._-]+$')][string]$DevinModel = 'swe-2-1-max',
   [ValidateRange(15, 480)][int]$CliMaxRunMinutes = 150,
-  [string]$CliMissionPath = ''
+  [string]$CliMissionPath = '',
+  [int]$CloudWeeklyCap = 4,
+  [ValidateRange(15, 720)][int]$CloudMaxRunMinutes = 240,
+  [string]$CloudMissionPath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -1300,10 +1303,15 @@ function Set-KickoffOutcome {
 
 function Get-DevinDesktopProcesses {
   # Select only Devin Desktop's own root processes; exclude the Devin CLI (bin\devin.exe) used by
-  # the PR reviewer and the audit arbiter, and exclude Electron child/helper processes.
-  return @(Get-CimInstance Win32_Process -Filter "Name='Devin.exe'" -ErrorAction SilentlyContinue | Where-Object {
+  # the PR reviewer, the audit arbiter and the cloud lane, and exclude Electron child/helper processes.
+  $allProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  $cloudIds = Get-CloudProcessTreeIds $allProcs
+  return @($allProcs | Where-Object {
+    [string]$_.Name -ieq 'Devin.exe' -and
+    (-not $cloudIds.Contains([int]$_.ProcessId)) -and
     $_.ExecutablePath -and
     $_.ExecutablePath -notmatch '\\bin\\devin\.exe$' -and
+    [string]$_.CommandLine -notmatch '(?i)(?:^|\s)--cloud(?:\s|$)' -and
     [string]$_.CommandLine -notmatch '--type=' -and
     [string]$_.CommandLine -notmatch '--require='
   })
@@ -1311,16 +1319,21 @@ function Get-DevinDesktopProcesses {
 
 function Stop-DevinDesktop {
   # Stop only Devin Desktop's own process trees; the Devin CLI (bin\devin.exe) used by the
-  # PR reviewer and the audit arbiter must keep running.
+  # PR reviewer, the audit arbiter and the cloud lane must keep running.
+  $cloudIds = Get-CloudProcessTreeIds
   $procs = @(Get-DevinDesktopProcesses)
+  $stopped = 0
   foreach ($desk in $procs) {
-    $null = & taskkill.exe /T /F /PID ([int]$desk.ProcessId) 2>&1
+    $deskPid = [int]$desk.ProcessId
+    if ($deskPid -le 0 -or $cloudIds.Contains($deskPid)) { continue }
+    $null = & taskkill.exe /T /F /PID $deskPid 2>&1
+    $stopped++
   }
-  if ($procs.Count -gt 0) {
-    Write-Log ('stopped ' + $procs.Count + ' Devin Desktop process tree(s)')
+  if ($stopped -gt 0) {
+    Write-Log ('stopped ' + $stopped + ' Devin Desktop process tree(s)')
     Start-Sleep -Seconds 3
   }
-  return $procs.Count
+  return $stopped
 }
 
 function Stop-StrayApps {
@@ -1329,6 +1342,7 @@ function Stop-StrayApps {
   if ($strayNames.Count -eq 0) { return }
   $allProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
   if ($allProcs.Count -eq 0) { return }
+  $protectedIds = Get-ProtectedProcessIds $allProcs
   foreach ($rawName in $strayNames) {
     if ([string]::IsNullOrWhiteSpace([string]$rawName)) { continue }
     $baseName = ([string]$rawName).Trim()
@@ -1375,7 +1389,7 @@ function Stop-StrayApps {
       $wsBytes = 0.0
       foreach ($cp in $allProcs) {
         if (-not $treeIds.Contains([int]$cp.ProcessId)) { continue }
-        if ([string]$cp.CommandLine -match '(?i)C:\\tivano\\' -or [string]$cp.Name -ieq 'msedgewebview2.exe') {
+        if ($protectedIds.Contains([int]$cp.ProcessId) -or [string]$cp.CommandLine -match '(?i)C:\\tivano\\' -or [string]$cp.Name -ieq 'msedgewebview2.exe') {
           $protected = $true
           break
         }
@@ -1412,20 +1426,26 @@ function Get-ProtectedProcessIds {
       break
     }
   }
-  # A live headless Devin CLI run (wrapper, devin.exe and everything under them) outlives the tick
-  # that started it; it must never be reaped as an orphan.
-  $cliRoots = @(Get-CliTrackedPids)
-  if ($cliRoots.Count -gt 0) {
-    $cliSet = New-Object 'Collections.Generic.HashSet[int]'
-    foreach ($r in $cliRoots) { if ($parentByPid.ContainsKey([int]$r)) { $null = $cliSet.Add([int]$r) } }
+  # Live headless Devin CLI and cloud runs (wrapper, devin.exe and everything under them) outlive
+  # the tick that started them; they must never be reaped as orphans or killed by stray cleanup.
+  $trackedRoots = New-Object Collections.Generic.List[int]
+  foreach ($r in @(Get-CliTrackedPids)) {
+    if ([int]$r -gt 0) { $null = $trackedRoots.Add([int]$r) }
+  }
+  foreach ($r in @(Get-CloudTrackedPids)) {
+    if ([int]$r -gt 0) { $null = $trackedRoots.Add([int]$r) }
+  }
+  if ($trackedRoots.Count -gt 0) {
+    $trackedSet = New-Object 'Collections.Generic.HashSet[int]'
+    foreach ($r in $trackedRoots.ToArray()) { if ($parentByPid.ContainsKey([int]$r)) { $null = $trackedSet.Add([int]$r) } }
     $grew = $true
     while ($grew) {
       $grew = $false
       foreach ($k in @($parentByPid.Keys)) {
-        if (-not $cliSet.Contains([int]$k) -and $cliSet.Contains([int]$parentByPid[$k])) { $null = $cliSet.Add([int]$k); $grew = $true }
+        if (-not $trackedSet.Contains([int]$k) -and $trackedSet.Contains([int]$parentByPid[$k])) { $null = $trackedSet.Add([int]$k); $grew = $true }
       }
     }
-    foreach ($id in $cliSet) { $null = $protectedIds.Add([int]$id) }
+    foreach ($id in $trackedSet) { $null = $protectedIds.Add([int]$id) }
   }
   return ,$protectedIds
 }
@@ -3376,9 +3396,12 @@ function Complete-CliRun {
   }
   $workDir = Join-Path $script:WorkRoot 'work'
   try {
-    foreach ($leftover in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $allCliProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $cloudIds = Get-CloudProcessTreeIds $allCliProcs
+    foreach ($leftover in @($allCliProcs | Where-Object {
           $_.CommandLine -and $_.CommandLine.IndexOf($workDir, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
-          $_.CommandLine -notmatch $script:IdentifiedTaskPattern })) {
+          $_.CommandLine -notmatch $script:IdentifiedTaskPattern -and
+          (-not $cloudIds.Contains([int]$_.ProcessId)) })) {
       $null = & taskkill.exe /T /F /PID ([int]$leftover.ProcessId) 2>&1
     }
   } catch { }
@@ -3463,7 +3486,11 @@ function Invoke-CliTick {
         Save-CliState $state
         return
       }
-      $null = & taskkill.exe /T /F /PID ([int]$state['wrapperPid']) 2>&1
+      $cloudIds = Get-CloudProcessTreeIds
+      $killWrapperPid = [int]$state['wrapperPid']
+      if ($killWrapperPid -gt 0 -and (-not $cloudIds.Contains($killWrapperPid))) {
+        $null = & taskkill.exe /T /F /PID $killWrapperPid 2>&1
+      }
       Start-Sleep -Seconds 2
       Complete-CliRun -State $state -Reason $reason
     } else {
@@ -3481,6 +3508,1106 @@ function Invoke-CliTick {
   }
   Start-CliRun -State $state
   Save-CliState $state
+}
+
+function Get-CloudStatePath { return (Join-Path $script:AutopilotDir 'cloud-state.json') }
+
+function Read-CloudState {
+  $state = [ordered]@{
+    runs = @()
+  }
+  if ($null -eq $script:AutopilotDir) { return $state }
+  $data = Read-JsonFile (Get-CloudStatePath)
+  if (-not $data) { return $state }
+  $rawRuns = Get-JsonProp $data 'runs'
+  if ($null -eq $rawRuns) { return $state }
+  $list = New-Object Collections.Generic.List[object]
+  foreach ($item in @($rawRuns)) {
+    if ($null -eq $item) { continue }
+    $issVal = 0
+    $rawIss = Get-JsonProp $item 'issue'
+    if ($null -ne $rawIss) { try { $issVal = [int]$rawIss } catch { $issVal = 0 } }
+    $pidVal = 0
+    $rawPid = Get-JsonProp $item 'pid'
+    if ($null -ne $rawPid) { try { $pidVal = [int]$rawPid } catch { $pidVal = 0 } }
+    $prVal = 0
+    $rawPr = Get-JsonProp $item 'prNumber'
+    if ($null -ne $rawPr) { try { $prVal = [int]$rawPr } catch { $prVal = 0 } }
+    $exitVal = $null
+    $rawExit = Get-JsonProp $item 'exitCode'
+    if ($null -ne $rawExit -and -not [string]::IsNullOrWhiteSpace([string]$rawExit)) {
+      try { $exitVal = [int]$rawExit } catch { $exitVal = $null }
+    }
+    $null = $list.Add([ordered]@{
+      issue = $issVal
+      branch = [string](Get-JsonProp $item 'branch')
+      runDir = [string](Get-JsonProp $item 'runDir')
+      pid = $pidVal
+      startedUtc = [string](Get-JsonProp $item 'startedUtc')
+      endedUtc = [string](Get-JsonProp $item 'endedUtc')
+      exitCode = $exitVal
+      result = [string](Get-JsonProp $item 'result')
+      prNumber = $prVal
+    })
+  }
+  $state['runs'] = [object[]]$list.ToArray()
+  return $state
+}
+
+function Save-CloudState {
+  param($State)
+  $path = Get-CloudStatePath
+  Save-JsonAtomic -Path $path -Object $State -Depth 6
+}
+
+function Get-CloudWrapperMetaPath {
+  param([AllowEmptyString()][string]$RunDir)
+  if ([string]::IsNullOrWhiteSpace($RunDir)) { return '' }
+  return (Join-Path $RunDir 'wrapper-meta.json')
+}
+
+function Get-CloudTrackedPids {
+  try {
+    $st = Read-CloudState
+    $ids = New-Object Collections.Generic.List[int]
+    foreach ($run in @($st['runs'])) {
+      if ($null -eq $run) { continue }
+      $ended = ([string]$run['endedUtc']).Trim()
+      $dp = 0
+      try { $dp = [int]$run['pid'] } catch { $dp = 0 }
+      $isActive = [string]::IsNullOrWhiteSpace($ended)
+      if (-not $isActive -and $dp -gt 0) {
+        if (Test-CloudRunAlive $run) { $isActive = $true }
+      }
+      if (-not $isActive) { continue }
+      if ($dp -gt 0) { $null = $ids.Add($dp) }
+      $runDir = [string]$run['runDir']
+      if (-not [string]::IsNullOrWhiteSpace($runDir)) {
+        $meta = Read-JsonFile (Join-Path $runDir 'meta.json')
+        if ($null -ne $meta) {
+          $mp = 0
+          try { $mp = [int](Get-JsonProp $meta 'devinPid') } catch { $mp = 0 }
+          if ($mp -gt 0 -and (-not $ids.Contains($mp))) { $null = $ids.Add($mp) }
+        }
+        $wmeta = Read-JsonFile (Get-CloudWrapperMetaPath $runDir)
+        if ($null -ne $wmeta) {
+          $wp = 0
+          try { $wp = [int](Get-JsonProp $wmeta 'wrapperPid') } catch { $wp = 0 }
+          if ($wp -gt 0 -and (-not $ids.Contains($wp))) { $null = $ids.Add($wp) }
+        }
+      }
+    }
+    return [int[]]$ids.ToArray()
+  } catch { return @() }
+}
+
+function Get-CloudProcessTreeIds {
+  param($AllProcs = $null)
+  $treeIds = New-Object 'Collections.Generic.HashSet[int]'
+  $roots = @(Get-CloudTrackedPids)
+  if ($roots.Count -eq 0) { return ,$treeIds }
+  if ($null -eq $AllProcs) {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  } else {
+    $all = @($AllProcs)
+  }
+  $parentByPid = @{}
+  foreach ($p in $all) {
+    if ($null -eq $p -or $null -eq $p.ProcessId) { continue }
+    $id = [int]$p.ProcessId
+    if ($id -gt 0) {
+      $ppid = 0
+      if ($null -ne $p.ParentProcessId) { $ppid = [int]$p.ParentProcessId }
+      $parentByPid[$id] = $ppid
+    }
+  }
+  foreach ($r in $roots) {
+    $rid = [int]$r
+    if ($rid -gt 0) { $null = $treeIds.Add($rid) }
+  }
+  $grew = $true
+  while ($grew) {
+    $grew = $false
+    foreach ($k in @($parentByPid.Keys)) {
+      $kid = [int]$k
+      if (-not $treeIds.Contains($kid) -and $treeIds.Contains([int]$parentByPid[$kid])) {
+        $null = $treeIds.Add($kid)
+        $grew = $true
+      }
+    }
+  }
+  return ,$treeIds
+}
+
+function Get-CloudClaimsDir {
+  $hLane = $HydrogenLaneRoot
+  if ([string]::IsNullOrWhiteSpace($hLane)) { $hLane = Join-Path $script:WorkRoot 'hydrogen' }
+  return (Join-Path $hLane 'claims')
+}
+
+function Get-CloudClaimLockPath {
+  param([int]$IssueNumber)
+  return (Join-Path (Get-CloudClaimsDir) ('issue-' + $IssueNumber + '.lock'))
+}
+
+function Read-CloudClaimLock {
+  param(
+    [string]$Path = '',
+    [int]$IssueNumber = 0
+  )
+  $lockPath = $Path
+  if ([string]::IsNullOrWhiteSpace($lockPath)) {
+    if ($IssueNumber -le 0) { return $null }
+    $lockPath = Get-CloudClaimLockPath -IssueNumber $IssueNumber
+  }
+  if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { return $null }
+  $text = $null
+  for ($attempt = 1; $attempt -le 4; $attempt++) {
+    try {
+      $text = [IO.File]::ReadAllText($lockPath, [Text.Encoding]::UTF8)
+      break
+    } catch [IO.FileNotFoundException] {
+      return $null
+    } catch [IO.DirectoryNotFoundException] {
+      return $null
+    } catch [IO.IOException] {
+      if ($attempt -lt 4) { Start-Sleep -Milliseconds 50 }
+    }
+  }
+  if ([string]::IsNullOrWhiteSpace($text)) {
+    return [pscustomobject]@{
+      path = $lockPath
+      valid = $false
+      laneId = ''
+      issue = $IssueNumber
+      pr = 0
+      claimedAtUtc = ''
+      lastActiveUtc = ''
+      workerPid = 0
+    }
+  }
+  try {
+    $obj = $text.TrimStart([char]0xFEFF) | ConvertFrom-Json
+    $laneVal = ([string](Get-JsonProp $obj 'laneId')).Trim()
+    $issVal = 0
+    $rawIss = Get-JsonProp $obj 'issue'
+    if ($null -ne $rawIss) { try { $issVal = [int]$rawIss } catch { $issVal = 0 } }
+    $prVal = 0
+    $rawPr = Get-JsonProp $obj 'pr'
+    if ($null -ne $rawPr) { try { $prVal = [int]$rawPr } catch { $prVal = 0 } }
+    $wpidVal = 0
+    $rawWpid = Get-JsonProp $obj 'workerPid'
+    if ($null -ne $rawWpid) { try { $wpidVal = [int]$rawWpid } catch { $wpidVal = 0 } }
+    return [pscustomobject]@{
+      path = $lockPath
+      valid = (-not [string]::IsNullOrWhiteSpace($laneVal))
+      laneId = $laneVal
+      issue = $issVal
+      pr = $prVal
+      claimedAtUtc = ([string](Get-JsonProp $obj 'claimedAtUtc')).Trim()
+      lastActiveUtc = ([string](Get-JsonProp $obj 'lastActiveUtc')).Trim()
+      workerPid = $wpidVal
+    }
+  } catch {
+    return [pscustomobject]@{
+      path = $lockPath
+      valid = $false
+      laneId = ''
+      issue = $IssueNumber
+      pr = 0
+      claimedAtUtc = ''
+      lastActiveUtc = ''
+      workerPid = 0
+    }
+  }
+}
+
+function Remove-CloudClaimLockIfUnchanged {
+  param(
+    [string]$Path,
+    [string]$ExpectedLaneId,
+    [string]$ExpectedClaimedAt,
+    [string]$ExpectedLastActive
+  )
+  $cur = Read-CloudClaimLock -Path $Path
+  if ($null -eq $cur) { return $false }
+  if ([bool]$cur.valid) {
+    if (-not $cur.laneId.Equals($ExpectedLaneId, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    if ($cur.claimedAtUtc -ne $ExpectedClaimedAt -or $cur.lastActiveUtc -ne $ExpectedLastActive) { return $false }
+  }
+  try {
+    [IO.File]::Delete($Path)
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Test-CloudClaimLockLive {
+  # Mirrors Start-HydrogenWorker.ps1 Sweep-ClaimLocks stale rules (4h threshold, open non-parked PR
+  # and live owner-lane process protection) and sweeps stale locks so a fresh claim can succeed.
+  param(
+    [int]$IssueNumber,
+    $OpenPrs = @()
+  )
+  if ($IssueNumber -le 0) { return $false }
+  $lockPath = Get-CloudClaimLockPath -IssueNumber $IssueNumber
+  if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { return $false }
+  $fileInfo = Get-Item -LiteralPath $lockPath -ErrorAction SilentlyContinue
+  if ($null -eq $fileInfo) { return $false }
+  $lock = Read-CloudClaimLock -Path $lockPath -IssueNumber $IssueNumber
+  if ($null -eq $lock) { return $false }
+
+  $nowUtc = [DateTime]::UtcNow
+  if (-not [bool]$lock.valid) {
+    $corruptAgeHours = ($nowUtc - $fileInfo.LastWriteTimeUtc).TotalHours
+    if ($corruptAgeHours -le 4.0) { return $true }
+    try {
+      [IO.File]::Delete($lockPath)
+      Write-Log ('cloud lane: swept corrupt claim lock ' + $fileInfo.Name + ' (age ' + [Math]::Round($corruptAgeHours, 1) + 'h)')
+    } catch { return $true }
+    return $false
+  }
+
+  $lastActiveDt = Parse-UtcTimestamp $lock.lastActiveUtc
+  if ($null -eq $lastActiveDt) { $lastActiveDt = Parse-UtcTimestamp $lock.claimedAtUtc }
+  if ($null -eq $lastActiveDt) { $lastActiveDt = $fileInfo.LastWriteTimeUtc }
+  $ageHours = ($nowUtc - $lastActiveDt).TotalHours
+  if ($ageHours -le 4.0) { return $true }
+
+  $issueBranchPattern = '^nyx/(?:h-)?' + $IssueNumber + '-'
+  foreach ($pr in @($OpenPrs)) {
+    if ($null -eq $pr) { continue }
+    $prNum = 0
+    try { $prNum = [int](Get-JsonProp $pr 'number') } catch { $prNum = 0 }
+    $headRef = [string](Get-JsonProp $pr 'headRefName')
+    $prLabels = @(Get-LabelNames (Get-JsonProp $pr 'labels'))
+    $isParked = ($prLabels -contains 'parked' -or $prLabels -contains 'audit-parked')
+    if ($isParked) { continue }
+    if (($lock.pr -gt 0 -and $prNum -eq $lock.pr) -or ($headRef -match $issueBranchPattern)) {
+      return $true
+    }
+  }
+
+  $ownerLane = [string]$lock.laneId
+  if ($ownerLane.Equals('cloud', [StringComparison]::OrdinalIgnoreCase)) {
+    if ($lock.workerPid -gt 0) {
+      $cProc = Get-Process -Id $lock.workerPid -ErrorAction SilentlyContinue
+      if ($null -ne $cProc) {
+        $cExited = $false
+        try { $cExited = [bool]$cProc.HasExited } catch { $cExited = $false }
+        if (-not $cExited -and ([string]$cProc.ProcessName -ieq 'devin')) { return $true }
+      }
+    }
+  } elseif ($ownerLane -match '^[a-z0-9][a-z0-9_-]{0,15}$') {
+    $hLane = $HydrogenLaneRoot
+    if ([string]::IsNullOrWhiteSpace($hLane)) { $hLane = Join-Path $script:WorkRoot 'hydrogen' }
+    $ownerWorkerPath = Join-Path (Join-Path (Join-Path (Join-Path $hLane 'lanes') $ownerLane) 'state') 'worker.json'
+    if (Test-Path -LiteralPath $ownerWorkerPath -PathType Leaf) {
+      $wData = Read-JsonFile $ownerWorkerPath
+      $sess = Get-JsonProp $wData 'activeSession'
+      if ($null -ne $sess -and (-not [bool](Get-JsonProp $sess 'finalized'))) {
+        $sessIssue = 0
+        try { $sessIssue = [int](Get-JsonProp $sess 'issue') } catch { $sessIssue = 0 }
+        $sessPr = 0
+        try { $sessPr = [int](Get-JsonProp $sess 'pr') } catch { $sessPr = 0 }
+        if (($sessIssue -eq $IssueNumber) -or ($lock.pr -gt 0 -and $sessPr -eq $lock.pr)) {
+          $sessPid = 0
+          try { $sessPid = [int](Get-JsonProp $sess 'pid') } catch { $sessPid = 0 }
+          if ($sessPid -gt 0) {
+            $hProc = Get-Process -Id $sessPid -ErrorAction SilentlyContinue
+            if ($null -ne $hProc) {
+              $hExited = $false
+              try { $hExited = [bool]$hProc.HasExited } catch { $hExited = $false }
+              if (-not $hExited) {
+                $expDt = Parse-UtcTimestamp ([string](Get-JsonProp $sess 'processStartUtc'))
+                if ($null -ne $expDt) {
+                  try {
+                    if ([Math]::Abs(($hProc.StartTime.ToUniversalTime() - $expDt).TotalSeconds) -le 5.0) { return $true }
+                  } catch {
+                    if ([string]$hProc.ProcessName -match '(?i)^agy') { return $true }
+                  }
+                } elseif ([string]$hProc.ProcessName -match '(?i)^agy') {
+                  return $true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (Remove-CloudClaimLockIfUnchanged -Path $lockPath -ExpectedLaneId $ownerLane -ExpectedClaimedAt $lock.claimedAtUtc -ExpectedLastActive $lock.lastActiveUtc) {
+    Write-Log ('cloud lane: swept stale claim lock for issue #' + $IssueNumber + ' (owner ' + $ownerLane + ', lastActive ' + [Math]::Round($ageHours, 1) + 'h ago)')
+    return $false
+  }
+  return $true
+}
+
+function Try-AcquireCloudClaimLock {
+  param(
+    [int]$IssueNumber,
+    [int]$WorkerPid = 0
+  )
+  if ($IssueNumber -le 0) { return $false }
+  $claimsDir = Get-CloudClaimsDir
+  [IO.Directory]::CreateDirectory($claimsDir) | Out-Null
+  $lockPath = Get-CloudClaimLockPath -IssueNumber $IssueNumber
+  $nowIso = [DateTime]::UtcNow.ToString('o')
+  $wp = $WorkerPid
+  if ($wp -le 0) { $wp = [int]$PID }
+  $payload = [ordered]@{
+    laneId = 'cloud'
+    issue = [int]$IssueNumber
+    pr = 0
+    claimedAtUtc = $nowIso
+    lastActiveUtc = $nowIso
+    workerPid = [int]$wp
+  }
+  $jsonText = (ConvertTo-Json -InputObject $payload -Depth 4) + "`n"
+  $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($jsonText)
+  $fs = $null
+  $created = $false
+  try {
+    $fs = [IO.File]::Open($lockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    $created = $true
+    $fs.Write($bytes, 0, $bytes.Length)
+    $fs.Flush()
+    return $true
+  } catch [IO.IOException] {
+    if ($created) {
+      if ($null -ne $fs) {
+        try { $fs.Dispose() } catch { }
+        $fs = $null
+      }
+      try { [IO.File]::Delete($lockPath) } catch { }
+    }
+    return $false
+  } finally {
+    if ($null -ne $fs) {
+      try { $fs.Dispose() } catch { }
+    }
+  }
+}
+
+function Update-CloudClaimLock {
+  param(
+    [int]$IssueNumber,
+    [int]$WorkerPid = 0,
+    [int]$PrNumber = 0
+  )
+  if ($IssueNumber -le 0) { return $false }
+  $claimsDir = Get-CloudClaimsDir
+  [IO.Directory]::CreateDirectory($claimsDir) | Out-Null
+  $lockPath = Get-CloudClaimLockPath -IssueNumber $IssueNumber
+  $existing = Read-CloudClaimLock -Path $lockPath -IssueNumber $IssueNumber
+  if ($null -ne $existing -and [bool]$existing.valid -and (-not $existing.laneId.Equals('cloud', [StringComparison]::OrdinalIgnoreCase))) {
+    return $false
+  }
+  $nowIso = [DateTime]::UtcNow.ToString('o')
+  $claimedAt = $nowIso
+  $resolvedPr = 0
+  $resolvedPid = 0
+  if ($null -ne $existing -and [bool]$existing.valid) {
+    if (-not [string]::IsNullOrWhiteSpace($existing.claimedAtUtc)) { $claimedAt = $existing.claimedAtUtc }
+    $resolvedPr = [int]$existing.pr
+    $resolvedPid = [int]$existing.workerPid
+  }
+  if ($PrNumber -gt 0) { $resolvedPr = $PrNumber }
+  if ($WorkerPid -gt 0) { $resolvedPid = $WorkerPid }
+  $payload = [ordered]@{
+    laneId = 'cloud'
+    issue = [int]$IssueNumber
+    pr = [int]$resolvedPr
+    claimedAtUtc = $claimedAt
+    lastActiveUtc = $nowIso
+    workerPid = [int]$resolvedPid
+  }
+  try {
+    Save-JsonAtomic -Path $lockPath -Object $payload -Depth 4
+    return $true
+  } catch {
+    Write-Log ('cloud lane: failed to update claim lock for issue #' + $IssueNumber + ': ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+    return $false
+  }
+}
+
+function Remove-CloudClaimLock {
+  param([int]$IssueNumber)
+  if ($IssueNumber -le 0) { return }
+  $lockPath = Get-CloudClaimLockPath -IssueNumber $IssueNumber
+  if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { return }
+  $existing = Read-CloudClaimLock -Path $lockPath -IssueNumber $IssueNumber
+  if ($null -ne $existing -and [bool]$existing.valid -and (-not $existing.laneId.Equals('cloud', [StringComparison]::OrdinalIgnoreCase))) {
+    return
+  }
+  try { [IO.File]::Delete($lockPath) } catch { }
+}
+
+function ConvertTo-CloudBranchSlug {
+  param([AllowEmptyString()][string]$Title)
+  $s = ([string]$Title).ToLowerInvariant()
+  $s = [regex]::Replace($s, '[^a-z0-9]+', '-')
+  $s = $s.Trim('-')
+  if ($s.Length -gt 40) { $s = $s.Substring(0, 40).TrimEnd('-') }
+  if ([string]::IsNullOrWhiteSpace($s)) { $s = 'work' }
+  return $s
+}
+
+function Get-CurrentWeekStartLocal {
+  $today = [DateTime]::Today
+  $daysSinceMonday = (([int]$today.DayOfWeek) + 6) % 7
+  return $today.AddDays(-$daysSinceMonday)
+}
+
+function Test-CloudWrapperAlive {
+  param($Run)
+  if ($null -eq $Run) { return $false }
+  $wmetaPath = Get-CloudWrapperMetaPath ([string]$Run['runDir'])
+  if ([string]::IsNullOrWhiteSpace($wmetaPath)) { return $false }
+  $wmeta = Read-JsonFile $wmetaPath
+  if ($null -eq $wmeta) { return $false }
+  $wp = 0
+  try { $wp = [int](Get-JsonProp $wmeta 'wrapperPid') } catch { $wp = 0 }
+  if ($wp -le 0) { return $false }
+  $proc = Get-Process -Id $wp -ErrorAction SilentlyContinue
+  if ($null -eq $proc) { return $false }
+  try {
+    if ($proc.HasExited) { return $false }
+  } catch { }
+  $expected = Parse-UtcTimestamp ([string](Get-JsonProp $wmeta 'wrapperStartUtc'))
+  if ($null -ne $expected) {
+    try {
+      if ([Math]::Abs(($proc.StartTime.ToUniversalTime() - $expected).TotalSeconds) -gt 5) { return $false }
+    } catch { }
+  }
+  return $true
+}
+
+function Test-CloudRunAlive {
+  param($Run)
+  if ($null -eq $Run) { return $false }
+  $dp = 0
+  try { $dp = [int]$Run['pid'] } catch { $dp = 0 }
+  if ($dp -le 0) { return $false }
+  $proc = Get-Process -Id $dp -ErrorAction SilentlyContinue
+  if ($null -eq $proc) { return $false }
+  try {
+    if ($proc.HasExited) { return $false }
+  } catch { }
+  if ([string]$proc.ProcessName -ine 'devin') { return $false }
+  $expected = $null
+  $runDir = [string]$Run['runDir']
+  if (-not [string]::IsNullOrWhiteSpace($runDir)) {
+    $meta = Read-JsonFile (Join-Path $runDir 'meta.json')
+    if ($null -ne $meta) {
+      $expected = Parse-UtcTimestamp ([string](Get-JsonProp $meta 'startedAtUtc'))
+    }
+  }
+  if ($null -eq $expected) {
+    $expected = Parse-UtcTimestamp ([string]$Run['startedUtc'])
+  }
+  if ($null -ne $expected) {
+    try {
+      if ([Math]::Abs(($proc.StartTime.ToUniversalTime() - $expected).TotalSeconds) -gt 120) { return $false }
+    } catch { }
+  }
+  return $true
+}
+
+function Build-CloudFallbackPrBody {
+  param([int]$IssueNumber)
+  $lines = @(
+    '## Summary',
+    '',
+    'Cloud run produced no PR body; the Devin lane must complete it before the gate.',
+    '',
+    '## Related',
+    '',
+    ('Closes #' + $IssueNumber),
+    '',
+    '## Verification',
+    '',
+    'Report each category separately with the result, or `NOT RUN`. One category never substitutes for another. Do not paste real credentials or production data.',
+    '',
+    '- [x] Synthetic replay: NOT RUN (agent self-tested; local Devin lane must verify before the gate)',
+    '- [x] Real Windows: NOT RUN',
+    '- [x] Real provider: NOT RUN',
+    '- [x] Desktop interaction: NOT RUN',
+    '- [x] Install/update: NOT RUN',
+    '',
+    'Tick a box once you have written its result, including `NOT RUN`. Results here are contributor self-tested until a Windows maintainer has reviewed them.',
+    '',
+    '## Screenshots',
+    '',
+    'None attached; cloud run produced no PR body and the local Devin lane must complete verification before the gate.',
+    '',
+    '## Coding agent use',
+    '',
+    '- [ ] No coding agent was used.',
+    '- [x] A coding agent was used and followed AGENTS.md.',
+    '',
+    'Implemented on the cloud lane; no person has reviewed it yet.',
+    '',
+    '## Product design (optional)',
+    '',
+    '- [ ] This PR changes user-visible product design beyond platform adaptation (product owner input requested).',
+    '',
+    '## Checklist',
+    '',
+    '- [ ] I included a "Parity: <ID> -> <status>" line under Related (or this change has no parity row) and did not edit docs/parity.md.',
+    '- [ ] New user-visible strings have English and Simplified Chinese.',
+    '- [ ] New dependencies, images, fonts or other assets have had their licenses checked, or there are none.'
+  )
+  return ($lines -join "`n")
+}
+
+function Ensure-CloudToolPaths {
+  if (-not $script:GhPath) {
+    $ghCmd = Get-Command -Name 'gh' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($ghCmd) { $script:GhPath = $ghCmd.Source }
+  }
+  if (-not $script:GitPath) {
+    $gitCmd = Get-Command -Name 'git' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($gitCmd) { $script:GitPath = $gitCmd.Source }
+  }
+  return ($null -ne $script:GhPath -and $null -ne $script:GitPath)
+}
+
+function Send-CloudIssueComment {
+  param(
+    [int]$IssueNumber,
+    [string]$BodyText
+  )
+  if ($IssueNumber -le 0 -or [string]::IsNullOrWhiteSpace($BodyText)) { return $false }
+  $commentPath = Join-Path $script:AutopilotDir ('cloud-comment-' + $IssueNumber + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.md')
+  try {
+    Write-Text $commentPath ($BodyText.TrimEnd() + "`n")
+    $res = Invoke-Gh ('issue comment ' + $IssueNumber + ' -R ' + $Repo + ' --body-file ' + (Quote-Argument $commentPath))
+    if ($res.exitCode -ne 0) {
+      Write-Log ('cloud lane: failed to comment on issue #' + $IssueNumber + ': ' + (ConvertTo-SingleLine (Get-ErrorSummary $res) 180))
+      return $false
+    }
+    return $true
+  } finally {
+    Remove-Item -LiteralPath $commentPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Complete-CloudRun {
+  param(
+    $Run,
+    [switch]$TimedOut
+  )
+  if (-not (Ensure-CloudToolPaths)) {
+    Write-Log 'cloud lane: deferring run finalization (gh or git not found on PATH)'
+    return $false
+  }
+
+  $issueNum = [int]$Run['issue']
+  $branch = [string]$Run['branch']
+  $runDir = [string]$Run['runDir']
+
+  # Wait briefly if the wrapper is still flushing exit.json after devin.exe exited.
+  for ($w = 0; $w -lt 10; $w++) {
+    if (-not (Test-CloudWrapperAlive $Run)) { break }
+    if (-not [string]::IsNullOrWhiteSpace($runDir) -and (Test-Path -LiteralPath (Join-Path $runDir 'exit.json') -PathType Leaf)) { break }
+    Start-Sleep -Milliseconds 500
+  }
+
+  $exitCode = $null
+  $endedUtc = [DateTime]::UtcNow.ToString('o')
+  if (-not [string]::IsNullOrWhiteSpace($runDir)) {
+    $ex = Read-JsonFile (Join-Path $runDir 'exit.json')
+    if ($null -ne $ex) {
+      $rawExit = Get-JsonProp $ex 'exitCode'
+      if ($null -ne $rawExit -and -not [string]::IsNullOrWhiteSpace([string]$rawExit)) {
+        try { $exitCode = [int]$rawExit } catch { $exitCode = $null }
+      }
+      $rawEnded = ([string](Get-JsonProp $ex 'endedAtUtc')).Trim()
+      if (-not [string]::IsNullOrWhiteSpace($rawEnded)) { $endedUtc = $rawEnded }
+    }
+  }
+
+  $outText = ''
+  if (-not [string]::IsNullOrWhiteSpace($runDir)) {
+    $rawOut = Read-Text (Join-Path $runDir 'stdout.log')
+    if ($null -ne $rawOut) { $outText = $rawOut }
+  }
+
+  $prBodyPath = ''
+  if (-not [string]::IsNullOrWhiteSpace($runDir)) {
+    [IO.Directory]::CreateDirectory($runDir) | Out-Null
+    $prBodyPath = Join-Path $runDir 'pr-body.md'
+  }
+  $extractedBody = ''
+  if (-not [string]::IsNullOrWhiteSpace($outText)) {
+    $bm = [regex]::Matches($outText, '(?ms)^[ \t]*===PR-BODY-BEGIN===[ \t]*\r?\n(.*?)\r?\n[ \t]*===PR-BODY-END===[ \t]*$')
+    if ($bm.Count -gt 0) {
+      $extractedBody = Remove-AttributionLines ($bm[$bm.Count - 1].Groups[1].Value.Trim())
+      if (-not [string]::IsNullOrWhiteSpace($extractedBody) -and -not [string]::IsNullOrWhiteSpace($prBodyPath)) {
+        Write-Text $prBodyPath ($extractedBody + "`n")
+      }
+    }
+  }
+
+  $resultLine = ''
+  if ($TimedOut -or ([string]$Run['result'] -eq 'timeout')) {
+    $resultLine = 'timeout'
+  } else {
+    if (-not [string]::IsNullOrWhiteSpace($outText)) {
+      $rm = [regex]::Matches($outText, '(?m)^[ \t]*RESULT:.*$')
+      if ($rm.Count -gt 0) {
+        $resultLine = $rm[$rm.Count - 1].Value.Trim()
+      }
+    }
+    if ([string]::IsNullOrWhiteSpace($resultLine)) {
+      if ($null -ne $exitCode) {
+        $resultLine = 'exit ' + $exitCode
+      } else {
+        $resultLine = 'no RESULT line'
+      }
+    }
+  }
+
+  $lsRes = Invoke-Git ('-C ' + (Quote-Argument $script:WorkspacePath) + ' ls-remote origin ' + (Quote-Argument ('refs/heads/' + $branch)))
+  if ($lsRes.exitCode -ne 0) {
+    Write-Log ('cloud lane: git ls-remote failed for ' + $branch + ' (will retry next tick): ' + (ConvertTo-SingleLine (Get-ErrorSummary $lsRes) 180))
+    return $false
+  }
+  $branchExists = (-not [string]::IsNullOrWhiteSpace([string]$lsRes.text)) -and ([string]$lsRes.text -match ('refs/heads/' + [regex]::Escape($branch) + '(?:\s|$)'))
+
+  $noCommitsAhead = $false
+  if ($branchExists) {
+    $prListRes = Invoke-Gh ('pr list -R ' + $Repo + ' --head ' + (Quote-Argument $branch) + ' --state all --limit 5 --json number,state')
+    if ($prListRes.exitCode -ne 0) {
+      Write-Log ('cloud lane: gh pr list failed for ' + $branch + ' (will retry next tick): ' + (ConvertTo-SingleLine (Get-ErrorSummary $prListRes) 180))
+      return $false
+    }
+    $prNumber = 0
+    if (-not [string]::IsNullOrWhiteSpace([string]$prListRes.text)) {
+      try {
+        $existingPrs = @($prListRes.text | ConvertFrom-Json | Where-Object { $null -ne $_ -and ([string](Get-JsonProp $_ 'state')).Equals('OPEN', [StringComparison]::OrdinalIgnoreCase) })
+        if ($existingPrs.Count -gt 0) {
+          $prNumber = [int](Get-JsonProp $existingPrs[0] 'number')
+        }
+      } catch {
+        Write-Log ('cloud lane: could not parse gh pr list JSON for ' + $branch + ': ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+        return $false
+      }
+    }
+
+    $issueTitle = 'Issue #' + $issueNum
+    $issueLabels = @()
+    $issRes = Invoke-Gh ('issue view ' + $issueNum + ' -R ' + $Repo + ' --json title,labels')
+    if ($issRes.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$issRes.text)) {
+      try {
+        $issObj = $issRes.text | ConvertFrom-Json
+        $t = [regex]::Replace(([string](Get-JsonProp $issObj 'title')), '[\r\n]+', ' ').Trim()
+        if (-not [string]::IsNullOrWhiteSpace($t)) { $issueTitle = $t }
+        $issueLabels = @(Get-LabelNames (Get-JsonProp $issObj 'labels'))
+      } catch { }
+    }
+
+    $createdPr = $false
+    if ($prNumber -le 0) {
+      $finalBody = ''
+      if (-not [string]::IsNullOrWhiteSpace($prBodyPath) -and (Test-Path -LiteralPath $prBodyPath -PathType Leaf)) {
+        $diskBody = Read-Text $prBodyPath
+        if (-not [string]::IsNullOrWhiteSpace($diskBody) -and ($diskBody -match '(?m)^Parity:\s*\S+')) {
+          $finalBody = Remove-AttributionLines $diskBody
+          $closingPattern = '(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(?:' + [regex]::Escape($Repo) + ')?#' + $issueNum + '\b'
+          if ($finalBody -notmatch $closingPattern) {
+            $finalBody = $finalBody + "`n`nCloses #" + $issueNum
+          }
+        }
+      }
+      if ([string]::IsNullOrWhiteSpace($finalBody)) {
+        $finalBody = Build-CloudFallbackPrBody -IssueNumber $issueNum
+      }
+      $finalBody = Remove-AttributionLines $finalBody
+      if ([string]::IsNullOrWhiteSpace($prBodyPath)) {
+        $prBodyPath = Join-Path $script:AutopilotDir ('cloud-pr-body-' + $issueNum + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.md')
+      }
+      Write-Text $prBodyPath ($finalBody + "`n")
+
+      $prTitle = $issueTitle + ' (#' + $issueNum + ')'
+      $createRes = Invoke-Gh ('pr create -R ' + $Repo + ' --base main --head ' + (Quote-Argument $branch) + ' --title ' + (Quote-Win32Argument $prTitle) + ' --body-file ' + (Quote-Argument $prBodyPath))
+      if ($createRes.exitCode -ne 0) {
+        $createErr = Get-ErrorSummary $createRes
+        if ($createErr -match '(?i)No commits between') {
+          Write-Log ('cloud lane: branch ' + $branch + ' has no commits ahead of main; treating as no branch')
+          $noCommitsAhead = $true
+          $resultLine = 'no commits ahead of main'
+        } else {
+          Write-Log ('cloud lane: gh pr create failed for ' + $branch + ' (will retry next tick): ' + (ConvertTo-SingleLine $createErr 200))
+          return $false
+        }
+      } else {
+        $urlMatch = [regex]::Match([string]$createRes.text, '/pull/([0-9]+)')
+        if ($urlMatch.Success) {
+          $prNumber = [int]$urlMatch.Groups[1].Value
+        } else {
+          $recheckPr = Invoke-Gh ('pr list -R ' + $Repo + ' --head ' + (Quote-Argument $branch) + ' --state all --limit 1 --json number')
+          if ($recheckPr.exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$recheckPr.text)) {
+            try {
+              $rePrs = @($recheckPr.text | ConvertFrom-Json | Where-Object { $null -ne $_ })
+              if ($rePrs.Count -gt 0) { $prNumber = [int](Get-JsonProp $rePrs[0] 'number') }
+            } catch { }
+          }
+        }
+        $createdPr = $true
+      }
+    }
+
+    if (-not $noCommitsAhead) {
+      $addLblRes = Invoke-Gh ('issue edit ' + $issueNum + ' -R ' + $Repo + ' --add-label lane-devin')
+      if ($addLblRes.exitCode -ne 0) {
+        $null = Invoke-Gh ('label create lane-devin -R ' + $Repo + ' --color 0E8A16 --description ' + (Quote-Argument 'Owned by local Devin lane'))
+        $addLblRes = Invoke-Gh ('issue edit ' + $issueNum + ' -R ' + $Repo + ' --add-label lane-devin')
+        if ($addLblRes.exitCode -ne 0) {
+          Write-Log ('cloud lane: failed to add lane-devin to issue #' + $issueNum + ' (handoff retried next tick): ' + (ConvertTo-SingleLine (Get-ErrorSummary $addLblRes) 160))
+          return $false
+        }
+      }
+      if ($createdPr -or ($issueLabels -notcontains 'lane-devin')) {
+        $handoffMsg = 'Cloud lane pushed ' + $branch + ', PR #' + $prNumber + ' opened; local Devin lane runs the self-check and gate.'
+        $null = Send-CloudIssueComment -IssueNumber $issueNum -BodyText $handoffMsg
+      }
+      Remove-CloudClaimLock -IssueNumber $issueNum
+      $Run['endedUtc'] = $endedUtc
+      $Run['exitCode'] = $exitCode
+      $Run['result'] = $resultLine
+      $Run['prNumber'] = [int]$prNumber
+      Write-Log ('cloud lane run finalized: issue #' + $issueNum + ' branch=' + $branch + ' PR #' + $prNumber + ' exit=' + [string]$exitCode + ' result=' + (ConvertTo-SingleLine (Protect-PublicText $resultLine) 180))
+      return $true
+    }
+  }
+
+  # Branch does not exist (or had no commits ahead of main).
+  Remove-CloudClaimLock -IssueNumber $issueNum
+  $rmLblRes = Invoke-Gh ('issue edit ' + $issueNum + ' -R ' + $Repo + ' --remove-label lane-cloud')
+  if ($rmLblRes.exitCode -ne 0) {
+    Write-Log ('cloud lane: warning: failed to remove lane-cloud from issue #' + $issueNum + ': ' + (ConvertTo-SingleLine (Get-ErrorSummary $rmLblRes) 160))
+  }
+  $safeResult = ConvertTo-SingleLine (Protect-PublicText $resultLine) 300
+  if ([string]::IsNullOrWhiteSpace($safeResult)) { $safeResult = 'unknown' }
+  $null = Send-CloudIssueComment -IssueNumber $issueNum -BodyText ('Cloud run ended without a branch: ' + $safeResult)
+  $Run['endedUtc'] = $endedUtc
+  $Run['exitCode'] = $exitCode
+  $Run['result'] = $resultLine
+  $Run['prNumber'] = 0
+  Write-Log ('cloud lane run ended without branch: issue #' + $issueNum + ' exit=' + [string]$exitCode + ' result=' + $safeResult)
+  return $true
+}
+
+function Start-CloudRun {
+  param(
+    [int]$IssueNumber,
+    [string]$Branch,
+    [string]$RunDir
+  )
+  $cli = Resolve-DevinCliPath
+  $mission = $CloudMissionPath
+  if ([string]::IsNullOrWhiteSpace($mission)) { $mission = Join-Path $PSScriptRoot 'devin-cloud-mission.md' }
+  if (-not (Test-Path -LiteralPath $mission -PathType Leaf)) { throw 'devin-cloud-mission.md is missing next to this script.' }
+
+  $runDir = $RunDir
+  if ([string]::IsNullOrWhiteSpace($runDir)) {
+    $runDir = Join-Path (Join-Path $script:AutopilotDir 'cloud-runs') ([DateTime]::Now.ToString('yyyyMMdd-HHmmss') + '-' + $IssueNumber)
+  }
+  $stamp = Split-Path -Leaf $runDir
+  [IO.Directory]::CreateDirectory($runDir) | Out-Null
+
+  $templateText = Read-Text $mission
+  $promptText = $templateText.Replace('{{ISSUE}}', [string]$IssueNumber).Replace('{{BRANCH}}', $Branch).Replace('{{REPO}}', $Repo)
+  $promptPath = Join-Path $runDir 'prompt.md'
+  Write-Text $promptPath $promptText
+
+  $lines = New-Object Collections.Generic.List[string]
+  $null = $lines.Add('$ErrorActionPreference = ' + (ConvertTo-PsLiteral 'Continue'))
+  $null = $lines.Add('$env:GIT_TERMINAL_PROMPT = ' + (ConvertTo-PsLiteral '0') + '; $env:GH_PROMPT_DISABLED = ' + (ConvertTo-PsLiteral '1') + '; $env:GIT_EDITOR = ' + (ConvertTo-PsLiteral 'true') + '; $env:CI = ' + (ConvertTo-PsLiteral '1') + '; $env:npm_config_yes = ' + (ConvertTo-PsLiteral 'true'))
+  $null = $lines.Add('$runDir = ' + (ConvertTo-PsLiteral $runDir))
+  $null = $lines.Add('$argsList = @(' + ((@('-p', '--cloud', '--prompt-file', ('"' + $promptPath + '"'), '--permission-mode', 'dangerous') | ForEach-Object { ConvertTo-PsLiteral $_ }) -join ', ') + ')')
+  $null = $lines.Add('$p = Start-Process -FilePath ' + (ConvertTo-PsLiteral $cli) + ' -ArgumentList $argsList -WorkingDirectory ' + (ConvertTo-PsLiteral $script:WorkRoot) + ' -RedirectStandardOutput (Join-Path $runDir ' + (ConvertTo-PsLiteral 'stdout.log') + ') -RedirectStandardError (Join-Path $runDir ' + (ConvertTo-PsLiteral 'stderr.log') + ') -WindowStyle Hidden -PassThru')
+  $null = $lines.Add('$null = $p.Handle')
+  $null = $lines.Add('[IO.File]::WriteAllText((Join-Path $runDir ' + (ConvertTo-PsLiteral 'meta.json') + '), (ConvertTo-Json @{ devinPid = $p.Id; startedAtUtc = [DateTime]::UtcNow.ToString(' + (ConvertTo-PsLiteral 'o') + ') }))')
+  $null = $lines.Add('$p.WaitForExit()')
+  $null = $lines.Add('[IO.File]::WriteAllText((Join-Path $runDir ' + (ConvertTo-PsLiteral 'exit.json') + '), (ConvertTo-Json @{ exitCode = $p.ExitCode; endedAtUtc = [DateTime]::UtcNow.ToString(' + (ConvertTo-PsLiteral 'o') + ') }))')
+  $wrapperPath = Join-Path $runDir 'wrapper.ps1'
+  Write-Text $wrapperPath (($lines.ToArray() -join "`r`n") + "`r`n")
+
+  $startedUtc = [DateTime]::UtcNow.ToString('o')
+  $proc = Start-Process -FilePath $script:PowerShellExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ('"' + $wrapperPath + '"')) -WorkingDirectory $script:WorkRoot -WindowStyle Hidden -PassThru
+  $wStart = [DateTime]::UtcNow
+  try { $wStart = $proc.StartTime.ToUniversalTime() } catch { }
+  Save-JsonAtomic -Path (Get-CloudWrapperMetaPath $runDir) -Object ([ordered]@{
+    wrapperPid = [int]$proc.Id
+    wrapperStartUtc = $wStart.ToString('o')
+  }) -Depth 4
+
+  # Wait briefly for wrapper.ps1 to write meta.json so we record the real devin.exe PID right away.
+  $devinPid = 0
+  $metaPath = Join-Path $runDir 'meta.json'
+  $exitPath = Join-Path $runDir 'exit.json'
+  for ($i = 0; $i -lt 40; $i++) {
+    if (Test-Path -LiteralPath $metaPath -PathType Leaf) {
+      $meta = Read-JsonFile $metaPath
+      if ($null -ne $meta) {
+        try { $devinPid = [int](Get-JsonProp $meta 'devinPid') } catch { $devinPid = 0 }
+        if ($devinPid -gt 0) { break }
+      }
+    }
+    if (Test-Path -LiteralPath $exitPath -PathType Leaf) { break }
+    try { if ($proc.HasExited) { break } } catch { }
+    Start-Sleep -Milliseconds 250
+  }
+
+  $lockPid = $devinPid
+  if ($lockPid -le 0) { $lockPid = [int]$proc.Id }
+  $null = Update-CloudClaimLock -IssueNumber $IssueNumber -WorkerPid $lockPid
+
+  Write-Log ('cloud lane run started: issue #' + $IssueNumber + ' branch=' + $Branch + ' devinPid=' + $devinPid + ' wrapperPid=' + $proc.Id + ' runDir=' + $stamp)
+  return [ordered]@{
+    issue = [int]$IssueNumber
+    branch = $Branch
+    runDir = $runDir
+    pid = [int]$devinPid
+    startedUtc = $startedUtc
+    endedUtc = ''
+    exitCode = $null
+    result = ''
+    prNumber = 0
+  }
+}
+
+function Invoke-CloudTick {
+  # (a) Respect STOP. A disabled weekly cap only stops new launches; existing runs are still monitored below.
+  if (Test-Stop) { return }
+
+  $state = Read-CloudState
+  $runs = @($state['runs'])
+  $nowUtc = [DateTime]::UtcNow
+
+  # (b) Check if any un-ended cloud run is still alive.
+  foreach ($run in $runs) {
+    if ($null -eq $run) { continue }
+    if (-not [string]::IsNullOrWhiteSpace([string]$run['endedUtc'])) { continue }
+
+    $runDir = [string]$run['runDir']
+    if ([int]$run['pid'] -le 0 -and (-not [string]::IsNullOrWhiteSpace($runDir))) {
+      $meta = Read-JsonFile (Join-Path $runDir 'meta.json')
+      if ($null -ne $meta) {
+        $mp = 0
+        try { $mp = [int](Get-JsonProp $meta 'devinPid') } catch { $mp = 0 }
+        if ($mp -gt 0) {
+          $run['pid'] = $mp
+          $null = Update-CloudClaimLock -IssueNumber ([int]$run['issue']) -WorkerPid $mp
+          Save-CloudState $state
+        }
+      }
+    }
+
+    $isAlive = (Test-CloudRunAlive $run)
+    $isStarting = (-not $isAlive) -and ([int]$run['pid'] -le 0) -and (Test-CloudWrapperAlive $run)
+    if ($isAlive -or $isStarting) {
+      $null = Update-CloudClaimLock -IssueNumber ([int]$run['issue']) -WorkerPid ([int]$run['pid'])
+      $started = Parse-UtcTimestamp ([string]$run['startedUtc'])
+      $ageMin = 0.0
+      if ($null -ne $started) { $ageMin = ($nowUtc - $started).TotalMinutes }
+      if ($ageMin -ge $CloudMaxRunMinutes) {
+        Write-Log ('cloud lane: issue #' + [int]$run['issue'] + ' pid=' + [int]$run['pid'] + ' exceeded ' + $CloudMaxRunMinutes + 'm (' + [Math]::Round($ageMin, 1) + 'm); killing process tree')
+        if ([int]$run['pid'] -gt 0) {
+          $null = & taskkill.exe /T /F /PID ([int]$run['pid']) 2>&1
+        }
+        $wmeta = Read-JsonFile (Get-CloudWrapperMetaPath $runDir)
+        if ($null -ne $wmeta) {
+          $wp = 0
+          try { $wp = [int](Get-JsonProp $wmeta 'wrapperPid') } catch { $wp = 0 }
+          if ($wp -gt 0 -and (Test-CloudWrapperAlive $run)) {
+            $null = & taskkill.exe /T /F /PID $wp 2>&1
+          }
+        }
+        Start-Sleep -Seconds 2
+        $run['result'] = 'timeout'
+        Save-CloudState $state
+        $null = Complete-CloudRun -Run $run -TimedOut
+        Save-CloudState $state
+      }
+      return
+    }
+  }
+
+  # (c) Finalize any exited run that has no endedUtc yet.
+  $anyDeferred = $false
+  $stateChanged = $false
+  foreach ($run in $runs) {
+    if ($null -eq $run) { continue }
+    if (-not [string]::IsNullOrWhiteSpace([string]$run['endedUtc'])) { continue }
+    $ok = Complete-CloudRun -Run $run
+    $stateChanged = $true
+    if (-not $ok) { $anyDeferred = $true }
+  }
+  if ($stateChanged) { Save-CloudState $state }
+  if ($anyDeferred) { return }
+
+  # (d) Enforce weekly quota (Monday 00:00 local time).
+  $weekStartLocal = Get-CurrentWeekStartLocal
+  $weekCount = 0
+  foreach ($run in $runs) {
+    if ($null -eq $run) { continue }
+    $stDt = Parse-UtcTimestamp ([string]$run['startedUtc'])
+    if ($null -ne $stDt -and $stDt.ToLocalTime() -ge $weekStartLocal) {
+      $weekCount++
+    }
+  }
+  if ($CloudWeeklyCap -le 0 -or $weekCount -ge $CloudWeeklyCap) { return }
+
+  if (-not (Ensure-CloudToolPaths)) {
+    Write-Log 'cloud lane: skipped (gh or git not found on PATH)'
+    return
+  }
+
+  # (e) Pick the oldest open eligible issue labelled lane-cloud.
+  $issListRes = Invoke-Gh ('issue list -R ' + $Repo + ' --state open --label lane-cloud --label ' + $Label + ' --limit 100 --json number,title,labels,createdAt')
+  if ($issListRes.exitCode -ne 0) {
+    Write-Log ('cloud lane: gh issue list failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $issListRes) 180))
+    return
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$issListRes.text)) { return }
+  $cloudIssues = @()
+  try {
+    $parsedIss = $issListRes.text | ConvertFrom-Json
+    if ($null -ne $parsedIss) {
+      $cloudIssues = @($parsedIss | Where-Object { $null -ne $_ } | Sort-Object `
+        @{ Expression = { [string](Get-JsonProp $_ 'createdAt') } }, `
+        @{ Expression = { [int](Get-JsonProp $_ 'number') } })
+    }
+  } catch {
+    Write-Log ('cloud lane: could not parse gh issue list JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+    return
+  }
+  if ($cloudIssues.Count -eq 0) { return }
+
+  $prListRes = Invoke-Gh ('pr list -R ' + $Repo + ' --state open --limit 200 --json number,headRefName,labels')
+  if ($prListRes.exitCode -ne 0) {
+    Write-Log ('cloud lane: gh pr list failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $prListRes) 180))
+    return
+  }
+  $openPrs = @()
+  if (-not [string]::IsNullOrWhiteSpace([string]$prListRes.text)) {
+    try {
+      $parsedPrs = $prListRes.text | ConvertFrom-Json
+      if ($null -ne $parsedPrs) {
+        $openPrs = @($parsedPrs | Where-Object { $null -ne $_ })
+      }
+    } catch {
+      Write-Log ('cloud lane: could not parse gh pr list JSON: ' + (ConvertTo-SingleLine $_.Exception.Message 160))
+      return
+    }
+  }
+
+  $remoteRes = Invoke-Git ('-C ' + (Quote-Argument $script:WorkspacePath) + ' ls-remote --heads origin')
+  if ($remoteRes.exitCode -ne 0) {
+    Write-Log ('cloud lane: git ls-remote --heads origin failed: ' + (ConvertTo-SingleLine (Get-ErrorSummary $remoteRes) 180))
+    return
+  }
+  $remoteHeads = New-Object Collections.Generic.List[string]
+  if (-not [string]::IsNullOrWhiteSpace([string]$remoteRes.text)) {
+    foreach ($line in ([string]$remoteRes.text -split "`r?`n")) {
+      $m = [regex]::Match($line, '\trefs/heads/(.+)$')
+      if ($m.Success) { $null = $remoteHeads.Add($m.Groups[1].Value.Trim()) }
+    }
+  }
+  $remoteHeadArr = [string[]]$remoteHeads.ToArray()
+
+  $excludedLabels = @('lane-devin', 'lane-hydrogen', 'parked', 'nyx-blocked', 'needs-human', 'audit-parked')
+  $selectedIssue = $null
+  foreach ($iss in $cloudIssues) {
+    $candNum = 0
+    try { $candNum = [int](Get-JsonProp $iss 'number') } catch { $candNum = 0 }
+    if ($candNum -le 0) { continue }
+    $candLabels = @(Get-LabelNames (Get-JsonProp $iss 'labels'))
+    $skipLabel = $false
+    foreach ($lbl in $candLabels) {
+      foreach ($ex in $excludedLabels) {
+        if ($lbl.Equals($ex, [StringComparison]::OrdinalIgnoreCase)) { $skipLabel = $true; break }
+      }
+      if ($skipLabel) { break }
+    }
+    if ($skipLabel) { continue }
+
+    $devinPrefix = 'nyx/' + $candNum + '-'
+    $hydroPrefix = 'nyx/h-' + $candNum + '-'
+    $hasOpenPr = $false
+    foreach ($pr in $openPrs) {
+      $headRef = [string](Get-JsonProp $pr 'headRefName')
+      if ($headRef.StartsWith($devinPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+          $headRef.StartsWith($hydroPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        $hasOpenPr = $true
+        break
+      }
+    }
+    if ($hasOpenPr) { continue }
+
+    $cloudPrefix = 'nyx/' + $candNum + '-cloud-'
+    $hasCloudBranch = $false
+    foreach ($rh in $remoteHeadArr) {
+      if ($rh.StartsWith($cloudPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        $hasCloudBranch = $true
+        break
+      }
+    }
+    if ($hasCloudBranch) { continue }
+
+    if (Test-CloudClaimLockLive -IssueNumber $candNum -OpenPrs $openPrs) { continue }
+    if (-not (Try-AcquireCloudClaimLock -IssueNumber $candNum -WorkerPid ([int]$PID))) { continue }
+
+    $selectedIssue = $iss
+    break
+  }
+
+  if ($null -eq $selectedIssue) { return }
+
+  # (f)-(g) Launch the cloud run and record it.
+  $selNum = [int](Get-JsonProp $selectedIssue 'number')
+  $selTitle = [string](Get-JsonProp $selectedIssue 'title')
+  $slug = ConvertTo-CloudBranchSlug $selTitle
+  $branch = 'nyx/' + $selNum + '-cloud-' + $slug
+  # Persist a recoverable launch record before the process starts, so a watchdog exit in between
+  # still leaves a run that counts toward the weekly cap and is monitored (via runDir\meta.json) and finalized.
+  $runDir = Join-Path (Join-Path $script:AutopilotDir 'cloud-runs') ([DateTime]::Now.ToString('yyyyMMdd-HHmmss') + '-' + $selNum)
+  $launchRun = [ordered]@{
+    issue = [int]$selNum
+    branch = $branch
+    runDir = $runDir
+    pid = 0
+    startedUtc = [DateTime]::UtcNow.ToString('o')
+    endedUtc = ''
+    exitCode = $null
+    result = ''
+    prNumber = 0
+  }
+  $updatedRuns = New-Object Collections.Generic.List[object]
+  foreach ($r in $runs) {
+    if ($null -ne $r) { $null = $updatedRuns.Add($r) }
+  }
+  $null = $updatedRuns.Add($launchRun)
+  $state['runs'] = [object[]]$updatedRuns.ToArray()
+  Save-CloudState $state
+
+  try {
+    $newRun = Start-CloudRun -IssueNumber $selNum -Branch $branch -RunDir $runDir
+  } catch {
+    $launchRun['endedUtc'] = [DateTime]::UtcNow.ToString('o')
+    $launchRun['result'] = 'launch failed: ' + (ConvertTo-SingleLine (Protect-PublicText ([string]$_.Exception.Message)) 160)
+    Save-CloudState $state
+    Remove-CloudClaimLock -IssueNumber $selNum
+    throw
+  }
+  $launchRun['pid'] = [int]$newRun['pid']
+  Save-CloudState $state
 }
 
 function Invoke-WatchTick {
@@ -3519,8 +4646,13 @@ function Invoke-WatchTick {
   Invoke-SelfSync $watchdog
 
   $gh = Get-Command -Name 'gh' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($gh) {
-    $script:GhPath = $gh.Source
+  if ($gh) { $script:GhPath = $gh.Source }
+  try {
+    Invoke-CloudTick
+  } catch {
+    Write-Log ('cloud lane error: ' + (ConvertTo-SingleLine $_.Exception.Message 200))
+  }
+  if ($script:GhPath) {
     try {
       Invoke-AutoMerge -Watchdog $watchdog
     } catch {
@@ -3890,9 +5022,11 @@ function Invoke-RegisterTask {
   if (-not [string]::IsNullOrWhiteSpace($HydrogenLaneRoot)) { $watchArgs += @('-HydrogenLaneRoot', (Quote-Argument $HydrogenLaneRoot)) }
   if ($DevinMode -eq 'cli') {
     $watchArgs += @('-DevinMode', 'cli', '-DevinModel', (Quote-Argument $DevinModel), '-CliMaxRunMinutes', [string]$CliMaxRunMinutes)
-    if (-not [string]::IsNullOrWhiteSpace($DevinCliPath)) { $watchArgs += @('-DevinCliPath', (Quote-Argument $DevinCliPath)) }
     if (-not [string]::IsNullOrWhiteSpace($CliMissionPath)) { $watchArgs += @('-CliMissionPath', (Quote-Argument $CliMissionPath)) }
   }
+  if (-not [string]::IsNullOrWhiteSpace($DevinCliPath)) { $watchArgs += @('-DevinCliPath', (Quote-Argument $DevinCliPath)) }
+  $watchArgs += @('-CloudWeeklyCap', [string]$CloudWeeklyCap, '-CloudMaxRunMinutes', [string]$CloudMaxRunMinutes)
+  if (-not [string]::IsNullOrWhiteSpace($CloudMissionPath)) { $watchArgs += @('-CloudMissionPath', (Quote-Argument $CloudMissionPath)) }
   Initialize-TaskFolder
   $action = New-ScheduledTaskAction -Execute $script:PowerShellExe -WorkingDirectory $script:WorkRoot -Argument ($watchArgs -join ' ')
   $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
