@@ -2127,4 +2127,16 @@ export const ko: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "다른 프로젝트의 연결된 하위 에이전트 및 헬퍼를 포함하여 %lld개의 대화를 영구적으로 삭제합니다. 프로젝트 소스 파일은 삭제되지 않습니다.",
   "Remove project": "프로젝트 제거",
+  // P2-76
+  "Needs attention": "확인 필요",
+  "Assign models": "모델 할당",
+  "%d roles waiting for a model": "역할 %d개에 모델 선택 대기 중",
+  "Pick a model for each role. Nothing starts until you send.": "각 역할의 모델을 선택하세요. 전송하기 전에는 시작되지 않습니다.",
+  "Send none": "보내지 않음",
+  "Send 1": "1개 보내기",
+  "Send %d": "%d개 보내기",
+  "Send %@": "%@ 보내기",
+  "Waiting for your decision.": "결정을 기다리고 있습니다.",
+  "Skipped sub-agent roles: %@": "건너뛴 하위 에이전트 역할: %@",
+  "Every sub-agent role was skipped.": "모든 하위 에이전트 역할을 건너뛰었습니다.",
 };

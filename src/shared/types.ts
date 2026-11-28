@@ -731,6 +731,21 @@ export interface HydraJobSummary {
   merge?: "merged" | "nothing" | "failed" | "skipped";
 }
 
+/** P2-76 (frozen ChimeraCastingRow): one adaptive role waiting for model
+ *  assignment before its sub-agent starts. */
+export interface ChimeraCastingRow {
+  id: string;
+  role: string;
+  task: string;
+  prefill?: import("./chimera").ChimeraPick | undefined;
+}
+
+/** P2-76 (frozen ChimeraCasting): pending model-assignment batch on a lead. */
+export interface ChimeraCasting {
+  batchId: string;
+  rows: ChimeraCastingRow[];
+}
+
 export interface ChatThread {
   id: string;
   projectId: string | null;
@@ -896,6 +911,9 @@ export interface ChatThread {
   /** P1-38: this lead's independent-review cards, newest last (frozen
    *  job.reviewEngine/reviewFindings + verdict counts). */
   hydraReviews?: import("./hydraReview").HydraReview[];
+  /** P2-76 (frozen ChimeraCasting): adaptive sub-agent roles waiting for
+   *  model assignment before starting. Runtime-only; stripped on store flush. */
+  chimeraCasting?: ChimeraCasting | undefined;
   /**
    * F01: manual position inside the thread's affiliation (frozen
    * ChatThread.sortOrder, ascending). Absent = never reordered — the

@@ -791,7 +791,12 @@ export class Store {
       ...this.data,
       turnStorage: "segments" as const,
       threads: this.data.threads.map((t) => {
-        const { messages: _messages, turn: _turn, ...rest } = t;
+        const {
+          messages: _messages,
+          turn: _turn,
+          chimeraCasting: _chimeraCasting,
+          ...rest
+        } = t;
         return rest;
       }),
     };

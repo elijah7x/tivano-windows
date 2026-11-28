@@ -63,8 +63,12 @@ import {
 import {
   chimeraAdaptivePolicy,
   chimeraEffectivePrompt,
+  chimeraPickProviderResolution,
   chimeraPresetAt,
+  chimeraRoleKey,
+  type ChimeraPick,
 } from "../shared/chimera";
+import { threadNeedsAttention } from "../shared/skylight";
 import {
   countReviewFindings,
   HYDRA_REVIEW_DEFAULT_FIRST,
@@ -101,6 +105,8 @@ import type {
   AppInfo,
   ApprovalRequest,
   ChatThread,
+  ChimeraCasting,
+  ChimeraCastingRow,
   CodexInfo,
   CodexModelCatalog,
   CodexQuestionRequest,
@@ -603,6 +609,37 @@ export class Engine {
     this.syncBadge();
   }
 
+  /** P2-76: taskbar/Dock attention hook — injected OS hook (flashFrame on
+   *  Windows, a no-op shim in tests). */
+  private attentionHook?: (active: boolean) => void;
+  private lastAttentionActive = false;
+  attachAttentionHook(u: (active: boolean) => void): void {
+    this.attentionHook = u;
+    this.syncAttentionHook(true);
+  }
+
+  private hasAnyThreadNeedingAttention(): boolean {
+    return this.store.state.threads.some(
+      (t) => !t.isArchived && threadNeedsAttention(t),
+    );
+  }
+
+  private syncAttentionHook(force = false): void {
+    const active = this.hasAnyThreadNeedingAttention();
+    if (!force && active === this.lastAttentionActive) return;
+    this.lastAttentionActive = active;
+    this.attentionHook?.(active);
+  }
+
+  private notifyThreadNeedsAttention(
+    thread: ChatThread,
+    reason: "approval" | "question" | "casting",
+  ): void {
+    this.syncAttentionHook(true);
+    if (thread.isArchived) return;
+    this.emit({ type: "attention-signal", threadId: thread.id, reason });
+  }
+
   /** Frozen AppModel.updateDockBadge: count unread non-archived
    *  threads; the Mac "panel" exclusion has no single-window analogue. */
   syncBadge(): void {
@@ -708,6 +745,7 @@ export class Engine {
     const now = Date.now();
     const { stoppedHeads } = this.interruptInFlightThreads(now, true);
     this.flagLeadsForStoppedHeads(stoppedHeads);
+    this.syncAttentionHook();
     this.updateSleepGuard();
   }
 
@@ -765,6 +803,10 @@ export class Engine {
         error: "the app closed before the landing finished",
       };
       t.hydraHead.copyKept = t.worktreeDir !== undefined;
+      changed = true;
+    }
+    if (t.chimeraCasting !== undefined) {
+      delete t.chimeraCasting;
       changed = true;
     }
     const turn = t.turn;
@@ -1474,6 +1516,8 @@ export class Engine {
     thread.isPinned = false;
     thread.updatedAt = Date.now();
     this.clearLimitWait(id);
+    this.clearQueuedHydraHeads(id);
+    this.syncAttentionHook();
     let selectionChanged = false;
     let nextThread: ChatThread | undefined;
     let clearedUnread = false;
@@ -1555,6 +1599,7 @@ export class Engine {
       if (k.startsWith(id + ":")) this.hydraRounds.delete(k);
     this.hydraRefunds.delete(id);
     this.hydraBudgetGen.delete(id);
+    this.chimeraLastPicks.delete(id);
     for (const k of [...this.hydraCaptures.keys()])
       if (k.startsWith(id + ":")) this.hydraCaptures.delete(k);
     // F11: an app-created worktree leaves the thread — best-effort
@@ -1579,6 +1624,7 @@ export class Engine {
       d.threads = d.threads.filter((t) => t.id !== id);
       if (d.ui.selectedThreadId === id) d.ui.selectedThreadId = null;
     });
+    this.syncAttentionHook();
     this.emit({ type: "thread-removed", threadId: id });
   }
 
@@ -2546,7 +2592,12 @@ export class Engine {
       // Frozen exemptions (watchQuiet guard): head threads run their own
       // watchdog; anything waiting on the user or on delegated heads is
       // awake by definition, not silent.
-      if (turn.approval?.status === "pending" || turn.question?.status === "pending") continue;
+      if (
+        turn.approval?.status === "pending" ||
+        turn.question?.status === "pending" ||
+        (thread.chimeraCasting?.rows.length ?? 0) > 0
+      )
+        continue;
       if (this.limitWaits.has(thread.id)) continue;
       if (
         this.store.state.threads.some(
@@ -3000,6 +3051,7 @@ export class Engine {
     this.store.update(() => {});
 
     this.emit({ type: "approval-resolved", threadId, turnId: turn.id, approval });
+    this.syncAttentionHook();
 
     if (approved) {
       turn.status = "running";
@@ -4047,7 +4099,8 @@ export class Engine {
     if (
       (mode === "adaptive" || leavingAdaptive) &&
       (this.hydraLeadBusy(threadId) ||
-        (this.hydraWaiting.get(threadId)?.length ?? 0) > 0)
+        (this.hydraWaiting.get(threadId)?.length ?? 0) > 0 ||
+        (thread.chimeraCasting?.rows.length ?? 0) > 0)
     )
       throw new EngineError("switch modes when no sub-agents are at work");
     if (
@@ -4258,8 +4311,10 @@ export class Engine {
         this.handles.get(threadId)?.resume(true);
       }
     }
-    if (approval.status === "pending" && !wasWaiting)
-      this.noteHeadWaiting(thread);
+    if (approval.status === "pending") {
+      if (!wasWaiting) this.noteHeadWaiting(thread);
+      this.notifyThreadNeedsAttention(thread, "approval");
+    }
   }
 
   private finishTurn(threadId: string, turnId: string, status: "done"): void {
@@ -4326,6 +4381,7 @@ export class Engine {
     this.store.update(() => {});
     this.emit({ type: "thread-updated", thread });
     if (!wasWaiting) this.noteHeadWaiting(thread);
+    this.notifyThreadNeedsAttention(thread, "question");
   }
 
   /** Codex only: the answer bytes were CONFIRMED on the wire — NOW the
@@ -4338,6 +4394,7 @@ export class Engine {
     if (question.status !== "pending" || question.providerKey !== providerKey) return;
     question.status = "answered";
     this.store.update(() => {});
+    this.syncAttentionHook();
     this.emit({ type: "thread-updated", thread });
   }
 
@@ -4352,6 +4409,7 @@ export class Engine {
     if (question.status !== "pending" || question.providerKey !== providerKey) return;
     question.status = "expired";
     this.store.update(() => {});
+    this.syncAttentionHook();
     this.emit({ type: "thread-updated", thread });
   }
 
@@ -4381,6 +4439,7 @@ export class Engine {
     this.store.update(() => {});
     this.emit({ type: "approval-resolved", threadId, turnId, approval });
     this.emit({ type: "turn-status", threadId, turnId, status: "running" });
+    this.syncAttentionHook();
     this.updateSleepGuard();
   }
 
@@ -4403,6 +4462,7 @@ export class Engine {
     approval.resolvedOptionId = optionId;
     this.store.update(() => {});
     this.emit({ type: "approval-resolved", threadId, turnId, approval });
+    this.syncAttentionHook();
     if (turn.status === "waiting-approval") {
       turn.status = "running";
       this.emit({ type: "turn-status", threadId, turnId, status: "running" });
@@ -5097,6 +5157,7 @@ export class Engine {
     this.toolItemsSeen.delete(turn.id);
     this.checkpoints?.turnEnded(thread.id, turn.id, status);
     this.store.update(() => {});
+    this.syncAttentionHook();
     this.emit({ type: "thread-updated", thread });
     this.emit({
       type: "turn-status",
@@ -5125,12 +5186,13 @@ export class Engine {
     // chime, notify, or mark unread (frozen AppModel.turnFinished).
     const isHead = thread.hydraHead !== undefined;
     if (!isHead && this.hydraWaiting.has(thread.id) && this.hydraLaunchFor(thread) === undefined) {
-      this.hydraWaiting.delete(thread.id);
+      this.clearQueuedHydraHeads(thread.id);
     }
     const leadHeadsBusy =
       !isHead &&
       (this.hydraLeadBusy(thread.id) ||
-        (this.hydraWaiting.get(thread.id)?.length ?? 0) > 0);
+        (this.hydraWaiting.get(thread.id)?.length ?? 0) > 0 ||
+        (thread.chimeraCasting?.rows.length ?? 0) > 0);
     const pending = this.pendingSends.get(thread.id);
     const continues =
       pending !== undefined ||
@@ -5266,6 +5328,7 @@ export class Engine {
     if (this.readOnly) return;
     const sent = this.hydraSent.get(key) ?? 0;
     const news = parser.delegations.slice(sent);
+    let addedCasting = false;
     if (news.length) {
       this.hydraSent.set(key, sent + news.length);
       // A ```hydra-sent block records heads that already went out —
@@ -5279,9 +5342,14 @@ export class Engine {
             this.refuseDelegation(thread, `a delegation block holds at most ${MAX_DELEGATED_TASKS} tasks`);
             return;
           }
-          this.dispatchDelegation(thread, d);
+          if (this.dispatchDelegation(thread, d)) addedCasting = true;
         });
       }
+    }
+    if (addedCasting) {
+      this.store.update(() => {});
+      this.emit({ type: "thread-updated", thread });
+      this.notifyThreadNeedsAttention(thread, "casting");
     }
     if (parser.isComplete && !parser.isSentBlock) {
       this.noteQueuedHeads(thread, [thread.turn?.id ?? "batch"]);
@@ -5479,7 +5547,17 @@ export class Engine {
       /** P1-12: a "continue" entry carries the head it reworks
        *  (frozen continueHeadID) instead of spawning a new one. */
       continueThreadId?: string;
+      /** P2-76: adaptive casting row id, resolved preset prompt, and
+       *  user-confirmed pick when held for model assignment. */
+      castId?: string;
+      rolePrompt?: string;
+      castPick?: ChimeraPick;
     }[]
+  >();
+  /** P2-76: per-thread remembered explicit picks keyed by normalized role. */
+  private readonly chimeraLastPicks = new Map<
+    string,
+    Record<string, ChimeraPick>
   >();
   /** Pairs whose heads-provider note this lead already heard once per
    *  job (frozen hydraFallbackNoted, per lead+pair). */
@@ -5505,6 +5583,7 @@ export class Engine {
    *  lead's chat when tasks wait on the concurrency cap. */
   private noteQueuedHeads(lead: ChatThread, batchIds: Iterable<string>): void {
     if (lead.hydraHead) return;
+    if ((lead.chimeraCasting?.rows.length ?? 0) > 0) return;
     const launch = this.hydraLaunchFor(lead);
     if (!launch) return;
     const queue = this.hydraWaiting.get(lead.id);
@@ -5538,6 +5617,7 @@ export class Engine {
   private spawnWaitingHeads(leadId: string): void {
     const lead = this.store.state.threads.find((t) => t.id === leadId);
     if (!lead || lead.hydraHead || this.readOnly) return;
+    if ((lead.chimeraCasting?.rows.length ?? 0) > 0) return;
     const queue = this.hydraWaiting.get(leadId);
     if (!queue?.length) return;
     const launch = this.hydraLaunchFor(lead);
@@ -5555,7 +5635,18 @@ export class Engine {
       if (next.continueThreadId) {
         this.sendBackHydraHead(lead, next.d, next.batchId, next.continueThreadId);
       } else {
-        this.spawnHydraHead(lead, next.d, next.batchId);
+        this.spawnHydraHead(
+          lead,
+          next.d,
+          next.batchId,
+          launch,
+          next.castId !== undefined
+            ? {
+                ...(next.rolePrompt !== undefined ? { rolePrompt: next.rolePrompt } : {}),
+                ...(next.castPick !== undefined ? { pick: next.castPick } : {}),
+              }
+            : undefined,
+        );
       }
     }
     if (!queue.length) this.hydraWaiting.delete(leadId);
@@ -5621,14 +5712,21 @@ export class Engine {
     }
   }
 
-  private dispatchDelegation(lead: ChatThread, d: HydraDelegation): void {
+  private dispatchDelegation(lead: ChatThread, d: HydraDelegation): boolean {
     // Heads never delegate — tell the head plainly via its own queue.
-    if (lead.hydraHead) return this.refuseDelegation(lead, "heads cannot delegate");
+    if (lead.hydraHead) {
+      this.refuseDelegation(lead, "heads cannot delegate");
+      return false;
+    }
     const s = this.store.state.settings;
-    if (s.hydraEnabled === false)
-      return this.refuseDelegation(lead, "Hydra is off");
-    if (lead.hydraEnabled === false)
-      return this.refuseDelegation(lead, "this chat has Hydra off");
+    if (s.hydraEnabled === false) {
+      this.refuseDelegation(lead, "Hydra is off");
+      return false;
+    }
+    if (lead.hydraEnabled === false) {
+      this.refuseDelegation(lead, "this chat has Hydra off");
+      return false;
+    }
     // Frozen maxDelegationRounds: one round per lead TURN that actually
     // dispatches heads (bounded slice — per-turn, stricter than the
     // frozen per-block accounting). Frozen chargeRound covers the whole
@@ -5639,10 +5737,11 @@ export class Engine {
     if (roundKey && !this.hydraRounds.has(roundKey)) {
       const rounds = this.hydraRounds.get(lead.id) ?? 0;
       if (rounds >= MAX_DELEGATION_ROUNDS) {
-        return this.refuseDelegation(
+        this.refuseDelegation(
           lead,
           `this request used all ${MAX_DELEGATION_ROUNDS} of its rounds of heads`,
         );
+        return false;
       }
       this.hydraRounds.set(lead.id, rounds + 1);
       this.hydraRounds.set(roundKey, 1);
@@ -5691,12 +5790,13 @@ export class Engine {
             t.hydraHead!.status !== "running" &&
             this.hydraBatchJob.get(t.hydraHead!.batchId) !== jobGen,
         );
-        return this.refuseDelegation(
+        this.refuseDelegation(
           lead,
           earlier
             ? `${d.continue} was not sent back: it belongs to an earlier request`
             : `${d.continue} was not sent back: no head of that name`,
         );
+        return false;
       }
       const info = target.hydraHead!;
       const reason =
@@ -5710,10 +5810,11 @@ export class Engine {
               ? "it is already queued for continuation"
               : undefined;
       if (reason) {
-        return this.refuseDelegation(
+        this.refuseDelegation(
           lead,
           `${d.continue} was not sent back: ${reason}`,
         );
+        return false;
       }
       const queue = this.hydraWaiting.get(lead.id) ?? [];
       queue.push({
@@ -5724,24 +5825,212 @@ export class Engine {
       });
       this.hydraWaiting.set(lead.id, queue);
       this.spawnWaitingHeads(lead.id);
-      return;
+      return false;
     }
     const team = this.store.state.threads.filter(
       (t) => t.hydraHead?.leadId === lead.id,
     );
     const running = team.filter((t) => t.hydraHead?.status === "running").length;
     const launch = this.hydraLaunchFor(lead);
+    // P2-76 (frozen ThreadRuntime.swift Chimera casting): adaptive roles wait
+    // for explicit model assignment before starting whenever auto-dispatch is off.
+    if (
+      this.subagentModeFor(lead) === "adaptive" &&
+      launch !== undefined &&
+      s.chimeraAutoDispatch !== true
+    ) {
+      const mode = this.provider.descriptor.mode;
+      const identityPreset = chimeraPresetAt(s.chimeraPresets, d.identity);
+      const rolePrompt = identityPreset
+        ? chimeraEffectivePrompt(identityPreset)
+        : undefined;
+      const role = identityPreset?.name || d.task;
+      const rememberedRaw = this.chimeraLastPicks.get(lead.id)?.[chimeraRoleKey(role)];
+      const remembered =
+        rememberedRaw &&
+        chimeraPickProviderResolution(rememberedRaw, mode).kind !== "unavailable"
+          ? rememberedRaw
+          : undefined;
+      const presetPickRaw = identityPreset?.pick;
+      const presetPick =
+        presetPickRaw &&
+        chimeraPickProviderResolution(presetPickRaw, mode).kind !== "unavailable"
+          ? presetPickRaw
+          : undefined;
+      const leadPick: ChimeraPick | undefined = lead.codexModel
+        ? {
+            provider: mode,
+            model: lead.codexModel,
+            ...(lead.codexEffort ? { effort: lead.codexEffort } : {}),
+          }
+        : undefined;
+      const prefill = remembered ?? presetPick ?? leadPick;
+      const castId = randomUUID();
+      const queue = this.hydraWaiting.get(lead.id) ?? [];
+      queue.push({
+        d,
+        batchId,
+        queuedAt: Date.now(),
+        castId,
+        ...(rolePrompt !== undefined ? { rolePrompt } : {}),
+      });
+      this.hydraWaiting.set(lead.id, queue);
+      this.recordHydraJobOpen(lead, batchId);
+      const row: ChimeraCastingRow = {
+        id: castId,
+        role,
+        task: d.task,
+        ...(prefill !== undefined ? { prefill } : {}),
+      };
+      lead.chimeraCasting = {
+        batchId: lead.chimeraCasting?.batchId ?? batchId,
+        rows: [...(lead.chimeraCasting?.rows ?? []), row],
+      };
+      return true;
+    }
     const cap = launch?.maxHeads ?? HYDRA_UNCAPPED_CONCURRENCY;
     // The pair's cap paces the rest through hydraWaiting (frozen
     // parity): over-cap entries wait for room, they are never refused.
-    if (running >= cap) {
+    if (running >= cap || (lead.chimeraCasting?.rows.length ?? 0) > 0) {
       const queue = this.hydraWaiting.get(lead.id) ?? [];
       queue.push({ d, batchId, queuedAt: Date.now() });
       this.hydraWaiting.set(lead.id, queue);
       this.recordHydraJobOpen(lead, batchId);
-      return;
+      return false;
     }
     this.spawnHydraHead(lead, d, batchId, launch);
+    return false;
+  }
+
+  /** P2-76 (frozen confirmChimeraCasting / cancelChimeraCasting): apply user
+   *  model picks for waiting adaptive roles, skip omitted/null rows, clear the
+   *  casting attention episode, and dispatch confirmed heads. */
+  confirmChimeraCasting(
+    threadId: string,
+    picks: Record<string, ChimeraPick | null>,
+  ): void {
+    this.assertMutable();
+    const thread = this.mustThread(threadId);
+    this.ensureThreadLoaded(threadId);
+    const casting = thread.chimeraCasting;
+    if (!casting || casting.rows.length === 0) return;
+
+    const queue = this.hydraWaiting.get(threadId) ?? [];
+    const mode = this.provider.descriptor.mode;
+    const batches: string[] = [];
+    const skippedByBatch = new Map<string, string[]>();
+    const remembered = { ...(this.chimeraLastPicks.get(threadId) ?? {}) };
+    let rememberedChanged = false;
+    let confirmedCount = 0;
+
+    const samePick = (a: ChimeraPick | undefined, b: ChimeraPick | undefined): boolean =>
+      (a?.provider ?? undefined) === (b?.provider ?? undefined) &&
+      (a?.model ?? undefined) === (b?.model ?? undefined) &&
+      (a?.effort ?? undefined) === (b?.effort ?? undefined);
+
+    for (const row of casting.rows) {
+      const idx = queue.findIndex((q) => q.castId === row.id);
+      if (idx < 0) continue;
+      const item = queue[idx]!;
+      if (!batches.includes(item.batchId)) batches.push(item.batchId);
+      const rawPick = Object.prototype.hasOwnProperty.call(picks, row.id)
+        ? picks[row.id]
+        : null;
+      const canRun =
+        rawPick !== null &&
+        rawPick !== undefined &&
+        chimeraPickProviderResolution(rawPick, mode).kind !== "unavailable";
+      if (canRun) {
+        const cleanPick: ChimeraPick = {
+          ...(rawPick.provider ? { provider: rawPick.provider } : {}),
+          ...(rawPick.model?.trim() ? { model: rawPick.model.trim() } : {}),
+          ...(rawPick.effort?.trim() ? { effort: rawPick.effort.trim() } : {}),
+        };
+        item.castPick = cleanPick;
+        confirmedCount++;
+        if (!samePick(cleanPick, row.prefill)) {
+          remembered[chimeraRoleKey(row.role)] = cleanPick;
+          rememberedChanged = true;
+        }
+      } else {
+        queue.splice(idx, 1);
+        skippedByBatch.set(item.batchId, [
+          ...(skippedByBatch.get(item.batchId) ?? []),
+          row.role,
+        ]);
+      }
+    }
+
+    if (rememberedChanged) this.chimeraLastPicks.set(threadId, remembered);
+    if (queue.length === 0) this.hydraWaiting.delete(threadId);
+    delete thread.chimeraCasting;
+    this.store.update(() => {});
+    this.syncAttentionHook();
+    this.emit({ type: "thread-updated", thread });
+
+    const allSkipped = batches.flatMap((b) => skippedByBatch.get(b) ?? []);
+    if (allSkipped.length > 0) {
+      this.appendNotice(
+        thread,
+        `Skipped sub-agent roles: ${allSkipped.join(", ")}`,
+        "info",
+      );
+    }
+
+    const pendingReports = this.hydraPendingReports.get(threadId) ?? [];
+    let jobsChanged = false;
+    for (const batchId of batches) {
+      const hasWaiting = queue.some((q) => q.batchId === batchId);
+      if (hasWaiting) continue;
+      const hasActiveHead = this.store.state.threads.some(
+        (t) =>
+          t.hydraHead?.leadId === threadId &&
+          t.hydraHead.batchId === batchId &&
+          (t.hydraHead.status === "running" || t.hydraHead.landingPending === true),
+      );
+      const hasPendingReport = pendingReports.some((r) => r.batchId === batchId);
+      if (hasActiveHead || hasPendingReport) continue;
+      this.hydraBatchRequest.delete(batchId);
+      this.hydraBatchGen.delete(batchId);
+      this.hydraBatchJob.delete(batchId);
+      const job = thread.hydraJobs?.find((j) => j.id === batchId && j.isOpen);
+      if (job) {
+        job.isOpen = false;
+        job.ending = "stopped";
+        job.merge = "nothing";
+        jobsChanged = true;
+      }
+    }
+    if (jobsChanged) {
+      this.store.update(() => {});
+      this.emit({ type: "thread-updated", thread });
+    }
+
+    if (confirmedCount === 0 && batches.length > 0 && queue.length === 0) {
+      const refusal =
+        "[Hydra] The user skipped every helper in that Chimera casting. Do the work yourself or ask again.";
+      const busy =
+        (thread.turn &&
+          (thread.turn.status === "running" || thread.turn.status === "waiting-approval")) ||
+        this.pendingSends.has(threadId);
+      if (busy) {
+        try {
+          this.enqueueFollowUp(threadId, refusal, { unauthored: true });
+        } catch {
+          this.appendNotice(thread, "Every sub-agent role was skipped.", "info");
+        }
+      } else {
+        try {
+          this.sendTurn(threadId, refusal, { authored: false });
+        } catch {
+          this.appendNotice(thread, "Every sub-agent role was skipped.", "info");
+        }
+      }
+    }
+
+    this.spawnWaitingHeads(threadId);
+    this.noteQueuedHeads(thread, batches);
+    this.flushHydraReports(threadId);
   }
 
   private recordHydraJobOpen(lead: ChatThread, batchId: string): void {
@@ -5760,6 +6049,7 @@ export class Engine {
     d: HydraDelegation,
     batchId: string,
     launch?: ResolvedHydraLaunch | undefined,
+    castOverride?: { rolePrompt?: string; pick?: ChimeraPick },
   ): void {
     this.recordHydraJobOpen(lead, batchId);
     const s = this.store.state.settings;
@@ -5798,14 +6088,19 @@ export class Engine {
       this.subagentModeFor(lead) === "adaptive"
         ? chimeraPresetAt(s.chimeraPresets, d.identity)
         : undefined;
-    const identityPrompt = identityPreset
-      ? chimeraEffectivePrompt(identityPreset)
-      : undefined;
+    const identityPrompt =
+      castOverride?.rolePrompt ??
+      (identityPreset ? chimeraEffectivePrompt(identityPreset) : undefined);
     const identityPick =
-      identityPreset?.pick?.provider === undefined ||
-      identityPreset?.pick?.provider === mode
-        ? identityPreset?.pick
-        : undefined;
+      castOverride?.pick !== undefined
+        ? castOverride.pick.provider === undefined ||
+          castOverride.pick.provider === mode
+          ? castOverride.pick
+          : undefined
+        : identityPreset?.pick?.provider === undefined ||
+            identityPreset?.pick?.provider === mode
+          ? identityPreset?.pick
+          : undefined;
 
     const team = this.store.state.threads.filter(
       (t) => t.hydraHead?.leadId === lead.id,
@@ -5844,13 +6139,18 @@ export class Engine {
       head.hydraHead!.profile = routed.name;
       head.title += ` · ${routed.name}`;
     }
-    // The head's model/effort (frozen): routed profile's, else the pair's
-    // worker fields when it keeps them, else the chat's own. Codex-only
-    // fields — adapters without per-thread models ignore them.
+    // The head's model/effort (frozen): cast pick when confirmed, else routed
+    // profile's, else the pair's worker fields when it keeps them, else the
+    // chat's own. Codex-only fields — adapters without per-thread models
+    // ignore them.
     const headModel =
-      identityPick?.model ?? routed?.model ?? launch?.workerModel ?? lead.codexModel;
+      castOverride?.pick !== undefined
+        ? (identityPick?.model ?? lead.codexModel)
+        : (identityPick?.model ?? routed?.model ?? launch?.workerModel ?? lead.codexModel);
     const headEffort =
-      identityPick?.effort ?? routed?.effort ?? launch?.workerEffort ?? lead.codexEffort;
+      castOverride?.pick !== undefined
+        ? (identityPick?.model ? identityPick.effort : lead.codexEffort)
+        : (identityPick?.effort ?? routed?.effort ?? launch?.workerEffort ?? lead.codexEffort);
     if (headModel) head.codexModel = headModel;
     if (headEffort) head.codexEffort = headEffort;
     // Frozen hydraRouteReference + routeHydraHead: a "project" naming a
@@ -6971,8 +7271,20 @@ export class Engine {
    *  work was queued is settled here so it cannot hold an open job or
    *  poison a later adaptive-mode switch. */
   private clearQueuedHydraHeads(leadId: string): void {
+    const lead = this.store.state.threads.find((t) => t.id === leadId);
+    const hadCasting = lead?.chimeraCasting !== undefined;
+    if (lead && hadCasting) {
+      delete lead.chimeraCasting;
+    }
     const queued = this.hydraWaiting.get(leadId) ?? [];
-    if (!queued.length) return;
+    if (!queued.length) {
+      if (hadCasting && lead) {
+        this.store.update(() => {});
+        this.syncAttentionHook();
+        this.emit({ type: "thread-updated", thread: lead });
+      }
+      return;
+    }
     this.hydraWaiting.delete(leadId);
     const batchIds = [...new Set(queued.map((q) => q.batchId))];
     const pendingReports = this.hydraPendingReports.get(leadId) ?? [];
@@ -6989,7 +7301,6 @@ export class Engine {
       this.hydraBatchRequest.delete(batchId);
       this.hydraBatchGen.delete(batchId);
       this.hydraBatchJob.delete(batchId);
-      const lead = this.store.state.threads.find((t) => t.id === leadId);
       const job = lead?.hydraJobs?.find((j) => j.id === batchId && j.isOpen);
       if (job) {
         job.isOpen = false;
@@ -6998,7 +7309,11 @@ export class Engine {
         jobsChanged = true;
       }
     }
-    if (jobsChanged) this.store.update(() => {});
+    if (jobsChanged || hadCasting) this.store.update(() => {});
+    if (hadCasting && lead) {
+      this.syncAttentionHook();
+      this.emit({ type: "thread-updated", thread: lead });
+    }
   }
 
   /** Frozen pendingReports: a batch's reports flush together once every

@@ -2315,6 +2315,18 @@ const zhHans: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "这将永久删除 %lld 个对话，包括关联到其他项目的子代理和助手。项目源文件不会被删除。",
   "Remove project": "移除项目",
+  // P2-76: Model-assignment waits as attention (v3.0.15 ChimeraCastingTab/SidebarView/AppModel).
+  "Needs attention": "需要关注",
+  "Assign models": "分配模型",
+  "%d roles waiting for a model": "%d 个角色等待选择模型",
+  "Pick a model for each role. Nothing starts until you send.": "为每个角色选模型，确认派出后才开始。",
+  "Send none": "都不派",
+  "Send 1": "派出 1 个",
+  "Send %d": "派出 %d 个",
+  "Send %@": "派出%@",
+  "Waiting for your decision.": "等待你的决定。",
+  "Skipped sub-agent roles: %@": "已跳过的子代理角色：%@",
+  "Every sub-agent role was skipped.": "已跳过全部子代理角色。",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
@@ -2457,6 +2469,8 @@ const EXTRA_NOTICE_KEYS = [
   "read: %@",
   "write: %@",
   "deny: %@",
+  "Skipped sub-agent roles: %@",
+  "Every sub-agent role was skipped.",
   "glob scan depth %@",
 ] as const;
 

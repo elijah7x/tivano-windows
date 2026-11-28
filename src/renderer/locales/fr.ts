@@ -2127,4 +2127,16 @@ export const fr: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "Cela supprime définitivement %lld discussions, y compris les sous-agents et assistants liés dans d’autres projets. Les fichiers sources du projet ne seront pas supprimés.",
   "Remove project": "Retirer le projet",
+  // P2-76
+  "Needs attention": "Attention requise",
+  "Assign models": "Attribuer des modèles",
+  "%d roles waiting for a model": "%d rôles en attente d’un modèle",
+  "Pick a model for each role. Nothing starts until you send.": "Choisissez un modèle pour chaque rôle. Rien ne démarre avant l’envoi.",
+  "Send none": "Ne rien envoyer",
+  "Send 1": "Envoyer 1",
+  "Send %d": "Envoyer %d",
+  "Send %@": "Envoyer %@",
+  "Waiting for your decision.": "En attente de votre décision.",
+  "Skipped sub-agent roles: %@": "Rôles de sous-agent ignorés : %@",
+  "Every sub-agent role was skipped.": "Tous les rôles de sous-agent ont été ignorés.",
 };

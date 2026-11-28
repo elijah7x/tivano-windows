@@ -21,7 +21,12 @@ import { ProjectIconPicker } from "./ProjectIconPicker";
 import { RemoveProjectPopover } from "./RemoveProjectPopover";
 import { MiniSpinner } from "./SpinnerCells";
 import { Skylight } from "./Skylight";
-import { resolveWeatherWindowMode } from "../../shared/skylight";
+import {
+  resolveWeatherWindowMode,
+  threadNeedsAnswer,
+  threadNeedsApproval,
+  threadNeedsAttention,
+} from "../../shared/skylight";
 
 /** P2-34 (frozen SidebarView RowActionsButton): a thread row's hover strip
  *  keeps the immediate affordances but never a bare archive button — archive
@@ -53,16 +58,31 @@ export function threadRowMenuItems(opts: {
 }
 
 function statusDot(t: ChatThread): string {
+  if (threadNeedsApproval(t)) return "waiting-approval";
+  if (threadNeedsAnswer(t)) return "question";
   const s = t.turn?.status;
   if (!s || s === "done") return "idle";
   return s;
 }
 
 /** Frozen ThreadStatusMark: a running turn wears the 2×3 perimeter
- *  spinner, not a static dot (SidebarView's MiniSpinner call site). */
-function statusMark(t: ChatThread): React.JSX.Element {
+ *  spinner, not a static dot (SidebarView's MiniSpinner call site).
+ *  Pending approvals, questions, and adaptive model-assignment waits
+ *  surface their static attention dots. */
+function statusMark(
+  t: ChatThread,
+  translate: (k: string, ...vars: string[]) => string,
+): React.JSX.Element {
   const s = statusDot(t);
-  if (s === "running" || s === "waiting-approval") return <MiniSpinner />;
+  if (s === "running") return <MiniSpinner />;
+  if (s === "waiting-approval") {
+    const label = translate("Awaiting approval");
+    return <span className="dot waiting-approval" title={label} aria-label={label} />;
+  }
+  if (s === "question") {
+    const label = translate("Awaiting your answer");
+    return <span className="dot question" title={label} aria-label={label} />;
+  }
   return <span className={`dot ${s}`} aria-hidden="true" />;
 }
 
@@ -328,6 +348,27 @@ export function Sidebar(props: {
         th.projectId !== null &&
         shelfIds.has(th.projectId),
     );
+    // P2-76 (frozen SidebarView.activityItems): standalone tasks needing
+    // user attention (approval, question, or adaptive casting) move into
+    // a "Needs attention" group at the top of the ungrouped tasks list.
+    const filteredUngrouped = frozenOrder(ungrouped.filter(matchThread));
+    const ungroupedIds = new Set(filteredUngrouped.map((x) => x.id));
+    const ungroupedByParent = new Map<string, ChatThread[]>();
+    const ungroupedMains: ChatThread[] = [];
+    for (const th of filteredUngrouped) {
+      if (q === "" && th.parentThreadId && ungroupedIds.has(th.parentThreadId)) {
+        ungroupedByParent.set(th.parentThreadId, [
+          ...(ungroupedByParent.get(th.parentThreadId) ?? []),
+          th,
+        ]);
+      } else {
+        ungroupedMains.push(th);
+      }
+    }
+    const attentionMains = ungroupedMains.filter((th) => threadNeedsAttention(th));
+    const restMains = ungroupedMains.filter((th) => !threadNeedsAttention(th));
+    const expandUngrouped = (xs: ChatThread[]): ChatThread[] =>
+      q === "" ? xs.flatMap((th) => [th, ...(ungroupedByParent.get(th.id) ?? [])]) : xs;
     return {
       // A group stays visible while searching when the project name matches
       // (showing all its threads) or when any child thread matches.
@@ -349,7 +390,8 @@ export function Sidebar(props: {
         threads: nestHelpers(frozenOrder(byProject.get(p.id) ?? [])),
       })),
       shelfHasUnread,
-      ungrouped: nestHelpers(frozenOrder(ungrouped.filter(matchThread))),
+      attentionUngrouped: expandUngrouped(attentionMains),
+      ungrouped: expandUngrouped(restMains),
       archived,
     };
   }, [snapshot, q]);
@@ -593,7 +635,7 @@ export function Sidebar(props: {
         setThreadMenu({ th, x: e.clientX, y: e.clientY, alignEnd: false });
       }}
     >
-      {statusMark(th)}
+      {statusMark(th, t)}
       {th.hasUnread && (
         <span
           className={`unread-mark ${th.unreadStatus ?? "done"}`}
@@ -1021,6 +1063,12 @@ export function Sidebar(props: {
           onDragLeave={() => setProjectHint((h) => (h?.id === "__ungrouped__" ? null : h))}
           onDrop={dropOnUngrouped}
         >
+          {groups.attentionUngrouped.length > 0 && (
+            <div className="attention-group" role="group" aria-label={t("Needs attention")}>
+              <div className="sidebar-section-header">{t("Needs attention")}</div>
+              {groups.attentionUngrouped.map(threadRow)}
+            </div>
+          )}
           {groups.ungrouped.map(threadRow)}
         </div>
       </div>
@@ -1039,7 +1087,7 @@ export function Sidebar(props: {
           {showArchived &&
             groups.archived.map((th) => (
               <div key={th.id} className="row archived" title={th.title}>
-                {statusMark(th)}
+                {statusMark(th, t)}
                 <span className="title">{th.title}</span>
                 {armedDeleteId === th.id ? (
                   <button

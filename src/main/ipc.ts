@@ -379,6 +379,9 @@ export function registerIpc(opts: IpcOptions): () => void {
   handle("threads:predict-next", (p) => engine.predictNextPrompt(p.threadId, p.turnId));
   handle("hydra:stop", (p) => engine.stopHydraHead(p.threadId));
   handle("hydra:continue", (p) => engine.continueHydraHead(p.threadId));
+  handle("hydra:confirm-casting", (p) =>
+    engine.confirmChimeraCasting(p.threadId, p.picks),
+  );
   handle("threads:set-hydra", (p) => engine.setThreadHydra(p.threadId, p.enabled));
   handle("threads:set-subagent-mode", (p) =>
     engine.setSubagentMode(p.threadId, p.mode),

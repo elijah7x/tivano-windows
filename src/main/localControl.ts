@@ -530,7 +530,10 @@ export class LocalControlService {
         t.turn && (t.turn.status === "running" || t.turn.status === "waiting-approval")
           ? t.turn.id
           : null,
-      waitingForUI: t.turn?.status === "waiting-approval",
+      waitingForUI:
+        t.turn?.status === "waiting-approval" ||
+        t.turn?.question?.status === "pending" ||
+        (t.chimeraCasting?.rows.length ?? 0) > 0,
       workspace: t.worktreeDir
         ? { mode: "worktree", phase: "ready", path: t.worktreeDir }
         : { mode: "local" },

@@ -538,6 +538,21 @@ button.primary:hover {
   background: var(--warning);
 }
 
+.dot.question {
+  background: #80718f;
+}
+
+.attention-group {
+  margin-bottom: 4px;
+}
+
+.sidebar-section-header {
+  padding: 6px 8px 2px;
+  font-size: calc(12px + var(--fs-ui-off));
+  font-weight: 600;
+  color: var(--text-2);
+}
+
 .dot.error,
 .dot.denied {
   background: var(--danger);
@@ -1294,6 +1309,52 @@ button.primary:hover {
 
 .approval.question .qother {
   margin-top: 6px;
+}
+
+.approval.casting .casting-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.approval.casting .casting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.approval.casting .casting-row.skipped {
+  opacity: 0.55;
+}
+
+.approval.casting .casting-meta {
+  min-width: 0;
+  flex: 1;
+}
+
+.approval.casting .casting-role {
+  font-weight: 600;
+  font-size: calc(12.5px + var(--fs-content-off));
+}
+
+.approval.casting .casting-task {
+  color: var(--text-2);
+  font-size: calc(12px + var(--fs-content-off));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval.casting .casting-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
 }
 
 /* composer */

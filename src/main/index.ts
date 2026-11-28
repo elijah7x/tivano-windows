@@ -608,7 +608,10 @@ bootstrap = app.whenReady().then(async () => {
     eng.setWindowActive(visible);
     broadcast({ type: "window-activity", active });
   };
-  win.on("focus", syncWindowActivity);
+  win.on("focus", () => {
+    if (win && !win.isDestroyed()) win.flashFrame(false);
+    syncWindowActivity();
+  });
   win.on("blur", syncWindowActivity);
   win.on("minimize", syncWindowActivity);
   win.on("restore", syncWindowActivity);
@@ -807,6 +810,21 @@ bootstrap = app.whenReady().then(async () => {
       app.setBadgeCount(count);
     } catch {
       /* badge support varies by platform */
+    }
+  });
+  // P2-76: Windows taskbar attention adaptation (frozen requestUserAttention) —
+  // flash the taskbar frame while a thread needs user decision and the window
+  // is unfocused; clear on focus or when all attention episodes clear.
+  eng.attachAttentionHook((active) => {
+    try {
+      if (!win || win.isDestroyed()) return;
+      if (active) {
+        if (!win.isFocused()) win.flashFrame(true);
+      } else {
+        win.flashFrame(false);
+      }
+    } catch {
+      /* taskbar flash varies by platform */
     }
   });
 
