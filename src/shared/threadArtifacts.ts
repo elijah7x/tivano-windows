@@ -82,9 +82,12 @@ export function cleanArtifactPath(raw: string): string | null {
   if (s.length > 2 && ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))))
     s = s.slice(1, -1);
   const lower = s.toLowerCase();
+  if (s.startsWith("\\\\") || s.startsWith("//")) return null;
   if (lower.startsWith("file://")) {
     s = s.slice("file://".length);
-    // file:///C:/x → C:/x ; file:///home/x → /home/x
+    // file:///C:/x → C:/x ; file:///home/x → /home/x. A file URL with a
+    // host is remote input, not a local path the main process may stat.
+    if (!s.startsWith("/")) return null;
     if (/^\/[A-Za-z]:[\\/]/.test(s)) s = s.slice(1);
     try {
       s = decodeURIComponent(s);

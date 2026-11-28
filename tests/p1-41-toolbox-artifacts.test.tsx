@@ -138,6 +138,25 @@ describe("P1-41 artifact resolution (win32)", () => {
     expect(items).toEqual([]);
     expect(seen).toEqual([]);
   });
+
+  it("rejects UNC and file-url host paths before any filesystem check", () => {
+    let checks = 0;
+    const items = resolveArtifacts(
+      [
+        { raw: "\\\\server\\share\\report.pdf" },
+        { raw: "//server/share/report.pdf" },
+        { raw: "file://server/share/report.pdf" },
+      ],
+      {
+        pathApi: win32,
+        workingDirectory: root,
+        home,
+        statFile: () => (checks++, 1),
+      },
+    );
+    expect(items).toEqual([]);
+    expect(checks).toBe(0);
+  });
 });
 
 describe("P1-41 artifact resolution (posix) and bounds", () => {
