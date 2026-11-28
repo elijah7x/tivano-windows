@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-28.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // Per-thread Codex model/effort picker (P2-56 / F17). The catalog is
 // provider-owned state fetched via models:list — pending until a Codex
@@ -53,21 +53,21 @@ function canonicalEffortKey(effort: string): string {
   return lower;
 }
 
+const EFFORT_RANKS = new Map<string, number>([
+  ["none", 0],
+  ["minimal", 1],
+  ["low", 2],
+  ["medium", 3],
+  ["high", 4],
+  ["xhigh", 5],
+  ["max", 6],
+  ["ultra", 6],
+]);
+
 /** Frozen Provider.swift effortRank — low to high ordering whatever
  *  order the agent lists levels in; unknown levels keep their place. */
 function effortRank(effort: string): number | undefined {
-  return (
-    {
-      none: 0,
-      minimal: 1,
-      low: 2,
-      medium: 3,
-      high: 4,
-      xhigh: 5,
-      max: 6,
-      ultra: 6,
-    } as Record<string, number>
-  )[canonicalEffortKey(effort)];
+  return EFFORT_RANKS.get(canonicalEffortKey(effort));
 }
 function findEffortIndex(
   efforts: readonly string[],
@@ -301,7 +301,11 @@ export function ModelPicker(props: ModelPickerProps): React.JSX.Element {
     }
     const effortParts: string[] = [];
     if (pair.orchestratorEffort) effortParts.push(t(effortTitle(pair.orchestratorEffort)));
-    if (pair.workerEffort && pair.workerEffort !== pair.orchestratorEffort) {
+    if (
+      pair.workerEffort &&
+      (!pair.orchestratorEffort ||
+        canonicalEffortKey(pair.workerEffort) !== canonicalEffortKey(pair.orchestratorEffort))
+    ) {
       effortParts.push(t(effortTitle(pair.workerEffort)));
     }
     if (effortParts.length > 0) parts.push(effortParts.join(" / "));

@@ -1,4 +1,4 @@
-// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-25.
+// Tivano Windows — derived from Tivano (AGPL-3.0), modified 2026-11-28.
 // Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 // P2-56 / P2-20 component tests: renders ModelListSettings (two-column
 // master-detail Your models + All chip wall + group detail + Browse all
@@ -1367,6 +1367,57 @@ describe("ModelPicker (P2-80 model/reasoning popover layout)", () => {
     expect(unsupportedCard).toContain('data-effort-level="medium"');
     expect(unsupportedCard).toContain('value="1"');
     expect(unsupportedSelect).toContain("Minimal (saved)");
+
+    // Prototype keys ("constructor") are ignored by effortRank, and pairDetail deduplicates equivalent effort aliases.
+    setMockSettings({
+      modelList: [],
+      modelSections: [],
+      hydraEnabled: true,
+      hydraPairs: [
+        {
+          id: "p-alias",
+          provider: "codex",
+          orchestratorModel: "gpt-multi",
+          workerModel: "gpt-single",
+          orchestratorEffort: "xhigh",
+          workerEffort: "extra_high",
+          name: "Alias Combo",
+          headProfiles: [],
+        },
+      ],
+    });
+    const aliasPairHtml = renderLang(
+      "en",
+      createElement(ModelPicker, {
+        thread: makeThread({ codexModel: "gpt-multi", codexEffort: "constructor" }),
+        initialCatalog: {
+          state: "ready",
+          models: [
+            {
+              id: "gpt-multi",
+              name: "GPT-5.4 Multi",
+              efforts: ["high", "constructor", "low"],
+              defaultEffort: "low",
+              isDefault: true,
+            },
+          ],
+        },
+        initialOpen: true,
+        initialModelsExpanded: true,
+      }),
+    );
+    expect(aliasPairHtml).toContain(
+      'class="model-pop-detail">GPT-5.4 Multi + gpt-single · Extra High<',
+    );
+    expect(aliasPairHtml).not.toContain("Extra High / Extra High");
+    const protoCard = extractSubtree(
+      aliasPairHtml,
+      'class="effort-card"',
+      'class="effort-select"',
+    );
+    expect(protoCard).toContain('data-effort-level="constructor"');
+    // Unranked "constructor" preserves its relative order instead of sorting as an Object.prototype function.
+    expect(protoCard).toContain('value="1"');
   });
 
   it("localizes P2-80 labels and preserves compact truncation classes across all 6 languages", () => {
