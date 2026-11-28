@@ -6,37 +6,51 @@
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it } from "vitest";
-
-(globalThis as { window?: unknown }).window = {
-  tivano: {
-    platform: "win32",
-    invoke: () => Promise.resolve({ editors: [] }),
-    onEvent: () => () => {},
-  },
-  matchMedia: () => ({ matches: true }),
-  addEventListener: () => {},
-  removeEventListener: () => {},
-};
-(globalThis as { document?: unknown }).document = {
-  documentElement: { dataset: {} },
-  hasFocus: () => true,
-  visibilityState: "visible",
-  addEventListener: () => {},
-  removeEventListener: () => {},
-};
-
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { defaultSettings } from "../src/main/store";
 import { clientStore } from "../src/renderer/client";
 import { ChatView, nextHydraPanelState } from "../src/renderer/components/ChatView";
 import { HydraMark, resolveHydraMarkClick, scheduleHydraAutoIntro } from "../src/renderer/components/HydraMark";
 import { HydraPanel } from "../src/renderer/components/HydraPanel";
 import { LanguageContext } from "../src/renderer/locale";
-import type { ChatThread, LanguageId, Settings, Snapshot } from "../src/shared/types";
+import type { AppInfo, ChatThread, LanguageId, Settings, Snapshot } from "../src/shared/types";
 
+const prevWindow = (globalThis as { window?: unknown }).window;
+const prevDocument = (globalThis as { document?: unknown }).document;
 const prevSnapshot = clientStore.snapshot;
+
+const installDomStubs = (): void => {
+  (globalThis as { window?: unknown }).window = {
+    tivano: {
+      platform: "win32",
+      invoke: () => Promise.resolve({ editors: [] }),
+      onEvent: () => () => {},
+    },
+    matchMedia: () => ({ matches: true }),
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
+  (globalThis as { document?: unknown }).document = {
+    documentElement: { dataset: {} },
+    hasFocus: () => true,
+    visibilityState: "visible",
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
+};
+
+installDomStubs();
+
+beforeEach(() => {
+  installDomStubs();
+});
 
 afterEach(() => {
   clientStore.snapshot = prevSnapshot;
+  if (prevWindow === undefined) delete (globalThis as { window?: unknown }).window;
+  else (globalThis as { window?: unknown }).window = prevWindow;
+  if (prevDocument === undefined) delete (globalThis as { document?: unknown }).document;
+  else (globalThis as { document?: unknown }).document = prevDocument;
 });
 
 const makeLead = (over: Partial<ChatThread> = {}): ChatThread =>
@@ -83,6 +97,27 @@ const makeHead = (
     ...over,
   }) as ChatThread;
 
+const makeSettings = (over: Partial<Settings> = {}): Settings => ({
+  ...defaultSettings(),
+  hydraEnabled: true,
+  hasSeenHydraIntro: true,
+  ...over,
+});
+
+const makeInfo = (): AppInfo => ({
+  appVersion: "0.0.0-test",
+  baselineTag: "v3.0.26",
+  baselineCommit: "0000000",
+  dataRoot: "C:\\synthetic\\data",
+  providerId: "mock",
+  providerLabel: "Mock",
+  mock: true,
+  mode: "mock",
+  realCli: { status: "not-configured" },
+  home: "C:\\synthetic\\home",
+  worktreesDir: "C:\\synthetic\\worktrees",
+});
+
 const renderMark = (
   opts: {
     thread?: ChatThread;
@@ -99,11 +134,7 @@ const renderMark = (
       createElement(HydraMark, {
         thread: opts.thread ?? makeLead(),
         heads: opts.heads ?? [],
-        settings: {
-          hydraEnabled: true,
-          hasSeenHydraIntro: true,
-          ...(opts.settings ?? {}),
-        } as Settings,
+        settings: makeSettings(opts.settings),
         panelHidden: opts.panelHidden ?? false,
         onTogglePanel: () => {},
       }),
@@ -189,13 +220,16 @@ describe("P2-79 Chimera mark and sub-agent panel button", () => {
     const thread = makeLead();
     const active = makeHead("running");
     const archived = makeHead("running", { isArchived: true });
-    clientStore.snapshot = {
+    const snapshot: Snapshot = {
       projects: [],
       threads: [thread, active, archived],
       selectedThreadId: thread.id,
-      activeTurns: {},
-      settings: { hydraEnabled: true, hasSeenHydraIntro: true },
-    } as unknown as Snapshot;
+      settings: makeSettings(),
+      info: makeInfo(),
+      rev: 0,
+      tokenActivity: {},
+    };
+    clientStore.snapshot = snapshot;
 
     const openHtml = renderToStaticMarkup(
       createElement(ChatView, {
@@ -203,11 +237,7 @@ describe("P2-79 Chimera mark and sub-agent panel button", () => {
         threads: [thread, active, archived],
         providerLabel: "Mock",
         mode: "mock",
-        settings: {
-          hydraEnabled: true,
-          hasSeenHydraIntro: true,
-          hydraAutoOpensPanels: true,
-        } as Settings,
+        settings: makeSettings({ hydraAutoOpensPanels: true }),
       }),
     );
     expect(openHtml).toContain('class="hydra-mark chimera"');
@@ -221,11 +251,7 @@ describe("P2-79 Chimera mark and sub-agent panel button", () => {
         threads: [thread, active],
         providerLabel: "Mock",
         mode: "mock",
-        settings: {
-          hydraEnabled: false,
-          hasSeenHydraIntro: true,
-          hydraAutoOpensPanels: false,
-        } as Settings,
+        settings: makeSettings({ hydraEnabled: false, hydraAutoOpensPanels: false }),
       }),
     );
     expect(propsOffHtml).toContain('class="hydra-mark off"');

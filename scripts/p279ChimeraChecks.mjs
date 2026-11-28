@@ -37,6 +37,7 @@ export async function runP279ChimeraChecks({
   instances.push(s);
   const page = await s.app.firstWindow();
   await page.waitForSelector(".sidebar-head", { timeout: 15000 });
+  const priorSettings = (await snap(page)).settings ?? {};
   await page.evaluate(() =>
     window.tivano.invoke("settings:set", {
       language: "en",
@@ -60,6 +61,7 @@ export async function runP279ChimeraChecks({
   const teamOf = (st, leadId) =>
     st.threads.filter((t) => t.hydraHead?.leadId === leadId && !t.isArchived);
 
+  try {
   await page.locator('button[title="New thread"]').click();
   await page.waitForSelector(".chat-head h1", { timeout: 8000 });
   const leadId = (await snap(page)).selectedThreadId;
@@ -210,6 +212,10 @@ export async function runP279ChimeraChecks({
       head2Id,
     );
     await waitSnap((st) => teamOf(st, leadId).every((t) => t.hydraHead.status !== "running"));
+    await page.waitForSelector(".hydra-mark .hydra-mark-badge", {
+      state: "detached",
+      timeout: 5000,
+    });
   }
   verify(
     "P279-E2E-09 stopping running head clears badge to zero while keeping Chimera mark",
@@ -236,6 +242,22 @@ export async function runP279ChimeraChecks({
     (await page.locator(".hydra-mark .hydra-mark-dots").count()) === 1 &&
       (await page.locator(".hydra-mark.chimera").count()) === 0,
   );
+  } finally {
+    try {
+      await page.evaluate(
+        (prev) => window.tivano.invoke("settings:set", prev),
+        {
+          language: priorSettings.language ?? "en",
+          hasSeenHydraIntro: priorSettings.hasSeenHydraIntro === true,
+          hydraEnabled: priorSettings.hydraEnabled !== false,
+          hydraDefaultEnabled: priorSettings.hydraDefaultEnabled !== false,
+          hydraAutoOpensPanels: priorSettings.hydraAutoOpensPanels !== false,
+        },
+      );
+    } catch {
+      // Best-effort restore when closing after an earlier failure.
+    }
+  }
 
   await closeInstance(s.app, s.proc);
 }
