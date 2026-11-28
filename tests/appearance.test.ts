@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Store, emptyStore } from "../src/main/store";
-import { CorruptStoreError, validateStoreFile } from "../src/main/storeDoc";
+import { CorruptStoreError, validateStoreFile, validateStoreHead } from "../src/main/storeDoc";
 import { Engine } from "../src/main/engine";
 import { MockProvider } from "../src/main/mockProvider";
 import { requestValidators } from "../src/shared/ipc";
@@ -283,9 +283,84 @@ describe("P2-62 retired settings migration", () => {
         settings: Record<string, unknown>;
       };
       raw.settings.theme = legacy;
+      delete raw.settings.appearanceMode;
       const migrated = validateStoreFile(raw);
       expect(migrated.settings.theme, legacy).toBe(expectedTheme);
       expect(migrated.settings.appearanceMode, legacy).toBe(expectedMode);
+    }
+  });
+
+  it("carries legacy dark appearances for theme ids kept as accents through both store validators", () => {
+    const validators = [
+      ["head", validateStoreHead],
+      ["file", validateStoreFile],
+    ] as const;
+    for (const theme of [
+      "nord",
+      "claude",
+      "matrix",
+      "everforest",
+      "rosePine",
+      "ayu",
+      "nightOwl",
+      "monokai",
+    ] as const) {
+      for (const [validatorName, validate] of validators) {
+        const raw = JSON.parse(JSON.stringify(emptyStore())) as {
+          settings: Record<string, unknown>;
+        };
+        raw.settings.theme = theme;
+        delete raw.settings.appearanceMode;
+        const migrated = validate(raw);
+        expect(migrated.settings.theme, `${validatorName}:${theme}`).toBe(theme);
+        expect(migrated.settings.appearanceMode, `${validatorName}:${theme}`).toBe("dark");
+      }
+    }
+  });
+
+  it("persists Match System when a fresh store selects a legacy-family accent", () => {
+    const root = freshRoot();
+    const { store, engine } = makeEngine(root);
+    expect(engine.snapshot().settings.appearanceMode).toBe("system");
+    engine.setSettings({ theme: "nord" });
+    store.close();
+
+    const persisted = JSON.parse(readFileSync(join(root, "store.json"), "utf8")) as {
+      settings: Record<string, unknown>;
+    };
+    expect(persisted.settings.appearanceMode).toBe("system");
+
+    const { store: store2, engine: engine2 } = makeEngine(root);
+    expect(store2.recoveredFrom).toBeUndefined();
+    expect(engine2.snapshot().settings.theme).toBe("nord");
+    expect(engine2.snapshot().settings.appearanceMode).toBe("system");
+    store2.close();
+  });
+
+  it("keeps neutral current accents on system appearance and preserves explicit appearanceMode", () => {
+    const validators = [
+      ["head", validateStoreHead],
+      ["file", validateStoreFile],
+    ] as const;
+    for (const theme of ["breeze", "system", "github", "catppuccin"] as const) {
+      for (const [validatorName, validate] of validators) {
+        const raw = JSON.parse(JSON.stringify(emptyStore())) as {
+          settings: Record<string, unknown>;
+        };
+        raw.settings.theme = theme;
+        delete raw.settings.appearanceMode;
+        expect(validate(raw).settings.appearanceMode, `${validatorName}:${theme}`).toBe("system");
+      }
+    }
+    for (const mode of ["system", "light", "dark"] as const) {
+      for (const [validatorName, validate] of validators) {
+        const raw = JSON.parse(JSON.stringify(emptyStore())) as {
+          settings: Record<string, unknown>;
+        };
+        raw.settings.theme = "nord";
+        raw.settings.appearanceMode = mode;
+        expect(validate(raw).settings.appearanceMode, `${validatorName}:explicit-${mode}`).toBe(mode);
+      }
     }
   });
 });
