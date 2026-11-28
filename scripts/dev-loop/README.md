@@ -38,6 +38,15 @@ A second implementer lane powered by **Gemini 4 Hydrogen** via the Antigravity C
 - **Branches and per-lane WIP cap:** Hydrogen uses `nyx/h-<issue>-<slug>` branches while Devin uses `nyx/<issue>-<slug>`. Devin's 3-PR hard WIP cap counts only Devin's own open non-parked `nyx/` PRs (branches not starting with `nyx/h-`), and Devin never works, fixes, or gates `nyx/h-` PRs.
 - **Merging:** the watchdog remains the only merger once both the gate and `nyx/audit` pass on the exact head SHA.
 
+## Cloud lane
+
+An optional Devin Cloud lane driven by `Start-DevinAutopilot.ps1` runs selected issues off-box and hands the resulting branch to the local Devin lane for Windows finishing and gating:
+
+- **Weekly cap and selection:** `-CloudWeeklyCap` defaults to `4` runs per week (`0` disables the cloud lane). Issues are chosen by the owner or the lead with label `lane-cloud`; every other lane skips `lane-cloud` issues until handoff.
+- **Branch-only push and watchdog handoff:** while a cloud run works on issue `<n>`, it holds `C:\tivano\dev-loop\hydrogen\claims\issue-<n>.lock` with `laneId` `cloud` and pushes only branch `nyx/<n>-cloud-<slug>`. The watchdog then opens the PR as the owner, labels the issue `lane-devin`, and deletes the claim lock.
+- **Local Devin finish:** the local Devin CLI lane finishes the `nyx/<n>-cloud-*` PR on Windows (merges `origin/main` if behind, completes the PR body if the cloud run produced none, runs `Invoke-PrePrSelfCheck.ps1 -RunChecks`, fixes Windows failures, pushes, and runs `Invoke-AutopilotGate.ps1`).
+- **State files:** `<Root>\autopilot\cloud-state.json` and `<Root>\autopilot\cloud-runs\`.
+
 ## Parking and revisits
 
 Stuck work never blocks the queue or waits for a person:
@@ -66,6 +75,7 @@ Once no open `nyx-auto` issue remains outside permanently `parked` ones (and `or
 | Label | Meaning |
 | --- | --- |
 | `nyx-auto` (`-Label`) | Marks an open issue for the autonomous loop to pick up. |
+| `lane-cloud` | Chosen by the owner or the lead for the Devin Cloud lane; skipped by every other lane until the watchdog opens the PR and hands it to `lane-devin`. |
 | `audit-followup` | Post-merge audit finding; worked ahead of reopened and remaining parity issues. |
 | `build-break` | Opened by the milestone when `main` build, packaging, or packaged smoke fails; worked through the normal PR path. |
 | `audit-parked` | Set by the independent auditor on a PR it cannot pass; triggers parking in `parked.json`. |
@@ -170,6 +180,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\dev-loop\Get-Loo
 - `<Root>\autopilot\hands-on.json`: last hands-on build commit SHA, prerelease tag/number, and open `hands-on` issue number.
 - `<Root>\autopilot\solo-v3.json`: phase/queue/worked-row state when running `solo-v3.md`.
 - `<Root>\autopilot\watchdog.json`: `lastSyncedSha`, consecutive nudge counter, nudge history, `stuckNotified` flag, `sessionStartedUtc`, `sessionRotations`, and `hungStreak`.
+- `<Root>\autopilot\cloud-state.json`: Devin Cloud lane weekly cap and run tracking state.
+- `<Root>\autopilot\cloud-runs\`: per-run prompts, logs, and outputs for the Devin Cloud lane.
 - `<Root>\autopilot\builds\<tag>\`: external packaging outputs (`pkg\`) and smoke evidence (`smoke\`), never inside a worktree.
 - `<Root>\autopilot\gate\pr-<n>-<timestamp>\`: gate run logs and `failures.md`.
 - `<Root>\autopilot\neon\`: Gemini 4 Neon escalation fixer runs (`pr-<n>-<timestamp>\` with filled prompt, `agy` logs, git status/diff artifacts, and `result.json`) and `health.json` (6-hour non-retryable unavailability cooldown).
