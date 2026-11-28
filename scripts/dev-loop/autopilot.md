@@ -63,6 +63,7 @@ if (-not $ok) {
 
 ## 3. Non-interactive discipline
 
+- **No new repositories or external hosting.** Never create GitHub repositories, gists, forks, releases, Pages sites or any other new GitHub resource, and never push to any repository other than `elijah7x/tivano-windows`. Keep screenshots and other evidence local under the run folder and describe them in the PR body in words (file name, what it shows); do not upload or link them from another repository.
 - Set these variables at the start of every PowerShell command block so no prompt or editor can appear:
   ```powershell
   $env:GIT_TERMINAL_PROMPT='0'; $env:GH_PROMPT_DISABLED='1'; $env:GIT_EDITOR='true'; $env:CI='1'; $env:npm_config_yes='true'
