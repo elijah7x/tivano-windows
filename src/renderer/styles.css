@@ -6847,3 +6847,26 @@ html[data-paused="1"] .welcome-strip-chev {
   font-size: calc(12px + var(--fs-ui-off));
   color: var(--danger, #d64545);
 }
+
+/* P2-73: distinct full-access (exclamationmark.shield) and review (checkmark.seal) icons */
+.runtime-mode-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.status-icon {
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.hydra-review-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-modal .choice {
+  gap: 6px;
+}

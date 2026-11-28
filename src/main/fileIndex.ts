@@ -8,6 +8,7 @@
 // frozen RecentCache contract.
 
 import { readdirSync, statSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import {
   compileMentionIndex,
@@ -74,6 +75,34 @@ function enumerate(directory: string): string[] {
   return out;
 }
 
+async function enumerateAsync(directory: string): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > MAX_DEPTH || out.length >= WALK_CAP) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return; // unreadable directory contributes nothing, never fails
+    }
+    for (const e of entries) {
+      if (out.length >= WALK_CAP) return;
+      if (e.name.startsWith(".")) continue; // skipsHiddenFiles
+      const full = join(dir, e.name);
+      if (e.isDirectory()) {
+        if (SKIP_DIRS.has(e.name)) continue;
+        await walk(full, depth + 1);
+      } else if (e.isFile()) {
+        // POSIX-style relative paths — identical to ls-files output,
+        // and what @-mentions insert on either platform.
+        out.push(relative(directory, full).split("\\").join("/"));
+      }
+    }
+  };
+  await walk(directory, 0);
+  return out;
+}
+
 export class FileIndexService {
   private readonly cache = new Map<
     string,
@@ -131,7 +160,7 @@ export class FileIndexService {
       // A failed git read falls back to the walk, like the frozen
       // `try? await output(...)` yielding enumerate().
     }
-    return enumerate(directory);
+    return enumerateAsync(directory);
   }
 
   /** Test seam: the paths a directory would list without touching the
@@ -146,6 +175,14 @@ export class FileIndexService {
   static exists(directory: string): boolean {
     try {
       return statSync(directory).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  static async existsAsync(directory: string): Promise<boolean> {
+    try {
+      return (await stat(directory)).isDirectory();
     } catch {
       return false;
     }

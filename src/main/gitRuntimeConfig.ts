@@ -25,6 +25,7 @@
 // capability before any Windows Git spawn is attempted (see index.ts).
 
 import { lstatSync, realpathSync } from "node:fs";
+import { lstat, realpath } from "node:fs/promises";
 
 export const GIT_POSIX_EXECUTABLE = "/usr/bin/git";
 
@@ -98,14 +99,51 @@ function standardGitCandidates(source: GitRuntimeSource): string[] {
   return out;
 }
 
+export interface GitRuntimeAsyncFs {
+  /** Real regular file, not a link/junction — false on ANY failure. */
+  existsFile(path: string): Promise<boolean>;
+  /** Physical path (links resolved); throws on failure. */
+  realpath(path: string): Promise<string>;
+}
+
+const defaultAsyncFs: GitRuntimeAsyncFs = {
+  existsFile: async (p) => {
+    try {
+      const st = await lstat(p);
+      return st.isFile() && !st.isSymbolicLink();
+    } catch {
+      return false;
+    }
+  },
+  realpath: (p) => realpath(p),
+};
+
+function candidateSyntaxError(candidate: string): string | null {
+  if (!winIsAbsolute(candidate) || candidate.includes("\0"))
+    return "not an absolute path";
+  if (!/\\git\.exe$/i.test(candidate.replace(/\//g, "\\")))
+    return "must name git.exe";
+  return null;
+}
+
+function pathGitCandidates(source: GitRuntimeSource): string[] {
+  const pathEnv = envValue(source, "PATH");
+  if (!pathEnv) return [];
+  const out: string[] = [];
+  for (const raw of pathEnv.split(";")) {
+    const dir = raw.trim();
+    if (!dir || dir === "." || !winIsAbsolute(dir)) continue;
+    out.push(`${dir.replace(/[\\/]+$/, "")}\\git.exe`);
+  }
+  return out;
+}
+
 function checkCandidate(
   candidate: string,
   fs: GitRuntimeFs,
 ): { ok: true; real: string } | { ok: false; why: string } {
-  if (!winIsAbsolute(candidate) || candidate.includes("\0"))
-    return { ok: false, why: "not an absolute path" };
-  if (!/\\git\.exe$/i.test(candidate.replace(/\//g, "\\")))
-    return { ok: false, why: "must name git.exe" };
+  const syntaxErr = candidateSyntaxError(candidate);
+  if (syntaxErr) return { ok: false, why: syntaxErr };
   if (!fs.existsFile(candidate)) return { ok: false, why: "not a real regular file" };
   try {
     return { ok: true, real: fs.realpath(candidate) };
@@ -113,6 +151,28 @@ function checkCandidate(
     return { ok: false, why: "cannot resolve path" };
   }
 }
+
+async function checkCandidateAsync(
+  candidate: string,
+  fs: GitRuntimeAsyncFs,
+): Promise<{ ok: true; real: string } | { ok: false; why: string }> {
+  const syntaxErr = candidateSyntaxError(candidate);
+  if (syntaxErr) return { ok: false, why: syntaxErr };
+  if (!(await fs.existsFile(candidate))) return { ok: false, why: "not a real regular file" };
+  try {
+    return { ok: true, real: await fs.realpath(candidate) };
+  } catch {
+    return { ok: false, why: "cannot resolve path" };
+  }
+}
+
+const NO_GIT_UNAVAILABLE: GitRuntime = {
+  kind: "unavailable",
+  reason: "no-git",
+  detail:
+    "no Git for Windows executable found (TIVANO_GIT_EXECUTABLE unset; " +
+    "no standard install; no absolute PATH entry contains git.exe)",
+};
 
 /**
  * Resolve the Git executable once. `source` is the main-process
@@ -148,22 +208,46 @@ export function resolveGitExecutable(
   }
 
   // 3. Startup PATH — absolute directories only, literal git.exe lookup.
-  const pathEnv = envValue(source, "PATH");
-  if (pathEnv) {
-    for (const raw of pathEnv.split(";")) {
-      const dir = raw.trim();
-      if (!dir || dir === "." || !winIsAbsolute(dir)) continue;
-      const candidate = `${dir.replace(/[\\/]+$/, "")}\\git.exe`;
-      const r = checkCandidate(candidate, fs);
-      if (r.ok) return { kind: "resolved", executable: r.real, source: "path" };
-    }
+  for (const candidate of pathGitCandidates(source)) {
+    const r = checkCandidate(candidate, fs);
+    if (r.ok) return { kind: "resolved", executable: r.real, source: "path" };
   }
 
-  return {
-    kind: "unavailable",
-    reason: "no-git",
-    detail:
-      "no Git for Windows executable found (TIVANO_GIT_EXECUTABLE unset; " +
-      "no standard install; no absolute PATH entry contains git.exe)",
-  };
+  return NO_GIT_UNAVAILABLE;
+}
+
+/** P2-74: async Git executable probe so startup does not block the main thread. */
+export async function resolveGitExecutableAsync(
+  source: GitRuntimeSource,
+  opts: { platform?: NodeJS.Platform; fs?: Partial<GitRuntimeAsyncFs> } = {},
+): Promise<GitRuntime> {
+  const platform = opts.platform ?? process.platform;
+  if (platform !== "win32")
+    return { kind: "resolved", executable: GIT_POSIX_EXECUTABLE, source: "posix" };
+
+  const fs: GitRuntimeAsyncFs = { ...defaultAsyncFs, ...(opts.fs ?? {}) };
+
+  const explicit = envValue(source, "TIVANO_GIT_EXECUTABLE");
+  if (explicit !== null) {
+    const r = await checkCandidateAsync(explicit, fs);
+    if (!r.ok)
+      return {
+        kind: "unavailable",
+        reason: "git-config-invalid",
+        detail: `TIVANO_GIT_EXECUTABLE is not a usable git.exe (${r.why}): ${explicit}`,
+      };
+    return { kind: "resolved", executable: r.real, source: "env" };
+  }
+
+  for (const candidate of standardGitCandidates(source)) {
+    const r = await checkCandidateAsync(candidate, fs);
+    if (r.ok) return { kind: "resolved", executable: r.real, source: "standard" };
+  }
+
+  for (const candidate of pathGitCandidates(source)) {
+    const r = await checkCandidateAsync(candidate, fs);
+    if (r.ok) return { kind: "resolved", executable: r.real, source: "path" };
+  }
+
+  return NO_GIT_UNAVAILABLE;
 }

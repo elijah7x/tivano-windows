@@ -402,6 +402,58 @@ export function ChatView(props: {
     () => timelineSlice(timelineItems, timelineVisible),
     [timelineItems, timelineVisible],
   );
+  const mdLabels = useMemo<MarkdownLabels>(
+    () => ({
+      copy: t("Copy"),
+      copied: t("Copied"),
+      renderDelegation: delegationCard,
+    }),
+    [t],
+  );
+  const liveTurnId = thread?.turn?.id;
+  const foldedTurnMeta = useMemo(() => {
+    const map = new Map<
+      TurnGroup,
+      {
+        steps: Message[];
+        stepIds: Set<string>;
+        stateLabel: string;
+        stepCount: string;
+        staveStatus: "completed" | "failed" | "stopped";
+      }
+    >();
+    for (const item of windowedItems) {
+      if (item.kind !== "turn" || item.turnId === liveTurnId) continue;
+      const { steps, open } = partitionGroup(item);
+      if (steps.length === 0) continue;
+      const stepIds = new Set(steps.map((m) => m.id));
+      let status: Message["status"] | undefined;
+      for (let i = open.length - 1; i >= 0; i--) {
+        if (open[i]!.role === "assistant") {
+          status = open[i]!.status;
+          break;
+        }
+      }
+      const first = item.messages[0]!;
+      const last = item.messages[item.messages.length - 1]!;
+      const dur = formatDuration(first.ts, last.ts);
+      const stateLabel =
+        status === "error" ? t("Failed after %@", dur)
+        : status === "cancelled" || status === "denied" || status === "interrupted"
+          ? t("Stopped after %@", dur)
+          : t("Worked for %@", dur);
+      const stepCount =
+        steps.length === 1
+          ? t("1 step")
+          : t("%@ steps", String(steps.length));
+      const staveStatus =
+        status === "error" ? "failed"
+        : status === "cancelled" || status === "denied" || status === "interrupted" ? "stopped"
+        : "completed";
+      map.set(item, { steps, stepIds, stateLabel, stepCount, staveStatus });
+    }
+    return map;
+  }, [windowedItems, liveTurnId, t]);
   useEffect(() => {
     setCkpts([]);
     setPreviewTurn(null);
@@ -1075,11 +1127,7 @@ export function ChatView(props: {
                   )}
                 </summary>
                 <div className="plan-body">
-                  {mdFor(m, m.content, {
-                    copy: t("Copy"),
-                    copied: t("Copied"),
-                    renderDelegation: delegationCard,
-                  }, veilFor(m))}
+                  {mdFor(m, m.content, mdLabels, veilFor(m))}
                 </div>
               </details>
             );
@@ -1167,15 +1215,13 @@ export function ChatView(props: {
                 <div className="msg-body">
                   {mdFor(
                     m,
-                    m.content.replaceAll(
-                      `*${INTERRUPTED_MARKER}*`,
-                      `*[${t("interrupted by restart — not resumed")}]*`,
-                    ),
-                    {
-                      copy: t("Copy"),
-                      copied: t("Copied"),
-                      renderDelegation: delegationCard,
-                    },
+                    m.content.includes(INTERRUPTED_MARKER)
+                      ? m.content.replaceAll(
+                          `*${INTERRUPTED_MARKER}*`,
+                          `*[${t("interrupted by restart — not resumed")}]*`,
+                        )
+                      : m.content,
+                    mdLabels,
                     veilFor(m),
                   )}
                 </div>
@@ -1271,26 +1317,10 @@ export function ChatView(props: {
           // page in on scroll-back (frozen TimelineWindow). The windowed
           // slice comes from the memoized items above.
           const renderTurnSteps = (g: TurnGroup): React.ReactNode => {
-            const { steps, open } = partitionGroup(g);
-            if (g.turnId === turn?.id || steps.length === 0)
+            const meta = foldedTurnMeta.get(g);
+            if (!meta)
               return g.messages.map(renderMessage);
-            const stepIds = new Set(steps.map((m) => m.id));
-            const lastAssistant = [...open]
-              .reverse()
-              .find((m) => m.role === "assistant");
-            const first = g.messages[0]!;
-            const last = g.messages[g.messages.length - 1]!;
-            const dur = formatDuration(first.ts, last.ts);
-            const status = lastAssistant?.status;
-            const stateLabel =
-              status === "error" ? t("Failed after %@", dur)
-              : status === "cancelled" || status === "denied" || status === "interrupted"
-                ? t("Stopped after %@", dur)
-                : t("Worked for %@", dur);
-            const stepCount =
-              steps.length === 1
-                ? t("1 step")
-                : t("%@ steps", String(steps.length));
+            const { steps, stepIds, stateLabel, stepCount, staveStatus } = meta;
             const fold = (
               <details
                 key={`fold-${g.turnId}`}
@@ -1304,11 +1334,7 @@ export function ChatView(props: {
                     <HydraStaveBar
                       messages={g.messages}
                       tint="var(--accent)"
-                      status={
-                        status === "error" ? "failed"
-                        : status === "cancelled" || status === "denied" || status === "interrupted" ? "stopped"
-                        : "completed"
-                      }
+                      status={staveStatus}
                     />
                   </span>
                 </summary>
