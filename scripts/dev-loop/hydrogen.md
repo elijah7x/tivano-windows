@@ -77,8 +77,8 @@ Follow the **Gate**, **Independent audit**, **Merge on pass**, and **Escalation 
    Never edit code while the gate is running; wait for its exit code (`0` = pass, `1` = fail, `2` = unavailable).
 2. **Hard stop on gate `pass` (exit `0`):** do NOT edit code or push commits for non-blocking, low, minor, nit, info, or advisory notes from the PR review, GLM-5.4, or `nyx/audit`. Never run `gh pr merge`.
 3. **On gate `fail` (exit `1`):**
-   - Make Hydrogen's first fix round on the same branch (update test counts in the PR body in the same step if tests changed, run `npm run verify`, stop worktree processes, commit with a plain message, push, and re-run `Invoke-AutopilotGate.ps1`). Apply `autopilot.md`'s GLM-5.4 advisory/contradiction rules only to the gate's GLM-5.4 reviewer, never to blocking `nyx/audit` findings.
-   - If the gate still fails after Hydrogen's first fix round (or the same `npm run verify` test fails 3 times in a row), escalate to Gemini 4 Neon via `Invoke-NeonFix.ps1` (step 6 below).
+   - Make Hydrogen's first fix round on the same branch (update test counts in the PR body in the same step if tests changed, run the capped verification from section 4 step 4 (`npm run build`, `npm run typecheck`, `node .\node_modules\vitest\vitest.mjs run --maxWorkers=2`, `node scripts/e2e.mjs`), stop worktree processes, commit with a plain message, push, and re-run `Invoke-AutopilotGate.ps1`). Apply `autopilot.md`'s GLM-5.4 advisory/contradiction rules only to the gate's GLM-5.4 reviewer, never to blocking `nyx/audit` findings.
+   - If the gate still fails after Hydrogen's first fix round (or the same verification test fails 3 times in a row), escalate to Gemini 4 Neon via `Invoke-NeonFix.ps1` (step 6 below).
 4. **On gate `unavailable` (exit `2`):** wait 5 minutes (checking `<Lane STOP>` and `<Shared STOP>`) and retry up to 3 times; if still unavailable, park the PR/issue (section 6).
 5. **Handling `continue PR #<pr>` and `nyx/audit`:**
    - Check PR state, current `headRefOid`, labels, comments, and `gh api repos/elijah7x/tivano-windows/commits/<headSha>/status`.
@@ -88,7 +88,7 @@ Follow the **Gate**, **Independent audit**, **Merge on pass**, and **Escalation 
    - If the current head lacks a passing gate summary: run `Invoke-AutopilotGate.ps1` first.
    - If `nyx/audit` is `failure` or `error` (and not `PARKED` on current head):
      - **PR-body-only block:** edit the PR body with `gh pr edit` and post one `Audit rebuttal:` comment without pushing a code commit, then finish.
-     - **First code/test block:** make Hydrogen's own fix commit (remove stale `audit-parked` label first if present, update PR body test counts if tests changed, run `npm run verify`, stop worktree processes, commit, push, and re-run `Invoke-AutopilotGate.ps1`), OR post one `Audit rebuttal:` comment citing concrete `file:line` / test evidence if the finding is factually wrong.
+     - **First code/test block:** make Hydrogen's own fix commit (remove stale `audit-parked` label first if present, update PR body test counts if tests changed, run the capped verification from section 4 step 4 (`npm run build`, `npm run typecheck`, `node .\node_modules\vitest\vitest.mjs run --maxWorkers=2`, `node scripts/e2e.mjs`), stop worktree processes, commit, push, and re-run `Invoke-AutopilotGate.ps1`), OR post one `Audit rebuttal:` comment citing concrete `file:line` / test evidence if the finding is factually wrong.
      - **Surviving block after Hydrogen's fix round** (same finding `id` or `title`): escalate to Gemini 4 Neon via `Invoke-NeonFix.ps1` (step 6).
    - If the gate passed on the current head and `nyx/audit` is `success`, `pending`, absent, or `arbitration pending`: do not edit code; finish the session.
 6. **Neon escalation (`Invoke-NeonFix.ps1`):**
@@ -100,7 +100,7 @@ Follow the **Gate**, **Independent audit**, **Merge on pass**, and **Escalation 
        -FailuresFile <Lane state dir>\runs\<n>\neon-<k>.md `
        -RunRoot <Lane state dir>\neon
      ```
-   - On `ok` (exit `0`): review `git diff`, remove `audit-parked` if present, run `npm run verify`, stop worktree processes, commit with a plain message (no co-author or model attribution), push, and re-run `Invoke-AutopilotGate.ps1`.
+   - On `ok` (exit `0`): review `git diff`, remove `audit-parked` if present, run the capped verification from section 4 step 4 (`npm run build`, `npm run typecheck`, `node .\node_modules\vitest\vitest.mjs run --maxWorkers=2`, `node scripts/e2e.mjs`), stop worktree processes, commit with a plain message (no co-author or model attribution), push, and re-run `Invoke-AutopilotGate.ps1`.
    - On `no-change` (exit `3`), `unavailable` (exit `2`), or if the 2-run cap is already reached: post one evidence-backed `Audit rebuttal:` if concrete evidence disproves a `nyx/audit` finding; otherwise park the PR/issue (section 6).
 
 ## 6. Parking and finishing the session

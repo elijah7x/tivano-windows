@@ -699,6 +699,16 @@ function Write-HealthOk {
   )
   if (-not (Test-Path -LiteralPath $HealthPath -PathType Leaf)) { return }
   $nowUtc = [DateTimeOffset]::UtcNow
+  # health.json is shared by all lanes: one lane's successful session must not cancel a cooldown
+  # another lane has just recorded (quota or auth), so an unexpired cooldown is left in place.
+  try {
+    $current = Get-Content -LiteralPath $HealthPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    $activeUntil = Parse-DateTimeOffset ([string](Get-JsonProp $current 'cooldownUntil'))
+    if ($null -ne $activeUntil -and $activeUntil -gt $nowUtc) {
+      Write-Log ('session ok, but keeping the shared agy cooldown until ' + $activeUntil.UtcDateTime.ToString('o'))
+      return
+    }
+  } catch { }
   $payload = [ordered]@{
     status = 'ok'
     retryable = $true

@@ -892,6 +892,15 @@ function Test-BlockingPointIsOnlyFlake {
   if ($remainder -match '(?i)(?:\b(?:install|build|typecheck|tsc|e2e|playwright|electron|i18n|zh-hans|translation|localiz(?:e|ation)|license|attribution|secret|credential|screenshot|parity)\b|;\s*also\b|\band\s+also\b|\badditionally\b|\bseparately\b|\bin\s+addition\b)') {
     return $false
   }
+  # Conservative: drop the point only when what remains, after removing the retried tests, is just
+  # a short statement about that test failing. Any longer description may name another defect
+  # in prose, so the point stays blocking.
+  $flakeWords = @('the','a','an','this','that','these','it','its','is','are','was','were','be','been','in','on','at','of','to','for','with','by','and','or','due','when','under','from','test','tests','case','cases','spec','suite','file','unit','vitest','fail','fails','failed','failing','failure','failures','flaky','flake','flakes','intermittent','intermittently','timeout','timeouts','timed','out','times','rerun','retry','passes','pass','passed','pr','gate','run','runs','ci','windows','assertion','assertions','expected','received','error','errors','still','now','again','currently','because','so','must','should','fix','fixed','green','red','not','no')
+  $otherWords = 0
+  foreach ($wm in [regex]::Matches($remainder, '[A-Za-z][A-Za-z\-]{2,}')) {
+    if ($flakeWords -notcontains $wm.Value.ToLowerInvariant()) { $otherWords++ }
+  }
+  if ($otherWords -gt 6) { return $false }
   return $true
 }
 

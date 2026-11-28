@@ -27,7 +27,7 @@ You are a coding agent on a Windows 11 development machine. Pull request {{PR}} 
   - One change does one thing; no unrelated refactoring. Synthetic data only. No local paths, user names, machine names or secrets in code or in the files you write.
 - Fix every blocking point and every new failure listed in {{FAILURES_FILE}}. If a failure is a merge conflict with `main`, run `git fetch origin` and `git merge origin/main` in the worktree (a merge, never a rebase), resolve the conflicts, and re-run the checks.
 - Do not argue in code comments. If you believe a blocking point is wrong, change nothing for it and explain why in `reason` of result.json and in `pr-body.md`, citing code and test evidence.
-- Self-test as before: run `npm run verify` and fix the failures your change causes. A failure that already exists on `origin/main` is not yours to fix; name it in `pr-body.md`.
+- Self-test as before: run `npm run build`, `npm run typecheck`, `node .\node_modules\vitest\vitest.mjs run --maxWorkers=2` and `node scripts/e2e.mjs`, and fix the failures your change causes. A failure that already exists on `origin/main` is not yours to fix; name it in `pr-body.md`.
 
 ## Outputs
 

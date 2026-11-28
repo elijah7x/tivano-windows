@@ -366,6 +366,69 @@ function Invoke-ReconcilePendingSyncPrs {
   return $items
 }
 
+function Add-MissedMergedParityEntries {
+  # Backfill: a crash or write failure between a merge and the watchdog recording its Parity lines
+  # would lose them, so re-read recently merged nyx/ PR bodies and add any line that is neither
+  # pending nor already applied on main (row Notes already carry the '(#<pr>)' tag).
+  param([switch]$IsDryRun)
+  $sinceDate = [DateTime]::UtcNow.AddDays(-3).ToString('yyyy-MM-dd')
+  $res = Invoke-Gh ('pr list -R ' + $Repo + ' --state merged --search ' + (Quote-Argument ('merged:>=' + $sinceDate)) + ' --limit 300 --json number,headRefName,body,mergedAt,mergeCommit')
+  if ($res.exitCode -ne 0) { Write-Log ('backfill: gh pr list failed: ' + (ConvertTo-SingleLine ([string]$res.error) 160)); return }
+  $prs = @()
+  try { $prs = @($res.text | ConvertFrom-Json) } catch { Write-Log 'backfill: unparseable pr list'; return }
+  $parityRes = Invoke-Gh ('api repos/' + $Repo + '/contents/docs/parity.md --jq .content')
+  if ($parityRes.exitCode -ne 0) { Write-Log 'backfill: cannot read docs/parity.md on main; skipping'; return }
+  $parityText = ''
+  try { $parityText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((([string]$parityRes.text) -replace '\s', ''))) } catch { Write-Log 'backfill: cannot decode docs/parity.md'; return }
+  $rowById = @{}
+  foreach ($line in ($parityText -split "`r?`n")) {
+    $m = [regex]::Match($line, '^\s*\|\s*([A-Za-z]+[0-9]*-[0-9]+)\s*\|')
+    if ($m.Success) { $rowById[$m.Groups[1].Value.ToUpperInvariant()] = $line }
+  }
+  $read = Read-JsonFileChecked $script:PendingPath
+  if (-not $read.ok) { Write-Log ('backfill: unreadable parity-pending.json: ' + $read.error); return }
+  $existing = @()
+  if ($read.exists -and $null -ne $read.data) { $existing = @($read.data | Where-Object { $null -ne $_ }) }
+  $known = @{}
+  foreach ($e in $existing) {
+    $k = ([string](Get-JsonProp $e 'pr')) + '|' + ([string](Get-JsonProp $e 'id')).Trim().ToUpperInvariant()
+    $known[$k] = $true
+  }
+  $added = New-Object Collections.Generic.List[object]
+  $allowed = '(?i)^Parity:\s*(P\d+-\d+|W-\d+)\s*->\s*(partial|not started|blocked\s*\([^)\r\n]+\)|n/a\s*\([^)\r\n]+\))\s*$'
+  foreach ($pr in $prs) {
+    $head = [string](Get-JsonProp $pr 'headRefName')
+    if (-not $head.StartsWith('nyx/') -or $head -like 'nyx/parity-sync-*' -or $head -like 'nyx/rebaseline-v*') { continue }
+    $num = 0; try { $num = [int](Get-JsonProp $pr 'number') } catch { continue }
+    $sha = ''; $mc = Get-JsonProp $pr 'mergeCommit'; if ($null -ne $mc) { $sha = [string](Get-JsonProp $mc 'oid') }
+    $mergedAt = [string](Get-JsonProp $pr 'mergedAt')
+    $last = $null
+    foreach ($raw in (([string](Get-JsonProp $pr 'body')) -split "`r?`n")) {
+      $line = $raw.Trim()
+      $m = [regex]::Match($line, $allowed)
+      if ($m.Success) {
+        $id = $m.Groups[1].Value.ToUpperInvariant()
+        $last = $null
+        if ($known.ContainsKey(([string]$num) + '|' + $id)) { continue }
+        if ($rowById.ContainsKey($id) -and $rowById[$id].Contains('(#' + $num + ')')) { continue }
+        $last = [ordered]@{ pr = $num; sha = $sha; id = $id; status = (Normalize-ParityStatus $m.Groups[2].Value); notes = ''; mergedAtUtc = $mergedAt }
+        $null = $added.Add($last)
+        $known[([string]$num) + '|' + $id] = $true
+        continue
+      }
+      $n = [regex]::Match($line, '(?i)^Parity-Notes:\s*(.+?)\s*$')
+      if ($n.Success -and $null -ne $last) { $last['notes'] = $n.Groups[1].Value.Trim(); $last = $null }
+    }
+  }
+  if ($added.Count -eq 0) { return }
+  Write-Log ('backfill: adding ' + $added.Count + ' parity entry(s) from merged PR bodies not yet recorded')
+  if ($IsDryRun) { return }
+  $all = New-Object Collections.Generic.List[object]
+  foreach ($e in $existing) { $null = $all.Add((Convert-PendingEntryToOrdered -Entry $e)) }
+  foreach ($e in $added) { $null = $all.Add($e) }
+  Save-JsonAtomic -Path $script:PendingPath -Object ([object[]]$all.ToArray()) -Depth 6
+}
+
 function Ensure-ParitySyncClone {
   if (-not (Test-Path -LiteralPath (Join-Path $script:RepoDir '.git'))) {
     if ((Test-Path -LiteralPath $script:RepoDir) -and @(Get-ChildItem -LiteralPath $script:RepoDir -Force -ErrorAction SilentlyContinue).Count -gt 0) {
@@ -435,6 +498,8 @@ try {
   $gitCmd = Get-Command -Name 'git' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $gitCmd) { throw 'git was not found on PATH.' }
   $script:GitPath = $gitCmd.Source
+
+  Add-MissedMergedParityEntries -IsDryRun:$DryRun
 
   $pendingRead = Read-JsonFileChecked $script:PendingPath
   if (-not $pendingRead.ok) {
