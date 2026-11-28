@@ -174,7 +174,8 @@ function Test-BaseSummaryReliable {
 
 function Invoke-WithCheckSlot {
   param([scriptblock]$Action, [int]$TimeoutMs = 7200000)
-  $slotCount = 2
+  # One slot by default: concurrent untrusted checks share one standard account and could tamper with each other.
+  $slotCount = 1
   $rawSlots = $env:TIVANO_GATE_CHECK_SLOTS
   if (-not [string]::IsNullOrWhiteSpace($rawSlots)) {
     $parsedSlots = 0
@@ -242,7 +243,7 @@ function Invoke-WithCheckSlot {
 }
 
 function Invoke-WithUntrustedChecksLock {
-  # Cap concurrent untrusted check runs via named slot mutexes (default 2, configurable via TIVANO_GATE_CHECK_SLOTS).
+  # Cap concurrent untrusted check runs via named slot mutexes (default 1; TIVANO_GATE_CHECK_SLOTS=2 opts into two).
   param([scriptblock]$Action)
   return (Invoke-WithCheckSlot -Action $Action -TimeoutMs 7200000)
 }
@@ -419,7 +420,7 @@ function Resolve-BaseCacheRoot {
   }
 }
 
-function Test-DocsOrTestsOnlyFiles {
+function Test-DocsOnlyFiles {
   param([string[]]$Files)
   if ($null -eq $Files -or $Files.Count -eq 0) { return $false }
   foreach ($file in $Files) {
@@ -433,9 +434,8 @@ function Test-DocsOrTestsOnlyFiles {
       if ($seg -eq '..' -or $seg -eq '') { return $false }
     }
     $isDocs = $norm.StartsWith('docs/', [StringComparison]::OrdinalIgnoreCase)
-    $isTests = $norm.StartsWith('tests/', [StringComparison]::OrdinalIgnoreCase)
     $isMarkdown = $norm.EndsWith('.md', [StringComparison]::OrdinalIgnoreCase)
-    if (-not ($isDocs -or $isTests -or $isMarkdown)) {
+    if (-not ($isDocs -or $isMarkdown)) {
       return $false
     }
   }
@@ -1359,7 +1359,7 @@ try {
         $worktrees += $prTree
 
         $changedFiles = @(Get-PrChangedFilesForReview $mergeBase $sha | Where-Object { $_ })
-        $skipE2e = Test-DocsOrTestsOnlyFiles $changedFiles
+        $skipE2e = Test-DocsOnlyFiles $changedFiles
 
         $diffOut = Join-Path $runDir 'diff.patch'
         $diffErr = Join-Path $runDir 'diff.err.log'

@@ -969,7 +969,8 @@ function Invoke-WithGitLock {
 
 function Invoke-WithCheckSlot {
   param([scriptblock]$Action, [int]$TimeoutMs = 7200000)
-  $slotCount = 2
+  # One slot by default: concurrent untrusted checks share one standard account and could tamper with each other.
+  $slotCount = 1
   $rawSlots = $env:TIVANO_GATE_CHECK_SLOTS
   if (-not [string]::IsNullOrWhiteSpace($rawSlots)) {
     $parsedSlots = 0

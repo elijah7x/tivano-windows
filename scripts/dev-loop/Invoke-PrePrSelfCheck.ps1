@@ -661,6 +661,9 @@ function Read-BaselineCache {
   param([string]$Path)
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
   try {
+    # Entries expire after 12 hours so a stale or poisoned baseline is rebuilt.
+    $age = [DateTime]::UtcNow - (Get-Item -LiteralPath $Path).LastWriteTimeUtc
+    if ($age.TotalHours -gt 12 -or $age.TotalHours -lt -1) { return $null }
     $raw = (Read-Utf8 $Path).TrimStart([char]0xFEFF).Trim()
     if (-not $raw.StartsWith('[') -or -not $raw.EndsWith(']')) { return $null }
     $keys = New-Object 'System.Collections.Generic.HashSet[string]'
@@ -906,13 +909,11 @@ function Get-UnitBaseline {
 
       [IO.Directory]::CreateDirectory($script:BaselineRoot) | Out-Null
       $shortSha = $MergeBaseSha.Substring(0, [Math]::Min(8, $MergeBaseSha.Length))
-      $wtDir = Join-Path $script:BaselineRoot ('wt-' + $shortSha)
+      $wtDir = Join-Path $script:BaselineRoot ('wt-' + $shortSha + '-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
       $wtAdded = $false
       try {
         if (Test-Path -LiteralPath $wtDir) {
-          if (-not (Remove-BaselineWorktree $wtDir)) {
-            throw ('could not clean existing baseline worktree: ' + $wtDir)
-          }
+          throw ('baseline worktree path already exists: ' + $wtDir)
         }
         $wtAdd = Invoke-Git @('worktree', 'add', '--detach', '--quiet', $wtDir, $MergeBaseSha)
         if ($wtAdd.code -ne 0) {
@@ -964,7 +965,7 @@ function Get-UnitBaseline {
         Write-Utf8Atomic $cacheFile ($json + "`n")
         return [pscustomobject]@{ ok = $true; keys = $keys; error = '' }
       } finally {
-        if ($wtAdded -or (Test-Path -LiteralPath $wtDir)) {
+        if ($wtAdded) {
           $null = Remove-BaselineWorktree $wtDir
         }
       }
