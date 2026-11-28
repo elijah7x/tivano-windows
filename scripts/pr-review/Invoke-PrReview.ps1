@@ -1,4 +1,4 @@
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-23.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-28.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 # Usage: .\Invoke-PrReview.ps1 -Root <state root outside any git checkout> -Checkout <clone used only for worktrees> -StandardCredentialFile <file> [-TokenFile <file>] [-Reference <macOS baseline clone>] [-BaseCacheRoot <cache dir>] [-DryRun] [-PrNumber <n> [-Force]]
 # One polling pass. Writes a one-line JSON summary to stdout and <Root>\last-run.json, and <run dir>\gate.json per reviewed PR.
@@ -136,8 +136,11 @@ function Invoke-WithNamedMutex {
 function Test-BaseStepsReliable {
   # Reuse a baseline when install, build, typecheck and e2e all passed and unit completed without timeout (124),
   # even if unit exited non-zero, provided vitest.json parses with entries.
-  param($Steps)
+  param($Steps, [bool]$AllowSkippedE2e = $false)
   if ($null -eq $Steps) { return $false }
+  if (-not $AllowSkippedE2e -and $Steps.PSObject.Properties['e2eSkipped'] -and $Steps.e2eSkipped -eq $true) {
+    return $false
+  }
   foreach ($name in @('install', 'build', 'typecheck', 'e2e')) {
     $prop = $Steps.PSObject.Properties[$name]
     if (-not $prop -or $null -eq $prop.Value) { return $false }
@@ -169,10 +172,80 @@ function Test-BaseSummaryReliable {
   return $true
 }
 
+function Invoke-WithCheckSlot {
+  param([scriptblock]$Action, [int]$TimeoutMs = 7200000)
+  # One slot by default: concurrent untrusted checks share one standard account and could tamper with each other.
+  $slotCount = 1
+  $rawSlots = $env:TIVANO_GATE_CHECK_SLOTS
+  if (-not [string]::IsNullOrWhiteSpace($rawSlots)) {
+    $parsedSlots = 0
+    if ([int]::TryParse($rawSlots.Trim(), [ref]$parsedSlots) -and ($parsedSlots -eq 1 -or $parsedSlots -eq 2)) {
+      $slotCount = $parsedSlots
+    }
+  }
+  $mutexes = New-Object Collections.Generic.List[System.Threading.Mutex]
+  $acquiredIndex = -1
+  try {
+    for ($slot = 1; $slot -le $slotCount; $slot++) {
+      $null = $mutexes.Add((New-Object System.Threading.Mutex($false, ('Global\TivanoUntrustedChecks-' + $slot))))
+    }
+    for ($i = 0; $i -lt $mutexes.Count; $i++) {
+      try {
+        if ($mutexes[$i].WaitOne(0)) {
+          $acquiredIndex = $i
+          break
+        }
+      } catch [System.Threading.AbandonedMutexException] {
+        # Previous holder terminated abnormally; ownership now belongs to this process.
+        $acquiredIndex = $i
+        break
+      }
+    }
+    if ($acquiredIndex -lt 0) {
+      [System.Threading.WaitHandle[]]$handles = $mutexes.ToArray()
+      try {
+        $waitIndex = [System.Threading.WaitHandle]::WaitAny($handles, $TimeoutMs)
+        if ($waitIndex -ne [System.Threading.WaitHandle]::WaitTimeout -and $waitIndex -ge 0 -and $waitIndex -lt $handles.Length) {
+          $acquiredIndex = $waitIndex
+        }
+      } catch [System.Threading.AbandonedMutexException] {
+        # Previous holder terminated abnormally; ownership of the abandoned slot now belongs to this process.
+        $abandoned = $_.Exception
+        while ($null -ne $abandoned -and $abandoned -isnot [System.Threading.AbandonedMutexException]) {
+          $abandoned = $abandoned.InnerException
+        }
+        if ($null -ne $abandoned -and $abandoned.MutexIndex -ge 0 -and $abandoned.MutexIndex -lt $handles.Length) {
+          $acquiredIndex = $abandoned.MutexIndex
+        } elseif ($null -ne $abandoned -and $null -ne $abandoned.Mutex) {
+          for ($j = 0; $j -lt $handles.Length; $j++) {
+            if ([object]::ReferenceEquals($handles[$j], $abandoned.Mutex)) {
+              $acquiredIndex = $j
+              break
+            }
+          }
+        }
+      }
+    }
+    if ($acquiredIndex -lt 0) {
+      throw ('Timed out waiting for a check slot (slots=' + $slotCount + ') after ' + [string]([int]($TimeoutMs / 1000)) + 's.')
+    }
+    return (& $Action)
+  } finally {
+    if ($acquiredIndex -ge 0 -and $acquiredIndex -lt $mutexes.Count) {
+      try { $mutexes[$acquiredIndex].ReleaseMutex() } catch { }
+    }
+    foreach ($m in $mutexes) {
+      if ($null -ne $m) {
+        try { $m.Dispose() } catch { }
+      }
+    }
+  }
+}
+
 function Invoke-WithUntrustedChecksLock {
-  # PR code runs under one shared standard account that can modify every active sandbox, so checks of different PRs never overlap.
+  # Cap concurrent untrusted check runs via named slot mutexes (default 1; TIVANO_GATE_CHECK_SLOTS=2 opts into two).
   param([scriptblock]$Action)
-  return (Invoke-WithNamedMutex 'Global\TivanoUntrustedChecks' 7200000 $Action)
+  return (Invoke-WithCheckSlot -Action $Action -TimeoutMs 7200000)
 }
 
 function Invoke-WithStateLock {
@@ -347,12 +420,47 @@ function Resolve-BaseCacheRoot {
   }
 }
 
+function Test-DocsOnlyFiles {
+  param([string[]]$Files)
+  if ($null -eq $Files -or $Files.Count -eq 0) { return $false }
+  foreach ($file in $Files) {
+    if ([string]::IsNullOrWhiteSpace($file)) { return $false }
+    $norm = $file.Trim().Replace('\', '/')
+    while ($norm.StartsWith('./', [StringComparison]::Ordinal)) {
+      $norm = $norm.Substring(2)
+    }
+    if ([string]::IsNullOrWhiteSpace($norm) -or $norm.StartsWith('/', [StringComparison]::Ordinal)) { return $false }
+    foreach ($seg in @($norm -split '/')) {
+      if ($seg -eq '..' -or $seg -eq '') { return $false }
+    }
+    $isDocs = $norm.StartsWith('docs/', [StringComparison]::OrdinalIgnoreCase)
+    $isMarkdown = $norm.EndsWith('.md', [StringComparison]::OrdinalIgnoreCase)
+    if (-not ($isDocs -or $isMarkdown)) {
+      return $false
+    }
+  }
+  return $true
+}
+
+function Get-PrChangedFilesForReview {
+  param([string]$MergeBase, [string]$HeadSha)
+  if ([string]::IsNullOrWhiteSpace($MergeBase) -or [string]::IsNullOrWhiteSpace($HeadSha)) { return @() }
+  $diffRes = Invoke-Git ('-c core.quotepath=false diff --no-renames --name-only ' + $MergeBase + '..' + $HeadSha)
+  if ($diffRes.exitCode -ne 0 -or [string]::IsNullOrWhiteSpace($diffRes.text)) { return @() }
+  $files = New-Object Collections.Generic.List[string]
+  foreach ($line in @($diffRes.text -split "`r?`n")) {
+    $trimmed = $line.Trim()
+    if ($trimmed) { $null = $files.Add($trimmed) }
+  }
+  return [string[]]$files.ToArray()
+}
+
 function Prune-BaseCache {
   param([string]$CacheRoot, [int]$KeepCount = 20)
   if ([string]::IsNullOrWhiteSpace($CacheRoot) -or -not (Test-Path -LiteralPath $CacheRoot -PathType Container)) { return }
   try {
     $entries = @(Get-ChildItem -LiteralPath $CacheRoot -Directory -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -match '^[0-9a-fA-F]{40}$' } |
+      Where-Object { $_.Name -match '^[0-9a-fA-F]{40}(-noe2e)?$' } |
       Sort-Object -Property LastWriteTimeUtc -Descending)
     if ($entries.Count -le $KeepCount) { return }
     for ($i = $KeepCount; $i -lt $entries.Count; $i++) {
@@ -363,56 +471,73 @@ function Prune-BaseCache {
   } catch { }
 }
 
+function Restore-BaseCacheEntry {
+  param([string]$EntryDir, [string]$MergeBase, [string]$ResultsDest, [string]$ChecksDest, [bool]$AllowSkippedE2e)
+  $markerPath = Join-Path $EntryDir 'complete.json'
+  $cachedResults = Join-Path $EntryDir 'results-base'
+  $cachedChecks = Join-Path $EntryDir 'checks-base'
+  if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $false }
+  if (-not (Test-Path -LiteralPath $cachedResults -PathType Container)) { return $false }
+  if (-not (Test-Path -LiteralPath $cachedChecks -PathType Container)) { return $false }
+  $markerText = Read-Text $markerPath
+  if ([string]::IsNullOrWhiteSpace($markerText)) { return $false }
+  $marker = $null
+  try { $marker = $markerText | ConvertFrom-Json } catch { return $false }
+  if ($null -eq $marker -or -not $marker.PSObject.Properties['sha']) { return $false }
+  if ([string]$marker.sha -ne $MergeBase) { return $false }
+  $cachedSteps = $null
+  try { $cachedSteps = Get-Content -LiteralPath (Join-Path $cachedResults 'steps.json') -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
+  $entryE2eSkipped = $false
+  if ($marker.PSObject.Properties['e2eSkipped'] -and $marker.e2eSkipped -eq $true) { $entryE2eSkipped = $true }
+  if ($cachedSteps -and $cachedSteps.PSObject.Properties['e2eSkipped'] -and $cachedSteps.e2eSkipped -eq $true) { $entryE2eSkipped = $true }
+  if ($entryE2eSkipped -and -not $AllowSkippedE2e) { return $false }
+  $cachedSummary = Get-StandardSummary $cachedChecks
+  $cachedVitest = Get-VitestReport (Join-Path $cachedResults 'vitest.json') ''
+  if (-not (Test-BaseStepsReliable $cachedSteps $AllowSkippedE2e) -or -not (Test-BaseSummaryReliable $cachedSummary) -or $null -eq $cachedVitest -or $cachedVitest.map.Count -eq 0) {
+    Remove-Item -LiteralPath $EntryDir -Recurse -Force -ErrorAction SilentlyContinue
+    return $false
+  }
+
+  if (Test-Path -LiteralPath $ResultsDest) { Remove-Item -LiteralPath $ResultsDest -Recurse -Force -ErrorAction Stop }
+  if (Test-Path -LiteralPath $ChecksDest) { Remove-Item -LiteralPath $ChecksDest -Recurse -Force -ErrorAction Stop }
+  [IO.Directory]::CreateDirectory($ResultsDest) | Out-Null
+  [IO.Directory]::CreateDirectory($ChecksDest) | Out-Null
+  Copy-Item -Path (Join-Path $cachedResults '*') -Destination $ResultsDest -Recurse -Force -ErrorAction Stop
+  Copy-Item -Path (Join-Path $cachedChecks '*') -Destination $ChecksDest -Recurse -Force -ErrorAction Stop
+  if (-not (Test-Path -LiteralPath (Join-Path $ResultsDest 'steps.json') -PathType Leaf) -or
+      -not (Test-Path -LiteralPath (Join-Path $ChecksDest 'summary.json') -PathType Leaf)) {
+    throw 'cached base entry is missing steps.json or summary.json'
+  }
+  return $true
+}
+
 function Restore-BaseCache {
-  param([string]$CacheRoot, [string]$MergeBase, [string]$RunDir)
+  param([string]$CacheRoot, [string]$MergeBase, [string]$RunDir, [bool]$AllowSkippedE2e = $false)
   if ([string]::IsNullOrWhiteSpace($CacheRoot)) { return $false }
   if ([string]::IsNullOrWhiteSpace($MergeBase) -or $MergeBase -notmatch '^[0-9a-fA-F]{40}$') { return $false }
   $resultsDest = Join-Path $RunDir 'results-base'
   $checksDest = Join-Path $RunDir 'checks-base'
-  try {
-    $entryDir = Join-Path $CacheRoot $MergeBase
-    $markerPath = Join-Path $entryDir 'complete.json'
-    $cachedResults = Join-Path $entryDir 'results-base'
-    $cachedChecks = Join-Path $entryDir 'checks-base'
-    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $false }
-    if (-not (Test-Path -LiteralPath $cachedResults -PathType Container)) { return $false }
-    if (-not (Test-Path -LiteralPath $cachedChecks -PathType Container)) { return $false }
-    $cachedSteps = $null
-    try { $cachedSteps = Get-Content -LiteralPath (Join-Path $cachedResults 'steps.json') -Raw -ErrorAction Stop | ConvertFrom-Json } catch { }
-    $cachedSummary = Get-StandardSummary $cachedChecks
-    $cachedVitest = Get-VitestReport (Join-Path $cachedResults 'vitest.json') ''
-    if (-not (Test-BaseStepsReliable $cachedSteps) -or -not (Test-BaseSummaryReliable $cachedSummary) -or $null -eq $cachedVitest -or $cachedVitest.map.Count -eq 0) {
-      Remove-Item -LiteralPath $entryDir -Recurse -Force -ErrorAction SilentlyContinue
-      return $false
-    }
-    $markerText = Read-Text $markerPath
-    if ([string]::IsNullOrWhiteSpace($markerText)) { return $false }
-    $marker = $markerText | ConvertFrom-Json
-    if ($null -eq $marker -or -not $marker.PSObject.Properties['sha']) { return $false }
-    if ([string]$marker.sha -ne $MergeBase) { return $false }
-
-    if (Test-Path -LiteralPath $resultsDest) { Remove-Item -LiteralPath $resultsDest -Recurse -Force -ErrorAction Stop }
-    if (Test-Path -LiteralPath $checksDest) { Remove-Item -LiteralPath $checksDest -Recurse -Force -ErrorAction Stop }
-    [IO.Directory]::CreateDirectory($resultsDest) | Out-Null
-    [IO.Directory]::CreateDirectory($checksDest) | Out-Null
-    Copy-Item -Path (Join-Path $cachedResults '*') -Destination $resultsDest -Recurse -Force -ErrorAction Stop
-    Copy-Item -Path (Join-Path $cachedChecks '*') -Destination $checksDest -Recurse -Force -ErrorAction Stop
-    if (-not (Test-Path -LiteralPath (Join-Path $resultsDest 'steps.json') -PathType Leaf) -or
-        -not (Test-Path -LiteralPath (Join-Path $checksDest 'summary.json') -PathType Leaf)) {
-      throw 'cached base entry is missing steps.json or summary.json'
-    }
-    return $true
-  } catch {
-    try {
-      if (Test-Path -LiteralPath $resultsDest) { Remove-Item -LiteralPath $resultsDest -Recurse -Force -ErrorAction SilentlyContinue }
-      if (Test-Path -LiteralPath $checksDest) { Remove-Item -LiteralPath $checksDest -Recurse -Force -ErrorAction SilentlyContinue }
-    } catch { }
-    return $false
+  $candidates = @((Join-Path $CacheRoot $MergeBase))
+  if ($AllowSkippedE2e) {
+    $candidates += (Join-Path $CacheRoot ($MergeBase + '-noe2e'))
   }
+  foreach ($entryDir in $candidates) {
+    try {
+      if (Restore-BaseCacheEntry $entryDir $MergeBase $resultsDest $checksDest $AllowSkippedE2e) {
+        return $true
+      }
+    } catch {
+      try {
+        if (Test-Path -LiteralPath $resultsDest) { Remove-Item -LiteralPath $resultsDest -Recurse -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $checksDest) { Remove-Item -LiteralPath $checksDest -Recurse -Force -ErrorAction SilentlyContinue }
+      } catch { }
+    }
+  }
+  return $false
 }
 
 function Publish-BaseCache {
-  param([string]$CacheRoot, [string]$MergeBase, [string]$ResultsBaseDir, [string]$ChecksBaseDir, [int]$KeepCount = 20)
+  param([string]$CacheRoot, [string]$MergeBase, [string]$ResultsBaseDir, [string]$ChecksBaseDir, [int]$KeepCount = 20, [bool]$E2eSkipped = $false)
   if ([string]::IsNullOrWhiteSpace($CacheRoot)) { return }
   if ([string]::IsNullOrWhiteSpace($MergeBase) -or $MergeBase -notmatch '^[0-9a-fA-F]{40}$') { return }
   if (-not (Test-Path -LiteralPath $ResultsBaseDir -PathType Container)) { return }
@@ -420,9 +545,10 @@ function Publish-BaseCache {
   $tempDir = $null
   try {
     [IO.Directory]::CreateDirectory($CacheRoot) | Out-Null
-    $finalDir = Join-Path $CacheRoot $MergeBase
+    $entryKey = if ($E2eSkipped) { $MergeBase + '-noe2e' } else { $MergeBase }
+    $finalDir = Join-Path $CacheRoot $entryKey
     if (-not (Test-Path -LiteralPath $finalDir -PathType Container)) {
-      $tempDir = Join-Path $CacheRoot ('.tmp-' + $MergeBase + '-' + $script:RunInstanceId)
+      $tempDir = Join-Path $CacheRoot ('.tmp-' + $entryKey + '-' + $script:RunInstanceId)
       $tempResults = Join-Path $tempDir 'results-base'
       $tempChecks = Join-Path $tempDir 'checks-base'
       [IO.Directory]::CreateDirectory($tempResults) | Out-Null
@@ -431,6 +557,7 @@ function Publish-BaseCache {
       Copy-Item -Path (Join-Path $ChecksBaseDir '*') -Destination $tempChecks -Recurse -Force -ErrorAction Stop
       $marker = [ordered]@{
         sha = $MergeBase
+        e2eSkipped = $E2eSkipped
         createdAt = [DateTime]::UtcNow.ToString('o')
       }
       Write-Text (Join-Path $tempDir 'complete.json') ((ConvertTo-Json -InputObject $marker -Depth 3 -Compress) + "`n")
@@ -486,20 +613,40 @@ function Invoke-StandardChecks {
     [string]$ChecksDir,
     [string]$ResultsDir,
     [string]$Worktree,
-    [string]$RunDir
+    [string]$RunDir,
+    [string]$BinDir,
+    [bool]$SkipE2e = $false
   )
-  # Invoke-AsStandardUser takes an argv array, which a powershell.exe -File command line cannot
-  # carry; a generated wrapper in the run dir passes it directly. The wrapper runs as a child
-  # process, so Invoke-AsStandardUser's exit code does not end this run.
+  # Invoke-AsStandardUser runs via a Scheduled Task under the standard account, so process env vars from
+  # Invoke-PrReview.ps1 are not inherited. A read-only per-run cmd wrapper in $BinDir forwards the check env
+  # flags into run-checks.cmd, and the PowerShell wrapper passes the argv array to Invoke-AsStandardUser.
+  $cmdWrapperPath = Join-Path $BinDir ("run-$Label.cmd")
+  $cmdLines = New-Object Collections.Generic.List[string]
+  $null = $cmdLines.Add('@echo off')
+  $null = $cmdLines.Add('rem Generated for one check run by Invoke-PrReview.ps1.')
+  $null = $cmdLines.Add('setlocal DisableDelayedExpansion')
+  if ($SkipE2e) {
+    $null = $cmdLines.Add('set "TIVANO_GATE_SKIP_E2E=1"')
+  } else {
+    $null = $cmdLines.Add('set "TIVANO_GATE_SKIP_E2E="')
+  }
+  $rawWorkers = $env:TIVANO_GATE_VITEST_WORKERS
+  if (-not [string]::IsNullOrWhiteSpace($rawWorkers) -and $rawWorkers.Trim() -match '^[1-9][0-9]*$') {
+    $null = $cmdLines.Add('set "TIVANO_GATE_VITEST_WORKERS=' + $rawWorkers.Trim() + '"')
+  }
+  $null = $cmdLines.Add('call ' + (Quote-Argument $script:RunChecks) + ' "%~1" "%~2"')
+  $null = $cmdLines.Add('exit /b %ERRORLEVEL%')
+  Write-Text $cmdWrapperPath (($cmdLines.ToArray() -join "`r`n") + "`r`n")
+
   $wrapperPath = Join-Path $RunDir ("standard-$Label.ps1")
   $wrapper = @"
-# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-10.
+# Tivano Windows - derived from Tivano (AGPL-3.0), modified 2026-11-28.
 # Droppy Code by Jordy Spruit (Droppy), https://getdroppycode.app
 # Generated for one run by Invoke-PrReview.ps1.
 `$ErrorActionPreference = 'Stop'
 `$Code = 0
 try {
-  & $(ConvertTo-PsLiteral $script:StandardScript) -CredentialFile $(ConvertTo-PsLiteral $StandardCredentialFile) -Evidence $(ConvertTo-PsLiteral $ChecksDir) -Command $(ConvertTo-PsLiteral $script:CmdExe) -Arguments @('/d', '/c', $(ConvertTo-PsLiteral $script:RunChecks), $(ConvertTo-PsLiteral $Worktree), $(ConvertTo-PsLiteral $ResultsDir)) -WorkingDirectory $(ConvertTo-PsLiteral $Worktree) -TimeoutSec 5400
+  & $(ConvertTo-PsLiteral $script:StandardScript) -CredentialFile $(ConvertTo-PsLiteral $StandardCredentialFile) -Evidence $(ConvertTo-PsLiteral $ChecksDir) -Command $(ConvertTo-PsLiteral $script:CmdExe) -Arguments @('/d', '/c', $(ConvertTo-PsLiteral $cmdWrapperPath), $(ConvertTo-PsLiteral $Worktree), $(ConvertTo-PsLiteral $ResultsDir)) -WorkingDirectory $(ConvertTo-PsLiteral $Worktree) -TimeoutSec 5400
   `$Code = [int]`$LASTEXITCODE
 } catch {
   [Console]::Error.WriteLine(`$_.Exception.Message)
@@ -531,13 +678,25 @@ function Write-ChecksSummary {
   $null = $lines.Add('')
   $null = $lines.Add('Checks run only under the isolated standard account; nothing here ran as the operating account. A `missing` value means that run did not produce results.')
   $null = $lines.Add('')
+  $baseE2eSkipped = [bool]($StepsBase -and $StepsBase.PSObject.Properties['e2eSkipped'] -and $StepsBase.e2eSkipped -eq $true)
+  $prE2eSkipped = [bool]($StepsPr -and $StepsPr.PSObject.Properties['e2eSkipped'] -and $StepsPr.e2eSkipped -eq $true)
+  if ($baseE2eSkipped -or $prE2eSkipped) {
+    $null = $lines.Add('Note: e2e skipped (docs/tests-only change).')
+    $null = $lines.Add('')
+  }
   $null = $lines.Add('| Step | base | pr |')
   $null = $lines.Add('| --- | --- | --- |')
   foreach ($step in @('install', 'build', 'typecheck', 'unit', 'e2e')) {
     $baseValue = 'missing'
     $prValue = 'missing'
-    if ($StepsBase -and $StepsBase.PSObject.Properties[$step]) { $baseValue = if ($null -eq $StepsBase.$step) { 'not run' } else { [string]$StepsBase.$step } }
-    if ($StepsPr -and $StepsPr.PSObject.Properties[$step]) { $prValue = if ($null -eq $StepsPr.$step) { 'not run' } else { [string]$StepsPr.$step } }
+    if ($StepsBase -and $StepsBase.PSObject.Properties[$step]) {
+      $baseValue = if ($null -eq $StepsBase.$step) { 'not run' } else { [string]$StepsBase.$step }
+      if ($step -eq 'e2e' -and $baseE2eSkipped) { $baseValue += ' (skipped)' }
+    }
+    if ($StepsPr -and $StepsPr.PSObject.Properties[$step]) {
+      $prValue = if ($null -eq $StepsPr.$step) { 'not run' } else { [string]$StepsPr.$step }
+      if ($step -eq 'e2e' -and $prE2eSkipped) { $prValue += ' (skipped)' }
+    }
     $null = $lines.Add('| ' + $step + ' | ' + $baseValue + ' | ' + $prValue + ' |')
   }
   $null = $lines.Add('')
@@ -621,10 +780,14 @@ function Get-StepRecord {
     $values[$step] = $null
     if ($Steps -and $Steps.PSObject.Properties[$step] -and $null -ne $Steps.$step) { $values[$step] = [int]$Steps.$step }
   }
-  return [pscustomobject]@{
+  $rec = [ordered]@{
     install = $values['install']; build = $values['build']; typecheck = $values['typecheck']
     unit = $values['unit']; e2e = $values['e2e']
   }
+  if ($Steps -and $Steps.PSObject.Properties['e2eSkipped'] -and $Steps.e2eSkipped -eq $true) {
+    $rec['e2eSkipped'] = $true
+  }
+  return [pscustomobject]$rec
 }
 
 # Loose check of the agent's verdict.json: anything missing, stale or malformed gives $null,
@@ -1065,6 +1228,10 @@ try {
     $standardPath = Get-AcceptancePath $script:StandardScript
     if (-not (Test-Path -LiteralPath $standardPath -PathType Leaf)) { throw 'Invoke-AsStandardUser.ps1 is missing; keep scripts\pr-review next to scripts\windows-acceptance.' }
     if (-not (Test-Path -LiteralPath $script:RunChecks -PathType Leaf)) { throw 'run-checks.cmd is missing.' }
+    $script:RunChecks = Get-AcceptancePath $script:RunChecks
+    if ($script:RunChecks.Contains('%') -or $script:RunChecks.Contains('"') -or $script:RunChecks.Contains("`r") -or $script:RunChecks.Contains("`n")) {
+      throw 'run-checks.cmd path cannot contain percent signs, quotes or newlines.'
+    }
     $referencePath = $null
     if ($Reference) {
       $referencePath = Get-AcceptancePath $Reference
@@ -1180,7 +1347,9 @@ try {
         # Only <run>\sandbox is writable by the standard account. Review inputs, wrappers,
         # copied results and the agent's output stay in the operator-only run dir.
         $sandbox = Join-Path $runDir 'sandbox'
+        $binDir = Join-Path $runDir 'bin'
         [IO.Directory]::CreateDirectory($sandbox) | Out-Null
+        [IO.Directory]::CreateDirectory($binDir) | Out-Null
         $prTree = Join-Path $sandbox ('pr-' + $number + '-' + $script:RunInstanceId)
         $baseTree = Join-Path $sandbox ('base-' + $number + '-' + $script:RunInstanceId)
         $addPr = Invoke-WithGitLock {
@@ -1188,6 +1357,9 @@ try {
         }
         if ($addPr.exitCode -ne 0) { throw ('git worktree add (pr) failed: ' + $addPr.error) }
         $worktrees += $prTree
+
+        $changedFiles = @(Get-PrChangedFilesForReview $mergeBase $sha | Where-Object { $_ })
+        $skipE2e = Test-DocsOnlyFiles $changedFiles
 
         $diffOut = Join-Path $runDir 'diff.patch'
         $diffErr = Join-Path $runDir 'diff.err.log'
@@ -1221,6 +1393,9 @@ try {
         $listCode = Invoke-Tool $icacls ((Quote-Argument $runDir) + ' /grant "*' + $standardSid + ':(RX)"') `
           (Join-Path $runDir 'acl-list.out.log') (Join-Path $runDir 'acl-list.err.log')
         if ($listCode -ne 0) { throw ('icacls could not let the standard account list the run directory: ' + (Get-Tail (Join-Path $runDir 'acl-list.err.log') 5)) }
+        $binAclCode = Invoke-Tool $icacls ((Quote-Argument $binDir) + ' /grant "*' + $standardSid + ':(OI)(CI)RX"') `
+          (Join-Path $runDir 'acl-bin.out.log') (Join-Path $runDir 'acl-bin.err.log')
+        if ($binAclCode -ne 0) { throw ('icacls could not grant the standard account Read/Execute on the run bin directory: ' + (Get-Tail (Join-Path $runDir 'acl-bin.err.log') 5)) }
         $aclCode = Invoke-Tool $icacls `
           ((Quote-Argument $sandbox) + ' /grant "*' + $standardSid + ':(OI)(CI)M"') `
           (Join-Path $runDir 'acl.out.log') (Join-Path $runDir 'acl.err.log')
@@ -1232,7 +1407,7 @@ try {
         $resultsPr = Join-Path $runDir 'results-pr'
         $checksBaseOut = Join-Path $runDir 'checks-base'
 
-        $baseCacheHit = Restore-BaseCache $resolvedBaseCacheRoot $mergeBase $runDir
+        $baseCacheHit = Restore-BaseCache $resolvedBaseCacheRoot $mergeBase $runDir $skipE2e
         if ($baseCacheHit) {
           $mergeBase7 = $mergeBase
           if ($mergeBase7.Length -ge 7) { $mergeBase7 = $mergeBase7.Substring(0, 7) }
@@ -1252,7 +1427,7 @@ try {
           $worktrees += $baseTree
           # Base runs first and its results are copied out before any PR code runs.
           $standardBase = Invoke-WithUntrustedChecksLock {
-            $r = Invoke-StandardChecks 'base' $checksBase (Join-Path $sandbox 'results-base') $baseTree $runDir
+            $r = Invoke-StandardChecks 'base' $checksBase (Join-Path $sandbox 'results-base') $baseTree $runDir $binDir $skipE2e
             Copy-RunOutput (Join-Path $sandbox 'results-base') $resultsBase | Out-Null
             Copy-RunOutput $checksBase $checksBaseOut | Out-Null
             $r
@@ -1261,13 +1436,14 @@ try {
         $standardBase.summary = Get-StandardSummary $checksBaseOut
         $stepsBase = Get-Steps (Join-Path $resultsBase 'steps.json')
         $reportBase = Get-VitestReport (Join-Path $resultsBase 'vitest.json') $baseTree
+        $baseE2eSkipped = [bool]($stepsBase -and $stepsBase.PSObject.Properties['e2eSkipped'] -and $stepsBase.e2eSkipped -eq $true)
         if (-not $baseCacheHit -and (Test-BaseSummaryReliable $standardBase.summary) -and $null -ne $stepsBase -and
-            (Test-BaseStepsReliable $stepsBase) -and $null -ne $reportBase -and $reportBase.map.Count -gt 0) {
-          Publish-BaseCache $resolvedBaseCacheRoot $mergeBase $resultsBase $checksBaseOut 20
+            (Test-BaseStepsReliable $stepsBase $baseE2eSkipped) -and $null -ne $reportBase -and $reportBase.map.Count -gt 0) {
+          Publish-BaseCache $resolvedBaseCacheRoot $mergeBase $resultsBase $checksBaseOut 20 $baseE2eSkipped
         }
 
         $standardPr = Invoke-WithUntrustedChecksLock {
-          $r = Invoke-StandardChecks 'pr' $checksPr (Join-Path $sandbox 'results-pr') $prTree $runDir
+          $r = Invoke-StandardChecks 'pr' $checksPr (Join-Path $sandbox 'results-pr') $prTree $runDir $binDir $skipE2e
           Copy-RunOutput (Join-Path $sandbox 'results-pr') $resultsPr | Out-Null
           Copy-RunOutput $checksPr (Join-Path $runDir 'checks-pr') | Out-Null
           $r
@@ -1357,12 +1533,14 @@ try {
           }
         }
 
+        $prE2eSkipped = [bool]($stepsPr -and $stepsPr.PSObject.Properties['e2eSkipped'] -and $stepsPr.e2eSkipped -eq $true)
         $gate = [ordered]@{
           prNumber = $number
           headSha = $sha
           baseSha = $mergeBase
           pr = (Get-StepRecord $stepsPr)
           base = (Get-StepRecord $stepsBase)
+          e2eSkipped = $prE2eSkipped
           unitComparison = $comparison.comparison
           newFailures = @($comparison.newFailures)
           fixed = @($comparison.fixed)
