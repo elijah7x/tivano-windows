@@ -400,7 +400,7 @@ export function Sidebar(props: {
       ungrouped: nestHelpers(frozenOrder(ungrouped.filter(matchThread))),
       archived,
     };
-  }, [snapshot, q]);
+  }, [snapshot.projects, snapshot.threads, q]);
 
   const pendingProjectId = pendingProjectDelete?.projectId ?? null;
   const pendingProject = useMemo(

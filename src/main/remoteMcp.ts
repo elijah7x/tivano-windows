@@ -6,6 +6,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFile, rename } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { join } from "node:path";
@@ -247,7 +248,11 @@ function isValidRedirect(uri: string): boolean {
 /** OAuth 2.1 authorization authority + persisted grant store (`remote-mcp.json`). */
 export class RemoteMcpAuthority {
   private readonly statePath: string;
-  private state: PersistedState;
+  private state: PersistedState = { clients: [], grants: [] };
+  private loaded = false;
+  private loadPromise: Promise<void> | null = null;
+  private loadInFlight = false;
+  private pendingPersistAfterLoad = false;
   private base = "";
   private pending = new Map<string, PendingEntry>();
   private codes = new Map<string, CodeEntry>();
@@ -259,9 +264,41 @@ export class RemoteMcpAuthority {
     dataRoot: string,
     private readonly onChanged: () => void,
     private readonly getLanguage: () => LanguageId = () => "en",
+    opts?: { deferLoad?: boolean },
   ) {
     this.statePath = join(dataRoot, "remote-mcp.json");
+    if (!opts?.deferLoad) {
+      this.state = this.loadState();
+      this.loaded = true;
+    }
+  }
+
+  /** P2-74: load persisted OAuth grants/clients off the critical startup path. */
+  ensureLoaded(): Promise<void> {
+    if (this.loaded) return Promise.resolve();
+    if (this.loadPromise) return this.loadPromise;
+    this.loadInFlight = true;
+    this.loadPromise = this.loadStateAsync()
+      .then((loaded) => {
+        if (!this.loaded) {
+          this.state = loaded;
+          this.loaded = true;
+        }
+      })
+      .finally(() => {
+        this.loadInFlight = false;
+        if (this.pendingPersistAfterLoad) {
+          this.pendingPersistAfterLoad = false;
+          this.persist();
+        }
+      });
+    return this.loadPromise;
+  }
+
+  private ensureLoadedSync(): void {
+    if (this.loaded) return;
     this.state = this.loadState();
+    this.loaded = true;
   }
 
   private get resourceUrl(): string {
@@ -300,6 +337,7 @@ export class RemoteMcpAuthority {
   }
 
   revoke(grantId: string): void {
+    this.ensureLoadedSync();
     this.state.grants = this.state.grants.filter((g) => g.id !== grantId);
     for (const [k, v] of this.accessTokens) {
       if (v.grantId === grantId) this.accessTokens.delete(k);
@@ -309,6 +347,7 @@ export class RemoteMcpAuthority {
   }
 
   revokeAll(): void {
+    this.ensureLoadedSync();
     this.state.grants = [];
     this.accessTokens.clear();
     this.codes.clear();
@@ -796,9 +835,8 @@ export class RemoteMcpAuthority {
     if (dropped) this.onChanged();
   }
 
-  private loadState(): PersistedState {
+  private parseStateText(raw: string): PersistedState | null {
     try {
-      const raw = readFileSync(this.statePath, "utf8");
       const parsed = JSON.parse(raw) as Partial<PersistedState>;
       if (
         typeof parsed === "object" &&
@@ -808,6 +846,16 @@ export class RemoteMcpAuthority {
       ) {
         return { clients: parsed.clients, grants: parsed.grants };
       }
+    } catch {
+      /* invalid JSON */
+    }
+    return null;
+  }
+
+  private loadState(): PersistedState {
+    try {
+      const parsed = this.parseStateText(readFileSync(this.statePath, "utf8"));
+      if (parsed) return parsed;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return { clients: [], grants: [] };
     }
@@ -819,7 +867,26 @@ export class RemoteMcpAuthority {
     return { clients: [], grants: [] };
   }
 
+  private async loadStateAsync(): Promise<PersistedState> {
+    try {
+      const parsed = this.parseStateText(await readFile(this.statePath, "utf8"));
+      if (parsed) return parsed;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return { clients: [], grants: [] };
+    }
+    try {
+      await rename(this.statePath, `${this.statePath}.${randomUUID()}.corrupt`);
+    } catch {
+      /* leave untouched if quarantine rename fails */
+    }
+    return { clients: [], grants: [] };
+  }
+
   private persist(): void {
+    if (this.loadInFlight) {
+      this.pendingPersistAfterLoad = true;
+      return;
+    }
     const tmp = `${this.statePath}.${randomUUID()}.tmp`;
     writeFileSync(tmp, JSON.stringify(this.state), { encoding: "utf8", mode: 0o600 });
     renameSync(tmp, this.statePath);
@@ -1260,14 +1327,23 @@ export class RemoteMcpService {
       dataRoot: string;
       appVersion: string;
       onChanged?: (status: RemoteMcpStatus) => void;
+      deferLoad?: boolean;
     },
   ) {
     this.authority = new RemoteMcpAuthority(
       opts.dataRoot,
       () => this.notify(),
       () => this.opts.engine.snapshot().settings.language ?? "en",
+      { deferLoad: opts.deferLoad === true },
     );
     this.endpoint = new RemoteMcpEndpoint(opts.localControl, opts.appVersion);
+  }
+
+  whenSettled(): Promise<void> {
+    return this.queue.then(
+      () => {},
+      () => {},
+    );
   }
 
   get port(): number {
@@ -1323,6 +1399,7 @@ export class RemoteMcpService {
   async refresh(forceRestart = false): Promise<void> {
     const run = async () => {
       try {
+        await this.authority.ensureLoaded();
         const s = this.opts.engine.snapshot().settings;
         if ((s.remoteMCPPort ?? 0) === 0 && !this.disposed && !this.opts.engine.readOnly) {
           const picked = await pickFreePort();
