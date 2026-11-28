@@ -56,6 +56,18 @@ const vChimeraPick = vObject({
   model: vOptional(vNonEmptyString(200)),
   effort: vOptional(vNonEmptyString(100)),
 });
+const vChimeraCastingPicks: Validator<Record<string, import("./chimera").ChimeraPick | null>> = (v) => {
+  if (typeof v !== "object" || v === null || Array.isArray(v))
+    throw new ValidationError("expected object");
+  const entries = Object.entries(v as Record<string, unknown>);
+  if (entries.length > 32) throw new ValidationError("too many casting picks");
+  const out: Record<string, import("./chimera").ChimeraPick | null> = {};
+  for (const [key, val] of entries) {
+    if (!key || key.length > 120) throw new ValidationError("bad casting row id");
+    out[key] = val === null ? null : vChimeraPick(val);
+  }
+  return out;
+};
 const vChimeraPreset = vObject({
   id: vNonEmptyString(120),
   name: vOptional(vMaxString(200)),
@@ -281,6 +293,7 @@ export const REQUEST_CHANNELS = [
   "hydra:catalog",
   "hydra:stop",
   "hydra:continue",
+  "hydra:confirm-casting",
   "threads:set-model",
   "questions:answer",
   "followUps:enqueue",
@@ -743,6 +756,11 @@ export const requestValidators = {
   // P1-35: continue a failed or stopped head in its own session/copy
   // (frozen continueFailedHydraHead).
   "hydra:continue": vObject({ threadId: vId }),
+  // P2-76: confirm or skip adaptive roles waiting for model assignment.
+  "hydra:confirm-casting": vObject({
+    threadId: vId,
+    picks: vChimeraCastingPicks,
+  }),
   "threads:set-model": vObject({
     threadId: vId,
     model: vNullable(vNonEmptyString(200)),
@@ -862,6 +880,13 @@ type AppEventPayload =
       chime: boolean;
       notify: "done" | "stopped" | "failed" | null;
       silent: boolean;
+    }
+  | {
+      /** P2-76 / frozen AppModel.threadNeedsAttention: emitted when a thread
+       *  enters user attention (approval, question, or adaptive casting). */
+      type: "attention-signal";
+      threadId: string;
+      reason: "approval" | "question" | "casting";
     }
   | { type: "sleep-prevention-changed"; active: boolean }
   | {

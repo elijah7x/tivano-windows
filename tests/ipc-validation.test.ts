@@ -552,3 +552,41 @@ describe("threads:predict-next payload (P2-01)", () => {
       );
   });
 });
+
+describe("hydra:confirm-casting payload (P2-76)", () => {
+  const uuid = "123e4567-e89b-42d3-a456-426614174000";
+  it("accepts threadId with model picks, skips (null), and Send none ({})", () => {
+    const empty = requestValidators["hydra:confirm-casting"]({ threadId: uuid, picks: {} });
+    expect(empty.threadId).toBe(uuid);
+    expect(empty.picks).toEqual({});
+
+    const populated = requestValidators["hydra:confirm-casting"]({
+      threadId: uuid,
+      picks: {
+        row1: { provider: "codex", model: "gpt-5", effort: "high" },
+        row2: null,
+        row3: {},
+      },
+    });
+    expect(populated.picks.row1).toEqual({ provider: "codex", model: "gpt-5", effort: "high" });
+    expect(populated.picks.row2).toBeNull();
+  });
+
+  it("rejects malformed threadId, non-object picks, or invalid pick values", () => {
+    for (const bad of [
+      {},
+      { threadId: "bad", picks: {} },
+      { threadId: uuid },
+      { threadId: uuid, picks: "none" },
+      { threadId: uuid, picks: { "": {} } },
+      { threadId: uuid, picks: { row1: { provider: 123 } } },
+      { threadId: uuid, picks: { row1: { model: 42 } } },
+      { threadId: uuid, picks: { row1: { extra: "nope" } } },
+      { threadId: uuid, picks: {}, extra: 1 },
+    ]) {
+      expect(() => requestValidators["hydra:confirm-casting"](bad), JSON.stringify(bad)).toThrow(
+        ValidationError,
+      );
+    }
+  });
+});

@@ -2144,4 +2144,16 @@ export const ja: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "これにより %lld 件のチャット（他のプロジェクトの関連サブエージェントおよびヘルパーを含む）が完全に削除されます。プロジェクトのソースファイルは削除されません。",
   "Remove project": "プロジェクトを削除",
+  // P2-76
+  "Needs attention": "要確認",
+  "Assign models": "モデルを割り当て",
+  "%d roles waiting for a model": "%d 個のロールがモデル未指定です",
+  "Pick a model for each role. Nothing starts until you send.": "各ロールのモデルを選択してください。送信するまで開始されません。",
+  "Send none": "派遣しない",
+  "Send 1": "1 個派遣",
+  "Send %d": "%d 個派遣",
+  "Send %@": "%@ を派遣",
+  "Waiting for your decision.": "判断を待っています。",
+  "Skipped sub-agent roles: %@": "スキップされたサブエージェントの役割：%@",
+  "Every sub-agent role was skipped.": "すべてのサブエージェントの役割がスキップされました。",
 };

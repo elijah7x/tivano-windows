@@ -2144,4 +2144,16 @@ export const zhHant: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "這將永久刪除 %lld 個對話，包含關聯至其他專案的子代理與助手。專案原始檔不會被刪除。",
   "Remove project": "移除專案",
+  // P2-76
+  "Needs attention": "需要注意",
+  "Assign models": "指派模型",
+  "%d roles waiting for a model": "%d 個角色正在等待指定模型",
+  "Pick a model for each role. Nothing starts until you send.": "為每個角色選擇模型，送出後才會開始執行。",
+  "Send none": "都不派",
+  "Send 1": "派出 1 個",
+  "Send %d": "派出 %d 個",
+  "Send %@": "派出 %@",
+  "Waiting for your decision.": "等待你的決定。",
+  "Skipped sub-agent roles: %@": "已略過的子代理角色：%@",
+  "Every sub-agent role was skipped.": "已略過全部子代理角色。",
 };

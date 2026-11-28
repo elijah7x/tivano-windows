@@ -690,3 +690,217 @@ describe("StreamVeil (A84)", () => {
     expect(out.match(/md-veil/g)?.length).toBe(1);
   });
 });
+
+import { threadNeedsAttention } from "../src/shared/skylight";
+import { ChimeraCastingCard } from "../src/renderer/components/ChimeraCastingCard";
+
+describe("P2-76 model-assignment wait surfaces", () => {
+  const casting = {
+    batchId: "batch-1",
+    rows: [
+      { id: "r1", role: "Scout", task: "Inspect core" },
+      { id: "r2", role: "Builder", task: "Patch bug" },
+    ],
+  };
+
+  it("treats chimeraCasting as question-grade attention for weather and sidebar", () => {
+    const waiting = thread({
+      id: "lead-wait",
+      title: "Waiting lead",
+      updatedAt: 10,
+      chimeraCasting: casting,
+    });
+    const secondWait = thread({
+      id: "lead-wait-2",
+      title: "Second waiting lead",
+      updatedAt: 20,
+      chimeraCasting: {
+        batchId: "batch-2",
+        rows: [{ id: "r3", role: "Reviewer", task: "Check diff" }],
+      },
+    });
+    const idle = thread({ id: "idle-1", title: "Idle thread", updatedAt: 30 });
+
+    expect(threadNeedsAttention(waiting)).toBe(true);
+    expect(threadNeedsAttention(idle)).toBe(false);
+    expect(threadActivityStatus(waiting)).toBe("question");
+
+    const globalSnap = resolveGlobalWeatherSnapshot([waiting, idle]);
+    expect(globalSnap.kind).toBe("awaiting");
+    expect(globalSnap.awaiting).toBe(1);
+    expect(portholeWeatherFromSnapshot(globalSnap).kind).toBe("awaiting");
+
+    const makeSnapshot = (threads: ChatThread[]): Snapshot => ({
+      projects: [],
+      threads,
+      settings: { theme: "system", language: "en", alwaysAllow: [] },
+      selectedThreadId: null,
+      info: baseInfo,
+      rev: 1,
+      tokenActivity: {},
+    });
+
+    const sidebarWithWait = renderInLang(
+      "en",
+      createElement(Sidebar, {
+        snapshot: makeSnapshot([waiting, secondWait, idle]),
+        onOpenSettings: () => {},
+        onOpenPalette: () => {},
+      }),
+    );
+    expect(sidebarWithWait).toContain("attention-group");
+    expect(sidebarWithWait).toContain("Needs attention");
+    expect(sidebarWithWait).toContain("dot question");
+    expect(sidebarWithWait).toContain("Awaiting your answer");
+
+    // Clearing the first casting still keeps secondWait in Needs attention;
+    // clearing both drops the section cleanly.
+    const clearedOne = renderInLang(
+      "en",
+      createElement(Sidebar, {
+        snapshot: makeSnapshot([thread({ id: "lead-wait", title: "Waiting lead" }), secondWait, idle]),
+        onOpenSettings: () => {},
+        onOpenPalette: () => {},
+      }),
+    );
+    expect(clearedOne).toContain("Needs attention");
+
+    const clearedAll = renderInLang(
+      "en",
+      createElement(Sidebar, {
+        snapshot: makeSnapshot([idle]),
+        onOpenSettings: () => {},
+        onOpenPalette: () => {},
+      }),
+    );
+    expect(clearedAll).not.toContain("Needs attention");
+    expect(clearedAll).not.toContain("attention-group");
+
+    // Staying on question when casting clears while a question remains pending.
+    const questionAlsoPending = thread({
+      id: "lead-q",
+      title: "Question lead",
+      turn: {
+        status: "running",
+        question: { providerKey: "q1", status: "pending", questions: [] },
+      } as unknown as ChatThread["turn"],
+    });
+    expect(threadNeedsAttention(questionAlsoPending)).toBe(true);
+    expect(threadActivityStatus(questionAlsoPending)).toBe("question");
+
+    const cardHtml = renderInLang(
+      "en",
+      createElement(ChimeraCastingCard, {
+        threadId: "lead-wait",
+        casting,
+        mode: "mock",
+      }),
+    );
+    expect(cardHtml).toContain("Assign models");
+    expect(cardHtml).toContain("2 roles waiting for a model");
+    expect(cardHtml).toContain("Send none");
+    expect(cardHtml).toContain("Send 2");
+  });
+
+  it("fires ClientStore OS notification for attention-signal only when thread is unseen", () => {
+    const notifications: Array<{ title: string; opts: NotificationOptions | undefined }> = [];
+    const origNotification = (globalThis as { Notification?: unknown }).Notification;
+    class FakeNotification {
+      static permission = "granted";
+      onclick: (() => void) | null = null;
+      constructor(title: string, opts?: NotificationOptions) {
+        notifications.push({ title, opts });
+      }
+      close() {}
+    }
+    (globalThis as { Notification?: unknown }).Notification = FakeNotification;
+
+    try {
+      const store = new ClientStore();
+      const t1 = thread({ id: "t-att", title: "Cast thread", chimeraCasting: { batchId: "b", rows: [{ id: "r", role: "Scout", task: "x" }] } });
+      const t2 = thread({ id: "t-other", title: "Other" });
+      const gen1 = store.beginHydration();
+      store.hydrate(
+        {
+          projects: [],
+          threads: [t1, t2],
+          settings: { theme: "system", language: "en", alwaysAllow: [] },
+          selectedThreadId: "t-other",
+          info: baseInfo,
+          rev: 1,
+          tokenActivity: {},
+        },
+        gen1,
+      );
+
+      // Unseen because t-other is selected -> fires notification with sound.
+      store.apply({ type: "attention-signal", threadId: "t-att", reason: "casting", rev: 2 });
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0]!.title).toBe("Cast thread");
+      expect(notifications[0]!.opts?.body).toBe("Waiting for your decision.");
+      expect(notifications[0]!.opts?.silent).toBe(false);
+      expect(notifications[0]!.opts?.tag).toBe("tivano-attention-t-att");
+
+      // Selected & focused -> suppressed.
+      const gen2 = store.beginHydration();
+      store.hydrate(
+        {
+          projects: [],
+          threads: [t1, t2],
+          settings: { theme: "system", language: "en", alwaysAllow: [] },
+          selectedThreadId: "t-att",
+          info: baseInfo,
+          rev: 3,
+          tokenActivity: {},
+        },
+        gen2,
+      );
+      store.apply({ type: "attention-signal", threadId: "t-att", reason: "casting", rev: 4 });
+      expect(notifications).toHaveLength(1);
+    } finally {
+      (globalThis as { Notification?: unknown }).Notification = origNotification;
+    }
+  });
+
+  it("surfaces project threads (even when collapsed) in top-level Needs attention without duplicating rows", () => {
+    const collapsedProj: Project = {
+      id: "proj-collapsed",
+      name: "Collapsed Project",
+      createdAt: 1,
+      expanded: false,
+    };
+    const waitingProjThread = thread({
+      id: "proj-wait",
+      projectId: collapsedProj.id,
+      title: "Project waiting thread",
+      updatedAt: 10,
+      chimeraCasting: {
+        batchId: "batch-proj",
+        rows: [{ id: "rp1", role: "Scout", task: "Check project" }],
+      },
+    });
+    const idleUngrouped = thread({ id: "idle-u", title: "Idle standalone", updatedAt: 5 });
+
+    const snap: Snapshot = {
+      projects: [collapsedProj],
+      threads: [waitingProjThread, idleUngrouped],
+      settings: { theme: "system", language: "en", alwaysAllow: [] },
+      selectedThreadId: null,
+      info: baseInfo,
+      rev: 1,
+      tokenActivity: {},
+    };
+    const html = renderInLang(
+      "en",
+      createElement(Sidebar, {
+        snapshot: snap,
+        onOpenSettings: () => {},
+        onOpenPalette: () => {},
+      }),
+    );
+    expect(html).toContain("attention-group");
+    expect(html).toContain("Needs attention");
+    expect(html.match(/data-thread-id="proj-wait"/g)?.length).toBe(1);
+    expect(html.indexOf("attention-group")).toBeLessThan(html.indexOf("Collapsed Project"));
+  });
+});

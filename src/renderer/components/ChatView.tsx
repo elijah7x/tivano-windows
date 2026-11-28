@@ -21,6 +21,7 @@ import { visibleThreads } from "../../shared/threadOrder";
 import { api, callApi, clientStore } from "../client";
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
+import { ChimeraCastingCard } from "./ChimeraCastingCard";
 import { CheckpointPreviewDialog } from "./CheckpointPreviewDialog";
 import { WorktreeDialog } from "./WorktreeDialog";
 import { BranchMenu } from "./BranchMenu";
@@ -1341,6 +1342,14 @@ export function ChatView(props: {
         )}
         {turn?.approval && <ApprovalCard threadId={thread.id} approval={turn.approval} />}
         {turn?.question && <QuestionCard threadId={thread.id} question={turn.question} />}
+        {thread.chimeraCasting && thread.chimeraCasting.rows.length > 0 && (
+          <ChimeraCastingCard
+            threadId={thread.id}
+            casting={thread.chimeraCasting}
+            mode={props.mode}
+            readOnly={props.readOnly}
+          />
+        )}
         {props.limitResumeAt !== undefined && (
           <LimitWaitRow threadId={thread.id} resumeAt={props.limitResumeAt} />
         )}

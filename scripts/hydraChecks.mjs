@@ -1291,5 +1291,86 @@ export async function runHydraChecks({
   await page3.locator(".chat-head h1").click();
   await page3.waitForSelector(".hydra-brief-pop", { state: "detached", timeout: 8000 });
 
+  // HY-54: P2-76 adaptive model-assignment waits surface the full attention state.
+  await page3.evaluate(() => {
+    window.__p276Notifications = [];
+    class StubNotification {
+      static permission = "granted";
+      onclick = null;
+      constructor(title, options) {
+        window.__p276Notifications.push({ title, options });
+      }
+      close() {}
+    }
+    window.Notification = StubNotification;
+  });
+  await page3.evaluate((a) => window.tivano.invoke("settings:set", a), {
+    chimeraAutoDispatch: false,
+    weatherWindowMode: "porthole",
+  });
+  const leadCast = await mkLead3();
+  await page3.evaluate(
+    (a) => window.tivano.invoke("threads:set-subagent-mode", a),
+    { threadId: leadCast, mode: "adaptive" },
+  );
+  // Creating a second thread moves selection away so leadCast is unseen.
+  const leadViewer = await mkLead3();
+  await page3.evaluate((a) => window.tivano.invoke("turns:send", a), {
+    threadId: leadCast,
+    text: "cast models [mock:hydra-identity]",
+  });
+  const sCastWait = await waitSnap3(
+    (s) =>
+      (s.threads.find((t) => t.id === leadCast)?.chimeraCasting?.rows.length ?? 0) === 2 &&
+      s.threads.find((t) => t.id === leadCast)?.turn?.status === "done",
+  );
+  verify(
+    "HY-54 adaptive wait holds casting rows before launching heads",
+    teamOf(sCastWait, leadCast).length === 0 &&
+      sCastWait.threads.find((t) => t.id === leadCast)?.chimeraCasting?.rows.length === 2,
+  );
+  await page3.waitForSelector(".attention-group", { timeout: 8000 });
+  const attText = await page3.locator(".attention-group").innerText();
+  const qDotCount = await page3.locator(".attention-group .dot.question").count();
+  const weatherState = await page3.locator(".skylight").getAttribute("data-weather");
+  const notifs = await page3.evaluate(() => window.__p276Notifications ?? []);
+  verify(
+    "HY-54b attention-wait shows Needs attention, question dot, awaiting weather, and unseen Notification",
+    attText.includes("Needs attention") &&
+      qDotCount >= 1 &&
+      weatherState === "awaiting" &&
+      notifs.some(
+        (n) =>
+          n.options?.body === "Waiting for your decision." &&
+          n.options?.silent === false,
+      ),
+    { attText, qDotCount, weatherState, notifs },
+  );
+
+  // Switch to the waiting lead (via selecting its row in Needs attention), confirm Send 2.
+  await page3.locator(`.attention-group .row[data-thread-id="${leadCast}"]`).dispatchEvent("click");
+  await page3.waitForSelector(".approval.casting", { timeout: 8000 });
+  const castCardText = await page3.locator(".approval.casting").innerText();
+  verify(
+    "HY-54c Assign models casting card renders for waiting lead",
+    castCardText.includes("Assign models") && castCardText.includes("Send 2"),
+    castCardText.slice(0, 200),
+  );
+  await page3.locator('.approval.casting button.primary:has-text("Send 2")').click();
+  await page3.waitForSelector(".approval.casting", { state: "detached", timeout: 8000 });
+  await waitSnap3(
+    (s) =>
+      teamOf(s, leadCast).length === 2 &&
+      teamOf(s, leadCast).every((t) => t.hydraHead.status === "completed") &&
+      s.threads
+        .find((t) => t.id === leadCast)
+        ?.messages.some((m) => m.content.includes("Hydra reports:")),
+  );
+  verify(
+    "HY-54d confirming Send 2 clears Needs attention and launches both heads",
+    (await page3.locator(".attention-group").count()) === 0,
+  );
+  void leadViewer;
+
   await boundedClose(s3.app, s3.proc);
 }

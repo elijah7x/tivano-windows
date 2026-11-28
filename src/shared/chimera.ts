@@ -83,6 +83,11 @@ export interface ChimeraPreset {
   enabled?: boolean | undefined;
 }
 
+/** Frozen `ChimeraPrompts.roleKey` — normalized key for remembered per-role picks. */
+export function chimeraRoleKey(role: string): string {
+  return role.trim().toLowerCase();
+}
+
 export function chimeraBuiltin(id: string): ChimeraBuiltin | undefined {
   return CHIMERA_BUILTINS.find((b) => b.id === id);
 }
@@ -192,7 +197,7 @@ export function chimeraAdaptivePolicy(
     ' Give every entry a short role title. When one of the user\'s identities fits that role, add "identity": <its number> and use the identity\'s name as the role title; combine different identities across roles as the job needs. Omit identity when none fits; that role runs on your own model. Never name models elsewhere.';
   const dispatch = autoDispatch
     ? "\nHeads go out at once without the user's confirmation, so pick identities carefully."
-    : "\nNo head starts before the user confirms: first send the role lineup as an ordinary message and wait for the user's approval; only then write the delegation block.";
+    : "\nThe user confirms or changes each role's model in a casting card before heads start.";
   return (
     'Every new entry needs a short clear job title in "role"; never include model or profile fields. A continue entry keeps the head\'s earlier model.' +
     suggestions +

@@ -26,6 +26,30 @@ export interface ThreadActivityOverrides {
   flashStatus?: "done" | "error" | "interrupted" | undefined;
 }
 
+export function threadNeedsApproval(
+  th: Pick<ChatThread, "turn">,
+): boolean {
+  const turn = th.turn;
+  return turn?.approval?.status === "pending" || turn?.status === "waiting-approval";
+}
+
+export function threadNeedsAnswer(
+  th: Pick<ChatThread, "turn" | "chimeraCasting">,
+): boolean {
+  return (
+    th.turn?.question?.status === "pending" ||
+    (th.chimeraCasting?.rows.length ?? 0) > 0
+  );
+}
+
+/** Frozen ThreadRuntime.needsUserAttention: pending approval, question, or
+ *  adaptive model-assignment wait. */
+export function threadNeedsAttention(
+  th: Pick<ChatThread, "turn" | "chimeraCasting">,
+): boolean {
+  return threadNeedsApproval(th) || threadNeedsAnswer(th);
+}
+
 /**
  * Frozen ThreadActivityStatus.resolve: pending decisions and live work stay
  * visible; terminal results are reminders only until they have been read
@@ -36,14 +60,10 @@ export function threadActivityStatus(
   overrides?: ThreadActivityOverrides,
 ): ThreadActivityStatus {
   const turn = th.turn;
-  if (
-    overrides?.needsApproval ||
-    turn?.approval?.status === "pending" ||
-    turn?.status === "waiting-approval"
-  ) {
+  if (overrides?.needsApproval || threadNeedsApproval(th)) {
     return "approval";
   }
-  if (overrides?.needsAnswer || turn?.question?.status === "pending") {
+  if (overrides?.needsAnswer || threadNeedsAnswer(th)) {
     return "question";
   }
   if (overrides?.isWorking || turn?.status === "running") {

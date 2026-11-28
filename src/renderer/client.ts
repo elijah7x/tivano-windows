@@ -27,35 +27,41 @@ const NOTIFY_BODY = {
   failed: "Stopped with an error.",
 } as const;
 
-function maybeNotifyDone(
-  store: ClientStore,
-  thread: ChatThread,
-  kind: keyof typeof NOTIFY_BODY,
-  silent: boolean,
-): void {
-  if (thread.hydraHead) return;
+function isThreadUnseen(store: ClientStore, thread: ChatThread): boolean {
   const s = store.snapshot;
-  if (!s) return;
+  if (!s) return false;
   const isOpenPanel =
     thread.isInPanel === true && thread.parentThreadId === s.selectedThreadId;
-  const isOnScreen = s.selectedThreadId === thread.id || isOpenPanel;
+  const isHeadOnScreen =
+    thread.hydraHead !== undefined && thread.hydraHead.leadId === s.selectedThreadId;
+  const isOnScreen = s.selectedThreadId === thread.id || isOpenPanel || isHeadOnScreen;
   const focused =
     typeof document !== "undefined" && typeof document.hasFocus === "function"
       ? document.hasFocus()
       : false;
-  const unseen = !isOnScreen || !focused;
-  if (!unseen) return;
+  return !isOnScreen || !focused;
+}
+
+function postThreadNotification(
+  store: ClientStore,
+  thread: ChatThread,
+  opts: { body: string; tag: string; silent: boolean },
+): void {
+  const s = store.snapshot;
+  if (!s) return;
+  if (!isThreadUnseen(store, thread)) return;
   if (typeof Notification === "undefined") return;
+  const targetId = thread.hydraHead ? thread.hydraHead.leadId : thread.id;
   const fire = () => {
     try {
       // Clicking the notification selects that thread.
       const n = new Notification(thread.title || "Tivano", {
-        body: translate(s.settings.language, NOTIFY_BODY[kind]),
-        tag: `tivano-turn-${thread.id}`,
-        silent,
+        body: translate(s.settings.language, opts.body),
+        tag: opts.tag,
+        silent: opts.silent,
       });
       n.onclick = () => {
-        void api().invoke("threads:select", { id: thread.id });
+        void api().invoke("threads:select", { id: targetId });
       };
     } catch {
       // Notification unavailable in this context — stay silent.
@@ -69,6 +75,30 @@ function maybeNotifyDone(
       })
       .catch(() => {});
   }
+}
+
+function maybeNotifyDone(
+  store: ClientStore,
+  thread: ChatThread,
+  kind: keyof typeof NOTIFY_BODY,
+  silent: boolean,
+): void {
+  if (thread.hydraHead) return;
+  postThreadNotification(store, thread, {
+    body: NOTIFY_BODY[kind],
+    tag: `tivano-turn-${thread.id}`,
+    silent,
+  });
+}
+
+/** P2-76 / frozen AppModel.threadNeedsAttention: unseen approval, question,
+ *  or adaptive casting waits surface a sounding OS notification. */
+function maybeNotifyAttention(store: ClientStore, thread: ChatThread): void {
+  postThreadNotification(store, thread, {
+    body: "Waiting for your decision.",
+    tag: `tivano-attention-${thread.id}`,
+    silent: false,
+  });
 }
 
 export interface TivanoApi {
@@ -821,6 +851,11 @@ export class ClientStore {
                 : "done";
           this.setWeatherFlash(t.id, flashStatus);
         }
+        break;
+      }
+      case "attention-signal": {
+        const t = this.thread(event.threadId);
+        if (t) maybeNotifyAttention(this, t);
         break;
       }
       case "quick-draft": {

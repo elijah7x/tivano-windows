@@ -510,7 +510,7 @@ describe("A58 pair binding (frozen hydraLaunch slice)", () => {
 
   it("leaving adaptive also refuses while delegations wait", async () => {
     const { engine, store } = make();
-    engine.setSettings({ hydraMaxHeads: 1 });
+    engine.setSettings({ hydraMaxHeads: 1, chimeraAutoDispatch: true });
     const lead = engine.createThread(null, "lead");
     engine.setSubagentMode(lead.id, "adaptive");
     engine.sendTurn(lead.id, "go [mock:hydra-waitmany]");
@@ -1106,6 +1106,7 @@ describe("P1-37 adaptive sub-agent identities", () => {
   it("an identity entry sends the preset prompt and its model pick", async () => {
     const { engine, store } = make();
     engine.setSettings({
+      chimeraAutoDispatch: true,
       chimeraPresets: [
         {
           id: "c1",
@@ -1135,6 +1136,7 @@ describe("P1-37 adaptive sub-agent identities", () => {
   it("identity numbers skip disabled presets (frozen usable numbering)", async () => {
     const { engine, store } = make();
     engine.setSettings({
+      chimeraAutoDispatch: true,
       chimeraPresets: [
         { id: "b-scout", builtin: "scout", enabled: false },
         { id: "b-builder", builtin: "builder" },
@@ -1519,5 +1521,234 @@ describe("P2-62 Hydra finish-signal & unread suppression (frozen AppModel.turnFi
       ),
     ).toHaveLength(1);
     store2.close();
+  });
+});
+
+describe("P2-76 model-assignment waits as attention", () => {
+  it("holds adaptive delegations in chimeraCasting, fires attention signals, and suppresses premature finish-signal", async () => {
+    const { engine, store } = make();
+    const events: string[] = [];
+    const attentionStates: boolean[] = [];
+    const finishSignals: Array<{ threadId: string; chime: boolean; notify: string | null }> = [];
+    const attentionSignals: string[] = [];
+    engine.attachAttentionHook((active) => attentionStates.push(active));
+    engine.onEvent((ev) => {
+      events.push(ev.type);
+      if (ev.type === "finish-signal") {
+        finishSignals.push({ threadId: ev.threadId, chime: ev.chime, notify: ev.notify });
+      }
+      if (ev.type === "attention-signal") attentionSignals.push(ev.threadId);
+    });
+
+    const lead = engine.createThread(null, "lead");
+    engine.selectThread(lead.id);
+    engine.setSubagentMode(lead.id, "adaptive");
+    engine.setSettings({ chimeraAutoDispatch: false });
+
+    engine.sendTurn(lead.id, "cast [mock:hydra-identity]");
+    await waitFor(
+      () =>
+        (thread(engine, lead.id).chimeraCasting?.rows.length ?? 0) === 2 &&
+        thread(engine, lead.id).turn?.status === "done",
+    );
+
+    expect(heads(engine, lead.id)).toHaveLength(0);
+    expect(thread(engine, lead.id).chimeraCasting?.rows.map((r) => r.task)).toEqual([
+      "Scout",
+      "No pick",
+    ]);
+    expect(attentionSignals.filter((id) => id === lead.id)).toHaveLength(1);
+    expect(attentionStates.at(-1)).toBe(true);
+    expect(
+      finishSignals.filter((f) => f.threadId === lead.id && (f.chime || f.notify !== null)),
+    ).toHaveLength(0);
+    expect(thread(engine, lead.id).hasUnread).toBeFalsy();
+    // Leaving adaptive is also blocked while delegations wait on model assignment.
+    expect(() => engine.setSubagentMode(lead.id, "same")).toThrow(/switch modes/);
+
+    // Confirming with one pick and one skip starts only the chosen head,
+    // emits a skipped-role notice, and clears the casting attention state.
+    const rows = thread(engine, lead.id).chimeraCasting!.rows;
+    engine.confirmChimeraCasting(lead.id, {
+      [rows[0]!.id]: { model: "custom-scout", effort: "high" },
+      [rows[1]!.id]: null,
+    });
+    expect(thread(engine, lead.id).chimeraCasting).toBeUndefined();
+    expect(attentionStates.at(-1)).toBe(false);
+    expect(
+      thread(engine, lead.id).messages.some(
+        (m) => m.role === "system" && m.content.includes("Skipped sub-agent roles:"),
+      ),
+    ).toBe(true);
+
+    await waitFor(
+      () =>
+        heads(engine, lead.id).length === 1 &&
+        thread(engine, lead.id).messages.some(
+          (m) => m.role === "user" && m.content.includes("Hydra reports:"),
+        ) &&
+        thread(engine, lead.id).turn?.status === "done",
+    );
+    expect(heads(engine, lead.id)[0]!.codexModel).toBe("custom-scout");
+    expect((heads(engine, lead.id)[0] as { codexEffort?: string }).codexEffort).toBe("high");
+    store.close();
+  });
+
+  it("handles Send none, multi-thread attention tracking, and interaction with pending questions", async () => {
+    const { engine, store } = make();
+    const attentionStates: boolean[] = [];
+    engine.attachAttentionHook((active) => attentionStates.push(active));
+
+    const leadA = engine.createThread(null, "lead-a");
+    const leadB = engine.createThread(null, "lead-b");
+    const qThread = engine.createThread(null, "q-thread");
+    engine.setSubagentMode(leadA.id, "adaptive");
+    engine.setSubagentMode(leadB.id, "adaptive");
+    engine.setSettings({ chimeraAutoDispatch: false });
+
+    engine.sendTurn(leadA.id, "cast a [mock:hydra-identity]");
+    engine.sendTurn(leadB.id, "cast b [mock:hydra-identity]");
+    engine.sendTurn(qThread.id, "ask [mock:question]");
+    await waitFor(
+      () =>
+        (thread(engine, leadA.id).chimeraCasting?.rows.length ?? 0) === 2 &&
+        (thread(engine, leadB.id).chimeraCasting?.rows.length ?? 0) === 2 &&
+        thread(engine, qThread.id).turn?.question?.status === "pending",
+    );
+    expect(attentionStates.at(-1)).toBe(true);
+
+    // Send none skips every role on leadA; attention stays active for leadB + qThread.
+    engine.confirmChimeraCasting(leadA.id, {});
+    await waitFor(() => !thread(engine, leadA.id).chimeraCasting);
+    expect(heads(engine, leadA.id)).toHaveLength(0);
+    expect(
+      thread(engine, leadA.id).messages.some(
+        (m) => m.role === "system" && m.content.includes("Skipped sub-agent roles:"),
+      ),
+    ).toBe(true);
+    expect(attentionStates.at(-1)).toBe(true);
+
+    // Confirming leadB still leaves attention active because qThread has a pending question.
+    const rowsB = thread(engine, leadB.id).chimeraCasting!.rows;
+    engine.confirmChimeraCasting(leadB.id, {
+      [rowsB[0]!.id]: {},
+      [rowsB[1]!.id]: null,
+    });
+    expect(attentionStates.at(-1)).toBe(true);
+
+    // Clearing the pending question on qThread finally drops attention to false.
+    const qReq = thread(engine, qThread.id).turn!.question!;
+    const firstQ = qReq.questions[0]!;
+    engine.answerQuestion(qThread.id, qReq.providerKey, {
+      [firstQ.id]: [firstQ.choices[0]?.label ?? "ok"],
+    });
+    await waitFor(
+      () =>
+        thread(engine, leadB.id).turn?.status === "done" &&
+        thread(engine, qThread.id).turn?.status === "done" &&
+        heads(engine, leadB.id).length === 1,
+    );
+    expect(attentionStates.at(-1)).toBe(false);
+    store.close();
+  });
+
+  it("clears model-assignment waits on Hydra off, archive, delete, and shutdown/recovery", async () => {
+    const { engine, store, root } = make();
+    const attentionStates: boolean[] = [];
+    engine.attachAttentionHook((active) => attentionStates.push(active));
+    engine.setSettings({ chimeraAutoDispatch: false });
+
+    const tOff = engine.createThread(null, "off");
+    const tArch = engine.createThread(null, "arch");
+    const tDel = engine.createThread(null, "del");
+    const tBoot = engine.createThread(null, "boot");
+    for (const id of [tOff.id, tArch.id, tDel.id, tBoot.id]) {
+      engine.setSubagentMode(id, "adaptive");
+      engine.sendTurn(id, "cast [mock:hydra-identity]");
+    }
+    await waitFor(
+      () =>
+        (thread(engine, tOff.id).chimeraCasting?.rows.length ?? 0) === 2 &&
+        (thread(engine, tArch.id).chimeraCasting?.rows.length ?? 0) === 2 &&
+        (thread(engine, tDel.id).chimeraCasting?.rows.length ?? 0) === 2 &&
+        (thread(engine, tBoot.id).chimeraCasting?.rows.length ?? 0) === 2,
+    );
+    expect(attentionStates.at(-1)).toBe(true);
+
+    engine.setThreadHydra(tOff.id, false);
+    expect(thread(engine, tOff.id).chimeraCasting).toBeUndefined();
+
+    engine.archiveThread(tArch.id);
+    expect(thread(engine, tArch.id).chimeraCasting).toBeUndefined();
+
+    engine.deleteThread(tDel.id);
+    expect(engine.snapshot().threads.some((t) => t.id === tDel.id)).toBe(false);
+    expect(attentionStates.at(-1)).toBe(true);
+
+    await engine.shutdown();
+    store.close();
+
+    // Restart: chimeraCasting was runtime-only so recovered store has no stale wait.
+    const store2 = new Store(root);
+    store2.open();
+    const engine2 = new Engine(store2, new MockProvider({ tickMs: 1 }), root, "0.0.0-test");
+    engine2.recoverInFlight();
+    expect(thread(engine2, tBoot.id).chimeraCasting).toBeUndefined();
+    store2.close();
+  });
+
+  it("clears pending chimeraCasting on cancelTurn (non-done endTurn) and user-authored sendTurn", async () => {
+    const { engine, store } = make();
+    const attentionStates: boolean[] = [];
+    engine.attachAttentionHook((active) => attentionStates.push(active));
+    engine.setSettings({ chimeraAutoDispatch: false });
+
+    // 1. User-authored sendTurn clears an existing chimeraCasting wait and its queued batch.
+    const leadUser = engine.createThread(null, "lead-user");
+    engine.setSubagentMode(leadUser.id, "adaptive");
+    engine.sendTurn(leadUser.id, "cast [mock:hydra-identity]");
+    await waitFor(
+      () =>
+        (thread(engine, leadUser.id).chimeraCasting?.rows.length ?? 0) === 2 &&
+        thread(engine, leadUser.id).turn?.status === "done",
+    );
+    expect(attentionStates.at(-1)).toBe(true);
+
+    engine.sendTurn(leadUser.id, "follow up directly");
+    expect(thread(engine, leadUser.id).chimeraCasting).toBeUndefined();
+    expect(attentionStates.at(-1)).toBe(false);
+    await waitFor(() => thread(engine, leadUser.id).turn?.status === "done");
+    expect(heads(engine, leadUser.id)).toHaveLength(0);
+    expect(
+      (thread(engine, leadUser.id).hydraJobs ?? []).every((j) => !j.isOpen),
+    ).toBe(true);
+
+    // 2. cancelTurn (non-done endTurn) clears chimeraCasting added mid-turn.
+    const leadCancel = engine.createThread(null, "lead-cancel");
+    engine.setSubagentMode(leadCancel.id, "adaptive");
+    let sawMidTurnCasting = false;
+    const unsub = engine.onEvent((ev) => {
+      if (
+        !sawMidTurnCasting &&
+        ev.type === "thread-updated" &&
+        ev.thread.id === leadCancel.id &&
+        (ev.thread.chimeraCasting?.rows.length ?? 0) >= 1 &&
+        ev.thread.turn?.status === "running"
+      ) {
+        sawMidTurnCasting = true;
+        expect(attentionStates.at(-1)).toBe(true);
+        engine.cancelTurn(leadCancel.id);
+      }
+    });
+    engine.sendTurn(leadCancel.id, "cast [mock:hydra-identity]");
+    await waitFor(
+      () => sawMidTurnCasting && thread(engine, leadCancel.id).turn?.status === "cancelled",
+    );
+    unsub();
+    expect(thread(engine, leadCancel.id).chimeraCasting).toBeUndefined();
+    expect(attentionStates.at(-1)).toBe(false);
+    expect(heads(engine, leadCancel.id)).toHaveLength(0);
+    expect(() => engine.setSubagentMode(leadCancel.id, "same")).not.toThrow();
+    store.close();
   });
 });
