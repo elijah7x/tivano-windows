@@ -135,16 +135,27 @@ export async function runHelperChecks({
   );
   await waitSnap(page, (s) => helperOf(s, tid)?.turn?.status === "done");
 
-  // HB-07: closing the panel drops the helper nested under its parent.
+  // HB-07: closing the panel drops the helper folded under its parent
+  // ("1 helper"); clicking the folded stub row unfolds it and persists
+  // expandsHelpers across restart.
   await page.locator(".helper-close").click();
   await waitSnap(page, (s) => helperOf(s, tid)?.isInPanel === false);
   await page.waitForSelector(".helper-panel", {
     state: "detached",
     timeout: 5000,
   });
+  const stubRow = page.locator(`.helper-stub-row[data-parent-thread-id="${tid}"]`, {
+    hasText: "1 helper",
+  });
+  await stubRow.waitFor();
+  await stubRow.click();
+  await waitSnap(
+    page,
+    (s) => s.threads.find((t) => t.id === tid)?.expandsHelpers === true,
+  );
   const helperRow = page.locator(".row.helper-row", { hasText: "Merge #95" });
   await helperRow.waitFor();
-  verify("HB-07 closed helper nests under the parent", true);
+  verify("HB-07 closed helper folds then unfolds under the parent", true);
 
   // HB-08: a closed helper still receives merge briefs without reopening.
   const gl2 = page.locator("a[data-md-link]", { hasText: "the MR" }).first();

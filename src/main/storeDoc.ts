@@ -314,6 +314,8 @@ const vThread = vObject({
   // F25: helper-chat binding (frozen parentThreadID / isInPanel).
   parentThreadId: vOptional(vNonEmptyString(120)),
   isInPanel: vOptional(vBoolean),
+  // P2-72: sidebar helper/sub-agent fold state (frozen expandsHelpers).
+  expandsHelpers: vOptional(vBoolean),
 });
 
 
@@ -841,6 +843,8 @@ const vThreadHead = vObject({
   // F25: helper-chat binding (frozen parentThreadID / isInPanel).
   parentThreadId: vOptional(vNonEmptyString(120)),
   isInPanel: vOptional(vBoolean),
+  // P2-72: sidebar helper/sub-agent fold state (frozen expandsHelpers).
+  expandsHelpers: vOptional(vBoolean),
 });
 
 const vStoreHead = vObject({

@@ -7758,6 +7758,18 @@ export class Engine {
   }
 
   /**
+   * P2-72 (frozen AppModel.toggleHelpersFold): toggle whether a parent
+   * thread's sidebar sub-agents/helpers are unfolded under it.
+   */
+  toggleHelpersFold(threadId: string): void {
+    this.assertMutable();
+    const thread = this.mustThread(threadId);
+    thread.expandsHelpers = thread.expandsHelpers !== true;
+    this.store.update(() => {});
+    this.emit({ type: "thread-updated", thread });
+  }
+
+  /**
    * F13/F22 detection slice (frozen GitHubConnection.githubCLI): which
    * forge CLIs merge/PR handoffs could actually run — presence and
    * `--version` only. Sign-in state is never probed and no credential

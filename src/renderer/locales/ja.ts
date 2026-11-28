@@ -2144,4 +2144,23 @@ export const ja: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "これにより %lld 件のチャット（他のプロジェクトの関連サブエージェントおよびヘルパーを含む）が完全に削除されます。プロジェクトのソースファイルは削除されません。",
   "Remove project": "プロジェクトを削除",
+  // P2-72
+  "1 sub-agent": "1 個のサブエージェント",
+  "%d sub-agents": "%d 個のサブエージェント",
+  "%d sub-agents · %d running": "%d 個のサブエージェント · %d 個が実行中",
+  "1 helper": "1 個のヘルパー",
+  "%d helpers": "%d 個のヘルパー",
+  "%d helpers · %d running": "%d 個のヘルパー · %d 個が実行中",
+  "1 folded sub-agent": "1 個の折りたたまれたサブエージェント",
+  "%d folded sub-agents": "%d 個の折りたたまれたサブエージェント",
+  "%d folded sub-agents, %d running": "%d 個の折りたたまれたサブエージェント、%d 個が実行中",
+  "1 folded helper": "折りたたまれたヘルパー 1 件",
+  "%d folded helpers": "折りたたまれたヘルパー %d 件",
+  "%d folded helpers, %d running": "折りたたまれたヘルパー %d 件、%d 件が実行中",
+  "Show the sub-agent": "サブエージェントを表示",
+  "Show %d sub-agents": "%d 件のサブエージェントを表示",
+  "Show the helper": "ヘルパーを表示",
+  "Show %d helpers": "%d 個のヘルパーを表示",
+  "Show helpers": "ヘルパーを表示",
+  "Hide helpers": "ヘルパーを隠す",
 };

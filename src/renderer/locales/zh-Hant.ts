@@ -2144,4 +2144,23 @@ export const zhHant: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "這將永久刪除 %lld 個對話，包含關聯至其他專案的子代理與助手。專案原始檔不會被刪除。",
   "Remove project": "移除專案",
+  // P2-72
+  "1 sub-agent": "1 個子代理",
+  "%d sub-agents": "%d 個子代理",
+  "%d sub-agents · %d running": "%d 個子代理 · %d 個在執行",
+  "1 helper": "1 個助手",
+  "%d helpers": "%d 個助手",
+  "%d helpers · %d running": "%d 個助手 · %d 個在執行",
+  "1 folded sub-agent": "1 個已摺疊的子代理",
+  "%d folded sub-agents": "%d 個已摺疊的子代理",
+  "%d folded sub-agents, %d running": "%d 個已摺疊的子代理，%d 個在執行",
+  "1 folded helper": "1 個已收合的助手",
+  "%d folded helpers": "%d 個已收合的助手",
+  "%d folded helpers, %d running": "%d 個已收合的助手，%d 個在執行",
+  "Show the sub-agent": "顯示該子代理",
+  "Show %d sub-agents": "顯示 %d 個子代理",
+  "Show the helper": "顯示此助手",
+  "Show %d helpers": "顯示 %d 個助手",
+  "Show helpers": "顯示助手",
+  "Hide helpers": "隱藏助手",
 };

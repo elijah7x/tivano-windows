@@ -5926,12 +5926,42 @@ html[data-paused="1"] .md-veil { animation: none !important; }
    SidebarHero helper rows). */
 .row.helper-row {
   margin-left: 18px;
+  width: calc(100% - 18px);
   font-size: calc(11.5px + var(--fs-ui-off));
   opacity: 0.9;
 }
 .row.helper-row > .title::before {
   content: "↳ ";
   color: var(--text-2);
+}
+.row.helper-row.hydra-sidebar-row > .title::before {
+  content: none;
+}
+.hydra-sidebar-name {
+  font-weight: 600;
+  flex: none;
+  white-space: nowrap;
+}
+/* P2-72 folded sub-agent / helper summary row (frozen HelperStubRow). */
+.row.helper-stub-row {
+  margin-left: 18px;
+  width: calc(100% - 18px);
+  font-size: calc(11.5px + var(--fs-ui-off));
+  color: var(--text-2);
+  gap: 5px;
+  cursor: pointer;
+}
+.row.helper-stub-row:hover {
+  color: var(--text);
+}
+.helper-stub-chevron {
+  font-size: 9px;
+  flex: none;
+}
+.helper-fold-btn {
+  flex: none;
+  font-size: 10px;
+  padding: 1px 4px;
 }
 
 /* F25: bottom-right resize grip — the dragged size persists in

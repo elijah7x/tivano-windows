@@ -2144,4 +2144,23 @@ export const fr: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "Cela supprime définitivement %lld discussions, y compris les sous-agents et assistants liés dans d’autres projets. Les fichiers sources du projet ne seront pas supprimés.",
   "Remove project": "Retirer le projet",
+  // P2-72
+  "1 sub-agent": "1 sous-agent",
+  "%d sub-agents": "%d sous-agents",
+  "%d sub-agents · %d running": "%d sous-agents · %d en cours",
+  "1 helper": "1 assistant",
+  "%d helpers": "%d assistants",
+  "%d helpers · %d running": "%d assistants · %d en cours",
+  "1 folded sub-agent": "1 sous-agent replié",
+  "%d folded sub-agents": "%d sous-agents repliés",
+  "%d folded sub-agents, %d running": "%d sous-agents repliés, %d en cours",
+  "1 folded helper": "1 assistant replié",
+  "%d folded helpers": "%d assistants repliés",
+  "%d folded helpers, %d running": "%d assistants repliés, %d en cours",
+  "Show the sub-agent": "Afficher le sous-agent",
+  "Show %d sub-agents": "Afficher %d sous-agents",
+  "Show the helper": "Afficher l’assistant",
+  "Show %d helpers": "Afficher %d assistants",
+  "Show helpers": "Afficher les assistants",
+  "Hide helpers": "Masquer les assistants",
 };

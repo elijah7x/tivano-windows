@@ -2332,6 +2332,25 @@ const zhHans: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "这将永久删除 %lld 个对话，包括关联到其他项目的子代理和助手。项目源文件不会被删除。",
   "Remove project": "移除项目",
+  // P2-72: Folded sidebar sub-agent/helper rows (v3.0.24 SidebarView.swift).
+  "1 sub-agent": "1 个子代理",
+  "%d sub-agents": "%d 个子代理",
+  "%d sub-agents · %d running": "%d 个子代理 · %d 个在运行",
+  "1 helper": "1 个助手",
+  "%d helpers": "%d 个助手",
+  "%d helpers · %d running": "%d 个助手 · %d 个在运行",
+  "1 folded sub-agent": "1 个已折叠的子代理",
+  "%d folded sub-agents": "%d 个已折叠的子代理",
+  "%d folded sub-agents, %d running": "%d 个已折叠的子代理，%d 个在运行",
+  "1 folded helper": "1 个已折叠的助手",
+  "%d folded helpers": "%d 个已折叠的助手",
+  "%d folded helpers, %d running": "%d 个已折叠的助手，%d 个在运行",
+  "Show the sub-agent": "显示该子代理",
+  "Show %d sub-agents": "显示 %d 个子代理",
+  "Show the helper": "显示该助手",
+  "Show %d helpers": "显示 %d 个助手",
+  "Show helpers": "显示助手",
+  "Hide helpers": "隐藏助手",
 };
 
 const dictionaries: Record<LanguageId, Record<string, string>> = {
