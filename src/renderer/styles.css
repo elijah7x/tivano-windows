@@ -6729,3 +6729,26 @@ html[data-paused="1"] .welcome-strip-chev {
   color: var(--text-2);
   line-height: 1.4;
 }
+
+/* P2-73: distinct full-access (exclamationmark.shield) and review (checkmark.seal) icons */
+.runtime-mode-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.status-icon {
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.hydra-review-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-modal .choice {
+  gap: 6px;
+}

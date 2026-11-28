@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { RemoteMcpStatus, Settings } from "../../shared/types";
 import { api, tryCall } from "../client";
 import { useT } from "../locale";
+import { FullAccessShieldIcon } from "./StatusIcons";
 
 function formatRelative(ts: number, lang: string): string {
   const sec = Math.round((ts - Date.now()) / 1000);
@@ -120,6 +121,7 @@ export function RemoteMcpSection(props: { settings: Settings }): React.JSX.Eleme
             })
           }
         >
+          <FullAccessShieldIcon />
           {t("Run remote chats without approval")}
         </button>
       </div>

@@ -18,6 +18,7 @@ import { callApi } from "../client";
 import { useT } from "../locale";
 import { HydraStaveBar } from "./HydraStaveBar";
 import { MiniSpinner } from "./SpinnerCells";
+import { CheckmarkSealIcon } from "./StatusIcons";
 
 const hex = (n: number): string => `#${n.toString(16).padStart(6, "0")}`;
 
@@ -153,7 +154,7 @@ function landingLabel(
 /** P1-38 frozen folding review card: one row naming the reviewer, the
  *  accepted/rejected counts, diff size and duration; it expands in place
  *  to each finding. */
-function HydraReviewCard(props: { review: HydraReview }): React.JSX.Element {
+export function HydraReviewCard(props: { review: HydraReview }): React.JSX.Element {
   const t = useT();
   const r = props.review;
   const parts: string[] = [];
@@ -173,6 +174,7 @@ function HydraReviewCard(props: { review: HydraReview }): React.JSX.Element {
     <details className="hydra-review">
       <summary>
         <span className="hydra-review-title">
+          <CheckmarkSealIcon label={t("Independent review")} />
           {t("Independent review by %@", r.reviewer)}
         </span>
         <span className="hydra-review-meta">{parts.join(" · ")}</span>
