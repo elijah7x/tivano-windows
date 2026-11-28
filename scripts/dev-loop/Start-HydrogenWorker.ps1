@@ -842,6 +842,12 @@ function Inspect-SessionLogsForCooldown {
   }
 
   $agyErr = Parse-AgyError -StderrText $errText -StdoutText $outText
+  if ($null -ne $agyErr -and ([string]$agyErr.message) -match '(?i)\bprint timeout\b' -and -not (Test-AuthQuotaErrorText ([string]$agyErr.message)) -and -not (Test-RegionNetworkErrorText ([string]$agyErr.message))) {
+    # The session hit its own wall-clock limit; that says nothing about the shared agy service,
+    # so it must not put every lane into a cooldown. The lane continues the issue next tick.
+    Write-Log ('previous session ended by its print timeout (session-local, no shared cooldown): ' + (ConvertTo-SingleLine ([string]$agyErr.message) 200))
+    return $false
+  }
   if ($null -ne $agyErr) {
     $combined = $agyErr.errorCode + ' ' + $agyErr.message
     $isHttpRetryable = ([bool]$agyErr.retryable -and (-not [string]::IsNullOrWhiteSpace($agyErr.codeKind)) -and $agyErr.codeKind.Equals('http', [StringComparison]::OrdinalIgnoreCase))
