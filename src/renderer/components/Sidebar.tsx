@@ -5,7 +5,7 @@
 // thread delete uses a two-tap armed confirmation on the row itself, and
 // project removal opens an anchored confirmation popover beside the project row.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ChatThread, OpenDirectoryResult, Snapshot } from "../../shared/types";
 import {
@@ -14,6 +14,7 @@ import {
   sameAnchorRect,
   type AnchorRect,
 } from "../../shared/popoverAnchor";
+import { personaAt } from "../../shared/hydraDelegation";
 import { compareThreads } from "../../shared/threadOrder";
 import { useT } from "../locale";
 import { api, callApi, clientStore, tryCall, type WeatherFlashStatus } from "../client";
@@ -66,11 +67,157 @@ function statusMark(t: ChatThread): React.JSX.Element {
   return <span className={`dot ${s}`} aria-hidden="true" />;
 }
 
+const hexColor = (n: number): string => `#${n.toString(16).padStart(6, "0")}`;
+
+/**
+ * P2-72 (frozen SidebarView.HelperStubRow): whether a child thread counts
+ * as running in the sidebar folded summary. A Hydra head is authoritative
+ * via `hydraHead.status` (so completed/stopped/failed heads never appear
+ * running from a stale turn record, and newly queued running heads count
+ * immediately even before a turn attaches). Plain helpers count by live
+ * turn status (`running` or `waiting-approval`).
+ */
+export function isSidebarChildRunning(th: ChatThread): boolean {
+  if (th.hydraHead) return th.hydraHead.status === "running";
+  return th.turn?.status === "running" || th.turn?.status === "waiting-approval";
+}
+
+export interface SidebarHelperGrouping {
+  helpersByParent: Map<string, ChatThread[]>;
+  parentsWithRunningHeads: Set<string>;
+}
+
+/**
+ * P2-72 (frozen SidebarView.helpersByParent + AppModel.parentsWithRunningHeads):
+ * group non-archived Hydra heads under their lead and non-archived closed
+ * plain helpers under their parent thread.
+ */
+export function groupSidebarHelpers(threads: readonly ChatThread[]): SidebarHelperGrouping {
+  const helpersByParent = new Map<string, ChatThread[]>();
+  const parentsWithRunningHeads = new Set<string>();
+  for (const th of threads) {
+    if (th.isArchived) continue;
+    if (th.hydraHead) {
+      const leadId = th.hydraHead.leadId;
+      const list = helpersByParent.get(leadId);
+      if (list) list.push(th);
+      else helpersByParent.set(leadId, [th]);
+      if (th.hydraHead.status === "running") parentsWithRunningHeads.add(leadId);
+    } else if (th.parentThreadId && th.isInPanel !== true) {
+      const list = helpersByParent.get(th.parentThreadId);
+      if (list) list.push(th);
+      else helpersByParent.set(th.parentThreadId, [th]);
+    }
+  }
+  return { helpersByParent, parentsWithRunningHeads };
+}
+
+/**
+ * P2-72 (frozen SidebarView.visibleHelpers): Hydra heads are surfaced under
+ * their parent while at least one head is running; closed plain helpers stay
+ * visible under their parent even after finishing. Newest createdAt first.
+ */
+export function visibleSidebarHelpers(
+  parentId: string,
+  grouping: SidebarHelperGrouping,
+): ChatThread[] {
+  const all = grouping.helpersByParent.get(parentId);
+  if (!all || all.length === 0) return [];
+  const showHeads = grouping.parentsWithRunningHeads.has(parentId);
+  const filtered = showHeads ? all : all.filter((h) => !h.hydraHead);
+  return filtered.slice().sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/**
+ * P2-72 (frozen SidebarView.orderedHeads): running Hydra heads first
+ * (newest createdAt first), then finished heads (newest createdAt first).
+ */
+export function orderedSidebarHeads(heads: readonly ChatThread[]): ChatThread[] {
+  return heads.slice().sort((a, b) => {
+    const aRunning = a.hydraHead?.status === "running";
+    const bRunning = b.hydraHead?.status === "running";
+    if (aRunning !== bRunning) return aRunning ? -1 : 1;
+    return b.createdAt - a.createdAt;
+  });
+}
+
+export interface FoldedHelpersMeta {
+  count: number;
+  running: number;
+  isHeads: boolean;
+}
+
+export function foldedHelpersMeta(helpers: readonly ChatThread[]): FoldedHelpersMeta {
+  const count = helpers.length;
+  let running = 0;
+  let allHeads = count > 0;
+  for (const h of helpers) {
+    if (isSidebarChildRunning(h)) running++;
+    if (!h.hydraHead) allHeads = false;
+  }
+  return { count, running, isHeads: allHeads };
+}
+
+/** P2-72 (frozen HelperStubFace.label): "3 sub-agents · 2 running" / "1 sub-agent" / "2 helpers". */
+export function foldedHelpersLabel(
+  meta: FoldedHelpersMeta,
+  t: (key: string, ...vars: string[]) => string,
+): string {
+  if (meta.count === 1) {
+    return t(meta.isHeads ? "1 sub-agent" : "1 helper");
+  }
+  if (meta.running > 0) {
+    return t(
+      meta.isHeads ? "%d sub-agents · %d running" : "%d helpers · %d running",
+      String(meta.count),
+      String(meta.running),
+    );
+  }
+  return t(
+    meta.isHeads ? "%d sub-agents" : "%d helpers",
+    String(meta.count),
+  );
+}
+
+export function foldedHelpersAriaLabel(
+  meta: FoldedHelpersMeta,
+  t: (key: string, ...vars: string[]) => string,
+): string {
+  if (meta.count === 1) {
+    return t(meta.isHeads ? "1 folded sub-agent" : "1 folded helper");
+  }
+  if (meta.running > 0) {
+    return t(
+      meta.isHeads ? "%d folded sub-agents, %d running" : "%d folded helpers, %d running",
+      String(meta.count),
+      String(meta.running),
+    );
+  }
+  return t(
+    meta.isHeads ? "%d folded sub-agents" : "%d folded helpers",
+    String(meta.count),
+  );
+}
+
+export function foldedHelpersTitle(
+  meta: FoldedHelpersMeta,
+  t: (key: string, ...vars: string[]) => string,
+): string {
+  if (meta.count === 1) {
+    return t(meta.isHeads ? "Show the sub-agent" : "Show the helper");
+  }
+  return t(
+    meta.isHeads ? "Show %d sub-agents" : "Show %d helpers",
+    String(meta.count),
+  );
+}
+
 export function Sidebar(props: {
   snapshot: Snapshot;
   finishFlashes?: Readonly<Record<string, WeatherFlashStatus>> | undefined;
   onOpenSettings: () => void;
   onOpenPalette: () => void;
+  onToggleHelpersFold?: (threadId: string) => void;
 }): React.JSX.Element {
   const t = useT();
   const [search, setSearch] = useState("");
@@ -100,6 +247,7 @@ export function Sidebar(props: {
   // v2.2.x: the shelf popover + inline shelf rename (v2.2.22).
   const [shelfOpen, setShelfOpen] = useState(false);
   const [shelfRename, setShelfRename] = useState<string | null>(null);
+  const [readOnlyExpands, setReadOnlyExpands] = useState<Record<string, boolean>>({});
   const { snapshot } = props;
   const q = search.trim().toLowerCase();
   // P2-34: the thread-row ⋯/context menu (frozen RowActionsButton +
@@ -301,20 +449,15 @@ export function Sidebar(props: {
     // F01/F02 frozen order: pinned first, then manual sortOrder, threads
     // never reordered stay on top, newest createdAt last.
     const frozenOrder = (xs: ChatThread[]) => xs.slice().sort(compareThreads);
-    // F25: closed helpers ride nested directly under their parent row
-    // (frozen SidebarHero); an orphaned helper keeps its slot as an
-    // ordinary row. While searching, helpers stand alone like any match.
-    const nestHelpers = (xs: ChatThread[]): ChatThread[] => {
+    // F25 + P2-72: closed plain helpers and running Hydra teams ride under
+    // their parent row (folded by default into HelperStubRow); an orphaned
+    // plain helper keeps its slot as an ordinary row. While searching,
+    // plain helpers stand alone like any match.
+    const helperGrouping = groupSidebarHelpers(snapshot.threads);
+    const topLevelThreads = (xs: ChatThread[]): ChatThread[] => {
       if (q !== "") return xs;
       const ids = new Set(xs.map((x) => x.id));
-      const byParent = new Map<string, ChatThread[]>();
-      const mains: ChatThread[] = [];
-      for (const th of xs) {
-        if (th.parentThreadId && ids.has(th.parentThreadId))
-          byParent.set(th.parentThreadId, [...(byParent.get(th.parentThreadId) ?? []), th]);
-        else mains.push(th);
-      }
-      return mains.flatMap((th) => [th, ...(byParent.get(th.id) ?? [])]);
+      return xs.filter((th) => !(th.parentThreadId && ids.has(th.parentThreadId)));
     };
     // v2.2.x frozen shelving: shelved projects leave the list for the
     // shelf row; their threads still show under search (finding a thread
@@ -336,7 +479,7 @@ export function Sidebar(props: {
         .map((p) => {
           const kids = byProject.get(p.id) ?? [];
           const nameMatch = !q || p.name.toLowerCase().includes(q);
-          const threads = nestHelpers(
+          const threads = topLevelThreads(
             frozenOrder(nameMatch ? kids : kids.filter(matchThread)),
           );
           return { project: p, threads, visible: !q || nameMatch || threads.length > 0 };
@@ -346,11 +489,12 @@ export function Sidebar(props: {
       // (browse without unshelving — frozen 2.2.6 shelf panel).
       shelf: shelfProjects.map((p) => ({
         project: p,
-        threads: nestHelpers(frozenOrder(byProject.get(p.id) ?? [])),
+        threads: topLevelThreads(frozenOrder(byProject.get(p.id) ?? [])),
       })),
       shelfHasUnread,
-      ungrouped: nestHelpers(frozenOrder(ungrouped.filter(matchThread))),
+      ungrouped: topLevelThreads(frozenOrder(ungrouped.filter(matchThread))),
       archived,
+      helperGrouping,
     };
   }, [snapshot, q]);
 
@@ -559,7 +703,26 @@ export function Sidebar(props: {
     setRenamingId(null);
   };
 
-  const threadRow = (th: ChatThread) => (
+  const isHelpersExpanded = (th: ChatThread): boolean =>
+    snapshot.readOnly === true && th.id in readOnlyExpands
+      ? readOnlyExpands[th.id]!
+      : th.expandsHelpers === true;
+
+  const toggleHelpersFold = (threadId: string, currentExpanded: boolean): void => {
+    if (props.onToggleHelpersFold) {
+      props.onToggleHelpersFold(threadId);
+      return;
+    }
+    if (snapshot.readOnly === true) {
+      setReadOnlyExpands((prev) => ({ ...prev, [threadId]: !currentExpanded }));
+      return;
+    }
+    tryCall("threads:toggle-helpers-fold", { id: threadId });
+  };
+
+  const threadRow = (th: ChatThread, hasChildren = false) => {
+    const expanded = hasChildren && isHelpersExpanded(th);
+    return (
     <div
       key={th.id}
       data-thread-id={th.id}
@@ -645,12 +808,104 @@ export function Sidebar(props: {
           {t("Delete")}?
         </button>
       ) : (
-        <span className="row-actions">
-          {THREAD_ROW_HOVER_ACTIONS.map((a) => rowActionButton(a, th))}
-        </span>
+        <>
+          {hasChildren && (
+            <button
+              type="button"
+              className="icon-btn helper-fold-btn"
+              title={expanded ? t("Hide helpers") : t("Show helpers")}
+              aria-label={expanded ? t("Hide helpers") : t("Show helpers")}
+              aria-expanded={expanded}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleHelpersFold(th.id, expanded);
+              }}
+            >
+              {expanded ? "▾" : "▸"}
+            </button>
+          )}
+          <span className="row-actions">
+            {THREAD_ROW_HOVER_ACTIONS.map((a) => rowActionButton(a, th))}
+          </span>
+        </>
       )}
     </div>
-  );
+    );
+  };
+
+  const hydraHeadSidebarRow = (h: ChatThread) => {
+    const info = h.hydraHead!;
+    const persona = personaAt(info.headIndex);
+    const running = info.status === "running";
+    const statusCls =
+      info.status === "failed"
+        ? "error"
+        : info.status === "stopped"
+          ? "interrupted"
+          : info.status === "completed"
+            ? "done"
+            : "idle";
+    return (
+      <button
+        key={h.id}
+        type="button"
+        data-thread-id={h.id}
+        className={`row helper-row hydra-sidebar-row${snapshot.selectedThreadId === h.id ? " selected" : ""}`}
+        title={`${info.name} · ${info.task || h.title}`}
+        onClick={() => select(h.id)}
+      >
+        <span
+          className="hydra-dot"
+          style={{ background: hexColor(persona.hex) }}
+          aria-hidden="true"
+        />
+        {running ? (
+          <MiniSpinner cellSize={2.2} />
+        ) : (
+          <span className={`dot ${statusCls}`} aria-hidden="true" />
+        )}
+        <span className="hydra-sidebar-name">{info.name}</span>
+        <span className="title">{info.task || h.title}</span>
+      </button>
+    );
+  };
+
+  const threadWithChildren = (th: ChatThread) => {
+    const children =
+      q === "" ? visibleSidebarHelpers(th.id, groups.helperGrouping) : [];
+    if (children.length === 0) return threadRow(th, false);
+    const expanded = isHelpersExpanded(th);
+    const meta = foldedHelpersMeta(children);
+    const plain = children.filter((h) => !h.hydraHead);
+    const heads = orderedSidebarHeads(children.filter((h) => Boolean(h.hydraHead)));
+    return (
+      <Fragment key={th.id}>
+        {threadRow(th, true)}
+        {!expanded ? (
+          <button
+            type="button"
+            className="row helper-stub-row"
+            data-parent-thread-id={th.id}
+            data-count={meta.count}
+            data-running={meta.running}
+            title={foldedHelpersTitle(meta, t)}
+            aria-label={foldedHelpersAriaLabel(meta, t)}
+            aria-expanded={false}
+            onClick={() => toggleHelpersFold(th.id, false)}
+          >
+            <span className="helper-stub-chevron" aria-hidden="true">▸</span>
+            <span className="title">{foldedHelpersLabel(meta, t)}</span>
+            {meta.running > 0 && <MiniSpinner cellSize={2.4} />}
+          </button>
+        ) : (
+          <>
+            {plain.map((h) => threadRow(h, false))}
+            {heads.map(hydraHeadSidebarRow)}
+          </>
+        )}
+      </Fragment>
+    );
+  };
 
   return (
     <nav className="sidebar sidebar-tray" aria-label={t("Thread list")}>
@@ -914,7 +1169,7 @@ export function Sidebar(props: {
             {/* While searching, matching child rows show regardless of the
                 saved collapsed state; the stored expanded flag is never
                 mutated by the filter. */}
-            {(project.expanded || q !== "") && threads.map(threadRow)}
+            {(project.expanded || q !== "") && threads.map(threadWithChildren)}
             {project.expanded && threads.length === 0 && !q && (
               <div className="group-empty">{t("No threads yet")}</div>
             )}
@@ -999,7 +1254,7 @@ export function Sidebar(props: {
                     {threads.length === 0 && (
                       <div className="shelf-empty">{t("No shelved projects")}</div>
                     )}
-                    {threads.map(threadRow)}
+                    {threads.map(threadWithChildren)}
                   </div>
                 ))}
               </div>
@@ -1021,7 +1276,7 @@ export function Sidebar(props: {
           onDragLeave={() => setProjectHint((h) => (h?.id === "__ungrouped__" ? null : h))}
           onDrop={dropOnUngrouped}
         >
-          {groups.ungrouped.map(threadRow)}
+          {groups.ungrouped.map(threadWithChildren)}
         </div>
       </div>
       {groups.archived.length > 0 && (

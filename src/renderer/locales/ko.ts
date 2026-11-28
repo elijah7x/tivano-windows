@@ -2144,4 +2144,23 @@ export const ko: Record<string, string> = {
   "This permanently deletes %lld chats, including linked sub-agents and helpers in other projects. Project source files will not be deleted.":
     "다른 프로젝트의 연결된 하위 에이전트 및 헬퍼를 포함하여 %lld개의 대화를 영구적으로 삭제합니다. 프로젝트 소스 파일은 삭제되지 않습니다.",
   "Remove project": "프로젝트 제거",
+  // P2-72
+  "1 sub-agent": "하위 에이전트 1개",
+  "%d sub-agents": "하위 에이전트 %d개",
+  "%d sub-agents · %d running": "하위 에이전트 %d개 · %d개 실행 중",
+  "1 helper": "도우미 1개",
+  "%d helpers": "도우미 %d개",
+  "%d helpers · %d running": "도우미 %d개 · %d개 실행 중",
+  "1 folded sub-agent": "접힌 하위 에이전트 1개",
+  "%d folded sub-agents": "접힌 하위 에이전트 %d개",
+  "%d folded sub-agents, %d running": "접힌 하위 에이전트 %d개, %d개 실행 중",
+  "1 folded helper": "접힌 도우미 1개",
+  "%d folded helpers": "접힌 도우미 %d개",
+  "%d folded helpers, %d running": "접힌 도우미 %d개, %d개 실행 중",
+  "Show the sub-agent": "하위 에이전트 표시",
+  "Show %d sub-agents": "하위 에이전트 %d개 표시",
+  "Show the helper": "도우미 표시",
+  "Show %d helpers": "도우미 %d개 표시",
+  "Show helpers": "도우미 표시",
+  "Hide helpers": "도우미 숨기기",
 };

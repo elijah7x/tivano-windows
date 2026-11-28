@@ -958,6 +958,12 @@ export interface ChatThread {
    * moves.
    */
   isInPanel?: boolean;
+  /**
+   * P2-72 (frozen Library.ChatThread.expandsHelpers): whether the sidebar
+   * shows this parent thread's helpers/sub-agents unfolded under it.
+   * Absent or false means folded into one summary row.
+   */
+  expandsHelpers?: boolean;
 }
 
 /** F11 worktree operation result — created reports the directory main
