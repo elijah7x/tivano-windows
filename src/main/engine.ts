@@ -93,6 +93,7 @@ import {
   formatReset as limitFormatReset,
 } from "./usageLimit";
 import { limitHandoffText } from "./limitHandoff";
+import { branchTitle, sliceThreadForBranch, type ThreadBranchPoint } from "./threadBranch";
 import type { AppEvent } from "../shared/ipc";
 import { INTERRUPTED_MARKER } from "../shared/types";
 import { threadsInAffiliation } from "../shared/threadOrder";
@@ -1564,7 +1565,10 @@ export class Engine {
     // thread record is gone.
     const del = this.mustThread(id);
     const wt = del.worktreeDir;
-    if (wt !== undefined && this.worktrees) {
+    const sharedWorktree =
+      wt !== undefined &&
+      this.store.state.threads.some((t) => t.id !== id && t.worktreeDir === wt);
+    if (wt !== undefined && this.worktrees && !sharedWorktree) {
       const projectId = del.projectId;
       if (projectId) {
         if (del.hydraHead)
@@ -3864,6 +3868,90 @@ export class Engine {
     this.emit({ type: "thread-added", thread });
     this.emit({ type: "thread-selected", threadId: thread.id });
     return thread;
+  }
+
+  /**
+   * P1-44 Branch from here (v3.0.26 AppModel.branchThread): a new chat in
+   * the same project carrying the source's copied history up to the
+   * chosen point, the source's chat settings and its folder. The branch
+   * has no provider session of its own yet, so its first send carries
+   * the copied history once as forwarded context (the transcript-provider
+   * path upstream). A "before" branch returns the user message as the
+   * composer draft. The source chat is never touched.
+   */
+  branchThread(
+    sourceId: string,
+    turnId: string,
+    point: ThreadBranchPoint,
+  ): { thread: ChatThread; draft?: string } {
+    this.assertMutable();
+    const source = this.mustThread(sourceId);
+    this.ensureThreadLoaded(sourceId);
+    const live = source.turn;
+    if (
+      (live && (live.status === "running" || live.status === "waiting-approval")) ||
+      this.revertingThreads.has(sourceId)
+    )
+      throw new EngineError(
+        "Could not branch chat: Wait for the current reply to finish before branching.",
+      );
+    const slice = sliceThreadForBranch(source.messages, live, turnId, point);
+    if (!slice)
+      throw new EngineError(
+        "Could not branch chat: This message can no longer be branched from.",
+      );
+    const hasHistory = slice.messages.some(
+      (m) => (m.role === "user" || m.role === "assistant") && m.content.trim() !== "",
+    );
+    const continuation =
+      hasHistory || source.continuation
+        ? captureContinuation(slice.messages, source.id, source.title, source.continuation)
+        : undefined;
+    const now = Date.now();
+    const thread: ChatThread = {
+      id: randomUUID(),
+      projectId: source.projectId,
+      title: branchTitle(source.title),
+      titleUserSet: true,
+      createdAt: now,
+      updatedAt: now,
+      messages: slice.messages,
+      turn: null,
+      sessionGrants: [],
+      hasStartedTurn: false,
+      ...(source.codexModel !== undefined ? { codexModel: source.codexModel } : {}),
+      ...(source.codexEffort !== undefined ? { codexEffort: source.codexEffort } : {}),
+      ...(source.codexServiceTier !== undefined
+        ? { codexServiceTier: source.codexServiceTier }
+        : {}),
+      runtimeMode:
+        source.runtimeMode ?? this.store.state.settings.defaultRuntimeMode ?? "fullAccess",
+      ...(source.interactionMode !== undefined
+        ? { interactionMode: source.interactionMode }
+        : {}),
+      ...(source.hydraEnabled !== undefined ? { hydraEnabled: source.hydraEnabled } : {}),
+      ...(source.hydraPairId !== undefined ? { hydraPairId: source.hydraPairId } : {}),
+      ...(source.subagentMode !== undefined ? { subagentMode: source.subagentMode } : {}),
+      // Same folder as the source: a shared worktree is only removed
+      // once no chat uses it (see deleteThread).
+      ...(source.worktreeDir !== undefined ? { worktreeDir: source.worktreeDir } : {}),
+      ...(continuation ? { continuation } : {}),
+      branchOrigin: {
+        sourceThreadId: source.id,
+        sourceTitle: source.title,
+        ...(slice.lastCopiedMessageId !== undefined
+          ? { lastCopiedMessageId: slice.lastCopiedMessageId }
+          : {}),
+      },
+    };
+    this.store.update((d) => {
+      d.threads.push(thread);
+      d.ui.selectedThreadId = thread.id;
+    });
+    this.touchThreadAccess(thread.id);
+    this.emit({ type: "thread-added", thread });
+    this.emit({ type: "thread-selected", threadId: thread.id });
+    return { thread, ...(slice.draft !== undefined ? { draft: slice.draft } : {}) };
   }
 
   /**

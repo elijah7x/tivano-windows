@@ -958,6 +958,19 @@ export interface ChatThread {
    * moves.
    */
   isInPanel?: boolean;
+  /**
+   * P1-44 Branch from here (v3.0.26 ThreadBranchOrigin): the chat this
+   * one was branched from. The provenance row sits under
+   * `lastCopiedMessageId` (top of the timeline when nothing was copied)
+   * and opens the original chat while it still exists.
+   */
+  branchOrigin?: ThreadBranchOrigin;
+}
+
+export interface ThreadBranchOrigin {
+  sourceThreadId: string;
+  sourceTitle: string;
+  lastCopiedMessageId?: string;
 }
 
 /** F11 worktree operation result — created reports the directory main

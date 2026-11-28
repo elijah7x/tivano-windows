@@ -229,6 +229,13 @@ const vHydraJobSummary = vObject({
   merge: vOptional(vEnum(["merged", "nothing", "failed", "skipped"] as const)),
 });
 
+/** P1-44 Branch from here — where a branched chat came from. */
+const vBranchOrigin = vObject({
+  sourceThreadId: vNonEmptyString(120),
+  sourceTitle: vNonEmptyString(500),
+  lastCopiedMessageId: vOptional(vNonEmptyString(120)),
+});
+
 const vThread = vObject({
   id: vNonEmptyString(120),
   projectId: vNullable(vNonEmptyString(120)),
@@ -314,6 +321,8 @@ const vThread = vObject({
   // F25: helper-chat binding (frozen parentThreadID / isInPanel).
   parentThreadId: vOptional(vNonEmptyString(120)),
   isInPanel: vOptional(vBoolean),
+  // P1-44: provenance of a branched chat.
+  branchOrigin: vOptional(vBranchOrigin),
 });
 
 
@@ -841,6 +850,8 @@ const vThreadHead = vObject({
   // F25: helper-chat binding (frozen parentThreadID / isInPanel).
   parentThreadId: vOptional(vNonEmptyString(120)),
   isInPanel: vOptional(vBoolean),
+  // P1-44: provenance of a branched chat.
+  branchOrigin: vOptional(vBranchOrigin),
 });
 
 const vStoreHead = vObject({

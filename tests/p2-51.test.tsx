@@ -199,6 +199,22 @@ describe("P2-51 message right-click Copy / Copy all menu", () => {
     expect(zhHtml).not.toContain("复制全文");
   });
 
+  it("P1-44: replies and prompts with a turn offer Branch from here", () => {
+    for (const role of ["assistant", "user"] as const) {
+      const state = { ...baseState, role, turnId: "turn-1", selection: null };
+      const html = renderInLang("en", createElement(MessagePopover, { state, onClose: () => {} }));
+      expect(html).toContain("Branch from here");
+      const zh = renderInLang("zh-Hans", createElement(MessagePopover, { state, onClose: () => {} }));
+      expect(zh).toContain("从这里分支");
+    }
+    const { turnId: _omit, ...noTurn } = { ...baseState, turnId: "x" };
+    const html = renderInLang(
+      "en",
+      createElement(MessagePopover, { state: { ...noTurn, selection: null }, onClose: () => {} }),
+    );
+    expect(html).not.toContain("Branch from here");
+  });
+
   it("user prompt keeps Edit from here and Rewind to this turn alongside Copy all", () => {
     const html = renderInLang(
       "en",

@@ -200,6 +200,7 @@ export const REQUEST_CHANNELS = [
   "threads:set-subagent-mode",
   "threads:set-interaction-mode",
   "threads:forward",
+  "threads:branch",
   "threads:revert",
   "threads:revert-preview",
   "threads:resend",
@@ -400,6 +401,13 @@ export const requestValidators = {
     mode: vEnum(["build", "plan"] as const),
   }),
   "threads:forward": vObject({ threadId: vId }),
+  // P1-44 Branch from here: "through" keeps the chosen reply's turn,
+  // "before" keeps what came before a user message.
+  "threads:branch": vObject({
+    threadId: vId,
+    turnId: vId,
+    point: vEnum(["before", "through"] as const),
+  }),
   // F09 (frozen ThreadRuntime.revert/resend, bounded): rewind the
   // conversation to before a turn — files are kept (in-place checkpoint
   // restore stays disabled), the provider history restarts fresh.

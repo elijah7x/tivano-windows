@@ -4,7 +4,7 @@
 // streaming/approval/error/interruption states, and the composer.
 
 import { createElement, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { AppInfo, ChatThread, CheckpointRecordView, CodexInfo, Message, Project, Settings, Turn } from "../../shared/types";
+import type { AppInfo, ChatThread, CheckpointRecordView, CodexInfo, Message, Project, Settings, ThreadBranchOrigin, Turn } from "../../shared/types";
 import { INTERRUPTED_MARKER } from "../../shared/types";
 import { AttachChip } from "./AttachChip";
 import { ToolMsgRow, WorkingIndicator } from "./WorkingIndicator";
@@ -1323,9 +1323,27 @@ export function ChatView(props: {
             }
             return out;
           };
-          return windowedItems.map((item: TimelineItem) =>
-            item.kind === "lone" ? renderMessage(item.message) : renderTurnSteps(item),
-          );
+          // P1-44: the provenance row sits under the copied history.
+          const origin = thread.branchOrigin;
+          const originRow = origin ? (
+            <BranchOriginRow
+              key="branch-origin"
+              origin={origin}
+              sourceExists={(props.threads ?? []).some((x) => x.id === origin.sourceThreadId)}
+            />
+          ) : null;
+          const anchor = origin?.lastCopiedMessageId;
+          const rows = windowedItems.flatMap((item: TimelineItem) => {
+            const row =
+              item.kind === "lone" ? renderMessage(item.message) : renderTurnSteps(item);
+            const anchored =
+              anchor !== undefined &&
+              (item.kind === "lone"
+                ? item.message.id === anchor
+                : item.messages.some((m) => m.id === anchor));
+            return anchored ? [row, originRow] : [row];
+          });
+          return origin && anchor === undefined ? [originRow, ...rows] : rows;
         })()}
         {/* F03: frozen WorkingIndicator — the live working line at the
             timeline's tail while the turn runs. showsWorkingCard picks
@@ -1453,5 +1471,34 @@ export function ChatView(props: {
         />
       )}
     </main>
+  );
+}
+
+/** P1-44 provenance line under a branch's copied history (v3.0.26
+ *  ThreadTimeline branch divider): opens the original chat while it
+ *  still exists. */
+function BranchOriginRow(props: { origin: ThreadBranchOrigin; sourceExists: boolean }) {
+  const t = useT();
+  return (
+    <div className="branch-origin-row" role="note">
+      <span className="branch-origin-line" aria-hidden="true" />
+      <span className="branch-origin-label">
+        {t("Branched from %@", props.origin.sourceTitle)}
+      </span>
+      {props.sourceExists && (
+        <button
+          type="button"
+          className="branch-origin-open"
+          onClick={() =>
+            void callApi("threads:select", { id: props.origin.sourceThreadId }).catch(
+              () => {},
+            )
+          }
+        >
+          {t("Open original chat")}
+        </button>
+      )}
+      <span className="branch-origin-line" aria-hidden="true" />
+    </div>
   );
 }
